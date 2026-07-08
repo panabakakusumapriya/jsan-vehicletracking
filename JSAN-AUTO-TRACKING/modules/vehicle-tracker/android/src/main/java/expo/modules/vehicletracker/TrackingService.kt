@@ -232,10 +232,10 @@ class TrackingService : Service() {
                 DetectedActivity.WALKING,
                 DetectedActivity.RUNNING
             )
-            val transitions = types.map {
+            val transitions = types.map { type: Int ->
                 ActivityTransition.Builder()
-                    .setActivityType(it)
-                    .setActivityTransitionType(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
+                    .setActivityType(type)
+                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
                     .build()
             }
             val request = ActivityTransitionRequest(transitions)
