@@ -1,5 +1,10 @@
-// Empty base in dev => same-origin; vite proxies /api to the backend.
-export const API_URL = import.meta.env.VITE_API_URL ?? '';
+// Base URL for the API + Socket.IO.
+//  - dev: '' => same-origin, vite proxies /api and /socket.io to the backend.
+//  - prod (Vercel etc.): no proxy exists, so call the deployed backend directly.
+//    Override with VITE_API_URL at build time if the backend URL changes.
+const DEFAULT_PROD_API = 'https://backend-jsan-vehicletracking-production.up.railway.app';
+export const API_URL =
+  import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? DEFAULT_PROD_API : '');
 
 const TOKEN_KEY = 'jsan_admin_token';
 
