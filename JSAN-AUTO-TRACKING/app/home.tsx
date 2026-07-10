@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -16,6 +17,13 @@ import { ensurePermissions } from '@/src/lib/permissions';
 
 type UiState = 'starting' | 'idle' | 'tracking' | 'blocked';
 
+const STATE_CONFIG = {
+  tracking: { color: '#2ecc71', icon: '●', label: 'Trip in progress', sub: 'Your location is being recorded.' },
+  blocked:  { color: '#ff5252', icon: '⚠', label: 'Action needed', sub: '' },
+  starting: { color: '#f0a500', icon: '◌', label: 'Starting…', sub: 'Setting up background tracking.' },
+  idle:     { color: '#5a9eff', icon: '◎', label: 'Ready — auto-tracking on', sub: 'Just drive. A trip starts automatically above 5 km/h.' },
+};
+
 export default function Home() {
   const { user, token, signOut } = useAuth();
   const [uiState, setUiState] = useState<UiState>('starting');
@@ -24,6 +32,23 @@ export default function Home() {
   const [lastFix, setLastFix] = useState<VehicleTracker.LocationEvent | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const started = useRef(false);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Pulse animation for tracking state
+  useEffect(() => {
+    if (uiState === 'tracking') {
+      const loop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.4, duration: 900, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
+        ])
+      );
+      loop.start();
+      return () => loop.stop();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [uiState, pulseAnim]);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -33,7 +58,6 @@ export default function Home() {
     }
   }, []);
 
-  // One-time bootstrap: permissions -> configure -> start.
   useEffect(() => {
     if (started.current || !user || !token) return;
     started.current = true;
@@ -57,7 +81,6 @@ export default function Home() {
     })();
   }, [user, token, refreshStatus]);
 
-  // Live event subscriptions.
   useEffect(() => {
     const subs = [
       VehicleTracker.addStateListener((e) => {
@@ -77,7 +100,6 @@ export default function Home() {
     return () => subs.forEach((s) => s?.remove());
   }, [refreshStatus]);
 
-  // Poll status every 4s while the screen is open.
   useEffect(() => {
     const id = setInterval(refreshStatus, 4000);
     return () => clearInterval(id);
@@ -107,128 +129,223 @@ export default function Home() {
     router.replace('/login');
   };
 
-  const dotColor =
-    uiState === 'tracking' ? '#31d07a' : uiState === 'blocked' ? '#ff6b6b' : '#f5b93b';
-  const headline =
-    uiState === 'tracking'
-      ? 'Trip in progress'
-      : uiState === 'blocked'
-        ? 'Action needed'
-        : uiState === 'starting'
-          ? 'Starting…'
-          : 'Ready — auto-tracking on';
-  const sub =
-    uiState === 'tracking'
-      ? 'Your location is being recorded.'
-      : uiState === 'blocked'
-        ? permMsg ?? ''
-        : 'Just drive. A trip starts automatically above 5 km/h.';
+  const cfg = STATE_CONFIG[uiState];
+  const subText = uiState === 'blocked' ? (permMsg ?? '') : cfg.sub;
+  const firstName = user?.name?.split(' ')[0] ?? 'Driver';
 
   return (
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#5a9eff" />}
     >
-      <View style={styles.headerRow}>
+      {/* Header */}
+      <View style={styles.header}>
         <View>
-          <Text style={styles.hi}>Hi, {user?.name?.split(' ')[0] ?? 'Driver'}</Text>
+          <Text style={styles.greeting}>Good day, {firstName}</Text>
           <Text style={styles.email}>{user?.email}</Text>
         </View>
-        <TouchableOpacity onPress={doSignOut}>
-          <Text style={styles.signout}>Sign out</Text>
+        <TouchableOpacity onPress={doSignOut} style={styles.signOutBtn}>
+          <Text style={styles.signOutText}>Sign out</Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.statusCard}>
-        <View style={[styles.dot, { backgroundColor: dotColor }]} />
-        <Text style={styles.headline}>{headline}</Text>
-        <Text style={styles.subline}>{sub}</Text>
+      {/* Status card */}
+      <View style={[styles.statusCard, { borderColor: cfg.color + '33' }]}>
+        <View style={styles.statusTop}>
+          <View style={styles.dotWrap}>
+            <Animated.View style={[styles.dotRing, { backgroundColor: cfg.color + '33', transform: [{ scale: pulseAnim }] }]} />
+            <View style={[styles.dot, { backgroundColor: cfg.color }]} />
+          </View>
+          <View style={styles.statusTextWrap}>
+            <Text style={[styles.statusHeadline, { color: cfg.color }]}>{cfg.label}</Text>
+            {subText ? <Text style={styles.statusSub}>{subText}</Text> : null}
+          </View>
+        </View>
 
         {uiState === 'blocked' && (
-          <TouchableOpacity style={styles.retryBtn} onPress={retryPermissions}>
-            <Text style={styles.retryText}>Grant permissions</Text>
+          <TouchableOpacity style={[styles.permBtn, { borderColor: cfg.color + '66' }]} onPress={retryPermissions}>
+            <Text style={[styles.permBtnText, { color: cfg.color }]}>Grant permissions</Text>
           </TouchableOpacity>
         )}
       </View>
 
+      {/* Stats grid */}
       <View style={styles.grid}>
-        <Stat label="Speed" value={lastFix ? `${Math.round(lastFix.speedKmh)} km/h` : '—'} />
-        <Stat label="Queued offline" value={String(status?.queued ?? 0)} />
-        <Stat
+        <StatCard
+          icon="⚡"
+          label="Speed"
+          value={lastFix ? `${Math.round(lastFix.speedKmh)}` : '—'}
+          unit={lastFix ? 'km/h' : ''}
+        />
+        <StatCard
+          icon="📡"
+          label="Queued offline"
+          value={String(status?.queued ?? 0)}
+          unit="pts"
+        />
+        <StatCard
+          icon="↕"
           label="Latitude"
-          value={lastFix ? lastFix.lat.toFixed(5) : '—'}
+          value={lastFix ? lastFix.lat.toFixed(4) : '—'}
+          unit=""
         />
-        <Stat
+        <StatCard
+          icon="↔"
           label="Longitude"
-          value={lastFix ? lastFix.lon.toFixed(5) : '—'}
+          value={lastFix ? lastFix.lon.toFixed(4) : '—'}
+          unit=""
         />
       </View>
 
+      {/* Info card */}
       <View style={styles.infoCard}>
-        <Row k="Tracking engine" v={status?.enabled ? 'Running (native service)' : 'Stopped'} />
-        <Row k="Current trip" v={status?.currentTripId ? status.currentTripId.slice(0, 8) + '…' : 'none'} />
-        <Row k="Server" v={API_BASE_URL} />
+        <Text style={styles.infoTitle}>System</Text>
+        <InfoRow label="Tracking engine" value={status?.enabled ? 'Running' : 'Stopped'} valueColor={status?.enabled ? '#2ecc71' : '#7a8699'} />
+        <InfoRow label="Current trip" value={status?.currentTripId ? status.currentTripId.slice(0, 10) + '…' : 'None'} />
+        <InfoRow label="Server" value={API_BASE_URL} />
       </View>
 
-      <TouchableOpacity style={styles.syncBtn} onPress={onRefresh}>
+      {/* Sync button */}
+      <TouchableOpacity style={styles.syncBtn} onPress={onRefresh} activeOpacity={0.7}>
+        <Text style={styles.syncIcon}>↻</Text>
         <Text style={styles.syncText}>Force sync now</Text>
       </TouchableOpacity>
 
       <Text style={styles.note}>
-        You can close the app — tracking keeps running in the background and uploads
-        automatically when you have internet.
+        You can close the app — tracking keeps running in the background and uploads automatically when you have internet.
       </Text>
     </ScrollView>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function StatCard({ icon, label, value, unit }: { icon: string; label: string; value: string; unit: string }) {
   return (
-    <View style={styles.stat}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
+    <View style={statStyles.card}>
+      <Text style={statStyles.icon}>{icon}</Text>
+      <View style={statStyles.row}>
+        <Text style={statStyles.value}>{value}</Text>
+        {unit ? <Text style={statStyles.unit}>{unit}</Text> : null}
+      </View>
+      <Text style={statStyles.label}>{label}</Text>
     </View>
   );
 }
 
-function Row({ k, v }: { k: string; v: string }) {
+function InfoRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
-    <View style={styles.row}>
-      <Text style={styles.rowKey}>{k}</Text>
-      <Text style={styles.rowVal} numberOfLines={1}>{v}</Text>
+    <View style={infoStyles.row}>
+      <Text style={infoStyles.label}>{label}</Text>
+      <Text style={[infoStyles.value, valueColor ? { color: valueColor } : null]} numberOfLines={1}>
+        {value}
+      </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0b1220' },
-  content: { padding: 20, paddingTop: 64, gap: 16 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  hi: { color: '#fff', fontSize: 22, fontWeight: '800' },
-  email: { color: '#8a94a6', fontSize: 13, marginTop: 2 },
-  signout: { color: '#4da3ff', fontSize: 15, fontWeight: '600' },
-  statusCard: { backgroundColor: '#131c2e', borderRadius: 20, padding: 24, alignItems: 'flex-start' },
-  dot: { width: 14, height: 14, borderRadius: 7, marginBottom: 12 },
-  headline: { color: '#fff', fontSize: 24, fontWeight: '800' },
-  subline: { color: '#8a94a6', fontSize: 14, marginTop: 6 },
-  retryBtn: { backgroundColor: '#2f7bff', borderRadius: 10, paddingHorizontal: 18, paddingVertical: 12, marginTop: 16 },
-  retryText: { color: '#fff', fontWeight: '700' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  stat: {
+  container: { flex: 1, backgroundColor: '#080e1a' },
+  content: { padding: 20, paddingTop: 60, gap: 14 },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  greeting: { color: '#e8eef8', fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
+  email: { color: '#5a6478', fontSize: 13, marginTop: 2 },
+  signOutBtn: {
+    backgroundColor: '#0f1827',
+    borderWidth: 1,
+    borderColor: '#1e2d45',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  signOutText: { color: '#5a9eff', fontSize: 13, fontWeight: '600' },
+  statusCard: {
+    backgroundColor: '#0f1827',
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 20,
+    gap: 14,
+  },
+  statusTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 14 },
+  dotWrap: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+  dotRing: { position: 'absolute', width: 22, height: 22, borderRadius: 11 },
+  dot: { width: 12, height: 12, borderRadius: 6 },
+  statusTextWrap: { flex: 1 },
+  statusHeadline: { fontSize: 17, fontWeight: '700', lineHeight: 22 },
+  statusSub: { color: '#7a8699', fontSize: 13, marginTop: 4, lineHeight: 18 },
+  permBtn: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  permBtnText: { fontWeight: '700', fontSize: 14 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  infoCard: {
+    backgroundColor: '#0f1827',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1e2d45',
+    padding: 18,
+    gap: 0,
+  },
+  infoTitle: {
+    color: '#5a6478',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginBottom: 12,
+  },
+  syncBtn: {
+    backgroundColor: '#0f1827',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1e2d45',
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  syncIcon: { color: '#5a9eff', fontSize: 18, fontWeight: '700' },
+  syncText: { color: '#5a9eff', fontWeight: '700', fontSize: 14 },
+  note: { color: '#3d4a5e', fontSize: 12, lineHeight: 18, textAlign: 'center', paddingBottom: 20 },
+});
+
+const statStyles = StyleSheet.create({
+  card: {
     flexGrow: 1,
     flexBasis: '47%',
-    backgroundColor: '#131c2e',
-    borderRadius: 16,
-    padding: 18,
+    backgroundColor: '#0f1827',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1e2d45',
+    padding: 16,
+    gap: 2,
   },
-  statValue: { color: '#fff', fontSize: 22, fontWeight: '800' },
-  statLabel: { color: '#8a94a6', fontSize: 13, marginTop: 4 },
-  infoCard: { backgroundColor: '#131c2e', borderRadius: 16, padding: 18, gap: 12 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
-  rowKey: { color: '#8a94a6', fontSize: 14 },
-  rowVal: { color: '#dbe4f3', fontSize: 14, fontWeight: '600', flexShrink: 1, textAlign: 'right' },
-  syncBtn: { backgroundColor: '#1c2942', borderRadius: 12, paddingVertical: 16, alignItems: 'center' },
-  syncText: { color: '#4da3ff', fontWeight: '700', fontSize: 15 },
-  note: { color: '#6b7688', fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 4 },
+  icon: { fontSize: 18, marginBottom: 6 },
+  row: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
+  value: { color: '#e8eef8', fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
+  unit: { color: '#7a8699', fontSize: 13, fontWeight: '500' },
+  label: { color: '#5a6478', fontSize: 12, marginTop: 2 },
+});
+
+const infoStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1a2236',
+    gap: 12,
+  },
+  label: { color: '#7a8699', fontSize: 13 },
+  value: { color: '#c4cede', fontSize: 13, fontWeight: '600', flexShrink: 1, textAlign: 'right' },
 });

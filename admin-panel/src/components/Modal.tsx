@@ -4,7 +4,10 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{title}</h3>
+        <div className="modal-header">
+          <h3>{title}</h3>
+          <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
         {children}
       </div>
     </div>

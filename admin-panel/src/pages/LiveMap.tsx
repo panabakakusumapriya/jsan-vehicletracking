@@ -78,16 +78,31 @@ export function LiveMap() {
   return (
     <div className="live-grid">
       <div className="live-list">
-        <div className="page-head" style={{ marginBottom: 2 }}>
-          <h1 className="page-title">Live</h1>
-          <span className={`badge ${connected ? 'green' : 'gray'}`}>{connected ? '● live' : 'offline'}</span>
+        <div className="page-head" style={{ marginBottom: 8 }}>
+          <h1 className="page-title">Live Map</h1>
+          <span className={`badge ${connected ? 'green' : 'gray'}`}>
+            {connected ? '● Live' : '○ Offline'}
+          </span>
         </div>
-        <p className="muted" style={{ marginTop: 0 }}>
-          {withLoc.length} active {withLoc.length === 1 ? 'driver' : 'drivers'}
-        </p>
+
+        <div className="live-stats">
+          <div className="live-stat-pill">
+            <div className="v" style={{ color: 'var(--green)' }}>{withLoc.length}</div>
+            <div className="k">Active</div>
+          </div>
+          <div className="live-stat-pill">
+            <div className="v">{list.length}</div>
+            <div className="k">Total</div>
+          </div>
+        </div>
 
         {list.length === 0 && (
-          <div className="card muted">No active trips right now. Drivers appear here the moment they start moving.</div>
+          <div className="card" style={{ textAlign: 'center', padding: '32px 16px' }}>
+            <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>🚗</div>
+            <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+              No active trips right now.<br />Drivers appear here when they start moving.
+            </p>
+          </div>
         )}
 
         {list.map((d) => (
@@ -98,11 +113,18 @@ export function LiveMap() {
           >
             <div className="row">
               <span className="driver-name">{d.driver.name}</span>
-              <span className={`badge ${d.stale ? 'amber' : 'green'}`}>{d.stale ? 'stale' : 'moving'}</span>
+              <span className={`badge ${d.stale ? 'amber' : 'green'}`}>
+                {d.stale ? '⚠ Stale' : '● Moving'}
+              </span>
             </div>
             <div className="driver-meta">
-              {d.vehicle?.plateNumber ? `${d.vehicle.plateNumber} · ` : ''}
-              {d.location ? `${Math.round(d.location.speed ?? 0)} km/h` : 'no fix'} · {km(d.distanceMeters)}
+              {d.vehicle?.plateNumber && (
+                <span style={{ color: 'var(--text-2)', fontWeight: 500 }}>{d.vehicle.plateNumber}</span>
+              )}
+              {d.vehicle?.plateNumber ? ' · ' : ''}
+              {d.location ? `${Math.round(d.location.speed ?? 0)} km/h` : 'No fix'}
+              {' · '}
+              {km(d.distanceMeters)}
             </div>
           </div>
         ))}
@@ -119,12 +141,13 @@ export function LiveMap() {
             <CircleMarker
               key={d.driver._id}
               center={[d.location!.lat, d.location!.lon]}
-              radius={9}
-              pathOptions={{ color: '#fff', weight: 2, fillColor: d.stale ? '#f5b93b' : '#31d07a', fillOpacity: 1 }}
+              radius={10}
+              pathOptions={{ color: '#fff', weight: 2.5, fillColor: d.stale ? '#f0a500' : '#2ecc71', fillOpacity: 1 }}
             >
               <Popup>
                 <b>{d.driver.name}</b>
                 <br />
+                {d.vehicle?.plateNumber && <><span>{d.vehicle.plateNumber}</span><br /></>}
                 {Math.round(d.location!.speed ?? 0)} km/h
                 <br />
                 {d.location!.recordedAt ? new Date(d.location!.recordedAt).toLocaleTimeString() : ''}
