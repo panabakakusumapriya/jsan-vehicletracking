@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(html|css|scss|sass|less|vue|json\\)$\")"
+    ]
+  }
+}
