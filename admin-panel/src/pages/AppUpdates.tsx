@@ -1,30 +1,21 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
-import { api, API_URL } from '../lib/api';
+import { api } from '../lib/api';
 
 interface AppVersion {
   _id: string;
   version: string;
   platform: string;
-  buildNumber?: number;
+  buildNumber?: string;
   downloadUrl: string;
   releaseNotes: string;
   isActive: boolean;
   releasedAt: string;
 }
 
-const BACKEND =
-  API_URL || 'https://backend-jsan-vehicletracking-production.up.railway.app';
-const EAS_WEBHOOK_URL = `${BACKEND}/api/app/eas-webhook`;
-
 const PlusIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-  </svg>
-);
-const CopyIcon = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-    <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
   </svg>
 );
 const EditIcon = () => (
@@ -33,37 +24,6 @@ const EditIcon = () => (
     <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
   </svg>
 );
-const CheckIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-    <polyline points="20 6 9 17 4 12"/>
-  </svg>
-);
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
-  };
-  return (
-    <button
-      onClick={copy}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 4,
-        background: copied ? 'var(--green-bg, #f0fdf4)' : 'var(--panel-2)',
-        border: '1px solid var(--line-2)',
-        borderRadius: 6, padding: '4px 10px',
-        fontSize: 12, fontWeight: 600, cursor: 'pointer',
-        color: copied ? 'var(--green)' : 'var(--text-2)',
-        transition: 'all 0.15s',
-      }}
-    >
-      {copied ? <><CheckIcon /> Copied</> : <><CopyIcon /> Copy</>}
-    </button>
-  );
-}
-
 function InlineUrlEditor({ v, onSaved }: { v: AppVersion; onSaved: () => void }) {
   const [editing, setEditing] = useState(false);
   const [url, setUrl] = useState(v.downloadUrl);
@@ -183,40 +143,6 @@ export function AppUpdates() {
         <button className="btn" onClick={() => setShowAdd(true)}>
           <PlusIcon /> Add version
         </button>
-      </div>
-
-      {/* EAS Webhook info */}
-      <div className="card" style={{
-        marginBottom: 16, background: '#faf5ff',
-        border: '1.5px solid rgba(124,58,237,0.18)',
-        padding: '14px 18px',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-          <div style={{ fontSize: 22, lineHeight: 1 }}>⚡</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 4 }}>
-              Auto-update download link via EAS Build webhook
-            </div>
-            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 10, lineHeight: 1.6 }}>
-              After each successful EAS build, the download URL updates automatically.
-              Add this URL as a webhook in your{' '}
-              <a href="https://expo.dev" target="_blank" rel="noreferrer" style={{ color: 'var(--brand)' }}>
-                Expo dashboard
-              </a>
-              {' '}→ Project → Webhooks → Build (event: <code style={{ background: 'var(--panel-2)', padding: '1px 5px', borderRadius: 4 }}>build.finished</code>).
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <code style={{
-                background: 'var(--panel)', border: '1px solid var(--line-2)',
-                borderRadius: 6, padding: '5px 10px', fontSize: 12,
-                color: 'var(--brand)', fontFamily: 'monospace', wordBreak: 'break-all',
-              }}>
-                {EAS_WEBHOOK_URL}
-              </code>
-              <CopyButton text={EAS_WEBHOOK_URL} />
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* Stats */}
@@ -389,7 +315,7 @@ function AddVersion({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
       await api.post('/api/app/versions', {
         version: form.version,
         platform: form.platform,
-        buildNumber: form.buildNumber ? Number(form.buildNumber) : undefined,
+        buildNumber: form.buildNumber || undefined,
         downloadUrl: form.downloadUrl || '',
         releaseNotes: form.releaseNotes || '',
         isActive: form.isActive,
@@ -414,13 +340,13 @@ function AddVersion({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
           <option value="both">Both</option>
         </select>
       </div>
-      <div className="field"><label>Build number (optional)</label>
-        <input className="input" type="number" value={form.buildNumber} onChange={e => set('buildNumber', e.target.value)} placeholder="1" />
+      <div className="field"><label>Build number</label>
+        <input className="input" type="text" value={form.buildNumber} onChange={e => set('buildNumber', e.target.value)} placeholder="e.g. 1.0.0 or 100" />
       </div>
-      <div className="field"><label>Download URL (optional)</label>
+      <div className="field"><label>Download URL</label>
         <input className="input" value={form.downloadUrl} onChange={e => set('downloadUrl', e.target.value)} placeholder="https://…/app.apk" />
       </div>
-      <div className="field"><label>Release notes (optional)</label>
+      <div className="field"><label>Release notes</label>
         <textarea className="input" rows={3} value={form.releaseNotes} onChange={e => set('releaseNotes', e.target.value)} placeholder="What's new in this version…" style={{ resize: 'vertical' }} />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>

@@ -4,7 +4,7 @@ const appVersionSchema = new mongoose.Schema(
   {
     version: { type: String, required: true, unique: true }, // e.g. "1.0.0"
     platform: { type: String, enum: ['android', 'ios', 'both'], default: 'android' },
-    buildNumber: { type: Number },
+    buildNumber: { type: String, default: '' },
     downloadUrl: { type: String, default: '' },
     releaseNotes: { type: String, default: '' },
     isActive: { type: Boolean, default: false }, // the "required minimum" version

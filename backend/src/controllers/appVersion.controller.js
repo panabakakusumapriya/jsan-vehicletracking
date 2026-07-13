@@ -19,7 +19,7 @@ exports.reportVersion = asyncHandler(async (req, res) => {
     await AppVersion.create({
       version,
       platform,
-      buildNumber: buildNumber ? Number(buildNumber) : undefined,
+      buildNumber: buildNumber ?? '',
       downloadUrl: '',
       releaseNotes: '',
       isActive: false, // admin must explicitly set active
@@ -28,35 +28,6 @@ exports.reportVersion = asyncHandler(async (req, res) => {
   res.json({ ok: true });
 });
 
-// POST /api/app/eas-webhook  — called by EAS after each successful build
-// Auto-updates (or creates) the version with the real download URL
-exports.easWebhook = asyncHandler(async (req, res) => {
-  const secret = process.env.EAS_WEBHOOK_SECRET;
-  if (secret) {
-    const sig = req.headers['expo-signature'] || '';
-    if (!sig.includes(secret)) {
-      return res.status(401).json({ error: 'Invalid webhook secret' });
-    }
-  }
-
-  const { status, metadata, artifacts } = req.body;
-  if (status !== 'finished') return res.json({ ok: true, skipped: true });
-
-  const version = metadata?.appVersion;
-  const downloadUrl = artifacts?.buildUrl || '';
-  const platform = metadata?.platform || 'android';
-  const buildNumber = metadata?.buildNumber ? Number(metadata.buildNumber) : undefined;
-
-  if (!version) return res.status(400).json({ error: 'No appVersion in metadata' });
-
-  await AppVersion.findOneAndUpdate(
-    { version },
-    { $setOnInsert: { isActive: false, releaseNotes: '' }, $set: { downloadUrl, platform, buildNumber } },
-    { upsert: true, new: true }
-  );
-
-  res.json({ ok: true, version, downloadUrl });
-});
 
 // GET /api/app/versions  — admin only
 exports.list = asyncHandler(async (req, res) => {
@@ -72,7 +43,7 @@ exports.create = asyncHandler(async (req, res) => {
   // If this is set active, deactivate others
   if (isActive) await AppVersion.updateMany({}, { isActive: false });
 
-  const doc = await AppVersion.create({ version, platform, buildNumber, downloadUrl, releaseNotes, isActive: !!isActive });
+  const doc = await AppVersion.create({ version, platform, buildNumber: buildNumber ?? '', downloadUrl, releaseNotes, isActive: !!isActive });
   res.status(201).json({ version: doc });
 });
 
@@ -84,7 +55,7 @@ exports.update = asyncHandler(async (req, res) => {
 
   const doc = await AppVersion.findByIdAndUpdate(
     req.params.id,
-    { isActive: !!isActive, downloadUrl, releaseNotes, buildNumber },
+    { isActive: !!isActive, downloadUrl, releaseNotes, buildNumber: buildNumber ?? '' },
     { new: true, runValidators: true }
   );
   if (!doc) return res.status(404).json({ error: 'Not found' });

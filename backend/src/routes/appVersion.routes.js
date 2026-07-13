@@ -8,9 +8,6 @@ router.get('/current', ctrl.getCurrent);
 // Public — mobile app reports its version on every startup
 router.post('/report-version', ctrl.reportVersion);
 
-// EAS Build webhook — auto-populates download URL after each build
-router.post('/eas-webhook', ctrl.easWebhook);
-
 // Admin-only management
 router.get('/versions', authenticate, requireRole('admin'), ctrl.list);
 router.post('/versions', authenticate, requireRole('admin'), ctrl.create);
