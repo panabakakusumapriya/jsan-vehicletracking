@@ -21,6 +21,7 @@ function createApp() {
   app.use('/api/vehicles', require('./routes/vehicle.routes'));
   app.use('/api/trips', require('./routes/trip.routes'));
   app.use('/api/tracking', require('./routes/tracking.routes'));
+  app.use('/api/app', require('./routes/appVersion.routes'));
 
   app.use((req, res) => res.status(404).json({ error: 'Not found' }));
   app.use(require('./middleware/error'));

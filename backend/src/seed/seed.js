@@ -8,6 +8,7 @@ const env = require('../config/env');
 const { connectDB } = require('../config/db');
 const User = require('../models/User');
 const Vehicle = require('../models/Vehicle');
+const AppVersion = require('../models/AppVersion');
 
 async function upsertUser({ email, name, password, role, managerId = null }) {
   let user = await User.findOne({ email: email.toLowerCase() });
@@ -62,6 +63,22 @@ async function run() {
   if (String(driver.vehicleId) !== String(vehicle._id)) {
     driver.vehicleId = vehicle._id;
     await driver.save();
+  }
+
+  // Seed initial app version
+  const existingVersion = await AppVersion.findOne({ version: '1.0.0' });
+  if (!existingVersion) {
+    await AppVersion.create({
+      version: '1.0.0',
+      platform: 'android',
+      buildNumber: 1,
+      downloadUrl: '',
+      releaseNotes: 'Initial release',
+      isActive: true,
+    });
+    console.log('  + created app version: 1.0.0 (active)');
+  } else {
+    console.log('  = app version 1.0.0 already exists');
   }
 
   console.log('\nDone. Logins:');

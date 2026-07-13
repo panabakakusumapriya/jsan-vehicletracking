@@ -38,7 +38,7 @@ import kotlin.math.roundToInt
  *   fix (every ~10s) -> trip state machine -> SQLite queue -> upload (when online).
  *
  * Trip lifecycle:
- *   idle    + speed >= 5 km/h            -> START trip (new clientTripId)
+ *   idle    + speed >= 6 km/h            -> START trip (new clientTripId)
  *   moving  + speed ~0 for STOP_GRACE_MS -> END trip ("ended")
  *   idle for >= 20 min (no trip started) -> stop service; Activity-Recognition
  *                                           transitions restart it on next movement.
@@ -49,9 +49,9 @@ class TrackingService : Service() {
         private const val NOTIF_ID = 4711
         private const val CHANNEL_ID = "jsan_tracking"
 
-        const val START_SPEED_KMH = 5.0     // auto-start threshold
+        const val START_SPEED_KMH = 6.0     // auto-start threshold
         const val STOP_SPEED_KMH = 1.0      // treat <= this as "stopped"
-        const val STOP_GRACE_MS = 60_000L   // sustained-stop before ending a trip (traffic lights!)
+        const val STOP_GRACE_MS = 20 * 60 * 1000L   // sustained-stop before ending a trip (20 min)
         const val IDLE_TIMEOUT_MS = 20 * 60 * 1000L // 20-min no-movement limit
         const val LOCATION_INTERVAL_MS = 10_000L
         const val FASTEST_MS = 5_000L

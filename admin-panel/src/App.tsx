@@ -4,6 +4,7 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { Drivers } from './pages/Drivers';
 import { LiveMap } from './pages/LiveMap';
 import { Login } from './pages/Login';
+import { AppUpdates } from './pages/AppUpdates';
 import { Managers } from './pages/Managers';
 import { TripDetail } from './pages/TripDetail';
 import { Trips } from './pages/Trips';
@@ -30,6 +31,14 @@ export default function App() {
           element={
             <ProtectedRoute adminOnly>
               <Managers />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app-updates"
+          element={
+            <ProtectedRoute adminOnly>
+              <AppUpdates />
             </ProtectedRoute>
           }
         />
