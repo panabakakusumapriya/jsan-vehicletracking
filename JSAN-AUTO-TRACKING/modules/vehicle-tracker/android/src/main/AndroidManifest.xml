@@ -10,6 +10,16 @@
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+  <!-- Keep CPU awake so GPS fixes continue when screen is off (MyCarTracks pattern) -->
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+  <!-- Network state: detect connectivity changes to trigger upload on reconnect -->
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+  <!-- Ask system to exclude us from Doze / battery optimisation so uploads aren't deferred -->
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
   <application>
     <service
       android:name=".TrackingService"
@@ -23,7 +33,10 @@
       android:exported="true">
       <intent-filter>
         <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <!-- HTC / OnePlus fast-boot -->
         <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+        <!-- Restart tracking after OTA app update (same as MyCarTracks) -->
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
       </intent-filter>
     </receiver>
 
@@ -31,5 +44,11 @@
       android:name=".ActivityTransitionReceiver"
       android:enabled="true"
       android:exported="true" />
+
+    <receiver
+      android:name=".ConnectivityReceiver"
+      android:enabled="true"
+      android:exported="false" />
+
   </application>
 </manifest>

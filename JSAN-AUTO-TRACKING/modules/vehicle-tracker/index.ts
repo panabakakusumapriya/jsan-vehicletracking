@@ -21,6 +21,7 @@ export type LocationEvent = {
 
 export type TripEvent = { tripId: string; recordedAt: string };
 export type StateEvent = { state: 'idle' | 'tracking' | 'idle_timeout' };
+export type UploadErrorEvent = { reason: 'not_configured' | 'auth_failure' | string; message: string; code?: number };
 
 export type TrackerStatus = {
   enabled: boolean;
@@ -70,6 +71,9 @@ export function addTripEndListener(cb: (e: TripEvent) => void): EventSubscriptio
 export function addStateListener(cb: (e: StateEvent) => void): EventSubscription | null {
   return native ? native.addListener('onStateChange', cb) : null;
 }
+export function addUploadErrorListener(cb: (e: UploadErrorEvent) => void): EventSubscription | null {
+  return native ? native.addListener('onUploadError', cb) : null;
+}
 
 export default {
   isSupported,
@@ -82,4 +86,5 @@ export default {
   addTripStartListener,
   addTripEndListener,
   addStateListener,
+  addUploadErrorListener,
 };

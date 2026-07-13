@@ -7,12 +7,15 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.location.Location
+import android.content.IntentFilter
+import android.net.ConnectivityManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
+import android.location.Location
+import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.ActivityRecognition
@@ -26,6 +29,7 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import java.text.SimpleDateFormat
+import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -35,26 +39,41 @@ import kotlin.math.roundToInt
 /**
  * Self-sufficient foreground tracking service. Owns the whole pipeline so it keeps
  * working when the JS/app is killed:
- *   fix (every ~10s) -> trip state machine -> SQLite queue -> upload (when online).
+ *   fix (every ~10s) -> accuracy filter -> speed average -> trip state machine
+ *                    -> SQLite queue -> upload (when online).
  *
  * Trip lifecycle:
- *   idle    + speed >= 6 km/h            -> START trip (new clientTripId)
- *   moving  + speed ~0 for STOP_GRACE_MS -> END trip ("ended")
- *   idle for >= 20 min (no trip started) -> stop service; Activity-Recognition
- *                                           transitions restart it on next movement.
+ *   idle    + avg speed >= 6 km/h            -> START trip (new clientTripId)
+ *   moving  + avg speed ~0 for STOP_GRACE_MS -> END trip ("ended")
+ *   idle for >= 20 min (no trip started)     -> stop service; Activity-Recognition
+ *                                               transitions restart it on next movement.
+ *
+ * Reliability improvements over baseline (matched from MyCarTracks analysis):
+ *   - PARTIAL_WAKE_LOCK keeps CPU awake → GPS fixes survive screen-off on aggressive OEMs
+ *   - GPS accuracy filter (MAX_ACCURACY_M) drops junk fixes from inside buildings
+ *   - Rolling 3-fix speed average prevents false trip starts from momentary GPS spikes
+ *   - ConnectivityReceiver triggers upload the instant network returns (offline resilience)
+ *   - MY_PACKAGE_REPLACED in BootReceiver restarts tracking after app updates
  */
 class TrackingService : Service() {
 
     companion object {
-        private const val NOTIF_ID = 4711
-        private const val CHANNEL_ID = "jsan_tracking"
+        private const val NOTIF_ID          = 4711
+        private const val CHANNEL_ID        = "jsan_tracking"
+        private const val WAKE_TAG          = "jsan:tracking"
 
-        const val START_SPEED_KMH = 6.0     // auto-start threshold
-        const val STOP_SPEED_KMH = 1.0      // treat <= this as "stopped"
-        const val STOP_GRACE_MS = 20 * 60 * 1000L   // sustained-stop before ending a trip (20 min)
-        const val IDLE_TIMEOUT_MS = 20 * 60 * 1000L // 20-min no-movement limit
-        const val LOCATION_INTERVAL_MS = 10_000L
-        const val FASTEST_MS = 5_000L
+        const val START_SPEED_KMH           = 6.0              // auto-start threshold
+        const val STOP_SPEED_KMH            = 1.0              // treat <= this as "stopped"
+        const val STOP_GRACE_MS             = 20 * 60 * 1000L  // 20 min sustained-stop → end trip
+        const val IDLE_TIMEOUT_MS           = 20 * 60 * 1000L  // 20 min no movement → stop service
+        const val LOCATION_INTERVAL_MS      = 10_000L
+        const val FASTEST_MS                = 5_000L
+
+        /** Reject GPS fixes worse than this accuracy (metres). MyCarTracks default = 200 m. */
+        const val MAX_ACCURACY_M            = 100f
+
+        /** Number of fixes to average for speed decisions. Prevents single-fix false starts. */
+        const val SPEED_AVG_WINDOW          = 3
 
         fun start(ctx: Context) {
             ContextCompat.startForegroundService(ctx, Intent(ctx, TrackingService::class.java))
@@ -67,7 +86,15 @@ class TrackingService : Service() {
 
     private lateinit var fused: FusedLocationProviderClient
     private lateinit var db: LocationDatabase
+
+    /** PARTIAL_WAKE_LOCK: keeps CPU running when screen is off so GPS fixes are not dropped. */
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    /** Rolling speed buffer — same pattern as MyCarTracks v0(3). */
+    private val speedBuffer = ArrayDeque<Double>(SPEED_AVG_WINDOW)
+
     private var lastLocation: Location? = null
+    private val connectivityReceiver = ConnectivityReceiver()
 
     private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("UTC")
@@ -79,10 +106,14 @@ class TrackingService : Service() {
         }
     }
 
+    // ---- Lifecycle ----
+
     override fun onCreate() {
         super.onCreate()
         fused = LocationServices.getFusedLocationProviderClient(this)
-        db = LocationDatabase(this)
+        db    = LocationDatabase(this)
+        acquireWakeLock()
+        registerConnectivityReceiver()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -91,6 +122,10 @@ class TrackingService : Service() {
         if (TrackingConfig.currentTripId(this) == null && TrackingConfig.idleSince(this) == 0L) {
             TrackingConfig.setIdleSince(this, System.currentTimeMillis())
         }
+
+        // Clear speed buffer on each service start so a kill+restart doesn't inherit
+        // a partial (zero-padded) window that could cause false stop decisions.
+        speedBuffer.clear()
 
         startLocationUpdates()
         registerActivityTransitions()
@@ -102,22 +137,57 @@ class TrackingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        try {
-            fused.removeLocationUpdates(locationCallback)
-        } catch (_: Exception) {}
+        try { fused.removeLocationUpdates(locationCallback) } catch (_: Exception) {}
+        releaseWakeLock()
+        try { unregisterReceiver(connectivityReceiver) } catch (_: Exception) {}
         super.onDestroy()
+    }
+
+    // ---- Wake lock (MyCarTracks: AbstractAutoTrackingService.onCreate bytecode) ----
+
+    private fun acquireWakeLock() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+            val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_TAG)
+            wl.setReferenceCounted(false)
+            if (!wl.isHeld) wl.acquire()
+            wakeLock = wl
+        } catch (e: Exception) {
+            // Non-fatal — tracking continues, just with less CPU guarantee.
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+            wakeLock = null
+        } catch (_: Exception) {}
+    }
+
+    // ---- Connectivity receiver ----
+
+    private fun registerConnectivityReceiver() {
+        try {
+            val filter = IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION)
+            @Suppress("DEPRECATION")
+            registerReceiver(connectivityReceiver, filter)
+        } catch (_: Exception) {}
     }
 
     // ---- Core state machine ----
 
     private fun processFix(location: Location) {
-        val now = System.currentTimeMillis()
+        // ── Accuracy filter (MyCarTracks: if accuracy > minRequiredAccuracy return) ──
+        if (location.hasAccuracy() && location.accuracy > MAX_ACCURACY_M) return
+
+        val now      = System.currentTimeMillis()
         val speedKmh = computeSpeedKmh(location)
-        val tripId = TrackingConfig.currentTripId(this)
+        val avgSpeed = averageSpeed(speedKmh)
+        val tripId   = TrackingConfig.currentTripId(this)
 
         if (tripId == null) {
-            // IDLE
-            if (speedKmh >= START_SPEED_KMH) {
+            // IDLE — use averaged speed to prevent false starts from GPS noise
+            if (avgSpeed >= START_SPEED_KMH) {
                 val newId = UUID.randomUUID().toString()
                 TrackingConfig.setCurrentTripId(this, newId)
                 TrackingConfig.setStillSince(this, 0L)
@@ -133,16 +203,14 @@ class TrackingService : Service() {
                     if (it == 0L) { TrackingConfig.setIdleSince(this, now); now } else it
                 }
                 if (now - idleSince >= IDLE_TIMEOUT_MS) {
-                    // No movement within the 20-min window — back off to save battery.
-                    // Activity-Recognition transitions will wake us on the next movement.
                     emitState("idle_timeout")
                     stopSelf()
                 }
             }
         } else {
-            // TRACKING
+            // TRACKING — use averaged speed for stop decision too
             val stopping: Boolean
-            if (speedKmh <= STOP_SPEED_KMH) {
+            if (avgSpeed <= STOP_SPEED_KMH) {
                 val stillSince = TrackingConfig.stillSince(this).let {
                     if (it == 0L) { TrackingConfig.setStillSince(this, now); now } else it
                 }
@@ -157,6 +225,7 @@ class TrackingService : Service() {
                 TrackingConfig.setCurrentTripId(this, null)
                 TrackingConfig.setStillSince(this, 0L)
                 TrackingConfig.setIdleSince(this, now)
+                speedBuffer.clear()
                 TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(location.time)))
                 emitState("idle")
                 updateNotification("Waiting for movement…")
@@ -169,25 +238,40 @@ class TrackingService : Service() {
         }
     }
 
+    /**
+     * Maintains a rolling SPEED_AVG_WINDOW-fix speed buffer and returns the average.
+     * Same as MyCarTracks v0(3) buffer — prevents single-fix GPS noise from
+     * triggering false trip starts or premature stops.
+     */
+    private fun averageSpeed(current: Double): Double {
+        if (speedBuffer.size >= SPEED_AVG_WINDOW) speedBuffer.poll()
+        speedBuffer.add(current)
+        return speedBuffer.average()
+    }
+
     private fun persist(location: Location, speedKmh: Double, tripId: String, status: String, now: Long) {
         db.insert(
             QueuedPoint(
-                clientId = UUID.randomUUID().toString(),
-                clientTripId = tripId,
-                lat = location.latitude,
-                lon = location.longitude,
-                speedKmh = speedKmh,
-                heading = if (location.hasBearing()) location.bearing.toDouble() else null,
-                accuracy = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
-                altitude = if (location.hasAltitude()) location.altitude else null,
-                batteryLevel = batteryLevel(),
-                isMoving = speedKmh > STOP_SPEED_KMH,
-                recordedAt = iso(if (location.time > 0) location.time else now),
-                tripStatus = status
+                clientId      = UUID.randomUUID().toString(),
+                clientTripId  = tripId,
+                lat           = location.latitude,
+                lon           = location.longitude,
+                speedKmh      = speedKmh,
+                heading       = if (location.hasBearing()) location.bearing.toDouble() else null,
+                accuracy      = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
+                altitude      = if (location.hasAltitude()) location.altitude else null,
+                batteryLevel  = batteryLevel(),
+                isMoving      = speedKmh > STOP_SPEED_KMH,
+                recordedAt    = iso(if (location.time > 0) location.time else now),
+                tripStatus    = status
             )
         )
     }
 
+    /**
+     * Hybrid speed: prefer GPS-reported speed (most accurate); fall back to
+     * distance/time between consecutive fixes.
+     */
     private fun computeSpeedKmh(location: Location): Double {
         val gps = if (location.hasSpeed() && location.speed >= 0f) location.speed * 3.6 else null
         val derived = lastLocation?.let { last ->
@@ -218,7 +302,6 @@ class TrackingService : Service() {
         try {
             fused.requestLocationUpdates(req, locationCallback, Looper.getMainLooper())
         } catch (_: SecurityException) {
-            // Location permission was revoked — nothing we can do; shut down.
             stopSelf()
         }
     }
@@ -238,17 +321,15 @@ class TrackingService : Service() {
                     .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
                     .build()
             }
-            val request = ActivityTransitionRequest(transitions)
             val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
                 PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             else PendingIntent.FLAG_UPDATE_CURRENT
             val pi = PendingIntent.getBroadcast(
                 this, 100, Intent(this, ActivityTransitionReceiver::class.java), flags
             )
-            ActivityRecognition.getClient(this).requestActivityTransitionUpdates(request, pi)
-        } catch (_: SecurityException) {
-        } catch (_: Exception) {
-        }
+            ActivityRecognition.getClient(this)
+                .requestActivityTransitionUpdates(ActivityTransitionRequest(transitions), pi)
+        } catch (_: Exception) {}
     }
 
     // ---- Notification / foreground ----
@@ -264,7 +345,8 @@ class TrackingService : Service() {
     private fun notification(text: String): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "Trip tracking", NotificationManager.IMPORTANCE_LOW)
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(channel)
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .createNotificationChannel(channel)
         }
         val launch = packageManager.getLaunchIntentForPackage(packageName)
         val contentPi = launch?.let {
@@ -287,7 +369,7 @@ class TrackingService : Service() {
             .notify(NOTIF_ID, notification(text))
     }
 
-    // ---- helpers ----
+    // ---- Helpers ----
 
     private fun iso(ms: Long): String = isoFmt.format(Date(ms))
 
@@ -296,10 +378,10 @@ class TrackingService : Service() {
     }
 
     private fun locMap(location: Location, speedKmh: Double, tripId: String, status: String) = mapOf(
-        "lat" to location.latitude,
-        "lon" to location.longitude,
-        "speedKmh" to speedKmh,
-        "tripId" to tripId,
+        "lat"        to location.latitude,
+        "lon"        to location.longitude,
+        "speedKmh"   to speedKmh,
+        "tripId"     to tripId,
         "tripStatus" to status,
         "recordedAt" to iso(if (location.time > 0) location.time else System.currentTimeMillis())
     )

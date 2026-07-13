@@ -14,8 +14,10 @@ import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
 import { ensurePermissions } from '@/src/lib/permissions';
+import { TabBar } from '@/src/components/TabBar';
 
 type UiState = 'starting' | 'idle' | 'tracking' | 'blocked';
+type UploadError = { reason: string; message: string; code?: number } | null;
 
 // Brand palette
 const C = {
@@ -54,6 +56,7 @@ export default function Home() {
   const [status, setStatus] = useState<VehicleTracker.TrackerStatus | null>(null);
   const [lastFix, setLastFix] = useState<VehicleTracker.LocationEvent | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [uploadError, setUploadError] = useState<UploadError>(null);
   const started = useRef(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -86,6 +89,14 @@ export default function Home() {
       }
       const perm = await ensurePermissions();
       if (!perm.ok) { setUiState('blocked'); setPermMsg(perm.message ?? 'Permissions required.'); return; }
+
+      // Guard: never pass empty/falsy values to native — service would start with broken config
+      if (!API_BASE_URL || !token || !user._id) {
+        setUiState('blocked');
+        setPermMsg('Configuration error — please sign out and sign in again.');
+        return;
+      }
+
       await VehicleTracker.configure(API_BASE_URL, token, user._id);
       await VehicleTracker.start();
       setUiState('idle');
@@ -96,9 +107,10 @@ export default function Home() {
   useEffect(() => {
     const subs = [
       VehicleTracker.addStateListener(e => { setUiState(e.state === 'tracking' ? 'tracking' : 'idle'); refreshStatus(); }),
-      VehicleTracker.addLocationListener(e => { setLastFix(e); setUiState('tracking'); }),
+      VehicleTracker.addLocationListener(e => { setLastFix(e); setUiState('tracking'); setUploadError(null); }),
       VehicleTracker.addTripEndListener(() => { setUiState('idle'); refreshStatus(); }),
-    ];
+      VehicleTracker.addUploadErrorListener(e => { setUploadError(e); }),
+    ].filter(Boolean);
     return () => subs.forEach(s => s?.remove());
   }, [refreshStatus]);
 
@@ -128,6 +140,7 @@ export default function Home() {
   const initials = (user?.name ?? 'D').split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
 
   return (
+    <View style={{ flex: 1 }}>
     <ScrollView
       style={s.root}
       contentContainerStyle={s.content}
@@ -149,6 +162,20 @@ export default function Home() {
           <Text style={s.signOutText}>Sign out</Text>
         </TouchableOpacity>
       </View>
+
+      {/* ── Upload error banner ── */}
+      {uploadError && (
+        <View style={s.uploadErrBanner}>
+          <Text style={s.uploadErrText}>
+            {uploadError.reason === 'auth_failure'
+              ? '⚠️ Auth expired — sign out and back in to resume uploads.'
+              : '⚠️ Upload paused — open the app to re-authenticate.'}
+          </Text>
+          <TouchableOpacity onPress={() => setUploadError(null)}>
+            <Text style={s.uploadErrDismiss}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* ── Status card ── */}
       <View style={[s.statusCard, { backgroundColor: cfg.bg, borderColor: cfg.bd }]}>
@@ -203,6 +230,8 @@ export default function Home() {
         Close the app anytime — tracking continues in the background.
       </Text>
     </ScrollView>
+    <TabBar />
+    </View>
   );
 }
 
@@ -284,6 +313,12 @@ const s = StyleSheet.create({
   syncText: { color: C.brand, fontSize: 14, fontWeight: '700' },
 
   note: { color: C.muted, fontSize: 12, lineHeight: 18, textAlign: 'center', paddingBottom: 20 },
+  uploadErrBanner: {
+    backgroundColor: C.amberBg, borderRadius: 12, borderWidth: 1, borderColor: C.amberBd,
+    paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 8,
+  },
+  uploadErrText: { flex: 1, fontSize: 12.5, color: C.amber, fontWeight: '600', lineHeight: 17 },
+  uploadErrDismiss: { fontSize: 14, color: C.muted, fontWeight: '700', paddingHorizontal: 4 },
 });
 
 const st = StyleSheet.create({

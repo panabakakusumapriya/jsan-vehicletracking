@@ -28,8 +28,13 @@ function InlineUrlEditor({ v, onSaved }: { v: AppVersion; onSaved: () => void })
   const [editing, setEditing] = useState(false);
   const [url, setUrl] = useState(v.downloadUrl);
   const [busy, setBusy] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
 
   const save = async () => {
+    setUrlError(null);
+    if (url) {
+      try { new URL(url); } catch { setUrlError('Must be a valid URL'); return; }
+    }
     setBusy(true);
     try {
       await api.patch(`/api/app/versions/${v._id}`, {
@@ -47,21 +52,24 @@ function InlineUrlEditor({ v, onSaved }: { v: AppVersion; onSaved: () => void })
 
   if (editing) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 260 }}>
-        <input
-          className="input"
-          style={{ margin: 0, padding: '4px 8px', fontSize: 12, flex: 1 }}
-          value={url}
-          onChange={e => setUrl(e.target.value)}
-          placeholder="https://…/app.apk"
-          autoFocus
-        />
-        <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={save} disabled={busy}>
-          {busy ? '…' : 'Save'}
-        </button>
-        <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => { setUrl(v.downloadUrl); setEditing(false); }}>
-          ✕
-        </button>
+      <div style={{ minWidth: 260 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            className="input"
+            style={{ margin: 0, padding: '4px 8px', fontSize: 12, flex: 1, borderColor: urlError ? 'var(--red)' : undefined }}
+            value={url}
+            onChange={e => { setUrl(e.target.value); setUrlError(null); }}
+            placeholder="https://…/app.apk"
+            autoFocus
+          />
+          <button className="btn" style={{ padding: '4px 10px', fontSize: 12 }} onClick={save} disabled={busy}>
+            {busy ? '…' : 'Save'}
+          </button>
+          <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => { setUrl(v.downloadUrl); setEditing(false); setUrlError(null); }}>
+            ✕
+          </button>
+        </div>
+        {urlError && <div style={{ fontSize: 11, color: 'var(--red, #dc2626)', marginTop: 3 }}>{urlError}</div>}
       </div>
     );
   }
@@ -197,7 +205,7 @@ export function AppUpdates() {
                 </a>
               </div>
             : <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: active.releaseNotes ? 6 : 0 }}>
-                No download link set — add one or set up the EAS webhook above.
+                No download link set — click the edit icon in the table below to add one.
               </div>
           }
           {active.releaseNotes && (
@@ -310,10 +318,20 @@ function AddVersion({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
   const set = (k: string, v: string | boolean) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
-    setError(null); setBusy(true);
+    setError(null);
+
+    // Client-side validation
+    const semverPattern = /^\d+\.\d+\.\d+$/;
+    if (!form.version.trim()) { setError('Version is required'); return; }
+    if (!semverPattern.test(form.version.trim())) { setError('Version must be in semver format: 1.0.0'); return; }
+    if (form.downloadUrl) {
+      try { new URL(form.downloadUrl); } catch { setError('Download URL must be a valid URL (include https://)'); return; }
+    }
+
+    setBusy(true);
     try {
       await api.post('/api/app/versions', {
-        version: form.version,
+        version: form.version.trim(),
         platform: form.platform,
         buildNumber: form.buildNumber || undefined,
         downloadUrl: form.downloadUrl || '',

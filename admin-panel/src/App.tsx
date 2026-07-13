@@ -6,6 +6,7 @@ import { LiveMap } from './pages/LiveMap';
 import { Login } from './pages/Login';
 import { AppUpdates } from './pages/AppUpdates';
 import { Managers } from './pages/Managers';
+import { SessionMap } from './pages/SessionMap';
 import { TripDetail } from './pages/TripDetail';
 import { Trips } from './pages/Trips';
 import { Vehicles } from './pages/Vehicles';
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="/" element={<LiveMap />} />
         <Route path="/trips" element={<Trips />} />
         <Route path="/trips/:id" element={<TripDetail />} />
+        <Route path="/trips/:id/map" element={<SessionMap />} />
         <Route path="/drivers" element={<Drivers />} />
         <Route path="/vehicles" element={<Vehicles />} />
         <Route

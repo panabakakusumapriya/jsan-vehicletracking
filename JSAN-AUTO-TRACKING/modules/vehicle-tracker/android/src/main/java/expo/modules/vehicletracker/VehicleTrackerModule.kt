@@ -12,7 +12,7 @@ class VehicleTrackerModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("VehicleTracker")
 
-        Events("onLocation", "onTripStart", "onTripEnd", "onStateChange")
+        Events("onLocation", "onTripStart", "onTripEnd", "onStateChange", "onUploadError")
 
         OnCreate {
             // Wire the always-on native service to JS events while the app is alive.

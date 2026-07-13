@@ -127,14 +127,26 @@ export function Trips() {
                 <td>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
                 <td style={{ color: 'var(--muted)' }}>{t.pointCount}</td>
                 <td>
-                  <Link to={`/trips/${t._id}`} style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 4,
-                    fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',
-                    background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.2)',
-                    borderRadius: 7, padding: '4px 10px',
-                  }}>
-                    View map →
-                  </Link>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {t.status === 'active' && (
+                      <Link to={`/trips/${t._id}/map`} style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        fontSize: 12.5, fontWeight: 600, color: '#059669',
+                        background: '#f0fdf4', border: '1px solid #a7f3d0',
+                        borderRadius: 7, padding: '4px 10px',
+                      }}>
+                        ● Live
+                      </Link>
+                    )}
+                    <Link to={`/trips/${t._id}/map`} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',
+                      background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.2)',
+                      borderRadius: 7, padding: '4px 10px',
+                    }}>
+                      Map →
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ))}

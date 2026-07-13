@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet';
+import { Link } from 'react-router-dom';
 import type { Socket } from 'socket.io-client';
 import { api } from '../lib/api';
 import { createSocket } from '../lib/socket';
@@ -130,7 +131,7 @@ export function LiveMap() {
                 {d.stale ? 'Stale' : 'Moving'}
               </span>
             </div>
-            <div className="driver-meta" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div className="driver-meta" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               {d.vehicle?.plateNumber && (
                 <span style={{
                   background: 'var(--panel-2)', border: '1px solid var(--line-2)',
@@ -143,6 +144,13 @@ export function LiveMap() {
               )}
               <span>{d.location ? `${Math.round(d.location.speed ?? 0)} km/h` : 'No fix'}</span>
               <span>{km(d.distanceMeters)}</span>
+              <Link
+                to={`/trips/${d.tripId}/map`}
+                style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--brand)', marginLeft: 'auto' }}
+                onClick={e => e.stopPropagation()}
+              >
+                View route →
+              </Link>
             </div>
           </div>
         ))}

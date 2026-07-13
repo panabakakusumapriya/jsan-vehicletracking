@@ -5,6 +5,9 @@ const { authenticate, requireRole } = require('../middleware/auth');
 // Drivers push their location points.
 router.post('/ingest', authenticate, requireRole('user'), ctrl.ingest);
 
+// Driver reads their own active session + GPS trail for the map screen.
+router.get('/my-session', authenticate, requireRole('user'), ctrl.mySession);
+
 // Admins / managers read the live snapshot.
 router.get('/live', authenticate, requireRole('admin', 'manager'), ctrl.live);
 

@@ -48,6 +48,11 @@ exports.ingest = asyncHandler(async (req, res) => {
     // Upsert the trip for this clientTripId.
     let trip = await Trip.findOne({ clientTripId, driverId: driver._id });
     if (!trip) {
+      // Enforce single active session: close any lingering active trips for this driver
+      await Trip.updateMany(
+        { driverId: driver._id, status: 'active' },
+        { $set: { status: 'completed', endedAt: new Date() } }
+      );
       trip = await Trip.create({
         clientTripId,
         driverId: driver._id,
@@ -140,6 +145,24 @@ exports.ingest = asyncHandler(async (req, res) => {
   }
 
   res.json({ accepted: acceptedClientIds.length, acceptedClientIds });
+});
+
+/**
+ * GET /api/tracking/my-session   (driver only)
+ * Returns the driver's current active trip + all its GPS points so the
+ * mobile map screen can render the route driven this session.
+ */
+exports.mySession = asyncHandler(async (req, res) => {
+  const trip = await Trip.findOne({ driverId: req.user._id, status: 'active' })
+    .sort({ startedAt: -1 });
+
+  if (!trip) return res.json({ trip: null, points: [] });
+
+  const points = await LocationPoint.find({ tripId: trip._id })
+    .sort({ recordedAt: 1 })
+    .select('lat lon speedKmh heading recordedAt');
+
+  res.json({ trip, points });
 });
 
 /**
