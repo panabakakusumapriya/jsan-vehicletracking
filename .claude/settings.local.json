@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm start:*)",
+      "Bash(echo \"Backend PID: $!\")",
+      "Bash(BACKEND_URL=http://localhost:4000 npm run dev)",
+      "Bash(echo \"Admin panel PID: $!\")",
+      "Read(//tmp/**)",
+      "Bash(curl -s http://localhost:4000/health)",
+      "Bash(curl -s -o /dev/null -w \"Admin panel HTTP status: %{http_code}\" http://localhost:5173)",
+      "Bash(curl:*)"
+    ]
+  }
+}

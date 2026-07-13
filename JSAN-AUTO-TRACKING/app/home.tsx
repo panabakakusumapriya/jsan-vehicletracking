@@ -17,11 +17,34 @@ import { ensurePermissions } from '@/src/lib/permissions';
 
 type UiState = 'starting' | 'idle' | 'tracking' | 'blocked';
 
-const STATE_CONFIG = {
-  tracking: { color: '#2ecc71', icon: '●', label: 'Trip in progress', sub: 'Your location is being recorded.' },
-  blocked:  { color: '#ff5252', icon: '⚠', label: 'Action needed', sub: '' },
-  starting: { color: '#f0a500', icon: '◌', label: 'Starting…', sub: 'Setting up background tracking.' },
-  idle:     { color: '#5a9eff', icon: '◎', label: 'Ready — auto-tracking on', sub: 'Just drive. A trip starts automatically above 5 km/h.' },
+// Brand palette
+const C = {
+  brand:     '#7c3aed',
+  brandDeep: '#5b21b6',
+  brandSoft: '#ede9fe',
+  brandMid:  '#a78bfa',
+  bg:        '#f7f7fb',
+  surface:   '#ffffff',
+  border:    '#e9ecf0',
+  text:      '#0d0d12',
+  text2:     '#374151',
+  muted:     '#9ca3af',
+  green:     '#059669',
+  greenBg:   '#ecfdf5',
+  greenBd:   '#a7f3d0',
+  amber:     '#d97706',
+  amberBg:   '#fffbeb',
+  amberBd:   '#fde68a',
+  red:       '#dc2626',
+  redBg:     '#fef2f2',
+  redBd:     '#fecaca',
+};
+
+const STATE = {
+  tracking: { label: 'Trip in progress',       sub: 'Your location is being recorded.',                              color: C.green, bg: C.greenBg, bd: C.greenBd },
+  blocked:  { label: 'Action needed',           sub: '',                                                              color: C.red,   bg: C.redBg,   bd: C.redBd   },
+  starting: { label: 'Starting…',              sub: 'Setting up background tracking.',                              color: C.amber, bg: C.amberBg, bd: C.amberBd },
+  idle:     { label: 'Ready — auto-tracking',  sub: 'Just drive. A trip starts automatically above 5 km/h.',       color: C.brand, bg: C.brandSoft, bd: '#d8b4fe' },
 };
 
 export default function Home() {
@@ -34,46 +57,35 @@ export default function Home() {
   const started = useRef(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
-  // Pulse animation for tracking state
   useEffect(() => {
     if (uiState === 'tracking') {
       const loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(pulseAnim, { toValue: 1.4, duration: 900, useNativeDriver: true }),
-          Animated.timing(pulseAnim, { toValue: 1, duration: 900, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1.5, duration: 800, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1,   duration: 800, useNativeDriver: true }),
         ])
       );
       loop.start();
       return () => loop.stop();
-    } else {
-      pulseAnim.setValue(1);
     }
+    pulseAnim.setValue(1);
   }, [uiState, pulseAnim]);
 
   const refreshStatus = useCallback(async () => {
-    try {
-      setStatus(await VehicleTracker.getStatus());
-    } catch {
-      // ignore
-    }
+    try { setStatus(await VehicleTracker.getStatus()); } catch {}
   }, []);
 
   useEffect(() => {
     if (started.current || !user || !token) return;
     started.current = true;
-
     (async () => {
       if (!VehicleTracker.isSupported) {
         setUiState('idle');
-        setPermMsg('Background tracking runs on Android only. Build a dev client and run on a device.');
+        setPermMsg('Background tracking runs on Android only.');
         return;
       }
       const perm = await ensurePermissions();
-      if (!perm.ok) {
-        setUiState('blocked');
-        setPermMsg(perm.message ?? 'Permissions required.');
-        return;
-      }
+      if (!perm.ok) { setUiState('blocked'); setPermMsg(perm.message ?? 'Permissions required.'); return; }
       await VehicleTracker.configure(API_BASE_URL, token, user._id);
       await VehicleTracker.start();
       setUiState('idle');
@@ -83,27 +95,14 @@ export default function Home() {
 
   useEffect(() => {
     const subs = [
-      VehicleTracker.addStateListener((e) => {
-        if (e.state === 'tracking') setUiState('tracking');
-        else setUiState('idle');
-        refreshStatus();
-      }),
-      VehicleTracker.addLocationListener((e) => {
-        setLastFix(e);
-        setUiState('tracking');
-      }),
-      VehicleTracker.addTripEndListener(() => {
-        setUiState('idle');
-        refreshStatus();
-      }),
+      VehicleTracker.addStateListener(e => { setUiState(e.state === 'tracking' ? 'tracking' : 'idle'); refreshStatus(); }),
+      VehicleTracker.addLocationListener(e => { setLastFix(e); setUiState('tracking'); }),
+      VehicleTracker.addTripEndListener(() => { setUiState('idle'); refreshStatus(); }),
     ];
-    return () => subs.forEach((s) => s?.remove());
+    return () => subs.forEach(s => s?.remove());
   }, [refreshStatus]);
 
-  useEffect(() => {
-    const id = setInterval(refreshStatus, 4000);
-    return () => clearInterval(id);
-  }, [refreshStatus]);
+  useEffect(() => { const id = setInterval(refreshStatus, 4000); return () => clearInterval(id); }, [refreshStatus]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -117,235 +116,194 @@ export default function Home() {
     if (perm.ok && token && user) {
       await VehicleTracker.configure(API_BASE_URL, token, user._id);
       await VehicleTracker.start();
-      setPermMsg(null);
-      setUiState('idle');
+      setPermMsg(null); setUiState('idle');
     } else {
       setPermMsg(perm.message ?? 'Permissions required.');
     }
   };
 
-  const doSignOut = async () => {
-    await signOut();
-    router.replace('/login');
-  };
-
-  const cfg = STATE_CONFIG[uiState];
+  const cfg = STATE[uiState];
   const subText = uiState === 'blocked' ? (permMsg ?? '') : cfg.sub;
   const firstName = user?.name?.split(' ')[0] ?? 'Driver';
+  const initials = (user?.name ?? 'D').split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
 
   return (
     <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#5a9eff" />}
+      style={s.root}
+      contentContainerStyle={s.content}
+      showsVerticalScrollIndicator={false}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.brand} />}
     >
-      {/* Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.greeting}>Good day, {firstName}</Text>
-          <Text style={styles.email}>{user?.email}</Text>
+      {/* ── Header ── */}
+      <View style={s.header}>
+        <View style={s.headerLeft}>
+          <View style={s.avatar}>
+            <Text style={s.avatarText}>{initials}</Text>
+          </View>
+          <View>
+            <Text style={s.greeting}>Good day, {firstName}</Text>
+            <Text style={s.email}>{user?.email}</Text>
+          </View>
         </View>
-        <TouchableOpacity onPress={doSignOut} style={styles.signOutBtn}>
-          <Text style={styles.signOutText}>Sign out</Text>
+        <TouchableOpacity style={s.signOutBtn} onPress={async () => { await signOut(); router.replace('/login'); }}>
+          <Text style={s.signOutText}>Sign out</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Status card */}
-      <View style={[styles.statusCard, { borderColor: cfg.color + '33' }]}>
-        <View style={styles.statusTop}>
-          <View style={styles.dotWrap}>
-            <Animated.View style={[styles.dotRing, { backgroundColor: cfg.color + '33', transform: [{ scale: pulseAnim }] }]} />
-            <View style={[styles.dot, { backgroundColor: cfg.color }]} />
+      {/* ── Status card ── */}
+      <View style={[s.statusCard, { backgroundColor: cfg.bg, borderColor: cfg.bd }]}>
+        <View style={s.statusRow}>
+          {/* Animated dot */}
+          <View style={s.dotArea}>
+            <Animated.View style={[s.dotRing, { backgroundColor: cfg.color + '30', transform: [{ scale: pulseAnim }] }]} />
+            <View style={[s.dot, { backgroundColor: cfg.color }]} />
           </View>
-          <View style={styles.statusTextWrap}>
-            <Text style={[styles.statusHeadline, { color: cfg.color }]}>{cfg.label}</Text>
-            {subText ? <Text style={styles.statusSub}>{subText}</Text> : null}
+          <View style={{ flex: 1 }}>
+            <Text style={[s.statusLabel, { color: cfg.color }]}>{cfg.label}</Text>
+            {subText ? <Text style={s.statusSub}>{subText}</Text> : null}
           </View>
         </View>
-
         {uiState === 'blocked' && (
-          <TouchableOpacity style={[styles.permBtn, { borderColor: cfg.color + '66' }]} onPress={retryPermissions}>
-            <Text style={[styles.permBtnText, { color: cfg.color }]}>Grant permissions</Text>
+          <TouchableOpacity style={[s.permBtn, { backgroundColor: cfg.color }]} onPress={retryPermissions}>
+            <Text style={s.permBtnText}>Grant permissions</Text>
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Stats grid */}
-      <View style={styles.grid}>
-        <StatCard
-          icon="⚡"
-          label="Speed"
-          value={lastFix ? `${Math.round(lastFix.speedKmh)}` : '—'}
-          unit={lastFix ? 'km/h' : ''}
-        />
-        <StatCard
-          icon="📡"
-          label="Queued offline"
-          value={String(status?.queued ?? 0)}
-          unit="pts"
-        />
-        <StatCard
-          icon="↕"
-          label="Latitude"
-          value={lastFix ? lastFix.lat.toFixed(4) : '—'}
-          unit=""
-        />
-        <StatCard
-          icon="↔"
-          label="Longitude"
-          value={lastFix ? lastFix.lon.toFixed(4) : '—'}
-          unit=""
-        />
+      {/* ── Stats grid ── */}
+      <View style={s.grid}>
+        <StatTile label="Speed"   value={lastFix ? `${Math.round(lastFix.speedKmh)}` : '—'} unit="km/h"  color={C.brand}   />
+        <StatTile label="Queued"  value={String(status?.queued ?? 0)}                         unit="pts"   color="#7c3aed"   />
+        <StatTile label="Lat"     value={lastFix ? lastFix.lat.toFixed(4) : '—'}              unit=""      color="#059669"   />
+        <StatTile label="Lon"     value={lastFix ? lastFix.lon.toFixed(4) : '—'}              unit=""      color="#d97706"   />
       </View>
 
-      {/* Info card */}
-      <View style={styles.infoCard}>
-        <Text style={styles.infoTitle}>System</Text>
-        <InfoRow label="Tracking engine" value={status?.enabled ? 'Running' : 'Stopped'} valueColor={status?.enabled ? '#2ecc71' : '#7a8699'} />
-        <InfoRow label="Current trip" value={status?.currentTripId ? status.currentTripId.slice(0, 10) + '…' : 'None'} />
-        <InfoRow label="Server" value={API_BASE_URL} />
+      {/* ── System info ── */}
+      <View style={s.infoCard}>
+        <View style={s.infoHeader}>
+          <Text style={s.infoTitle}>System</Text>
+          <View style={[s.engineBadge, { backgroundColor: status?.enabled ? C.greenBg : '#f3f4f6' }]}>
+            <View style={[s.engineDot, { backgroundColor: status?.enabled ? C.green : C.muted }]} />
+            <Text style={[s.engineText, { color: status?.enabled ? C.green : C.muted }]}>
+              {status?.enabled ? 'Running' : 'Stopped'}
+            </Text>
+          </View>
+        </View>
+        <InfoRow label="Active trip"  value={status?.currentTripId ? '#' + status.currentTripId.slice(-6) : 'None'} />
+        <InfoRow label="Server"       value={API_BASE_URL} last />
       </View>
 
-      {/* Sync button */}
-      <TouchableOpacity style={styles.syncBtn} onPress={onRefresh} activeOpacity={0.7}>
-        <Text style={styles.syncIcon}>↻</Text>
-        <Text style={styles.syncText}>Force sync now</Text>
+      {/* ── Sync ── */}
+      <TouchableOpacity style={s.syncBtn} onPress={onRefresh} activeOpacity={0.75}>
+        <Text style={s.syncIcon}>↻</Text>
+        <Text style={s.syncText}>Sync now</Text>
       </TouchableOpacity>
 
-      <Text style={styles.note}>
-        You can close the app — tracking keeps running in the background and uploads automatically when you have internet.
+      <Text style={s.note}>
+        Close the app anytime — tracking continues in the background.
       </Text>
     </ScrollView>
   );
 }
 
-function StatCard({ icon, label, value, unit }: { icon: string; label: string; value: string; unit: string }) {
+/* ── Sub-components ── */
+function StatTile({ label, value, unit, color }: { label: string; value: string; unit: string; color: string }) {
   return (
-    <View style={statStyles.card}>
-      <Text style={statStyles.icon}>{icon}</Text>
-      <View style={statStyles.row}>
-        <Text style={statStyles.value}>{value}</Text>
-        {unit ? <Text style={statStyles.unit}>{unit}</Text> : null}
-      </View>
-      <Text style={statStyles.label}>{label}</Text>
+    <View style={[st.tile, { borderTopColor: color }]}>
+      <Text style={[st.val, { color }]}>{value}</Text>
+      {unit ? <Text style={st.unit}>{unit}</Text> : null}
+      <Text style={st.label}>{label}</Text>
     </View>
   );
 }
 
-function InfoRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
+function InfoRow({ label, value, last }: { label: string; value: string; last?: boolean }) {
   return (
-    <View style={infoStyles.row}>
-      <Text style={infoStyles.label}>{label}</Text>
-      <Text style={[infoStyles.value, valueColor ? { color: valueColor } : null]} numberOfLines={1}>
-        {value}
-      </Text>
+    <View style={[ir.row, last && { borderBottomWidth: 0 }]}>
+      <Text style={ir.label}>{label}</Text>
+      <Text style={ir.value} numberOfLines={1}>{value}</Text>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#080e1a' },
-  content: { padding: 20, paddingTop: 60, gap: 14 },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
+/* ── Styles ── */
+const s = StyleSheet.create({
+  root:    { flex: 1, backgroundColor: C.bg },
+  content: { padding: 20, paddingTop: 64, gap: 12 },
+
+  header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 11 },
+  avatar: {
+    width: 44, height: 44, borderRadius: 14,
+    backgroundColor: C.brand, alignItems: 'center', justifyContent: 'center',
+    shadowColor: C.brandDeep,
+    shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
-  greeting: { color: '#e8eef8', fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
-  email: { color: '#5a6478', fontSize: 13, marginTop: 2 },
-  signOutBtn: {
-    backgroundColor: '#0f1827',
-    borderWidth: 1,
-    borderColor: '#1e2d45',
+  avatarText:  { color: '#fff', fontSize: 16, fontWeight: '900' },
+  greeting:    { color: C.text, fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
+  email:       { color: C.muted, fontSize: 12, marginTop: 2 },
+  signOutBtn:  {
+    paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: C.surface, borderWidth: 1, borderColor: C.border,
     borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 2, elevation: 1,
   },
-  signOutText: { color: '#5a9eff', fontSize: 13, fontWeight: '600' },
+  signOutText: { color: C.text2, fontSize: 12.5, fontWeight: '600' },
+
   statusCard: {
-    backgroundColor: '#0f1827',
-    borderRadius: 18,
-    borderWidth: 1,
-    padding: 20,
-    gap: 14,
+    borderRadius: 20, borderWidth: 1.5, padding: 18, gap: 14,
   },
-  statusTop: { flexDirection: 'row', alignItems: 'flex-start', gap: 14 },
-  dotWrap: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
-  dotRing: { position: 'absolute', width: 22, height: 22, borderRadius: 11 },
-  dot: { width: 12, height: 12, borderRadius: 6 },
-  statusTextWrap: { flex: 1 },
-  statusHeadline: { fontSize: 17, fontWeight: '700', lineHeight: 22 },
-  statusSub: { color: '#7a8699', fontSize: 13, marginTop: 4, lineHeight: 18 },
-  permBtn: {
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  permBtnText: { fontWeight: '700', fontSize: 14 },
+  statusRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 14 },
+  dotArea:   { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+  dotRing:   { position: 'absolute', width: 24, height: 24, borderRadius: 12 },
+  dot:       { width: 12, height: 12, borderRadius: 6 },
+  statusLabel: { fontSize: 15.5, fontWeight: '700', lineHeight: 22 },
+  statusSub:   { color: C.text2, fontSize: 12.5, marginTop: 4, lineHeight: 18 },
+  permBtn:     { borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 2 },
+  permBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+
   infoCard: {
-    backgroundColor: '#0f1827',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#1e2d45',
-    padding: 18,
-    gap: 0,
+    backgroundColor: C.surface, borderRadius: 18, borderWidth: 1,
+    borderColor: C.border, padding: 18,
+    shadowColor: '#111', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 2,
   },
-  infoTitle: {
-    color: '#5a6478',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    marginBottom: 12,
-  },
+  infoHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+  infoTitle:    { color: C.text, fontSize: 13, fontWeight: '700' },
+  engineBadge:  { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
+  engineDot:    { width: 6, height: 6, borderRadius: 3 },
+  engineText:   { fontSize: 11.5, fontWeight: '700' },
+
   syncBtn: {
-    backgroundColor: '#0f1827',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#1e2d45',
-    paddingVertical: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
+    backgroundColor: C.surface, borderRadius: 13, borderWidth: 1, borderColor: C.border,
+    paddingVertical: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    shadowColor: '#111', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 2,
   },
-  syncIcon: { color: '#5a9eff', fontSize: 18, fontWeight: '700' },
-  syncText: { color: '#5a9eff', fontWeight: '700', fontSize: 14 },
-  note: { color: '#3d4a5e', fontSize: 12, lineHeight: 18, textAlign: 'center', paddingBottom: 20 },
+  syncIcon: { color: C.brand, fontSize: 19, fontWeight: '800' },
+  syncText: { color: C.brand, fontSize: 14, fontWeight: '700' },
+
+  note: { color: C.muted, fontSize: 12, lineHeight: 18, textAlign: 'center', paddingBottom: 20 },
 });
 
-const statStyles = StyleSheet.create({
-  card: {
-    flexGrow: 1,
-    flexBasis: '47%',
-    backgroundColor: '#0f1827',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#1e2d45',
-    padding: 16,
-    gap: 2,
+const st = StyleSheet.create({
+  tile: {
+    flexGrow: 1, flexBasis: '47%',
+    backgroundColor: C.surface, borderRadius: 16,
+    borderWidth: 1, borderColor: C.border,
+    borderTopWidth: 3, padding: 16,
+    shadowColor: '#111', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 2,
   },
-  icon: { fontSize: 18, marginBottom: 6 },
-  row: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
-  value: { color: '#e8eef8', fontSize: 22, fontWeight: '800', letterSpacing: -0.5 },
-  unit: { color: '#7a8699', fontSize: 13, fontWeight: '500' },
-  label: { color: '#5a6478', fontSize: 12, marginTop: 2 },
+  val:   { fontSize: 24, fontWeight: '900', letterSpacing: -0.5 },
+  unit:  { color: C.muted, fontSize: 12, fontWeight: '600', marginTop: 2 },
+  label: { color: C.muted, fontSize: 11.5, fontWeight: '600', marginTop: 8, textTransform: 'uppercase', letterSpacing: 0.4 },
 });
 
-const infoStyles = StyleSheet.create({
+const ir = StyleSheet.create({
   row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 9,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1a2236',
-    gap: 12,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f3f4f6', gap: 12,
   },
-  label: { color: '#7a8699', fontSize: 13 },
-  value: { color: '#c4cede', fontSize: 13, fontWeight: '600', flexShrink: 1, textAlign: 'right' },
+  label: { color: C.muted, fontSize: 13 },
+  value: { color: C.text2, fontSize: 13, fontWeight: '600', flexShrink: 1, textAlign: 'right' },
 });

@@ -4,14 +4,31 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
-
 import { useAuth } from '@/src/lib/auth';
+
+// Brand palette
+const C = {
+  brand:     '#7c3aed',
+  brandDeep: '#5b21b6',
+  brandSoft: '#ede9fe',
+  brandMid:  '#a78bfa',
+  bg:        '#f7f7fb',
+  surface:   '#ffffff',
+  border:    '#ede9fe',
+  borderMid: '#e5e7eb',
+  text:      '#0d0d12',
+  textSub:   '#374151',
+  muted:     '#9ca3af',
+  red:       '#dc2626',
+  redBg:     '#fef2f2',
+};
 
 export default function Login() {
   const { signIn } = useAuth();
@@ -19,11 +36,10 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [focusedField, setFocusedField] = useState<string | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
 
   const onSubmit = async () => {
-    setError(null);
-    setBusy(true);
+    setError(null); setBusy(true);
     try {
       const user = await signIn(email.trim(), password);
       if (user.role !== 'user') {
@@ -40,197 +56,178 @@ export default function Login() {
 
   return (
     <KeyboardAvoidingView
-      style={styles.container}
+      style={s.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={styles.inner}>
-        {/* Logo / Brand */}
-        <View style={styles.logoWrap}>
-          <View style={styles.logoBox}>
-            <Text style={styles.logoText}>🚗</Text>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Top brand block */}
+        <View style={s.hero}>
+          {/* Decorative circle behind logo */}
+          <View style={s.heroBg} />
+          <View style={s.logoRing}>
+            <View style={s.logoBox}>
+              <Text style={s.logoEmoji}>🚛</Text>
+            </View>
           </View>
-          <Text style={styles.brand}>JSANFleet</Text>
-          <Text style={styles.tagline}>Driver Tracking</Text>
+          <Text style={s.appName}>JSANFleet</Text>
+          <View style={s.tagRow}>
+            <View style={s.tagDot} />
+            <Text style={s.tagText}>DRIVER PORTAL</Text>
+          </View>
         </View>
 
-        {/* Card */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Welcome back</Text>
-          <Text style={styles.cardSub}>Sign in to start your shift</Text>
+        {/* Form */}
+        <View style={s.card}>
+          <Text style={s.cardTitle}>Welcome back</Text>
+          <Text style={s.cardSub}>Sign in to start your shift</Text>
 
-          <View style={styles.fieldWrap}>
-            <Text style={styles.label}>Email address</Text>
-            <TextInput
-              style={[styles.input, focusedField === 'email' && styles.inputFocused]}
-              placeholder="driver@company.com"
-              placeholderTextColor="#5a6478"
-              autoCapitalize="none"
-              keyboardType="email-address"
-              value={email}
-              onChangeText={setEmail}
-              onFocus={() => setFocusedField('email')}
-              onBlur={() => setFocusedField(null)}
-            />
+          <View style={s.sep} />
+
+          {/* Email */}
+          <View style={s.field}>
+            <Text style={s.label}>Email address</Text>
+            <View style={[s.inputWrap, focused === 'email' && s.inputWrapFocused]}>
+              <Text style={[s.inputIcon, focused === 'email' && s.inputIconFocused]}>✉</Text>
+              <TextInput
+                style={s.input}
+                placeholder="driver@company.com"
+                placeholderTextColor={C.muted}
+                autoCapitalize="none"
+                keyboardType="email-address"
+                value={email}
+                onChangeText={setEmail}
+                onFocus={() => setFocused('email')}
+                onBlur={() => setFocused(null)}
+              />
+            </View>
           </View>
 
-          <View style={styles.fieldWrap}>
-            <Text style={styles.label}>Password</Text>
-            <TextInput
-              style={[styles.input, focusedField === 'password' && styles.inputFocused]}
-              placeholder="••••••••"
-              placeholderTextColor="#5a6478"
-              secureTextEntry
-              value={password}
-              onChangeText={setPassword}
-              onFocus={() => setFocusedField('password')}
-              onBlur={() => setFocusedField(null)}
-            />
+          {/* Password */}
+          <View style={s.field}>
+            <Text style={s.label}>Password</Text>
+            <View style={[s.inputWrap, focused === 'password' && s.inputWrapFocused]}>
+              <Text style={[s.inputIcon, focused === 'password' && s.inputIconFocused]}>🔒</Text>
+              <TextInput
+                style={s.input}
+                placeholder="••••••••"
+                placeholderTextColor={C.muted}
+                secureTextEntry
+                value={password}
+                onChangeText={setPassword}
+                onFocus={() => setFocused('password')}
+                onBlur={() => setFocused(null)}
+              />
+            </View>
           </View>
 
           {error ? (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>⚠ {error}</Text>
+            <View style={s.errorBox}>
+              <Text style={s.errorText}>⚠  {error}</Text>
             </View>
           ) : null}
 
           <TouchableOpacity
-            style={[styles.button, busy && styles.buttonDisabled]}
+            style={[s.btn, busy && s.btnDisabled]}
             onPress={onSubmit}
             disabled={busy}
-            activeOpacity={0.85}
+            activeOpacity={0.88}
           >
             {busy
               ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.buttonText}>Sign In →</Text>
+              : <Text style={s.btnText}>Sign In  →</Text>
             }
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.footer}>Tracking runs automatically in the background</Text>
-      </View>
+        <Text style={s.foot}>
+          Tracking runs automatically in the background
+        </Text>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#080e1a',
+const s = StyleSheet.create({
+  root:  { flex: 1, backgroundColor: C.bg },
+  scroll: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 22, paddingVertical: 52, gap: 18 },
+
+  /* Hero */
+  hero:   { alignItems: 'center', gap: 10, paddingVertical: 4 },
+  heroBg: {
+    position: 'absolute', top: -30,
+    width: 220, height: 220, borderRadius: 110,
+    backgroundColor: 'rgba(124,58,237,0.07)',
   },
-  inner: {
-    flex: 1,
-    justifyContent: 'center',
-    padding: 24,
-    gap: 24,
-  },
-  logoWrap: {
-    alignItems: 'center',
-    gap: 6,
+  logoRing: {
+    width: 88, height: 88, borderRadius: 28,
+    backgroundColor: C.brandSoft,
+    alignItems: 'center', justifyContent: 'center',
+    marginBottom: 2,
   },
   logoBox: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    backgroundColor: '#162035',
-    borderWidth: 1,
-    borderColor: '#1e2d45',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
+    width: 72, height: 72, borderRadius: 22,
+    backgroundColor: C.brand,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: C.brand,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35, shadowRadius: 16, elevation: 10,
   },
-  logoText: {
-    fontSize: 30,
-  },
-  brand: {
-    color: '#e8eef8',
-    fontSize: 26,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  tagline: {
-    color: '#5a9eff',
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-  },
+  logoEmoji: { fontSize: 30 },
+  appName:   { color: C.text, fontSize: 30, fontWeight: '900', letterSpacing: -0.8 },
+  tagRow:    { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  tagDot:    { width: 6, height: 6, borderRadius: 3, backgroundColor: C.brandMid },
+  tagText:   { color: C.brandMid, fontSize: 11, fontWeight: '800', letterSpacing: 1.5 },
+
+  /* Card */
   card: {
-    backgroundColor: '#0f1827',
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#1e2d45',
-    padding: 24,
-    gap: 0,
+    backgroundColor: C.surface,
+    borderRadius: 22, borderWidth: 1, borderColor: C.borderMid,
+    padding: 26,
+    shadowColor: '#111', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06, shadowRadius: 14, elevation: 3,
   },
-  cardTitle: {
-    color: '#e8eef8',
-    fontSize: 20,
-    fontWeight: '800',
-    marginBottom: 4,
+  cardTitle: { color: C.text, fontSize: 21, fontWeight: '800', letterSpacing: -0.4 },
+  cardSub:   { color: C.muted, fontSize: 13.5, marginTop: 4 },
+  sep:       { height: 1, backgroundColor: C.borderMid, marginVertical: 20 },
+
+  /* Fields */
+  field:  { marginBottom: 16 },
+  label:  { color: C.textSub, fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 8 },
+  inputWrap: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#f9fafb', borderRadius: 12,
+    borderWidth: 1.5, borderColor: C.borderMid,
   },
-  cardSub: {
-    color: '#7a8699',
-    fontSize: 14,
-    marginBottom: 22,
-  },
-  fieldWrap: {
-    marginBottom: 14,
-  },
-  label: {
-    color: '#c4cede',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-    marginBottom: 7,
-  },
+  inputWrapFocused: { borderColor: C.brand, backgroundColor: '#fff' },
+  inputIcon:        { paddingLeft: 14, fontSize: 14, color: C.muted },
+  inputIconFocused: { color: C.brand },
   input: {
-    backgroundColor: '#162035',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#253452',
-    color: '#e8eef8',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    fontSize: 15,
+    flex: 1, paddingHorizontal: 12, paddingVertical: 14,
+    fontSize: 15, color: C.text,
   },
-  inputFocused: {
-    borderColor: '#2f7bff',
-    backgroundColor: '#1a2640',
-  },
+
+  /* Error */
   errorBox: {
-    backgroundColor: 'rgba(255,82,82,0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,82,82,0.25)',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
+    backgroundColor: C.redBg, borderWidth: 1,
+    borderColor: 'rgba(220,38,38,0.2)',
+    borderRadius: 10, padding: 12, marginBottom: 14,
   },
-  errorText: {
-    color: '#ff5252',
-    fontSize: 13,
-    lineHeight: 18,
+  errorText: { color: C.red, fontSize: 13, fontWeight: '500', lineHeight: 18 },
+
+  /* Button */
+  btn: {
+    marginTop: 6, borderRadius: 13, paddingVertical: 16,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: C.brand,
+    shadowColor: C.brandDeep,
+    shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 14, elevation: 7,
   },
-  button: {
-    backgroundColor: '#2f7bff',
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginTop: 6,
-  },
-  buttonDisabled: {
-    opacity: 0.55,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  footer: {
-    color: '#3d4a5e',
-    fontSize: 12,
-    textAlign: 'center',
-    lineHeight: 18,
-  },
+  btnDisabled: { opacity: 0.5 },
+  btnText:     { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.3 },
+
+  foot: { color: C.muted, fontSize: 12, textAlign: 'center', lineHeight: 18, paddingBottom: 8 },
 });
