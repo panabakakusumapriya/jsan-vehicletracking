@@ -62,8 +62,8 @@ class TrackingService : Service() {
         private const val CHANNEL_ID        = "jsan_tracking"
         private const val WAKE_TAG          = "jsan:tracking"
 
-        const val START_SPEED_KMH           = 6.0              // auto-start threshold
-        const val STOP_SPEED_KMH            = 1.0              // treat <= this as "stopped"
+        const val START_SPEED_KMH           = 10.0             // auto-start threshold (raised to avoid GPS noise false starts)
+        const val STOP_SPEED_KMH            = 3.0              // treat <= this as "stopped" (raised to absorb GPS noise)
         const val STOP_GRACE_MS             = 20 * 60 * 1000L  // 20 min sustained-stop → end trip
         const val IDLE_TIMEOUT_MS           = 20 * 60 * 1000L  // 20 min no movement → stop service
         const val LOCATION_INTERVAL_MS      = 10_000L
@@ -216,7 +216,12 @@ class TrackingService : Service() {
                 }
                 stopping = now - stillSince >= STOP_GRACE_MS
             } else {
-                if (TrackingConfig.stillSince(this) != 0L) TrackingConfig.setStillSince(this, 0L)
+                // Only reset the stop-grace timer on genuine movement (>= START_SPEED_KMH).
+                // Speeds between STOP_SPEED_KMH and START_SPEED_KMH are GPS noise while
+                // stationary — letting them reset stillSince prevents the trip from ever closing.
+                if (avgSpeed >= START_SPEED_KMH) {
+                    if (TrackingConfig.stillSince(this) != 0L) TrackingConfig.setStillSince(this, 0L)
+                }
                 stopping = false
             }
 

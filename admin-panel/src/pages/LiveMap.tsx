@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { divIcon } from 'leaflet';
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import { Link } from 'react-router-dom';
@@ -11,7 +11,8 @@ import type { LiveDriver, LocationEvent } from '../lib/types';
 
 function Recenter({ focus }: { focus: [number, number] | null }) {
   const map = useMap();
-  useEffect(() => { if (focus) map.setView(focus, 15, { animate: true }); }, [focus, map]);
+  // panTo preserves the user's current zoom level instead of forcing a fixed zoom.
+  useEffect(() => { if (focus) map.panTo(focus, { animate: true }); }, [focus, map]);
   return null;
 }
 
@@ -81,9 +82,13 @@ export function LiveMap() {
 
   const list    = Object.values(drivers);
   const withLoc = list.filter(d => d.location);
-  const center: [number, number] = withLoc[0]?.location
-    ? [withLoc[0].location!.lat, withLoc[0].location!.lon]
-    : [17.42, 78.45];
+
+  // Stable initial center — captured once when the first driver location arrives.
+  // Never updated after that so socket events don't cause MapContainer to reset the view.
+  const initialCenter = useRef<[number, number]>([17.42, 78.45]);
+  if (withLoc[0]?.location && initialCenter.current[0] === 17.42 && initialCenter.current[1] === 78.45) {
+    initialCenter.current = [withLoc[0].location.lat, withLoc[0].location.lon];
+  }
 
   return (
     <div className="live-grid">
@@ -180,7 +185,7 @@ export function LiveMap() {
 
       {/* ── Map ── */}
       <div className="map-wrap">
-        <MapContainer center={center} zoom={13} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
+        <MapContainer center={initialCenter.current} zoom={13} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             attribution="&copy; OpenStreetMap contributors"
