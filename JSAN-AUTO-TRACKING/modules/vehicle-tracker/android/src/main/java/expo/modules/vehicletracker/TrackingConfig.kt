@@ -40,4 +40,13 @@ object TrackingConfig {
     /** epoch ms when we entered idle (service start / last trip end). Drives the 20-min timeout. */
     fun idleSince(ctx: Context): Long = prefs(ctx).getLong("idleSince", 0L)
     fun setIdleSince(ctx: Context, ms: Long) = prefs(ctx).edit().putLong("idleSince", ms).apply()
+
+    /**
+     * Set by ActivityTransitionReceiver when STILL is entered/exited.
+     * When true the service treats effective speed as 0 regardless of GPS output,
+     * which kills false movement readings from GPS drift while standing still.
+     */
+    fun isStill(ctx: Context): Boolean = prefs(ctx).getBoolean("activityStill", false)
+    fun setStill(ctx: Context, still: Boolean) =
+        prefs(ctx).edit().putBoolean("activityStill", still).apply()
 }
