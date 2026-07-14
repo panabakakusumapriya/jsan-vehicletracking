@@ -18,12 +18,25 @@ async function request(path: string, options: RequestInit = {}, token?: string |
   const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    // Prefer the server's human-readable `message`; keep the machine `code` for the UI to branch on.
+    const err = new Error(data?.message || data?.error || `Request failed (${res.status})`) as Error & {
+      code?: string;
+      status?: number;
+    };
+    err.code = data?.error;
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
 export function apiLogin(email: string, password: string): Promise<{ token: string; user: AuthUser }> {
   return request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+}
+
+export function apiLogout(token: string): Promise<{ ok: boolean }> {
+  return request('/api/auth/logout', { method: 'POST' }, token);
 }
 
 export function apiMe(token: string): Promise<{ user: AuthUser }> {

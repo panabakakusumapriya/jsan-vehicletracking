@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from 'react-leaflet';
+import { divIcon } from 'leaflet';
+import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import { Link } from 'react-router-dom';
 import type { Socket } from 'socket.io-client';
 import { api } from '../lib/api';
@@ -12,6 +13,27 @@ function Recenter({ focus }: { focus: [number, number] | null }) {
   const map = useMap();
   useEffect(() => { if (focus) map.setView(focus, 15, { animate: true }); }, [focus, map]);
   return null;
+}
+
+// Top-down car marker that rotates to point in the driver's direction of travel.
+// Green = moving, amber = stale (no recent fix).
+function carIcon(heading: number | null | undefined, stale: boolean) {
+  const fill = stale ? '#d97706' : '#059669';
+  const rot = typeof heading === 'number' && isFinite(heading) ? heading : 0;
+  const svg = `
+    <svg viewBox="0 0 32 32" width="30" height="30" xmlns="http://www.w3.org/2000/svg">
+      <rect x="9" y="3" width="14" height="26" rx="6" fill="${fill}" stroke="#ffffff" stroke-width="1.6"/>
+      <path d="M11.5 9 Q16 6.3 20.5 9 L19.6 12.6 Q16 11 12.4 12.6 Z" fill="rgba(255,255,255,0.9)"/>
+      <path d="M12.4 23.6 Q16 22.2 19.6 23.6 L20.5 20.4 Q16 21.9 11.5 20.4 Z" fill="rgba(255,255,255,0.6)"/>
+      <circle cx="16" cy="16.2" r="1.5" fill="rgba(255,255,255,0.85)"/>
+    </svg>`;
+  return divIcon({
+    className: 'car-marker',
+    html: `<div style="transform: rotate(${rot}deg); transform-origin: center; width:30px; height:30px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));">${svg}</div>`,
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+    popupAnchor: [0, -15],
+  });
 }
 
 export function LiveMap() {
@@ -165,15 +187,10 @@ export function LiveMap() {
           />
           <Recenter focus={focus} />
           {withLoc.map(d => (
-            <CircleMarker
+            <Marker
               key={d.driver._id}
-              center={[d.location!.lat, d.location!.lon]}
-              radius={10}
-              pathOptions={{
-                color: '#fff', weight: 2.5,
-                fillColor: d.stale ? '#d97706' : '#059669',
-                fillOpacity: 1,
-              }}
+              position={[d.location!.lat, d.location!.lon]}
+              icon={carIcon(d.location!.heading, d.stale)}
             >
               <Popup>
                 <b>{d.driver.name}</b><br />
@@ -181,7 +198,7 @@ export function LiveMap() {
                 {Math.round(d.location!.speed ?? 0)} km/h<br />
                 {d.location!.recordedAt ? new Date(d.location!.recordedAt).toLocaleTimeString() : ''}
               </Popup>
-            </CircleMarker>
+            </Marker>
           ))}
         </MapContainer>
       </div>

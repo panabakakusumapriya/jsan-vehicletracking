@@ -2,6 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -48,7 +49,16 @@ export default function Login() {
       }
       router.replace('/home');
     } catch (e: any) {
-      setError(e?.message ?? 'Login failed');
+      // Someone is already signed in with this account on another device — surface a popup.
+      if (e?.code === 'ALREADY_LOGGED_IN') {
+        Alert.alert(
+          'Already logged in',
+          e?.message ?? 'This account is already logged in on another device. Log out there first.',
+          [{ text: 'OK' }],
+        );
+      } else {
+        setError(e?.message ?? 'Login failed');
+      }
     } finally {
       setBusy(false);
     }

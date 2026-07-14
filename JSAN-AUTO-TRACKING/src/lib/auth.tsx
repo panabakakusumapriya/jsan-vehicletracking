@@ -2,7 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
 import * as VehicleTracker from '@/modules/vehicle-tracker';
-import { apiLogin, type AuthUser } from './api';
+import { apiLogin, apiLogout, type AuthUser } from './api';
 
 type AuthState = {
   loading: boolean;
@@ -48,6 +48,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await VehicleTracker.stop();
     } catch {
       // ignore — module may be unavailable on this platform
+    }
+    // Release the single-active-session lock so this driver can sign in again.
+    if (state.token) {
+      try { await apiLogout(state.token); } catch { /* offline — session frees on idle timeout */ }
     }
     await SecureStore.deleteItemAsync(TOKEN_KEY);
     await SecureStore.deleteItemAsync(USER_KEY);
