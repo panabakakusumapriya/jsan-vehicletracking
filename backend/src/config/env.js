@@ -21,6 +21,10 @@ module.exports = {
   CORS_ORIGIN: parseCorsOrigin(process.env.CORS_ORIGIN),
   HEARTBEAT_INTERVAL_SECONDS: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '10', 10),
   STALE_AFTER_SECONDS: parseInt(process.env.STALE_AFTER_SECONDS || '60', 10),
+  // An active trip silent longer than this is treated as dead (app killed / long signal
+  // loss / crashed test session) and auto-closed so it stops lingering on the live map.
+  // Kept well above the device's 10s heartbeat and normal GPS blips. Default 15 min.
+  SESSION_DEAD_AFTER_SECONDS: parseInt(process.env.SESSION_DEAD_AFTER_SECONDS || '900', 10),
   SEED_ADMIN_NAME: process.env.SEED_ADMIN_NAME || 'Super Admin',
   SEED_ADMIN_EMAIL: process.env.SEED_ADMIN_EMAIL || 'admin@jsan.local',
   SEED_ADMIN_PASSWORD: process.env.SEED_ADMIN_PASSWORD || 'Admin@12345',

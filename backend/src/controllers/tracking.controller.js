@@ -172,11 +172,30 @@ exports.mySession = asyncHandler(async (req, res) => {
  */
 exports.live = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
+  const now = Date.now();
+
+  // Self-healing: an active trip that hasn't reported for longer than the dead-session
+  // window isn't live — it's a leftover (app killed, crashed/reinstalled session, or a
+  // very long signal loss). Close it so it stops showing up as a permanent "stale" marker.
+  // Offline-buffered points that arrive later still append to the (now closed) trip, so the
+  // recorded route is preserved; it just won't reappear as a live driver.
+  const deadCutoff = new Date(now - env.SESSION_DEAD_AFTER_SECONDS * 1000);
+  await Trip.updateMany(
+    {
+      status: 'active',
+      ...scope,
+      $or: [
+        { 'lastLocation.recordedAt': { $lt: deadCutoff } },
+        { lastLocation: null, startedAt: { $lt: deadCutoff } },
+      ],
+    },
+    { $set: { status: 'timed_out', endedAt: new Date() } }
+  );
+
   const trips = await Trip.find({ status: 'active', ...scope })
     .populate('driverId', 'name email phone')
     .populate('vehicleId', 'plateNumber model');
 
-  const now = Date.now();
   const drivers = trips.map((t) => {
     const recordedAt = t.lastLocation?.recordedAt ? new Date(t.lastLocation.recordedAt).getTime() : null;
     return {

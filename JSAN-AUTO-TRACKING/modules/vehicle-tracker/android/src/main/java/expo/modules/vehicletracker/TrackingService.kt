@@ -76,6 +76,13 @@ class TrackingService : Service() {
         const val LOCATION_INTERVAL_MS      = 10_000L
         const val FASTEST_MS                = 5_000L
 
+        /**
+         * While stopped (within the 20-min grace) we do NOT record jittering GPS fixes.
+         * Instead we re-send the frozen anchor position this often so the server keeps
+         * seeing the session as alive (must stay below the backend STALE window of 60s).
+         */
+        const val STATIONARY_HEARTBEAT_MS   = 30_000L
+
         /** Reject GPS fixes worse than this accuracy (metres). */
         const val MAX_ACCURACY_M            = 50f
 
@@ -109,6 +116,15 @@ class TrackingService : Service() {
 
     private var lastLocation: Location? = null
     private val connectivityReceiver = ConnectivityReceiver()
+
+    /**
+     * When stopped, the marker is frozen at this anchor (the spot where we stopped) so parked
+     * GPS drift never pollutes the route or the live map. Cleared the moment real movement
+     * resumes. `lastHeartbeatMs` throttles the keep-alive point sent while parked.
+     */
+    private var stopAnchorLat: Double? = null
+    private var stopAnchorLon: Double? = null
+    private var lastHeartbeatMs: Long = 0L
 
     /**
      * 1-D Kalman smoother applied independently to latitude and longitude.
@@ -267,12 +283,13 @@ class TrackingService : Service() {
         // ── 4. Speed ─────────────────────────────────────────────────────────────────
         val rawSpeedKmh = computeSpeedKmh(location)   // also updates lastLocation
 
-        // ── 5. Activity-STILL override ───────────────────────────────────────────────
-        // Google's Activity Recognition ML model (accelerometer + gyro) writes STILL into
-        // prefs via ActivityTransitionReceiver. While STILL, GPS reports phantom drift
-        // speed — we zero it out here so the stop-grace timer is not fooled.
+        // ── 5. Activity Recognition (accelerometer + gyro, on-device ML) ─────────────
+        // STILL is the trustworthy "we're parked" signal — Google's fused sensor model can't
+        // be fooled by GPS drift. We keep the speed buffer on REAL GPS speed and fuse STILL
+        // into the stop decision below, so a *stale* STILL flag (the ML lags a few seconds
+        // leaving a stop) can still be vetoed by clearly genuine GPS movement (>= START).
         val activityStill = TrackingConfig.isStill(this)
-        val speedKmh      = if (activityStill) 0.0 else rawSpeedKmh
+        val speedKmh      = rawSpeedKmh
         val avgSpeed      = averageSpeed(speedKmh)
 
         val now    = System.currentTimeMillis()
@@ -303,34 +320,58 @@ class TrackingService : Service() {
             }
         } else {
             // TRACKING
-            val stopping: Boolean
-            if (avgSpeed <= STOP_SPEED_KMH || activityStill) {
-                // Either GPS (Kalman-smoothed) speed is low OR the device is definitively still.
-                val stillSince = TrackingConfig.stillSince(this).let {
-                    if (it == 0L) { TrackingConfig.setStillSince(this, now); now } else it
-                }
-                stopping = now - stillSince >= STOP_GRACE_MS
-            } else {
-                // Only reset the stop-grace timer on genuine movement above START threshold.
-                // Speeds between STOP and START are residual GPS noise; letting them reset
-                // stillSince would prevent the trip from ever closing.
-                if (avgSpeed >= START_SPEED_KMH) {
-                    if (TrackingConfig.stillSince(this) != 0L) TrackingConfig.setStillSince(this, 0L)
-                }
-                stopping = false
-            }
+            // "Stopped" fuses two signals: a Kalman-smoothed speed at/below the stop threshold
+            // (catches a real stop immediately), OR the activity recogniser's STILL verdict
+            // (Google's on-device accelerometer+gyro ML model — immune to GPS drift) as long as
+            // GPS isn't clearly showing genuine driving. That veto (`avgSpeed < START`) keeps a
+            // lagging STILL flag from freezing the marker when the vehicle is actually moving.
+            // While stopped we FREEZE the marker at an anchor and stop recording jittering
+            // fixes — that is what kills the parked GPS noise.
+            val stopped = avgSpeed <= STOP_SPEED_KMH || (activityStill && avgSpeed < START_SPEED_KMH)
 
-            if (stopping) {
-                persistSmoothed(smoothLat, smoothLon, location, speedKmh, tripId, "ended", now)
-                TrackingConfig.setCurrentTripId(this, null)
-                TrackingConfig.setStillSince(this, 0L)
-                TrackingConfig.setIdleSince(this, now)
-                speedBuffer.clear()
-                kalman.reset()
-                TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(location.time)))
-                emitState("idle")
-                updateNotification("Waiting for movement…")
+            if (stopped) {
+                // Mark the moment we became stationary and anchor the position there.
+                if (TrackingConfig.stillSince(this) == 0L) {
+                    TrackingConfig.setStillSince(this, now)
+                    lastHeartbeatMs = 0L // force an immediate keep-alive at the new anchor
+                }
+                if (stopAnchorLat == null) { stopAnchorLat = smoothLat; stopAnchorLon = smoothLon }
+                val aLat = stopAnchorLat!!
+                val aLon = stopAnchorLon!!
+                val stillSince = TrackingConfig.stillSince(this)
+
+                if (now - stillSince >= STOP_GRACE_MS) {
+                    // Sustained 20-min stop → end the trip cleanly at the anchor.
+                    persistSmoothed(aLat, aLon, location, 0.0, tripId, "ended", now)
+                    TrackingConfig.setCurrentTripId(this, null)
+                    TrackingConfig.setStillSince(this, 0L)
+                    TrackingConfig.setIdleSince(this, now)
+                    stopAnchorLat = null; stopAnchorLon = null
+                    lastHeartbeatMs = 0L
+                    speedBuffer.clear()
+                    kalman.reset()
+                    TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(location.time)))
+                    emitState("idle")
+                    updateNotification("Waiting for movement…")
+                } else {
+                    // Parked within grace: drop the noisy fix, keep the marker frozen at the
+                    // anchor, and send a low-rate keep-alive so the session never shows "stale".
+                    if (now - lastHeartbeatMs >= STATIONARY_HEARTBEAT_MS) {
+                        lastHeartbeatMs = now
+                        persistSmoothed(aLat, aLon, location, 0.0, tripId, "active", now)
+                        TrackerEvents.emit("onLocation", locMapSmoothed(aLat, aLon, location, 0.0, tripId, "active"))
+                    }
+                    updateNotification("Parked • stopped ${((now - stillSince) / 60000L).toInt()} min")
+                }
             } else {
+                // Genuine movement → record the real smoothed position. Only speed >= START
+                // clears the stop timer; the STOP..START band is treated as residual noise and
+                // does not reset the grace countdown, so a trip can still close.
+                if (avgSpeed >= START_SPEED_KMH && TrackingConfig.stillSince(this) != 0L) {
+                    TrackingConfig.setStillSince(this, 0L)
+                }
+                stopAnchorLat = null; stopAnchorLon = null
+                lastHeartbeatMs = now
                 persistSmoothed(smoothLat, smoothLon, location, speedKmh, tripId, "active", now)
                 TrackerEvents.emit("onLocation", locMapSmoothed(smoothLat, smoothLon, location, speedKmh, tripId, "active"))
                 updateNotification("Trip in progress • ${speedKmh.roundToInt()} km/h")
