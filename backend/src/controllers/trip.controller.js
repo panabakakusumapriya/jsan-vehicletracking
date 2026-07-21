@@ -3,12 +3,21 @@ const LocationPoint = require('../models/LocationPoint');
 const asyncHandler = require('../utils/asyncHandler');
 const { accessibleDriverFilter } = require('../utils/scope');
 
-// GET /api/trips?status=&driverId=&limit=&page=
+// GET /api/trips?status=&driverId=&from=&to=&limit=&page=
 exports.list = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
   const filter = { ...scope };
   if (req.query.status) filter.status = req.query.status;
   if (req.query.driverId) filter.driverId = req.query.driverId;
+  if (req.query.from || req.query.to) {
+    filter.startedAt = {};
+    if (req.query.from) filter.startedAt.$gte = new Date(req.query.from);
+    if (req.query.to) {
+      const to = new Date(req.query.to);
+      to.setHours(23, 59, 59, 999);
+      filter.startedAt.$lte = to;
+    }
+  }
 
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
   const page = Math.max(parseInt(req.query.page || '1', 10), 1);

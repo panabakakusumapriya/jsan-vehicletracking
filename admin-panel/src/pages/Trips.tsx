@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { dt, km, statusBadge } from '../lib/format';
-import type { Trip } from '../lib/types';
+import type { Trip, User } from '../lib/types';
 
 const driverName = (d: Trip['driverId']) => (typeof d === 'object' && d ? d.name : '—');
 const plate      = (v: Trip['vehicleId']) => (typeof v === 'object' && v ? v.plateNumber : '—');
@@ -15,15 +15,29 @@ const FilterIcon = () => (
 
 export function Trips() {
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [drivers, setDrivers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('');
+  const [driverId, setDriverId] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+
+  useEffect(() => {
+    api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
+  }, []);
 
   useEffect(() => {
     setLoading(true);
-    api.get<{ trips: Trip[] }>(`/api/trips${status ? `?status=${status}` : ''}`)
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (driverId) params.set('driverId', driverId);
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    const qs = params.toString();
+    api.get<{ trips: Trip[] }>(`/api/trips${qs ? `?${qs}` : ''}`)
       .then(r => setTrips(r.trips))
       .finally(() => setLoading(false));
-  }, [status]);
+  }, [status, driverId, from, to]);
 
   const active    = trips.filter(t => t.status === 'active').length;
   const completed = trips.filter(t => t.status === 'completed').length;
@@ -39,11 +53,11 @@ export function Trips() {
             Full history of driver trips and routes
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <FilterIcon />
           <select
             className="input"
-            style={{ width: 170, margin: 0 }}
+            style={{ width: 150, margin: 0 }}
             value={status}
             onChange={e => setStatus(e.target.value)}
           >
@@ -52,6 +66,41 @@ export function Trips() {
             <option value="completed">Completed</option>
             <option value="timed_out">Timed out</option>
           </select>
+          <select
+            className="input"
+            style={{ width: 170, margin: 0 }}
+            value={driverId}
+            onChange={e => setDriverId(e.target.value)}
+          >
+            <option value="">All drivers</option>
+            {drivers.map(d => <option key={d._id} value={d._id}>{d.name}</option>)}
+          </select>
+          <input
+            className="input"
+            type="date"
+            style={{ width: 150, margin: 0 }}
+            value={from}
+            max={to || undefined}
+            onChange={e => setFrom(e.target.value)}
+          />
+          <span style={{ color: 'var(--muted)', fontSize: 13 }}>to</span>
+          <input
+            className="input"
+            type="date"
+            style={{ width: 150, margin: 0 }}
+            value={to}
+            min={from || undefined}
+            onChange={e => setTo(e.target.value)}
+          />
+          {(status || driverId || from || to) && (
+            <button
+              className="btn-ghost"
+              style={{ padding: '6px 10px', fontSize: 12.5 }}
+              onClick={() => { setStatus(''); setDriverId(''); setFrom(''); setTo(''); }}
+            >
+              Clear
+            </button>
+          )}
         </div>
       </div>
 
