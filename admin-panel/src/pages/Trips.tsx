@@ -142,6 +142,7 @@ export function Trips() {
               <th>Vehicle</th>
               <th>Status</th>
               <th>Started</th>
+              <th>Ended</th>
               <th>Distance</th>
               <th>Max speed</th>
               <th>Points</th>
@@ -172,6 +173,7 @@ export function Trips() {
                 </td>
                 <td><span className={`badge ${statusBadge(t.status)}`}>{t.status.replace('_', ' ')}</span></td>
                 <td style={{ color: 'var(--muted)', fontSize: 13 }}>{dt(t.startedAt)}</td>
+                <td style={{ color: 'var(--muted)', fontSize: 13 }}>{t.endedAt ? dt(t.endedAt) : '—'}</td>
                 <td style={{ fontWeight: 600 }}>{km(t.distanceMeters)}</td>
                 <td>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
                 <td style={{ color: 'var(--muted)' }}>{t.pointCount}</td>
@@ -201,7 +203,7 @@ export function Trips() {
             ))}
             {!loading && trips.length === 0 && (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
+                <td colSpan={9} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
                   No trips found for the selected filter.
                 </td>
               </tr>

@@ -77,7 +77,7 @@ class TrackingService : Service() {
         // genuine movement resets the timer; a long red light > STOP_GRACE just splits the trip.
         const val STOP_GRACE_MS             = 3 * 60 * 1000L   // 3 min sustained stop → end trip
         const val STILL_STOP_GRACE_MS       = 2 * 60 * 1000L   // ML-confirmed STILL → end a touch sooner
-        const val IDLE_TIMEOUT_MS           = 20 * 60 * 1000L  // 20 min no movement (no trip) → stop service
+        const val IDLE_TIMEOUT_MS           = 3 * 60 * 1000L   // 3 min no movement (no trip) → stop service
         const val TICK_INTERVAL_MS          = 20_000L          // GPS-independent evaluation of stop/heartbeat
         const val LOCATION_INTERVAL_MS      = 10_000L
         const val FASTEST_MS                = 5_000L
