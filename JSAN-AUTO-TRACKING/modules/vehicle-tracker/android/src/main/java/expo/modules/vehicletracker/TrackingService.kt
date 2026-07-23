@@ -43,8 +43,8 @@ import kotlin.math.roundToInt
  *   fix → Kalman smooth → distance check → trip state machine → SQLite → upload
  *
  * Trip lifecycle:
- *   IDLE:     watch for 50 m of movement at avg speed ≥ 15 km/h → START trip
- *             (15 km/h threshold rejects walking / jogging; 50 m rejects GPS drift)
+ *   IDLE:     watch for 50 m of movement at avg speed ≥ 10 km/h → START trip
+ *             (10 km/h threshold rejects walking / jogging; 50 m rejects GPS drift)
  *
  *   TRACKING: record a point every 50 m moved from the last recorded point.
  *             No speed check needed during a trip — the 50 m rule naturally ignores
@@ -75,9 +75,9 @@ class TrackingService : Service() {
         /**
          * Minimum average speed over the first TRIP_START_DISTANCE_M to confirm a
          * vehicle trip (not walking/jogging).
-         * Walking ~5 km/h, jogging ~10 km/h, slowest vehicle ~15 km/h.
+         * Walking ~5 km/h, jogging ~8 km/h, slowest vehicle ~10 km/h.
          */
-        const val TRIP_START_MIN_SPEED_KMH  = 15.0
+        const val TRIP_START_MIN_SPEED_KMH  = 10.0
 
         /** Distance from the last recorded point that triggers saving a new point. */
         const val POINT_DISTANCE_M          = 50f
