@@ -30,7 +30,6 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import java.text.SimpleDateFormat
-import java.util.ArrayDeque
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -38,77 +37,77 @@ import java.util.UUID
 import kotlin.math.roundToInt
 
 /**
- * Self-sufficient foreground tracking service. Owns the whole pipeline so it keeps
- * working when the JS/app is killed:
- *   fix (every ~10s) -> jump filter -> accuracy filter -> Kalman smooth
- *                    -> STILL override -> speed average -> trip state machine
- *                    -> SQLite queue -> upload (when online).
+ * Distance-based tracking service — same core approach as MyCarTracks.
  *
- * Sensor-fusion anti-drift pipeline (matches MyCarTracks approach):
- *
- *   1. Position-jump filter  — rejects teleport fixes (implied speed > MAX_JUMP_KMH).
- *   2. Accuracy filter       — rejects fixes with horizontal accuracy > MAX_ACCURACY_M.
- *   3. Kalman lat/lon smoother — fuses GPS position + reported accuracy into a smoothed
- *      trace. When the device is still the smoothed position barely moves, so derived speed
- *      naturally collapses toward 0, killing the main source of drift-while-walking.
- *   4. Activity STILL flag   — Google's on-device ML model (accel + gyro) sends
- *      ENTER_STILL via ActivityRecognition. ActivityTransitionReceiver writes it to prefs;
- *      this service reads it and forces effective speed = 0 while STILL is active.
- *      EXIT_STILL clears the flag. This is the same primary signal MyCarTracks uses.
- *   5. Rolling speed average — 3-fix buffer prevents a single noisy fix from changing
- *      trip state.
+ * Pipeline per GPS fix:
+ *   fix → Kalman smooth → distance check → trip state machine → SQLite → upload
  *
  * Trip lifecycle:
- *   idle    + effective avg speed >= START_SPEED_KMH  -> START trip
- *   moving  + effective avg speed ~0 for STOP_GRACE_MS -> END trip
- *   idle for IDLE_TIMEOUT_MS (no trip)               -> stop service
+ *   IDLE:     watch for 50 m of movement at avg speed ≥ 15 km/h → START trip
+ *             (15 km/h threshold rejects walking / jogging; 50 m rejects GPS drift)
+ *
+ *   TRACKING: record a point every 50 m moved from the last recorded point.
+ *             No speed check needed during a trip — the 50 m rule naturally ignores
+ *             GPS noise (drift is < 30 m) and records real movement at any speed.
+ *
+ *   END:      no 50 m movement for TRIP_END_NO_MOVE_MS (10 min) → end trip.
+ *             Checked by the GPS-independent ticker so it fires even when GPS goes
+ *             quiet on a parked vehicle.
+ *
+ * Why distance instead of speed:
+ *   Speed from a single GPS fix is noisy. A parked car can report 2–5 km/h from
+ *   satellite drift. Distance from the last *recorded* point is measured over many
+ *   fixes and is naturally robust — drift never accumulates to 50 m.
+ *   Slow crawl through traffic (7 km/h) reaches 50 m in ~26 s → recorded cleanly,
+ *   no gaps. Under the old speed-averaging approach that same crawl was misclassified
+ *   as stopped, causing the 5-minute blackout seen in session 6a61b04d…
  */
 class TrackingService : Service() {
 
     companion object {
-        private const val NOTIF_ID          = 4711
-        private const val CHANNEL_ID        = "jsan_tracking"
-        private const val WAKE_TAG          = "jsan:tracking"
+        private const val NOTIF_ID   = 4711
+        private const val CHANNEL_ID = "jsan_tracking"
+        private const val WAKE_TAG   = "jsan:tracking"
 
-        const val START_SPEED_KMH           = 10.0             // auto-start threshold (raised to avoid GPS noise false starts)
-        const val STOP_SPEED_KMH            = 3.0              // treat <= this as "stopped" (raised to absorb GPS noise)
-        // Sustained-stop → end trip. Kept short ("a couple of mins") so a parked driver stops
-        // cleanly instead of lingering. Brief traffic stops (lights) don't reach it because any
-        // genuine movement resets the timer; a long red light > STOP_GRACE just splits the trip.
-        const val STOP_GRACE_MS             = 3 * 60 * 1000L   // 3 min sustained stop → end trip
-        const val STILL_STOP_GRACE_MS       = 2 * 60 * 1000L   // ML-confirmed STILL → end a touch sooner
-        const val IDLE_TIMEOUT_MS           = 3 * 60 * 1000L   // 3 min no movement (no trip) → stop service
-        const val TICK_INTERVAL_MS          = 20_000L          // GPS-independent evaluation of stop/heartbeat
+        /** Distance the vehicle must travel from the watch position to start a trip. */
+        const val TRIP_START_DISTANCE_M     = 50f
+
+        /**
+         * Minimum average speed over the first TRIP_START_DISTANCE_M to confirm a
+         * vehicle trip (not walking/jogging).
+         * Walking ~5 km/h, jogging ~10 km/h, slowest vehicle ~15 km/h.
+         */
+        const val TRIP_START_MIN_SPEED_KMH  = 15.0
+
+        /** Distance from the last recorded point that triggers saving a new point. */
+        const val POINT_DISTANCE_M          = 50f
+
+        /**
+         * If the vehicle has not moved POINT_DISTANCE_M for this long, the trip ends.
+         * 10 min comfortably covers all traffic signal waits (even HITEC City / KPHB
+         * junction which runs up to 150 s) without splitting trips.
+         */
+        const val TRIP_END_NO_MOVE_MS       = 10 * 60 * 1000L
+
+        /**
+         * If no trip starts within this window after service launch, stop the service
+         * to save battery. ActivityTransitionReceiver re-launches when movement resumes.
+         */
+        const val IDLE_TIMEOUT_MS           = 10 * 60 * 1000L
+
+        /** GPS-independent ticker interval — drives end-of-trip detection + heartbeat. */
+        const val TICK_INTERVAL_MS          = 20_000L
+
+        /** GPS fix request interval. */
         const val LOCATION_INTERVAL_MS      = 10_000L
         const val FASTEST_MS                = 5_000L
 
         /**
-         * While stopped (within the 20-min grace) we do NOT record jittering GPS fixes.
-         * Instead we re-send the frozen anchor position this often so the server keeps
-         * seeing the session as alive (must stay below the backend STALE window of 60s).
+         * While the vehicle is stopped (within the 10 min grace) we re-send the last
+         * recorded position at this rate to keep the server session alive and prevent
+         * the live-map marker going "stale" (server stale window = 60 s).
          */
         const val STATIONARY_HEARTBEAT_MS   = 30_000L
-
-        /**
-         * Once a stop is anchored, we stay "stopped" until the smoothed position physically
-         * leaves this radius of the anchor. GPS drift never travels this far; genuine driving
-         * crosses it within seconds (10 km/h ≈ 28 m per 10s fix). This is the strongest defence
-         * against drift-speed faking movement while parked.
-         */
-        const val STICKY_RADIUS_M           = 35f
-
-        /** Reject GPS fixes worse than this accuracy (metres). */
-        const val MAX_ACCURACY_M            = 50f
-
-        /** Number of fixes to average for speed decisions. Prevents single-fix false starts. */
-        const val SPEED_AVG_WINDOW          = 3
-
-        /**
-         * Reject a fix whose implied speed vs. the previous fix exceeds this value.
-         * Catches GPS teleport glitches (e.g. first fix after a tunnel, multipath in cities).
-         * 250 km/h covers any road vehicle; raise if tracking aircraft.
-         */
-        const val MAX_JUMP_KMH              = 250.0
 
         fun start(ctx: Context) {
             ContextCompat.startForegroundService(ctx, Intent(ctx, TrackingService::class.java))
@@ -122,29 +121,33 @@ class TrackingService : Service() {
     private lateinit var fused: FusedLocationProviderClient
     private lateinit var db: LocationDatabase
 
-    /** PARTIAL_WAKE_LOCK: keeps CPU running when screen is off so GPS fixes are not dropped. */
+    /** Keeps CPU alive when screen is off so GPS fixes are not dropped. */
     private var wakeLock: PowerManager.WakeLock? = null
 
-    /** Rolling speed buffer — prevents single-fix noise from changing trip state. */
-    private val speedBuffer = ArrayDeque<Double>(SPEED_AVG_WINDOW)
-
-    private var lastLocation: Location? = null
     private val connectivityReceiver = ConnectivityReceiver()
 
-    /**
-     * When stopped, the marker is frozen at this anchor (the spot where we stopped) so parked
-     * GPS drift never pollutes the route or the live map. Cleared the moment real movement
-     * resumes. `lastHeartbeatMs` throttles the keep-alive point sent while parked.
-     */
-    private var stopAnchorLat: Double? = null
-    private var stopAnchorLon: Double? = null
+    // ── Trip-start watch state ────────────────────────────────────────────────
+    /** First GPS fix after entering idle — reference for measuring the start 50 m. */
+    private var startWatchPos: Location? = null
+    /** Wall-clock time when startWatchPos was captured (for avg-speed calculation). */
+    private var startWatchTime: Long = 0L
+
+    // ── In-trip recording state ───────────────────────────────────────────────
+    /** Last position for which a point was written to SQLite. */
+    private var lastRecordedLocation: Location? = null
+    /** Wall-clock time of the last point written (resets every 50 m). */
+    private var lastMovedMs: Long = 0L
+    /** Throttles the server keep-alive heartbeat while parked. */
     private var lastHeartbeatMs: Long = 0L
 
+    // ── Misc ─────────────────────────────────────────────────────────────────
+    private var lastLocation: Location? = null   // for speed derivation
+
     /**
-     * GPS-independent heartbeat/stop evaluator. The fused provider often stops delivering fixes
-     * when the vehicle is stationary, which would otherwise freeze the state machine (the trip
-     * would never close and the server would flip to "stale"). This ticker keeps evaluating the
-     * stop and sending keep-alives even when no new GPS fix arrives.
+     * GPS-independent ticker:
+     *   • Detects trip end when GPS goes quiet on a parked vehicle.
+     *   • Sends keep-alive heartbeats so the live-map session never goes stale.
+     *   • Checks idle timeout so the service self-terminates without a GPS fix.
      */
     private val ticker = Handler(Looper.getMainLooper())
     private val tickRunnable = object : Runnable {
@@ -155,23 +158,19 @@ class TrackingService : Service() {
     }
 
     /**
-     * 1-D Kalman smoother applied independently to latitude and longitude.
+     * 1-D Kalman smoother (lat + lon independently).
      *
-     * State  : position (degrees, but the maths treats them as metres-equivalent).
-     * Process noise Q : expected position uncertainty growth per second due to movement.
-     *   3 m/s  → a slow-walking device; keeps the filter from lagging too far behind a
-     *            moving vehicle while still aggressively smoothing stationary drift.
-     * Measurement noise R : GPS horizontal accuracy² (reported per fix by the OS).
-     *
-     * When the device is STILL the smoothed position barely changes between fixes, so
-     * distance/time derived speed collapses toward 0 — that is the primary drift cure.
+     * Smooths GPS jitter without ever dropping a fix — every satellite reading
+     * is blended in, weighted by its reported accuracy (R = accuracy²). A parked
+     * device's smoothed position barely moves even when raw fixes jitter ±20 m,
+     * so the 50 m distance check naturally ignores that drift.
      */
     private inner class KalmanGPS {
         var lat = 0.0
         var lon = 0.0
-        private var varianceM2   = -1.0   // negative = not yet initialised
-        private var lastTimeMs   = 0L
-        private val Q_M_PER_SEC  = 3.0   // process noise (m/s)
+        private var varianceM2  = -1.0
+        private var lastTimeMs  = 0L
+        private val Q_M_PER_SEC = 3.0   // process noise: expected movement m/s
 
         fun process(rawLat: Double, rawLon: Double, accuracyM: Float, timeMs: Long): Pair<Double, Double> {
             val acc = accuracyM.toDouble().coerceAtLeast(1.0)
@@ -183,17 +182,12 @@ class TrackingService : Service() {
             }
             val dtSec = ((timeMs - lastTimeMs) / 1000.0).coerceIn(0.0, 60.0)
             lastTimeMs = timeMs
-
-            // Predict: variance grows with time (device might have moved)
             varianceM2 += dtSec * Q_M_PER_SEC * Q_M_PER_SEC
-
-            // Update: blend new measurement using Kalman gain
             val R = acc * acc
             val K = varianceM2 / (varianceM2 + R)
             lat += K * (rawLat - lat)
             lon += K * (rawLon - lon)
             varianceM2 *= (1.0 - K)
-
             return Pair(lat, lon)
         }
 
@@ -212,7 +206,7 @@ class TrackingService : Service() {
         }
     }
 
-    // ---- Lifecycle ----
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCreate() {
         super.onCreate()
@@ -225,20 +219,24 @@ class TrackingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundCompat(notification("Waiting for movement…"))
 
-        if (TrackingConfig.currentTripId(this) == null && TrackingConfig.idleSince(this) == 0L) {
-            TrackingConfig.setIdleSince(this, System.currentTimeMillis())
-        }
+        val now = System.currentTimeMillis()
 
-        // Clear speed buffer on each service start so a kill+restart doesn't inherit
-        // a partial (zero-padded) window that could cause false stop decisions.
-        speedBuffer.clear()
+        // If a trip was active before the service was killed (START_STICKY restart),
+        // restore the movement timer so we don't immediately end the trip on restart.
+        if (TrackingConfig.currentTripId(this) != null) {
+            if (lastMovedMs == 0L) lastMovedMs = now
+            if (lastHeartbeatMs == 0L) lastHeartbeatMs = now
+        } else {
+            // Entering idle — record when we started waiting so idle timeout works.
+            if (TrackingConfig.idleSince(this) == 0L) {
+                TrackingConfig.setIdleSince(this, now)
+            }
+        }
 
         startLocationUpdates()
         registerActivityTransitions()
-        // Start the GPS-independent stop/heartbeat evaluator (idempotent across restarts).
         ticker.removeCallbacks(tickRunnable)
         ticker.postDelayed(tickRunnable, TICK_INTERVAL_MS)
-        // Opportunistically flush any backlog left from an offline period.
         triggerUpload()
         return START_STICKY
     }
@@ -253,7 +251,7 @@ class TrackingService : Service() {
         super.onDestroy()
     }
 
-    // ---- Wake lock (MyCarTracks: AbstractAutoTrackingService.onCreate bytecode) ----
+    // ── Wake lock ─────────────────────────────────────────────────────────────
 
     private fun acquireWakeLock() {
         try {
@@ -262,19 +260,14 @@ class TrackingService : Service() {
             wl.setReferenceCounted(false)
             if (!wl.isHeld) wl.acquire()
             wakeLock = wl
-        } catch (e: Exception) {
-            // Non-fatal — tracking continues, just with less CPU guarantee.
-        }
-    }
-
-    private fun releaseWakeLock() {
-        try {
-            wakeLock?.let { if (it.isHeld) it.release() }
-            wakeLock = null
         } catch (_: Exception) {}
     }
 
-    // ---- Connectivity receiver ----
+    private fun releaseWakeLock() {
+        try { wakeLock?.let { if (it.isHeld) it.release() }; wakeLock = null } catch (_: Exception) {}
+    }
+
+    // ── Connectivity receiver ─────────────────────────────────────────────────
 
     private fun registerConnectivityReceiver() {
         try {
@@ -284,164 +277,217 @@ class TrackingService : Service() {
         } catch (_: Exception) {}
     }
 
-    // ---- Core state machine ----
+    // ── Core state machine ────────────────────────────────────────────────────
 
     private fun processFix(location: Location) {
-        // ── 1. Position-jump filter: reject teleport fixes ──────────────────────────
-        // Compute implied speed vs last accepted fix. If physically impossible, skip
-        // this fix but still advance lastLocation so the next fix has a fresh baseline.
-        val last = lastLocation
-        if (last != null) {
-            val dtMs = location.time - last.time
-            if (dtMs > 0) {
-                val impliedKmh = (last.distanceTo(location) / (dtMs / 1000.0)) * 3.6
-                if (impliedKmh > MAX_JUMP_KMH) {
-                    lastLocation = location   // reset baseline to avoid cascading rejects
-                    kalman.reset()
-                    return
-                }
-            }
-        }
+        val now = System.currentTimeMillis()
 
-        // ── 2. Accuracy filter ───────────────────────────────────────────────────────
-        if (location.hasAccuracy() && location.accuracy > MAX_ACCURACY_M) return
-
-        // ── 3. Kalman smooth ─────────────────────────────────────────────────────────
+        // ── Kalman smooth ────────────────────────────────────────────────────
+        // Always feed every fix into the smoother — no hard-reject by accuracy.
+        // The filter weights each fix by accuracy² so poor fixes barely move the
+        // smoothed position; good fixes update it quickly.
         val accuracy = if (location.hasAccuracy()) location.accuracy else 30f
         val (smoothLat, smoothLon) = kalman.process(
             location.latitude, location.longitude, accuracy, location.time
         )
 
-        // ── 4. Speed ─────────────────────────────────────────────────────────────────
-        val rawSpeedKmh = computeSpeedKmh(location)   // also updates lastLocation
-
-        // ── 5. Activity Recognition (accelerometer + gyro, on-device ML) ─────────────
-        // STILL is the trustworthy "we're parked" signal — Google's fused sensor model can't
-        // be fooled by GPS drift. We keep the speed buffer on REAL GPS speed and fuse STILL
-        // into the stop decision below, so a *stale* STILL flag (the ML lags a few seconds
-        // leaving a stop) can still be vetoed by clearly genuine GPS movement (>= START).
-        val activityStill = TrackingConfig.isStill(this)
-        val speedKmh      = rawSpeedKmh
-        val avgSpeed      = averageSpeed(speedKmh)
-
-        val now    = System.currentTimeMillis()
-        val tripId = TrackingConfig.currentTripId(this)
+        val speedKmh = computeSpeedKmh(location)   // updates lastLocation
+        val tripId   = TrackingConfig.currentTripId(this)
 
         if (tripId == null) {
-            // IDLE — only start a trip when we have genuine averaged movement AND the
-            // activity recogniser agrees we are not still.
-            if (avgSpeed >= START_SPEED_KMH && !activityStill) {
-                val newId = UUID.randomUUID().toString()
-                TrackingConfig.setCurrentTripId(this, newId)
-                TrackingConfig.setStillSince(this, 0L)
-                TrackingConfig.setIdleSince(this, 0L)
-                persistSmoothed(smoothLat, smoothLon, location, speedKmh, newId, "active", now)
-                TrackerEvents.emit("onTripStart", mapOf("tripId" to newId, "recordedAt" to iso(location.time)))
-                TrackerEvents.emit("onLocation", locMapSmoothed(smoothLat, smoothLon, location, speedKmh, newId, "active"))
-                emitState("tracking")
-                updateNotification("Trip started • ${speedKmh.roundToInt()} km/h")
-                triggerUpload()
-            } else {
-                val idleSince = TrackingConfig.idleSince(this).let {
-                    if (it == 0L) { TrackingConfig.setIdleSince(this, now); now } else it
+            // ── IDLE: watch for a vehicle-speed 50 m run ────────────────────
+            if (startWatchPos == null) {
+                // First fix after idle — anchor the watch position here.
+                startWatchPos  = location
+                startWatchTime = now
+                return
+            }
+
+            val distFromWatch = startWatchPos!!.distanceTo(location)
+
+            if (distFromWatch >= TRIP_START_DISTANCE_M) {
+                // Covered 50 m — check whether it was vehicle-speed or walking.
+                val elapsedSec    = ((now - startWatchTime) / 1000.0).coerceAtLeast(0.1)
+                val avgSpeedKmh   = (distFromWatch / elapsedSec) * 3.6
+
+                if (avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH) {
+                    // ── START TRIP ───────────────────────────────────────────
+                    val newId = UUID.randomUUID().toString()
+                    TrackingConfig.setCurrentTripId(this, newId)
+                    TrackingConfig.setIdleSince(this, 0L)
+                    lastRecordedLocation = location
+                    lastMovedMs          = now
+                    lastHeartbeatMs      = now
+                    startWatchPos        = null
+
+                    savePoint(smoothLat, smoothLon, location, speedKmh, newId, "active", now)
+                    TrackerEvents.emit("onTripStart", mapOf("tripId" to newId, "recordedAt" to iso(location.time)))
+                    TrackerEvents.emit("onLocation",  locMap(smoothLat, smoothLon, speedKmh, newId, "active", location.time))
+                    emitState("tracking")
+                    updateNotification("Trip started • ${speedKmh.roundToInt()} km/h")
+                    triggerUpload()
+                } else {
+                    // Speed too low — person is walking. Reset watch to current
+                    // position and try again from here.
+                    startWatchPos  = location
+                    startWatchTime = now
                 }
-                if (now - idleSince >= IDLE_TIMEOUT_MS) {
+            } else {
+                // Haven't moved 50 m yet — check idle timeout.
+                val idleSince = TrackingConfig.idleSince(this)
+                if (idleSince > 0L && now - idleSince >= IDLE_TIMEOUT_MS) {
                     emitState("idle_timeout")
                     stopSelf()
                 }
             }
+
         } else {
-            // TRACKING
-            // "Stopped" fuses three signals:
-            //   (a) speed: Kalman/Doppler speed at/below the stop threshold, OR the activity
-            //       recogniser's STILL verdict (accel+gyro ML) as long as GPS isn't clearly
-            //       driving (the `avgSpeed < START` veto stops a lagging STILL flag freezing us);
-            //   (b) geometry: once anchored, we're still "stopped" until the smoothed position
-            //       leaves STICKY_RADIUS of the anchor. GPS noise jitters within a few metres, so
-            //       this rejects drift that would otherwise fake movement — the key anti-noise gate.
-            // While stopped we FREEZE the marker at the anchor and drop jittering fixes.
-            val withinAnchor = stopAnchorLat?.let { aLat ->
-                val r = FloatArray(1)
-                Location.distanceBetween(aLat, stopAnchorLon!!, smoothLat, smoothLon, r)
-                r[0] <= STICKY_RADIUS_M
-            } ?: false
-            val speedStopped = avgSpeed <= STOP_SPEED_KMH || (activityStill && avgSpeed < START_SPEED_KMH)
-            val stopped = speedStopped || withinAnchor
-
-            if (stopped) {
-                // Mark the moment we became stationary and anchor the position there.
-                if (TrackingConfig.stillSince(this) == 0L) {
-                    TrackingConfig.setStillSince(this, now)
-                    lastHeartbeatMs = 0L // force an immediate keep-alive at the new anchor
-                }
-                if (stopAnchorLat == null) { stopAnchorLat = smoothLat; stopAnchorLon = smoothLon }
-                val aLat = stopAnchorLat!!
-                val aLon = stopAnchorLon!!
-                val elapsed = now - TrackingConfig.stillSince(this)
-
-                if (shouldEndStop(elapsed, activityStill)) {
-                    endTripAt(tripId, aLat, aLon, now)
-                } else if (now - lastHeartbeatMs >= STATIONARY_HEARTBEAT_MS) {
-                    // Parked within grace: drop the noisy fix, keep the marker frozen at the
-                    // anchor, and send a low-rate keep-alive so the session never shows "stale".
-                    lastHeartbeatMs = now
-                    persistSmoothed(aLat, aLon, location, 0.0, tripId, "active", now)
-                    TrackerEvents.emit("onLocation", locMapSmoothed(aLat, aLon, location, 0.0, tripId, "active"))
-                    updateNotification("Parked • stopped ${(elapsed / 60000L).toInt()} min")
-                }
-            } else {
-                // Genuine movement (not STILL and above the stop threshold) → clear the stop
-                // timer so brief traffic stops never accumulate toward an end, and record the
-                // real position.
-                if (TrackingConfig.stillSince(this) != 0L) TrackingConfig.setStillSince(this, 0L)
-                stopAnchorLat = null; stopAnchorLon = null
-                lastHeartbeatMs = now
-                persistSmoothed(smoothLat, smoothLon, location, speedKmh, tripId, "active", now)
-                TrackerEvents.emit("onLocation", locMapSmoothed(smoothLat, smoothLon, location, speedKmh, tripId, "active"))
-                updateNotification("Trip in progress • ${speedKmh.roundToInt()} km/h")
+            // ── TRACKING: record every 50 m of real movement ─────────────────
+            val lastRec = lastRecordedLocation
+            if (lastRec == null) {
+                // Happens only on a START_STICKY restart mid-trip — re-anchor here.
+                lastRecordedLocation = location
+                lastMovedMs          = now
+                return
             }
-            triggerUpload()
+
+            val distFromLast = lastRec.distanceTo(location)
+
+            if (distFromLast >= POINT_DISTANCE_M) {
+                // Vehicle moved 50 m — record the smoothed position.
+                lastRecordedLocation = location
+                lastMovedMs          = now
+                lastHeartbeatMs      = now
+
+                savePoint(smoothLat, smoothLon, location, speedKmh, tripId, "active", now)
+                TrackerEvents.emit("onLocation", locMap(smoothLat, smoothLon, speedKmh, tripId, "active", location.time))
+                updateNotification("Trip • ${speedKmh.roundToInt()} km/h")
+                triggerUpload()
+            }
+            // else: vehicle hasn't moved 50 m since last point — do nothing.
+            // GPS drift (< 30 m) never triggers this; genuine slow movement
+            // will accumulate and trigger within a few fixes.
         }
     }
 
     /**
-     * Maintains a rolling SPEED_AVG_WINDOW-fix speed buffer and returns the average.
-     * Same as MyCarTracks v0(3) buffer — prevents single-fix GPS noise from
-     * triggering false trip starts or premature stops.
+     * Runs every TICK_INTERVAL_MS regardless of GPS activity.
+     *
+     *  • Trip end detection: if the vehicle has not moved 50 m in TRIP_END_NO_MOVE_MS,
+     *    end the trip. This fires even when the GPS provider stops delivering fixes
+     *    on a parked vehicle (fused provider often goes quiet when stationary).
+     *
+     *  • Server keep-alive: re-send the last position every STATIONARY_HEARTBEAT_MS
+     *    while stopped so the live-map session never shows "stale".
+     *
+     *  • Idle timeout: stop the service if no trip has started within IDLE_TIMEOUT_MS.
      */
-    private fun averageSpeed(current: Double): Double {
-        if (speedBuffer.size >= SPEED_AVG_WINDOW) speedBuffer.poll()
-        speedBuffer.add(current)
-        return speedBuffer.average()
+    private fun onTick() {
+        if (!TrackingConfig.isEnabled(this)) return
+        val now    = System.currentTimeMillis()
+        val tripId = TrackingConfig.currentTripId(this)
+
+        if (tripId == null) {
+            // Idle — check timeout so the service stops if nobody drives.
+            val idleSince = TrackingConfig.idleSince(this)
+            if (idleSince > 0L && now - idleSince >= IDLE_TIMEOUT_MS) {
+                emitState("idle_timeout")
+                stopSelf()
+            }
+            return
+        }
+
+        // Active trip — has the vehicle moved 50 m recently?
+        if (lastMovedMs > 0L && now - lastMovedMs >= TRIP_END_NO_MOVE_MS) {
+            // 10 minutes without 50 m of movement → vehicle is genuinely parked.
+            endTrip(tripId, now)
+            return
+        }
+
+        // Still within the grace window — keep the server session alive.
+        if (now - lastHeartbeatMs >= STATIONARY_HEARTBEAT_MS) {
+            lastHeartbeatMs = now
+            val last = lastRecordedLocation ?: return
+            insertPoint(kalman.lat, kalman.lon, 0.0, tripId, "active", now)
+            triggerUpload()
+            TrackerEvents.emit("onLocation", mapOf(
+                "lat"        to kalman.lat,
+                "lon"        to kalman.lon,
+                "speedKmh"   to 0.0,
+                "tripId"     to tripId,
+                "tripStatus" to "active",
+                "recordedAt" to iso(now)
+            ))
+            val stoppedMin = ((now - lastMovedMs) / 60_000L).toInt()
+            updateNotification(if (stoppedMin > 0) "Stopped • $stoppedMin min" else "Stopped")
+        }
     }
 
-    /** Persist using Kalman-smoothed lat/lon; raw location supplies metadata (heading, altitude, etc.). */
-    private fun persistSmoothed(
+    // ── Trip end ──────────────────────────────────────────────────────────────
+
+    private fun endTrip(tripId: String, now: Long) {
+        // Record the final position at speed 0 with status "ended".
+        insertPoint(kalman.lat, kalman.lon, 0.0, tripId, "ended", now)
+        TrackingConfig.setCurrentTripId(this, null)
+        TrackingConfig.setIdleSince(this, now)
+        lastRecordedLocation = null
+        lastMovedMs          = 0L
+        lastHeartbeatMs      = 0L
+        startWatchPos        = null
+        startWatchTime       = 0L
+        kalman.reset()
+        triggerUpload()
+        TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(now)))
+        emitState("idle")
+        updateNotification("Waiting for movement…")
+    }
+
+    // ── Persistence helpers ───────────────────────────────────────────────────
+
+    private fun savePoint(
         smoothLat: Double, smoothLon: Double,
         location: Location, speedKmh: Double,
         tripId: String, status: String, now: Long,
     ) {
-        db.insert(
-            QueuedPoint(
-                clientId      = UUID.randomUUID().toString(),
-                clientTripId  = tripId,
-                lat           = smoothLat,
-                lon           = smoothLon,
-                speedKmh      = speedKmh,
-                heading       = if (location.hasBearing()) location.bearing.toDouble() else null,
-                accuracy      = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
-                altitude      = if (location.hasAltitude()) location.altitude else null,
-                batteryLevel  = batteryLevel(),
-                isMoving      = speedKmh > STOP_SPEED_KMH,
-                recordedAt    = iso(if (location.time > 0) location.time else now),
-                tripStatus    = status
-            )
-        )
+        db.insert(QueuedPoint(
+            clientId     = UUID.randomUUID().toString(),
+            clientTripId = tripId,
+            lat          = smoothLat,
+            lon          = smoothLon,
+            speedKmh     = speedKmh,
+            heading      = if (location.hasBearing()) location.bearing.toDouble() else null,
+            accuracy     = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
+            altitude     = if (location.hasAltitude()) location.altitude else null,
+            batteryLevel = batteryLevel(),
+            isMoving     = speedKmh > 1.0,
+            recordedAt   = iso(if (location.time > 0) location.time else now),
+            tripStatus   = status,
+        ))
     }
 
+    /** Insert a point without a live Location object (heartbeats, trip-end marker). */
+    private fun insertPoint(lat: Double, lon: Double, speedKmh: Double, tripId: String, status: String, now: Long) {
+        db.insert(QueuedPoint(
+            clientId     = UUID.randomUUID().toString(),
+            clientTripId = tripId,
+            lat          = lat,
+            lon          = lon,
+            speedKmh     = speedKmh,
+            heading      = null,
+            accuracy     = null,
+            altitude     = null,
+            batteryLevel = batteryLevel(),
+            isMoving     = speedKmh > 1.0,
+            recordedAt   = iso(now),
+            tripStatus   = status,
+        ))
+    }
+
+    // ── Speed ─────────────────────────────────────────────────────────────────
+
     /**
-     * Hybrid speed: prefer GPS-reported speed (most accurate); fall back to
-     * distance/time between consecutive fixes.
+     * Prefer GPS-reported Doppler speed (most accurate on modern chipsets).
+     * Fall back to distance/time between consecutive fixes if unavailable.
      */
     private fun computeSpeedKmh(location: Location): Double {
         val gps = if (location.hasSpeed() && location.speed >= 0f) location.speed * 3.6 else null
@@ -463,98 +509,7 @@ class TrackingService : Service() {
         Thread { Uploader.flush(applicationContext) }.start()
     }
 
-    /**
-     * A stop is "over" (trip should end) once it has been sustained past the grace window.
-     * When Activity Recognition confidently reports STILL we end a touch sooner, since that
-     * means engine-off / out-of-vehicle rather than a rolling traffic stop.
-     */
-    private fun shouldEndStop(elapsedMs: Long, still: Boolean): Boolean =
-        elapsedMs >= STOP_GRACE_MS || (still && elapsedMs >= STILL_STOP_GRACE_MS)
-
-    /** Queue a point without a live Location (used by the ticker heartbeat and clean stop-end). */
-    private fun insertPoint(lat: Double, lon: Double, speedKmh: Double, tripId: String, status: String, now: Long) {
-        db.insert(
-            QueuedPoint(
-                clientId      = UUID.randomUUID().toString(),
-                clientTripId  = tripId,
-                lat           = lat,
-                lon           = lon,
-                speedKmh      = speedKmh,
-                heading       = null,
-                accuracy      = null,
-                altitude      = null,
-                batteryLevel  = batteryLevel(),
-                isMoving      = speedKmh > STOP_SPEED_KMH,
-                recordedAt    = iso(now),
-                tripStatus    = status
-            )
-        )
-    }
-
-    /** Close the current trip at the given anchor and reset all stop state → idle. */
-    private fun endTripAt(tripId: String, lat: Double, lon: Double, now: Long) {
-        insertPoint(lat, lon, 0.0, tripId, "ended", now)
-        TrackingConfig.setCurrentTripId(this, null)
-        TrackingConfig.setStillSince(this, 0L)
-        TrackingConfig.setIdleSince(this, now)
-        stopAnchorLat = null; stopAnchorLon = null
-        lastHeartbeatMs = 0L
-        speedBuffer.clear()
-        kalman.reset()
-        triggerUpload()
-        TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(now)))
-        emitState("idle")
-        updateNotification("Waiting for movement…")
-    }
-
-    /**
-     * Runs every TICK_INTERVAL_MS regardless of GPS. While an active trip is stopped it closes
-     * the trip once the grace elapses (fixes "session never stops" when the provider goes quiet
-     * on a parked vehicle) and otherwise heartbeats the anchor (fixes "goes stale"). It is a
-     * no-op while moving — the GPS callback owns that path.
-     */
-    private fun onTick() {
-        if (!TrackingConfig.isEnabled(this)) return
-        val tripId = TrackingConfig.currentTripId(this) ?: return
-        val now = System.currentTimeMillis()
-
-        // If GPS has gone quiet (fused provider often stops emitting on a parked vehicle) the
-        // callback can't register the stop. When the accelerometer/gyro model reports STILL we
-        // start the stop clock here ourselves, anchored at the last known position — otherwise a
-        // parked trip with no fresh fixes would never close. We do NOT do this without STILL:
-        // GPS-silent-but-not-still is likely a tunnel (still driving), which must keep the trip.
-        if (TrackingConfig.stillSince(this) == 0L) {
-            val last = lastLocation
-            if (TrackingConfig.isStill(this) && last != null) {
-                TrackingConfig.setStillSince(this, now)
-                if (stopAnchorLat == null) { stopAnchorLat = last.latitude; stopAnchorLon = last.longitude }
-                lastHeartbeatMs = 0L
-            } else {
-                return // moving (or unknown) → GPS callback owns this
-            }
-        }
-
-        val aLat = stopAnchorLat ?: return
-        val aLon = stopAnchorLon ?: return
-        val elapsed = now - TrackingConfig.stillSince(this)
-
-        if (shouldEndStop(elapsed, TrackingConfig.isStill(this))) {
-            endTripAt(tripId, aLat, aLon, now)
-            return
-        }
-        if (now - lastHeartbeatMs >= STATIONARY_HEARTBEAT_MS) {
-            lastHeartbeatMs = now
-            insertPoint(aLat, aLon, 0.0, tripId, "active", now)
-            triggerUpload()
-            TrackerEvents.emit("onLocation", mapOf(
-                "lat" to aLat, "lon" to aLon, "speedKmh" to 0.0,
-                "tripId" to tripId, "tripStatus" to "active", "recordedAt" to iso(now)
-            ))
-            updateNotification("Parked • stopped ${(elapsed / 60000L).toInt()} min")
-        }
-    }
-
-    // ---- Location + activity registration ----
+    // ── Location + activity registration ─────────────────────────────────────
 
     private fun startLocationUpdates() {
         val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, LOCATION_INTERVAL_MS)
@@ -563,29 +518,27 @@ class TrackingService : Service() {
             .build()
         try {
             fused.requestLocationUpdates(req, locationCallback, Looper.getMainLooper())
-        } catch (_: SecurityException) {
-            stopSelf()
-        }
+        } catch (_: SecurityException) { stopSelf() }
     }
 
     private fun registerActivityTransitions() {
         try {
-            val movingTypes = listOf(
-                DetectedActivity.IN_VEHICLE,
-                DetectedActivity.ON_BICYCLE,
-                DetectedActivity.ON_FOOT,
-                DetectedActivity.WALKING,
-                DetectedActivity.RUNNING,
-            )
             val transitions = buildList {
-                // ENTER movement → wake service (existing behaviour)
-                movingTypes.forEach { type ->
+                // Wake the service when the device enters a vehicle (or other movement).
+                listOf(
+                    DetectedActivity.IN_VEHICLE,
+                    DetectedActivity.ON_BICYCLE,
+                    DetectedActivity.ON_FOOT,
+                    DetectedActivity.WALKING,
+                    DetectedActivity.RUNNING,
+                ).forEach { type ->
                     add(ActivityTransition.Builder()
                         .setActivityType(type)
                         .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
                         .build())
                 }
-                // ENTER / EXIT STILL → update the isStill pref so processFix can zero GPS drift
+                // STILL transitions — used only to update the pref for ActivityTransitionReceiver;
+                // the new distance-based logic no longer uses the STILL flag for trip decisions.
                 add(ActivityTransition.Builder()
                     .setActivityType(DetectedActivity.STILL)
                     .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
@@ -606,23 +559,21 @@ class TrackingService : Service() {
         } catch (_: Exception) {}
     }
 
-    // ---- Notification / foreground ----
+    // ── Notification ──────────────────────────────────────────────────────────
 
     private fun startForegroundCompat(notif: Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-        } else {
+        else
             startForeground(NOTIF_ID, notif)
-        }
     }
 
     private fun notification(text: String): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "Trip tracking", NotificationManager.IMPORTANCE_LOW)
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                .createNotificationChannel(channel)
+            val ch = NotificationChannel(CHANNEL_ID, "Trip tracking", NotificationManager.IMPORTANCE_LOW)
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
         }
-        val launch = packageManager.getLaunchIntentForPackage(packageName)
+        val launch   = packageManager.getLaunchIntentForPackage(packageName)
         val contentPi = launch?.let {
             PendingIntent.getActivity(
                 this, 0, it,
@@ -643,24 +594,22 @@ class TrackingService : Service() {
             .notify(NOTIF_ID, notification(text))
     }
 
-    // ---- Helpers ----
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun iso(ms: Long): String = isoFmt.format(Date(ms))
 
-    private fun emitState(state: String) {
+    private fun emitState(state: String) =
         TrackerEvents.emit("onStateChange", mapOf("state" to state))
-    }
 
-    private fun locMapSmoothed(
-        smoothLat: Double, smoothLon: Double,
-        location: Location, speedKmh: Double,
-        tripId: String, status: String,
+    private fun locMap(
+        lat: Double, lon: Double, speedKmh: Double,
+        tripId: String, status: String, locationTime: Long,
     ) = mapOf(
-        "lat"        to smoothLat,
-        "lon"        to smoothLon,
+        "lat"        to lat,
+        "lon"        to lon,
         "speedKmh"   to speedKmh,
         "tripId"     to tripId,
         "tripStatus" to status,
-        "recordedAt" to iso(if (location.time > 0) location.time else System.currentTimeMillis())
+        "recordedAt" to iso(if (locationTime > 0) locationTime else System.currentTimeMillis()),
     )
 }

@@ -149,12 +149,24 @@ exports.ingest = asyncHandler(async (req, res) => {
 
 /**
  * GET /api/tracking/my-session   (driver only)
- * Returns the driver's current active trip + all its GPS points so the
- * mobile map screen can render the route driven this session.
+ * Returns the driver's most recent trip (active or recently completed) + all its GPS
+ * points so the mobile map screen can render the route driven this session.
+ * Falls back to the latest completed/timed_out trip within the last 24 h so the
+ * driver can still see their route after a trip ends.
  */
 exports.mySession = asyncHandler(async (req, res) => {
-  const trip = await Trip.findOne({ driverId: req.user._id, status: 'active' })
+  // Prefer an active trip; fall back to most recent trip from last 24 h.
+  let trip = await Trip.findOne({ driverId: req.user._id, status: 'active' })
     .sort({ startedAt: -1 });
+
+  if (!trip) {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    trip = await Trip.findOne({
+      driverId: req.user._id,
+      status: { $in: ['completed', 'timed_out'] },
+      startedAt: { $gte: cutoff },
+    }).sort({ startedAt: -1 });
+  }
 
   if (!trip) return res.json({ trip: null, points: [] });
 
@@ -193,7 +205,7 @@ exports.live = asyncHandler(async (req, res) => {
   );
 
   const trips = await Trip.find({ status: 'active', ...scope })
-    .populate('driverId', 'name email phone')
+    .populate('driverId', 'name email phone country')
     .populate('vehicleId', 'plateNumber model');
 
   const drivers = trips.map((t) => {
@@ -211,4 +223,47 @@ exports.live = asyncHandler(async (req, res) => {
   });
 
   res.json({ drivers, serverTime: new Date().toISOString() });
+});
+
+/**
+ * GET /api/tracking/parked   (admin / manager)
+ * Returns the most recent completed/timed_out trip per driver (ended within the last 8 h)
+ * so the live map can show inactive vehicles at their last known parking position.
+ * Excludes drivers who currently have an active trip (they appear in /live already).
+ */
+exports.parked = asyncHandler(async (req, res) => {
+  const scope = await accessibleDriverFilter(req.user);
+  const cutoff = new Date(Date.now() - 8 * 60 * 60 * 1000);
+
+  // Drivers who are currently active — exclude them from the parked view.
+  const activeTrips = await Trip.find({ status: 'active', ...scope }).select('driverId');
+  const activeDriverIds = activeTrips.map((t) => t.driverId.toString());
+
+  const recentEnded = await Trip.find({
+    status: { $in: ['completed', 'timed_out'] },
+    endedAt: { $gte: cutoff },
+    lastLocation: { $ne: null },
+    ...scope,
+  })
+    .populate('driverId', 'name email phone country')
+    .populate('vehicleId', 'plateNumber model')
+    .sort({ endedAt: -1 });
+
+  // Keep only the most recent trip per driver, skip active drivers.
+  const seen = new Set();
+  const parked = [];
+  for (const t of recentEnded) {
+    const dId = t.driverId?._id?.toString() ?? t.driverId?.toString();
+    if (!dId || seen.has(dId) || activeDriverIds.includes(dId)) continue;
+    seen.add(dId);
+    parked.push({
+      tripId: t._id,
+      driver: t.driverId,
+      vehicle: t.vehicleId,
+      location: t.lastLocation,
+      endedAt: t.endedAt,
+    });
+  }
+
+  res.json({ parked });
 });

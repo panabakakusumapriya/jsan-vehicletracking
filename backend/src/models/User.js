@@ -14,6 +14,7 @@ const userSchema = new mongoose.Schema(
     // For a manager this is null (managers report to admins collectively).
     managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     vehicleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', default: null },
+    country: { type: String, trim: true, default: null },
     active: { type: Boolean, default: true },
     lastLoginAt: { type: Date, default: null },
     // Single-active-session enforcement (drivers). `activeSessionId` is the jti embedded

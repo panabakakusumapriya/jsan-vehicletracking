@@ -11,4 +11,7 @@ router.get('/my-session', authenticate, requireRole('user'), ctrl.mySession);
 // Admins / managers read the live snapshot.
 router.get('/live', authenticate, requireRole('admin', 'manager'), ctrl.live);
 
+// Admins / managers read parked (recently stopped) vehicles.
+router.get('/parked', authenticate, requireRole('admin', 'manager'), ctrl.parked);
+
 module.exports = router;

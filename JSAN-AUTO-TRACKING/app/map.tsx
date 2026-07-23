@@ -26,7 +26,7 @@ const C = {
 };
 
 interface Point { lat: number; lon: number; speedKmh: number; recordedAt: string }
-interface Trip  { _id: string; startedAt: string; distanceMeters: number; maxSpeedKmh: number; pointCount: number }
+interface Trip  { _id: string; status: string; startedAt: string; endedAt?: string | null; distanceMeters: number; maxSpeedKmh: number; pointCount: number }
 
 function km(m: number) {
   if (!m) return '0 km';
@@ -121,14 +121,16 @@ export default function MapScreen() {
         <View style={s.stat}><Text style={s.statV}>{elapsed(trip.startedAt)}</Text><Text style={s.statK}>Started</Text></View>
       </View>
 
-      {/* Live badge */}
-      <View style={s.liveBadge}>
-        <View style={s.liveDot} />
-        <Text style={s.liveText}>
-          Live session · {updatedAt ? `updated ${elapsed(updatedAt.toISOString())}` : ''}
+      {/* Live / Last trip badge */}
+      <View style={[s.liveBadge, trip.status !== 'active' && s.lastBadge]}>
+        <View style={[s.liveDot, trip.status !== 'active' && s.lastDot]} />
+        <Text style={[s.liveText, trip.status !== 'active' && s.lastText]}>
+          {trip.status === 'active'
+            ? `Live session · ${updatedAt ? `updated ${elapsed(updatedAt.toISOString())}` : ''}`
+            : `Last trip · ended ${trip.endedAt ? elapsed(trip.endedAt) : ''}`}
         </Text>
         <TouchableOpacity onPress={() => fetchSession(true)} style={{ padding: 4 }}>
-          <Text style={{ color: C.green, fontSize: 16 }}>↻</Text>
+          <Text style={{ color: trip.status === 'active' ? C.green : C.muted, fontSize: 16 }}>↻</Text>
         </TouchableOpacity>
       </View>
 
@@ -171,6 +173,9 @@ const s = StyleSheet.create({
   liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 6, backgroundColor: C.greenBg, borderBottomWidth: 1, borderBottomColor: '#a7f3d0' },
   liveDot:   { width: 7, height: 7, borderRadius: 4, backgroundColor: C.green },
   liveText:  { flex: 1, fontSize: 12, color: C.green, fontWeight: '600' },
+  lastBadge: { backgroundColor: '#f8fafc', borderBottomColor: '#e2e8f0' },
+  lastDot:   { backgroundColor: '#94a3b8' },
+  lastText:  { color: '#64748b' },
 
   legend:     { flexDirection: 'row', gap: 14, paddingHorizontal: 14, paddingVertical: 6, backgroundColor: C.surface, borderBottomWidth: 1, borderBottomColor: C.border },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },

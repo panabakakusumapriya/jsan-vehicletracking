@@ -26,7 +26,7 @@ exports.getOne = asyncHandler(async (req, res) => {
 
 // POST /api/users  (admin creates admin/manager/driver; manager creates drivers only)
 exports.create = asyncHandler(async (req, res) => {
-  const { name, email, password, phone, role = 'user', managerId, vehicleId } = req.body || {};
+  const { name, email, password, phone, role = 'user', managerId, vehicleId, country } = req.body || {};
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'name, email and password are required' });
   }
@@ -46,6 +46,7 @@ exports.create = asyncHandler(async (req, res) => {
     name,
     email,
     phone: phone || null,
+    country: country || null,
     role: finalRole,
     managerId: finalRole === 'user' ? finalManager : null,
     vehicleId: vehicleId || null,
@@ -65,9 +66,10 @@ exports.update = asyncHandler(async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!canManageDriver(req.user, user)) return res.status(403).json({ error: 'Forbidden' });
 
-  const { name, phone, active, vehicleId, managerId, password, role } = req.body || {};
+  const { name, phone, active, vehicleId, managerId, password, role, country } = req.body || {};
   if (name !== undefined) user.name = name;
   if (phone !== undefined) user.phone = phone;
+  if (country !== undefined) user.country = country || null;
   if (active !== undefined) user.active = active;
   if (vehicleId !== undefined) {
     user.vehicleId = vehicleId || null;
