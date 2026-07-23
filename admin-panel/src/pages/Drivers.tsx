@@ -77,6 +77,7 @@ export function Drivers() {
               <th>Driver</th>
               <th>Email</th>
               <th>Phone</th>
+              <th>Country</th>
               <th>Vehicle</th>
               <th>Status</th>
               <th></th>
@@ -100,6 +101,7 @@ export function Drivers() {
                 </td>
                 <td style={{ color: 'var(--muted)' }}>{d.email}</td>
                 <td>{d.phone || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                <td>{d.country || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                 <td>
                   {vehiclePlate(d.vehicleId) !== '—'
                     ? <span style={{ background: 'var(--panel-2)', border: '1px solid var(--line-2)', borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>{vehiclePlate(d.vehicleId)}</span>
@@ -112,7 +114,7 @@ export function Drivers() {
             ))}
             {drivers.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
+                <td colSpan={7} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
                   No drivers yet — add one to get started.
                 </td>
               </tr>
@@ -138,17 +140,19 @@ function AddDriver({ vehicles, managers, isAdmin, onClose, onSaved }: {
   vehicles: Vehicle[]; managers: User[];
   isAdmin: boolean; onClose: () => void; onSaved: () => void;
 }) {
-  const [form, setForm] = useState({ name: '', email: '', password: '', phone: '', vehicleId: '', managerId: '' });
+  const [form, setForm] = useState({ name: '', email: '', password: '', phone: '', country: '', vehicleId: '', managerId: '' });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
+    if (!form.country.trim()) { setError('Country is required'); return; }
     setError(null); setBusy(true);
     try {
       await api.post('/api/users', {
         name: form.name, email: form.email, password: form.password,
         phone: form.phone || undefined, role: 'user',
+        country: form.country.trim(),
         vehicleId: form.vehicleId || undefined,
         managerId: isAdmin ? form.managerId || undefined : undefined,
       });
@@ -173,6 +177,9 @@ function AddDriver({ vehicles, managers, isAdmin, onClose, onSaved }: {
       </div>
       <div className="field"><label>Phone (optional)</label>
         <input className="input" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="+91 9876543210" />
+      </div>
+      <div className="field"><label>Country</label>
+        <input className="input" value={form.country} onChange={e => set('country', e.target.value)} placeholder="India" />
       </div>
       {isAdmin && (
         <div className="field"><label>Manager</label>

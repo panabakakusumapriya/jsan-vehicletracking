@@ -19,6 +19,7 @@ export function Trips() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('');
   const [driverId, setDriverId] = useState('');
+  const [country, setCountry] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
@@ -39,10 +40,25 @@ export function Trips() {
       .finally(() => setLoading(false));
   }, [status, driverId, from, to]);
 
-  const active    = trips.filter(t => t.status === 'active').length;
-  const completed = trips.filter(t => t.status === 'completed').length;
-  const totalKm   = trips.reduce((acc, t) => acc + (t.distanceMeters ?? 0), 0);
-  const topSpeed  = trips.reduce((acc, t) => Math.max(acc, t.maxSpeedKmh ?? 0), 0);
+  // Derive unique countries from loaded drivers
+  const countries = Array.from(new Set(drivers.map(d => d.country).filter(Boolean))).sort() as string[];
+
+  // Driver IDs belonging to the selected country (for client-side country filter)
+  const countryDriverIds = country
+    ? new Set(drivers.filter(d => d.country === country).map(d => d._id))
+    : null;
+
+  const filteredTrips = countryDriverIds
+    ? trips.filter(t => {
+        const id = typeof t.driverId === 'object' ? t.driverId._id : t.driverId;
+        return countryDriverIds.has(id);
+      })
+    : trips;
+
+  const active    = filteredTrips.filter(t => t.status === 'active').length;
+  const completed = filteredTrips.filter(t => t.status === 'completed').length;
+  const totalKm   = filteredTrips.reduce((acc, t) => acc + (t.distanceMeters ?? 0), 0);
+  const topSpeed  = filteredTrips.reduce((acc, t) => Math.max(acc, t.maxSpeedKmh ?? 0), 0);
 
   return (
     <div>
@@ -55,6 +71,15 @@ export function Trips() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <FilterIcon />
+          <select
+            className="input"
+            style={{ width: 140, margin: 0 }}
+            value={country}
+            onChange={e => { setCountry(e.target.value); setDriverId(''); }}
+          >
+            <option value="">All countries</option>
+            {countries.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
           <select
             className="input"
             style={{ width: 150, margin: 0 }}
@@ -73,7 +98,9 @@ export function Trips() {
             onChange={e => setDriverId(e.target.value)}
           >
             <option value="">All drivers</option>
-            {drivers.map(d => <option key={d._id} value={d._id}>{d.name}</option>)}
+            {(country ? drivers.filter(d => d.country === country) : drivers).map(d => (
+              <option key={d._id} value={d._id}>{d.name}</option>
+            ))}
           </select>
           <input
             className="input"
@@ -92,11 +119,11 @@ export function Trips() {
             min={from || undefined}
             onChange={e => setTo(e.target.value)}
           />
-          {(status || driverId || from || to) && (
+          {(status || driverId || country || from || to) && (
             <button
               className="btn-ghost"
               style={{ padding: '6px 10px', fontSize: 12.5 }}
-              onClick={() => { setStatus(''); setDriverId(''); setFrom(''); setTo(''); }}
+              onClick={() => { setStatus(''); setDriverId(''); setCountry(''); setFrom(''); setTo(''); }}
             >
               Clear
             </button>
@@ -150,7 +177,7 @@ export function Trips() {
             </tr>
           </thead>
           <tbody>
-            {trips.map(t => (
+            {filteredTrips.map(t => (
               <tr key={t._id}>
                 <td>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -201,7 +228,7 @@ export function Trips() {
                 </td>
               </tr>
             ))}
-            {!loading && trips.length === 0 && (
+            {!loading && filteredTrips.length === 0 && (
               <tr>
                 <td colSpan={9} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
                   No trips found for the selected filter.

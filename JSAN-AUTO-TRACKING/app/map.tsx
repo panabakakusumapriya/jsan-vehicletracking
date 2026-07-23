@@ -94,9 +94,9 @@ export default function MapScreen() {
         >
           <View style={s.emptyCard}>
             <Text style={s.emptyEmoji}>🗺️</Text>
-            <Text style={s.emptyTitle}>No active trip</Text>
+            <Text style={s.emptyTitle}>No trips found</Text>
             <Text style={s.emptyBody}>
-              Start driving — your route will appear here automatically once a trip begins.
+              No trips in the last 7 days. Start driving — your route will appear here automatically once a trip begins.
             </Text>
             <TouchableOpacity style={s.retryBtn} onPress={() => fetchSession()}>
               <Text style={s.retryText}>Check again</Text>
@@ -148,10 +148,14 @@ export default function MapScreen() {
       <View style={s.mapWrap}>
         {points.length === 0 ? (
           <View style={s.noGps}>
-            <Text style={s.noGpsText}>Waiting for GPS points…{'\n'}Pull down to refresh.</Text>
+            <Text style={s.noGpsText}>
+              {trip.status === 'active'
+                ? 'Waiting for GPS points…\nPull down to refresh.'
+                : 'No GPS points recorded for this trip.\nPull down to refresh.'}
+            </Text>
           </View>
         ) : (
-          <LeafletMap points={points} />
+          <LeafletMap points={points.map(p => ({ ...p, speedKmh: p.speedKmh ?? 0 }))} />
         )}
       </View>
 

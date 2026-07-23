@@ -39,7 +39,7 @@ function carIcon(heading: number | null | undefined, stale: boolean) {
 function parkedCarIcon() {
   const svg = `
     <svg viewBox="0 0 32 32" width="30" height="30" xmlns="http://www.w3.org/2000/svg">
-      <rect x="9" y="3" width="14" height="26" rx="6" fill="#94a3b8" stroke="#ffffff" stroke-width="1.6"/>
+      <rect x="9" y="3" width="14" height="26" rx="6" fill="#f97316" stroke="#ffffff" stroke-width="1.6"/>
       <path d="M11.5 9 Q16 6.3 20.5 9 L19.6 12.6 Q16 11 12.4 12.6 Z" fill="rgba(255,255,255,0.7)"/>
       <path d="M12.4 23.6 Q16 22.2 19.6 23.6 L20.5 20.4 Q16 21.9 11.5 20.4 Z" fill="rgba(255,255,255,0.4)"/>
       <text x="16" y="19" text-anchor="middle" font-size="9" font-weight="bold" fill="white" font-family="sans-serif">P</text>
@@ -146,17 +146,15 @@ export function LiveMap() {
         </div>
 
         {/* Country filter */}
-        {countries.length > 0 && (
-          <select
-            className="input"
-            style={{ width: '100%', margin: '8px 0 4px', fontSize: 13 }}
-            value={countryFilter}
-            onChange={e => setCountryFilter(e.target.value)}
-          >
-            <option value="">All countries</option>
-            {countries.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        )}
+        <select
+          className="input"
+          style={{ width: '100%', margin: '8px 0 4px', fontSize: 13 }}
+          value={countryFilter}
+          onChange={e => setCountryFilter(e.target.value)}
+        >
+          <option value="">All countries</option>
+          {countries.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
 
         {/* Stat pills */}
         <div className="live-stats">

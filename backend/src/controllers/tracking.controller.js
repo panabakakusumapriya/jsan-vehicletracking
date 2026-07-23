@@ -160,7 +160,7 @@ exports.mySession = asyncHandler(async (req, res) => {
     .sort({ startedAt: -1 });
 
   if (!trip) {
-    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     trip = await Trip.findOne({
       driverId: req.user._id,
       status: { $in: ['completed', 'timed_out'] },
