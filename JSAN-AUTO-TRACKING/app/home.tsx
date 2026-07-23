@@ -46,7 +46,7 @@ const STATE = {
   tracking: { label: 'Trip in progress',       sub: 'Your location is being recorded.',                              color: C.green, bg: C.greenBg, bd: C.greenBd },
   blocked:  { label: 'Action needed',           sub: '',                                                              color: C.red,   bg: C.redBg,   bd: C.redBd   },
   starting: { label: 'Starting…',              sub: 'Setting up background tracking.',                              color: C.amber, bg: C.amberBg, bd: C.amberBd },
-  idle:     { label: 'Ready — auto-tracking',  sub: 'Just drive. A trip starts automatically above 5 km/h.',       color: C.brand, bg: C.brandSoft, bd: '#d8b4fe' },
+  idle:     { label: 'Ready — auto-tracking',  sub: 'Just drive. A trip starts automatically above 10 km/h.',      color: C.brand, bg: C.brandSoft, bd: '#d8b4fe' },
 };
 
 export default function Home() {
@@ -205,27 +205,6 @@ export default function Home() {
         <StatTile label="Lon"     value={lastFix ? lastFix.lon.toFixed(4) : '—'}              unit=""      color="#d97706"   />
       </View>
 
-      {/* ── System info ── */}
-      <View style={s.infoCard}>
-        <View style={s.infoHeader}>
-          <Text style={s.infoTitle}>System</Text>
-          <View style={[s.engineBadge, { backgroundColor: status?.enabled ? C.greenBg : '#f3f4f6' }]}>
-            <View style={[s.engineDot, { backgroundColor: status?.enabled ? C.green : C.muted }]} />
-            <Text style={[s.engineText, { color: status?.enabled ? C.green : C.muted }]}>
-              {status?.enabled ? 'Running' : 'Stopped'}
-            </Text>
-          </View>
-        </View>
-        <InfoRow label="Active trip"  value={status?.currentTripId ? '#' + status.currentTripId.slice(-6) : 'None'} />
-        <InfoRow label="Server"       value={API_BASE_URL} last />
-      </View>
-
-      {/* ── Sync ── */}
-      <TouchableOpacity style={s.syncBtn} onPress={onRefresh} activeOpacity={0.75}>
-        <Text style={s.syncIcon}>↻</Text>
-        <Text style={s.syncText}>Sync now</Text>
-      </TouchableOpacity>
-
       <Text style={s.note}>
         Close the app anytime — tracking continues in the background.
       </Text>
@@ -246,14 +225,6 @@ function StatTile({ label, value, unit, color }: { label: string; value: string;
   );
 }
 
-function InfoRow({ label, value, last }: { label: string; value: string; last?: boolean }) {
-  return (
-    <View style={[ir.row, last && { borderBottomWidth: 0 }]}>
-      <Text style={ir.label}>{label}</Text>
-      <Text style={ir.value} numberOfLines={1}>{value}</Text>
-    </View>
-  );
-}
 
 /* ── Styles ── */
 const s = StyleSheet.create({
@@ -293,25 +264,6 @@ const s = StyleSheet.create({
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
 
-  infoCard: {
-    backgroundColor: C.surface, borderRadius: 18, borderWidth: 1,
-    borderColor: C.border, padding: 18,
-    shadowColor: '#111', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 2,
-  },
-  infoHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  infoTitle:    { color: C.text, fontSize: 13, fontWeight: '700' },
-  engineBadge:  { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999 },
-  engineDot:    { width: 6, height: 6, borderRadius: 3 },
-  engineText:   { fontSize: 11.5, fontWeight: '700' },
-
-  syncBtn: {
-    backgroundColor: C.surface, borderRadius: 13, borderWidth: 1, borderColor: C.border,
-    paddingVertical: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    shadowColor: '#111', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 2,
-  },
-  syncIcon: { color: C.brand, fontSize: 19, fontWeight: '800' },
-  syncText: { color: C.brand, fontSize: 14, fontWeight: '700' },
-
   note: { color: C.muted, fontSize: 12, lineHeight: 18, textAlign: 'center', paddingBottom: 20 },
   uploadErrBanner: {
     backgroundColor: C.amberBg, borderRadius: 12, borderWidth: 1, borderColor: C.amberBd,
@@ -334,11 +286,3 @@ const st = StyleSheet.create({
   label: { color: C.muted, fontSize: 11.5, fontWeight: '600', marginTop: 8, textTransform: 'uppercase', letterSpacing: 0.4 },
 });
 
-const ir = StyleSheet.create({
-  row: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f3f4f6', gap: 12,
-  },
-  label: { color: C.muted, fontSize: 13 },
-  value: { color: C.text2, fontSize: 13, fontWeight: '600', flexShrink: 1, textAlign: 'right' },
-});
