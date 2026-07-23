@@ -2,19 +2,27 @@
 
 ## Goal
 
-Upgrade the admin panel's three Leaflet-based map pages to a 3D view: live
-multi-vehicle tracking, live single-trip tracking, and trip replay — so ops
-can watch vehicles as tilted 3D models moving over real terrain/buildings
-instead of flat 2D markers, and can replay any completed trip exactly as it
-happened.
+Upgrade the admin panel's single-trip map pages to a 3D view: live
+single-trip tracking and trip replay — so ops can watch a vehicle as a
+tilted 3D model moving over real terrain/buildings instead of a flat 2D
+marker, and can replay any completed trip exactly as it happened. The
+fleet-wide live map stays on its existing 2D Leaflet view (decided after
+trying 3D there — a top-down overview of many vehicles at once reads better
+flat; the immersive 3D "drive" treatment is reserved for single-vehicle
+views, which is what the feature was actually about).
 
 ## Scope
 
-**In scope:** admin panel only (`admin-panel/`), three existing pages:
+**In scope:** admin panel only (`admin-panel/`), two existing pages:
 
-- `LiveMap.tsx` — fleet-wide live tracking (all active drivers)
 - `SessionMap.tsx` — single active trip, live auto-refreshing view
 - `TripDetail.tsx` — single trip replay (usually completed)
+
+**Explicitly stays on 2D Leaflet:**
+
+- `LiveMap.tsx` — fleet-wide live tracking (all active + parked drivers,
+  with the country filter). Tried on the 3D stack first; reverted by
+  request — kept on `react-leaflet` with its existing marker/popup design.
 
 **Out of scope (separate projects):**
 
@@ -61,18 +69,11 @@ interpolation logic lives once in `map3d/`.
 
 ## Per-page design
 
-### `LiveMap.tsx` (fleet, live)
+### `LiveMap.tsx` (fleet, live) — unchanged, stays 2D
 
-- Left panel (driver cards, stat pills, Socket.IO connection/reconnect,
-  `drivers` state) is unchanged — it already produces exactly what the 3D
-  layer needs.
-- `<MapContainer>` (Leaflet) → `<Map3D>` with one `VehicleLayer` instance per
-  entry in `withLoc`, each fed by its own `useInterpolatedPosition(driver.location)`.
-- Clicking a driver card focuses the camera via MapLibre's `flyTo` (animated
-  pan + pitch/zoom to the vehicle) instead of Leaflet's `panTo`.
-- Click/hover on a vehicle shows the same info (name, plate, speed, time) as
-  an HTML overlay positioned at the vehicle's projected screen coordinates.
-- Empty state ("No active trips right now") unchanged.
+No changes. Keeps `react-leaflet`, its `carIcon`/`parkedCarIcon` SVG markers,
+the country filter, and the active/parked driver split exactly as before
+this project.
 
 ### `SessionMap.tsx` (single trip, live)
 
@@ -97,11 +98,13 @@ interpolation logic lives once in `map3d/`.
 
 ## Dependencies
 
-`admin-panel/package.json` additions: `maplibre-gl`, `deck.gl` (or scoped —
-`@deck.gl/core`, `@deck.gl/layers`, `@deck.gl/geo-layers` for `TripsLayer`,
-`@deck.gl/mapbox` for the MapLibre overlay), `@loaders.gl/gltf`. Plus the
-model asset at `public/models/vehicle.glb`. `maplibre-gl` ships its own TS
-types, so no `@types/maplibre-gl` needed.
+`admin-panel/package.json` additions: `maplibre-gl`, `@deck.gl/core`,
+`@deck.gl/layers`, `@deck.gl/geo-layers` (for `TripsLayer`), `@deck.gl/mapbox`
+(for the MapLibre overlay), `@deck.gl/mesh-layers` (for `ScenegraphLayer`),
+`@loaders.gl/core` + `@loaders.gl/gltf`. Plus the model asset at
+`public/models/vehicle.glb`. `maplibre-gl` ships its own TS types, so no
+`@types/maplibre-gl` needed. `leaflet`/`react-leaflet`/`@types/leaflet` stay
+in the dependency list too, since `LiveMap.tsx` still needs them.
 
 ## Error handling
 
@@ -117,12 +120,13 @@ types, so no `@types/maplibre-gl` needed.
 ## Testing
 
 No test runner exists in `admin-panel` today (no test script, no Vitest/RTL).
-This project adds none — verification is manual: `npm run dev`, check all
-three pages in a real browser (live fleet with multiple drivers, live
-single-trip, and replay with scrub/speed controls).
+This project adds none — verification is manual: `npm run dev`, check the
+two affected pages in a real browser (live single-trip, and replay with
+scrub/speed controls).
 
 ## Rollout
 
-Straight replacement of the Leaflet map in each of the three pages — no
-feature flag, no side-by-side 2D/3D toggle. Small, controlled internal user
-base (ops/dispatch) can be told directly if something looks off.
+Straight replacement of the Leaflet map on the two single-trip pages — no
+feature flag, no side-by-side 2D/3D toggle. `LiveMap.tsx` is untouched.
+Small, controlled internal user base (ops/dispatch) can be told directly if
+something looks off.
