@@ -110,15 +110,12 @@ export default function MapScreen() {
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Stats bar */}
-      <View style={s.statsBar}>
-        <View style={s.stat}><Text style={s.statV}>{points.length}</Text><Text style={s.statK}>Points</Text></View>
-        <View style={s.sep} />
-        <View style={s.stat}><Text style={s.statV}>{km(trip.distanceMeters)}</Text><Text style={s.statK}>Distance</Text></View>
-        <View style={s.sep} />
-        <View style={s.stat}><Text style={s.statV}>{Math.round(trip.maxSpeedKmh)} km/h</Text><Text style={s.statK}>Top speed</Text></View>
-        <View style={s.sep} />
-        <View style={s.stat}><Text style={s.statV}>{elapsed(trip.startedAt)}</Text><Text style={s.statK}>Started</Text></View>
+      {/* Stats cards */}
+      <View style={s.statsGrid}>
+        <View style={s.statCard}><Text style={s.statV}>{points.length}</Text><Text style={s.statK}>Points</Text></View>
+        <View style={s.statCard}><Text style={s.statV}>{km(trip.distanceMeters)}</Text><Text style={s.statK}>Distance</Text></View>
+        <View style={s.statCard}><Text style={s.statV}>{Math.round(trip.maxSpeedKmh)} km/h</Text><Text style={s.statK}>Top speed</Text></View>
+        <View style={s.statCard}><Text style={s.statV}>{elapsed(trip.startedAt)}</Text><Text style={s.statK}>Started</Text></View>
       </View>
 
       {/* Live / Last trip badge */}
@@ -168,11 +165,10 @@ const s = StyleSheet.create({
   center:    { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28 },
   loadText:  { marginTop: 12, color: C.muted, fontSize: 14 },
 
-  statsBar:  { flexDirection: 'row', backgroundColor: C.surface, borderBottomWidth: 1, borderBottomColor: C.border, paddingVertical: 10, paddingHorizontal: 6 },
-  stat:      { flex: 1, alignItems: 'center' },
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: C.bg },
+  statCard:  { flexGrow: 1, flexBasis: '22%', alignItems: 'center', backgroundColor: C.surface, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 6, borderWidth: 1, borderColor: C.border },
   statV:     { fontSize: 14, fontWeight: '800', color: C.text },
-  statK:     { fontSize: 9.5, color: C.muted, marginTop: 1, textTransform: 'uppercase', letterSpacing: 0.4 },
-  sep:       { width: 1, backgroundColor: C.border, marginVertical: 4 },
+  statK:     { fontSize: 9, color: C.muted, marginTop: 3, textTransform: 'uppercase', letterSpacing: 0.4 },
 
   liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 6, backgroundColor: C.greenBg, borderBottomWidth: 1, borderBottomColor: '#a7f3d0' },
   liveDot:   { width: 7, height: 7, borderRadius: 4, backgroundColor: C.green },
