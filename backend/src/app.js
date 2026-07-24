@@ -20,7 +20,10 @@ function createApp() {
       },
     },
   }));
-  app.use(cors({ origin: env.CORS_ORIGIN }));
+  // exposedHeaders lets the admin panel read the server-chosen filename off
+  // Content-Disposition when it calls the API cross-origin (prod deploys
+  // with no dev proxy) -- browsers hide response headers by default in CORS.
+  app.use(cors({ origin: env.CORS_ORIGIN, exposedHeaders: ['Content-Disposition'] }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(express.json({ limit: '5mb' })); // offline batches can be large
   app.use(morgan('dev'));

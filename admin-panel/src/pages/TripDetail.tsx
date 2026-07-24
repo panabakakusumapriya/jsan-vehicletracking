@@ -1,15 +1,30 @@
-import { useEffect, useState } from 'react';
-import { CircleMarker, MapContainer, Polyline, Popup, TileLayer } from 'react-leaflet';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api } from '../lib/api';
+import { ExportButtons } from '../components/ExportButtons';
+import { api, downloadFile } from '../lib/api';
 import { dt, km, statusBadge } from '../lib/format';
+import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
+import { buildReplayLayers } from '../lib/map3d/TripPathLayer';
+import { useTripPlayback } from '../lib/map3d/useTripPlayback';
 import type { Trip } from '../lib/types';
 
 interface PathPoint {
   lat: number;
   lon: number;
   speedKmh: number;
+  heading?: number | null;
   recordedAt: string;
+}
+
+const SPEEDS = [1, 4, 16];
+
+function formatClock(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
 export function TripDetail() {
@@ -17,6 +32,7 @@ export function TripDetail() {
   const [trip, setTrip] = useState<Trip | null>(null);
   const [points, setPoints] = useState<PathPoint[]>([]);
   const [loading, setLoading] = useState(true);
+  const mapRef = useRef<Map3DHandle>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -29,13 +45,23 @@ export function TripDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
+  // Show the whole recorded route, not just a fixed zoom on its first point.
+  useEffect(() => {
+    if (points.length > 0) {
+      mapRef.current?.fitToRoute(points.map((p) => [p.lon, p.lat]));
+    }
+  }, [points]);
+
+  const playback = useTripPlayback(points);
+  const layers = useMemo(
+    () => buildReplayLayers(points, playback.currentTimeMs, playback.playing),
+    [points, playback.currentTimeMs, playback.playing]
+  );
+
   if (loading) return <div className="muted">Loading trip…</div>;
   if (!trip) return <div className="muted">Trip not found.</div>;
 
-  const line: [number, number][] = points.map((p) => [p.lat, p.lon]);
-  const start = line[0];
-  const end = line[line.length - 1];
-  const center: [number, number] = start ?? [17.42, 78.45];
+  const start: [number, number] = points[0] ? [points[0].lon, points[0].lat] : [78.45, 17.42];
   const driver = typeof trip.driverId === 'object' ? trip.driverId.name : 'Driver';
 
   return (
@@ -44,9 +70,12 @@ export function TripDetail() {
         <h1 className="page-title">
           Trip · {driver} <span className={`badge ${statusBadge(trip.status)}`}>{trip.status}</span>
         </h1>
-        <Link to="/trips" className="btn-ghost">
-          ← Back to trips
-        </Link>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <ExportButtons onExport={(format) => downloadFile(`/api/trips/${id}/export?format=${format}`)} />
+          <Link to="/trips" className="btn-ghost">
+            ← Back to trips
+          </Link>
+        </div>
       </div>
 
       <div className="stat-row">
@@ -72,26 +101,59 @@ export function TripDetail() {
         </div>
       </div>
 
-      <div className="map-wrap" style={{ height: 'calc(100vh - 260px)' }}>
-        <MapContainer center={center} zoom={14} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
-          <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution="&copy; OpenStreetMap contributors"
-          />
-          {line.length > 1 && <Polyline positions={line} pathOptions={{ color: '#2f7bff', weight: 4 }} />}
-          {start && (
-            <CircleMarker center={start} radius={8} pathOptions={{ color: '#fff', weight: 2, fillColor: '#31d07a', fillOpacity: 1 }}>
-              <Popup>Start</Popup>
-            </CircleMarker>
-          )}
-          {end && line.length > 1 && (
-            <CircleMarker center={end} radius={8} pathOptions={{ color: '#fff', weight: 2, fillColor: '#ff6b6b', fillOpacity: 1 }}>
-              <Popup>End</Popup>
-            </CircleMarker>
-          )}
-        </MapContainer>
+      <div className="map-wrap" style={{ height: 'calc(100vh - 340px)', minHeight: 380 }}>
+        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} />
       </div>
-      {line.length === 0 && <p className="muted" style={{ marginTop: 12 }}>No location points recorded for this trip yet.</p>}
+
+      {points.length > 1 && (
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', gap: 12, marginTop: 12,
+            padding: '10px 14px', background: 'var(--panel)', border: '1px solid var(--line-2)',
+            borderRadius: 'var(--radius-lg)',
+          }}
+        >
+          <button
+            className="btn"
+            style={{ minWidth: 72 }}
+            onClick={() => (playback.playing ? playback.pause() : playback.play())}
+          >
+            {playback.playing ? '⏸ Pause' : '▶ Play'}
+          </button>
+
+          <span style={{ fontSize: 12.5, color: 'var(--muted)', fontFamily: 'monospace', minWidth: 90 }}>
+            {formatClock(playback.currentTimeMs)} / {formatClock(playback.durationMs)}
+          </span>
+
+          <input
+            type="range"
+            min={0}
+            max={playback.durationMs}
+            value={playback.currentTimeMs}
+            onChange={(e) => playback.seek(Number(e.target.value))}
+            style={{ flex: 1 }}
+          />
+
+          <div style={{ display: 'flex', gap: 4 }}>
+            {SPEEDS.map((s) => (
+              <button
+                key={s}
+                className="btn-ghost"
+                style={{
+                  padding: '4px 9px', fontSize: 12, fontWeight: 700,
+                  background: playback.speed === s ? 'var(--brand-light)' : undefined,
+                  color: playback.speed === s ? 'var(--brand)' : undefined,
+                }}
+                onClick={() => playback.setSpeed(s)}
+              >
+                {s}×
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {points.length === 0 && <p className="muted" style={{ marginTop: 12 }}>No location points recorded for this trip yet.</p>}
     </div>
   );
 }

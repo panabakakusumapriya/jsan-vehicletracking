@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api';
+import { ExportButtons } from '../components/ExportButtons';
+import { api, downloadFile } from '../lib/api';
 import { dt, km, statusBadge } from '../lib/format';
 import type { Trip, User } from '../lib/types';
 
@@ -54,6 +55,21 @@ export function Trips() {
         return countryDriverIds.has(id);
       })
     : trips;
+
+  const handleExport = (format: 'kml' | 'json') => {
+    const params = new URLSearchParams({ format });
+    if (status) params.set('status', status);
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    // A specific driver takes precedence; otherwise a country filter (client-side
+    // only, so translate it into the exact driver IDs it currently matches).
+    if (driverId) {
+      params.set('driverId', driverId);
+    } else if (countryDriverIds) {
+      params.set('driverIds', Array.from(countryDriverIds).join(','));
+    }
+    return downloadFile(`/api/trips/export?${params.toString()}`);
+  };
 
   const active    = filteredTrips.filter(t => t.status === 'active').length;
   const completed = filteredTrips.filter(t => t.status === 'completed').length;
@@ -128,6 +144,7 @@ export function Trips() {
               Clear
             </button>
           )}
+          <ExportButtons onExport={handleExport} disabled={filteredTrips.length === 0} />
         </div>
       </div>
 
@@ -216,13 +233,16 @@ export function Trips() {
                         ● Live
                       </Link>
                     )}
-                    <Link to={`/trips/${t._id}/map`} style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 4,
-                      fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',
-                      background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.2)',
-                      borderRadius: 7, padding: '4px 10px',
-                    }}>
-                      Map →
+                    <Link
+                      to={t.status === 'active' ? `/trips/${t._id}/map` : `/trips/${t._id}`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',
+                        background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.2)',
+                        borderRadius: 7, padding: '4px 10px',
+                      }}
+                    >
+                      {t.status === 'active' ? 'Map →' : 'Details →'}
                     </Link>
                   </div>
                 </td>

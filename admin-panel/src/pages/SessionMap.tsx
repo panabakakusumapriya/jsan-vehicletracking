@@ -1,35 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
-import {
-  CircleMarker,
-  MapContainer,
-  Polyline,
-  Popup,
-  TileLayer,
-  useMap,
-} from 'react-leaflet';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api';
 import { km, dt } from '../lib/format';
+import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
+import { buildLivePathLayers } from '../lib/map3d/TripPathLayer';
+import { useInterpolatedPosition } from '../lib/map3d/useInterpolatedPosition';
 import type { Trip } from '../lib/types';
 
 interface Point {
   lat: number;
   lon: number;
   speedKmh: number;
+  heading?: number | null;
   recordedAt: string;
-}
-
-/** Auto-fit the map to the polyline bounds whenever the points change */
-function FitBounds({ line }: { line: [number, number][] }) {
-  const map = useMap();
-  useEffect(() => {
-    if (line.length > 1) {
-      map.fitBounds(line, { padding: [32, 32], maxZoom: 17 });
-    } else if (line.length === 1) {
-      map.setView(line[0], 15);
-    }
-  }, [line, map]);
-  return null;
 }
 
 export function SessionMap() {
@@ -39,6 +22,7 @@ export function SessionMap() {
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mapRef = useRef<Map3DHandle>(null);
 
   const fetchData = async (silent = false) => {
     if (!id) return;
@@ -70,24 +54,32 @@ export function SessionMap() {
     }
   }, [trip]);
 
+  const latest = points[points.length - 1] ?? null;
+  const animatedVehicle = useInterpolatedPosition(
+    latest ? { lat: latest.lat, lon: latest.lon, heading: latest.heading, recordedAt: latest.recordedAt } : null,
+    trip ? trip.status !== 'active' : false
+  );
+
+  // Keep the whole recorded route in view as it grows -- matches the old
+  // Leaflet FitBounds behavior. A fixed center/zoom on just the latest point
+  // left most of the path off-screen for anything longer than a short hop.
+  useEffect(() => {
+    if (points.length > 0) {
+      mapRef.current?.fitToRoute(points.map((p) => [p.lon, p.lat]));
+    }
+  }, [points]);
+
+  const layers = useMemo(
+    () => buildLivePathLayers(points, animatedVehicle, trip ? trip.status !== 'active' : false),
+    [points, animatedVehicle, trip]
+  );
+
   if (loading) return <div className="muted" style={{ padding: 32 }}>Loading session…</div>;
   if (!trip)   return <div className="muted" style={{ padding: 32 }}>Trip not found.</div>;
 
-  const line: [number, number][] = points.map(p => [p.lat, p.lon]);
-  const start  = line[0];
-  const latest = line[line.length - 1];
-  const center: [number, number] = start ?? [17.42, 78.45];
-
+  const start: [number, number] = points[0] ? [points[0].lon, points[0].lat] : [78.45, 17.42];
   const driverName = typeof trip.driverId === 'object' ? trip.driverId.name : 'Driver';
   const plate      = trip.vehicleId && typeof trip.vehicleId === 'object' ? trip.vehicleId.plateNumber : null;
-
-  // Speed-colour gradient for each segment (green → amber → red)
-  const segmentColors = points.slice(1).map((_, i) => {
-    const spd = points[i].speedKmh;
-    if (spd < 40)  return '#059669'; // green
-    if (spd < 80)  return '#d97706'; // amber
-    return '#dc2626';                // red
-  });
 
   return (
     <div>
@@ -159,55 +151,7 @@ export function SessionMap() {
 
       {/* Map */}
       <div className="map-wrap" style={{ height: 'calc(100vh - 300px)', minHeight: 420 }}>
-        <MapContainer
-          center={center}
-          zoom={14}
-          scrollWheelZoom
-          style={{ height: '100%', width: '100%' }}
-          // prefer canvas renderer for GPU acceleration
-          renderer={undefined}
-        >
-          <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution="&copy; OpenStreetMap contributors"
-          />
-          <FitBounds line={line} />
-
-          {/* Speed-coloured segments */}
-          {line.length > 1 && line.slice(1).map((_, i) => (
-            <Polyline
-              key={i}
-              positions={[line[i], line[i + 1]]}
-              pathOptions={{ color: segmentColors[i], weight: 5, opacity: 0.9 }}
-            />
-          ))}
-
-          {/* Start marker — green */}
-          {start && (
-            <CircleMarker
-              center={start}
-              radius={9}
-              pathOptions={{ color: '#fff', weight: 2.5, fillColor: '#059669', fillOpacity: 1 }}
-            >
-              <Popup><b>Trip start</b><br />{dt(points[0]?.recordedAt)}</Popup>
-            </CircleMarker>
-          )}
-
-          {/* Latest / current position — violet */}
-          {latest && line.length > 0 && (
-            <CircleMarker
-              center={latest}
-              radius={10}
-              pathOptions={{ color: '#fff', weight: 2.5, fillColor: '#7c3aed', fillOpacity: 1 }}
-            >
-              <Popup>
-                <b>{trip.status === 'active' ? 'Current position' : 'Trip end'}</b><br />
-                {Math.round(points[points.length - 1]?.speedKmh ?? 0)} km/h<br />
-                {dt(points[points.length - 1]?.recordedAt)}
-              </Popup>
-            </CircleMarker>
-          )}
-        </MapContainer>
+        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} />
       </div>
 
       {points.length === 0 && (

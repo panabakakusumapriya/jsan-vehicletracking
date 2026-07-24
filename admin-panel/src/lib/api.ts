@@ -41,3 +41,43 @@ export const api = {
     request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 };
+
+// Fetches a file (KML/JSON/zip export) with the same Bearer auth as `api`,
+// then saves it via a synthetic link click -- a plain <a href> can't carry
+// the token, since auth here is a header, not a cookie. Filename comes from
+// the server's Content-Disposition header (it knows the trip/driver names).
+export async function downloadFile(path: string, fallbackFilename = 'download'): Promise<void> {
+  const headers: Record<string, string> = {};
+  const token = tokenStore.get();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_URL}${path}`, { headers });
+  if (res.status === 401) {
+    tokenStore.clear();
+    window.location.href = '/login';
+    throw new Error('Not authenticated');
+  }
+  if (!res.ok) {
+    let message = `Export failed (${res.status})`;
+    try {
+      const data = await res.json();
+      if (data?.error) message = data.error;
+    } catch {
+      /* response wasn't JSON -- keep the generic message */
+    }
+    throw new Error(message);
+  }
+
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const filename = /filename="?([^"]+)"?/.exec(disposition)?.[1] || fallbackFilename;
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

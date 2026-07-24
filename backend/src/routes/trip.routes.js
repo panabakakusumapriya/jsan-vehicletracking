@@ -6,6 +6,8 @@ const { authenticate } = require('../middleware/auth');
 router.use(authenticate);
 
 router.get('/', ctrl.list);
+router.get('/export', ctrl.exportBulk);
 router.get('/:id', ctrl.getOne);
+router.get('/:id/export', ctrl.exportOne);
 
 module.exports = router;

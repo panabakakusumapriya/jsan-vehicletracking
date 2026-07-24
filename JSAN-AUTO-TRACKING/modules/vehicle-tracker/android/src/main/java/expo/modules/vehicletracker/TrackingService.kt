@@ -44,7 +44,17 @@ import kotlin.math.roundToInt
  *
  * Trip lifecycle:
  *   IDLE:     watch for 50 m of movement at avg speed ≥ 10 km/h → START trip
+<<<<<<< Updated upstream
  *             (10 km/h threshold rejects walking / jogging; 50 m rejects GPS drift)
+=======
+ *             (50 m rejects GPS drift; the avg-speed check uses the Kalman-smoothed
+ *             position, not the raw fix -- a single noisy fix while someone is simply
+ *             walking to their vehicle could otherwise make a short walk look like a
+ *             50 m dash at driving speed. NOTE: 10 km/h sits close to jogging pace
+ *             (~10 km/h) -- this threshold was lowered from 15 km/h on request; a
+ *             sustained jog can legitimately cross it, the smoothing only helps with
+ *             GPS-noise false positives, not genuine jogging speed.)
+>>>>>>> Stashed changes
  *
  *   TRACKING: record a point every 50 m moved from the last recorded point.
  *             No speed check needed during a trip — the 50 m rule naturally ignores
@@ -75,7 +85,15 @@ class TrackingService : Service() {
         /**
          * Minimum average speed over the first TRIP_START_DISTANCE_M to confirm a
          * vehicle trip (not walking/jogging).
+<<<<<<< Updated upstream
          * Walking ~5 km/h, jogging ~8 km/h, slowest vehicle ~10 km/h.
+=======
+         * Walking ~5 km/h, jogging ~10 km/h, slowest vehicle ~15 km/h -- lowered to
+         * 10 from the original 15 on request. This narrows the margin against
+         * jogging specifically (a sustained jog can now cross this bar); the
+         * Kalman-smoothing fix below only rejects noise-driven false positives,
+         * not genuine sustained jogging speed.
+>>>>>>> Stashed changes
          */
         const val TRIP_START_MIN_SPEED_KMH  = 10.0
 
@@ -296,14 +314,24 @@ class TrackingService : Service() {
 
         if (tripId == null) {
             // ── IDLE: watch for a vehicle-speed 50 m run ────────────────────
+            // Anchored and measured on the Kalman-smoothed position, not the raw
+            // fix -- a single noisy fix (common indoors/near buildings) could
+            // otherwise make a short walk look like a fast 50 m dash and start
+            // a trip incorrectly. See KalmanGPS above.
+            val smoothedFix = Location("smoothed").apply {
+                latitude  = smoothLat
+                longitude = smoothLon
+                time      = location.time
+            }
+
             if (startWatchPos == null) {
                 // First fix after idle — anchor the watch position here.
-                startWatchPos  = location
+                startWatchPos  = smoothedFix
                 startWatchTime = now
                 return
             }
 
-            val distFromWatch = startWatchPos!!.distanceTo(location)
+            val distFromWatch = startWatchPos!!.distanceTo(smoothedFix)
 
             if (distFromWatch >= TRIP_START_DISTANCE_M) {
                 // Covered 50 m — check whether it was vehicle-speed or walking.
@@ -327,9 +355,9 @@ class TrackingService : Service() {
                     updateNotification("Trip started • ${speedKmh.roundToInt()} km/h")
                     triggerUpload()
                 } else {
-                    // Speed too low — person is walking. Reset watch to current
-                    // position and try again from here.
-                    startWatchPos  = location
+                    // Speed too low — person is walking. Reset watch to the
+                    // current (smoothed) position and try again from here.
+                    startWatchPos  = smoothedFix
                     startWatchTime = now
                 }
             } else {
