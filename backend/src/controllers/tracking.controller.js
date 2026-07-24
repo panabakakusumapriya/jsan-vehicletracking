@@ -5,6 +5,7 @@ const { haversineMeters } = require('../utils/geo');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { emitLocation } = require('../realtime/io');
 const env = require('../config/env');
+const { cleanRoutePoints } = require('../utils/routeClean');
 
 /**
  * POST /api/tracking/ingest   (driver only)
@@ -99,7 +100,11 @@ exports.ingest = asyncHandler(async (req, res) => {
       }
 
       if (p.clientId) acceptedClientIds.push(p.clientId);
-      if (last) addedDistance += haversineMeters(last, { lat: p.lat, lon: p.lon });
+      if (last) {
+        const segDist = haversineMeters(last, { lat: p.lat, lon: p.lon });
+        // Only accumulate distance for real movement (> 5 m), not Kalman drift
+        if (segDist >= 5) addedDistance += segDist;
+      }
       if (doc.speedKmh > maxSpeed) maxSpeed = doc.speedKmh;
       addedCount += 1;
       last = { lat: p.lat, lon: p.lon, speed: doc.speedKmh, heading: doc.heading, recordedAt };
@@ -170,9 +175,12 @@ exports.mySession = asyncHandler(async (req, res) => {
 
   if (!trip) return res.json({ trip: null, points: [] });
 
-  const points = await LocationPoint.find({ tripId: trip._id })
+  const raw = await LocationPoint.find({ tripId: trip._id })
     .sort({ recordedAt: 1 })
     .select('lat lon speedKmh heading recordedAt');
+
+  // Clean route: remove near-duplicates & GPS spikes for a smooth polyline.
+  const points = cleanRoutePoints(raw);
 
   res.json({ trip, points });
 });

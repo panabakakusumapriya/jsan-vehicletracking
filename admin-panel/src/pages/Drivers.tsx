@@ -13,6 +13,7 @@ export function Drivers() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [managers, setManagers] = useState<User[]>([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [editing, setEditing] = useState<User | null>(null);
 
   const load = () => {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
@@ -109,7 +110,10 @@ export function Drivers() {
                   }
                 </td>
                 <td><span className={`badge ${d.active ? 'green' : 'red'}`}>{d.active ? 'Active' : 'Inactive'}</span></td>
-                <td>{d.active && <button className="btn-danger" onClick={() => deactivate(d)}>Deactivate</button>}</td>
+                <td style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(d)}>Edit</button>
+                  {d.active && <button className="btn-danger" onClick={() => deactivate(d)}>Deactivate</button>}
+                </td>
               </tr>
             ))}
             {drivers.length === 0 && (
@@ -130,6 +134,17 @@ export function Drivers() {
           isAdmin={isAdmin}
           onClose={() => setShowAdd(false)}
           onSaved={() => { setShowAdd(false); load(); }}
+        />
+      )}
+
+      {editing && (
+        <EditDriver
+          driver={editing}
+          vehicles={vehicles}
+          managers={managers}
+          isAdmin={isAdmin}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); load(); }}
         />
       )}
     </div>
@@ -199,6 +214,81 @@ function AddDriver({ vehicles, managers, isAdmin, onClose, onSaved }: {
       <div className="modal-actions">
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn" onClick={save} disabled={busy}>{busy ? 'Creating…' : 'Create driver'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function EditDriver({ driver, vehicles, managers, isAdmin, onClose, onSaved }: {
+  driver: User; vehicles: Vehicle[]; managers: User[];
+  isAdmin: boolean; onClose: () => void; onSaved: () => void;
+}) {
+  const vehicleIdVal = driver.vehicleId && typeof driver.vehicleId === 'object' ? driver.vehicleId._id : (driver.vehicleId || '');
+  const managerIdVal = driver.managerId && typeof driver.managerId === 'object' ? (driver.managerId as any)._id : (driver.managerId || '');
+  const [form, setForm] = useState({
+    name: driver.name,
+    phone: driver.phone || '',
+    country: driver.country || '',
+    vehicleId: vehicleIdVal as string,
+    managerId: managerIdVal as string,
+    password: '',
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    setError(null); setBusy(true);
+    try {
+      const body: Record<string, unknown> = {
+        name: form.name,
+        phone: form.phone || null,
+        country: form.country || null,
+        vehicleId: form.vehicleId || null,
+      };
+      if (isAdmin) body.managerId = form.managerId || null;
+      if (form.password) body.password = form.password;
+      await api.patch(`/api/users/${driver._id}`, body);
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update driver');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Edit · ${driver.name}`} onClose={onClose}>
+      <div className="field"><label>Full name</label>
+        <input className="input" value={form.name} onChange={e => set('name', e.target.value)} />
+      </div>
+      <div className="field"><label>Phone</label>
+        <input className="input" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="+91 9876543210" />
+      </div>
+      <div className="field"><label>Country</label>
+        <input className="input" value={form.country} onChange={e => set('country', e.target.value)} placeholder="India" />
+      </div>
+      {isAdmin && (
+        <div className="field"><label>Manager</label>
+          <select className="input" value={form.managerId} onChange={e => set('managerId', e.target.value)}>
+            <option value="">— Unassigned —</option>
+            {managers.map(m => <option key={m._id} value={m._id}>{m.name} ({m.email})</option>)}
+          </select>
+        </div>
+      )}
+      <div className="field"><label>Vehicle</label>
+        <select className="input" value={form.vehicleId} onChange={e => set('vehicleId', e.target.value)}>
+          <option value="">— None —</option>
+          {vehicles.map(v => <option key={v._id} value={v._id}>{v.plateNumber}{v.model ? ` · ${v.model}` : ''}</option>)}
+        </select>
+      </div>
+      <div className="field"><label>New password (leave blank to keep current)</label>
+        <input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Leave blank to keep current" />
+      </div>
+      {error && <div className="error-text">{error}</div>}
+      <div className="modal-actions">
+        <button className="btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
       </div>
     </Modal>
   );

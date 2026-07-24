@@ -40,7 +40,8 @@ export function TripDetail() {
       .get<{ trip: Trip; points?: PathPoint[] }>(`/api/trips/${id}?points=true`)
       .then((r) => {
         setTrip(r.trip);
-        setPoints(r.points ?? []);
+        // Backend may insert null gap markers — filter them for clean rendering
+        setPoints((r.points ?? []).filter((p): p is PathPoint => p != null));
       })
       .finally(() => setLoading(false));
   }, [id]);

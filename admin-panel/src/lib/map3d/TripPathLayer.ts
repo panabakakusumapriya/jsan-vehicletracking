@@ -138,13 +138,23 @@ export function buildLivePathLayers(
 ) {
   const layers = [];
   if (points.length > 1) {
-    const segments = points.slice(1).map((p, i) => ({
-      path: [
-        [points[i].lon, points[i].lat],
-        [p.lon, p.lat],
-      ],
-      speedKmh: points[i].speedKmh ?? 0,
-    }));
+    // Skip segments that span a GPS gap (> 2 min AND > 500 m) to avoid
+    // invalid straight lines across signal-loss periods.
+    const segments: { path: number[][]; speedKmh: number }[] = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const dtMs = new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime();
+      // Quick equirectangular distance approximation (good enough for gap detection)
+      const dLat = (b.lat - a.lat) * 111320;
+      const dLon = (b.lon - a.lon) * 111320 * Math.cos((a.lat * Math.PI) / 180);
+      const distM = Math.sqrt(dLat * dLat + dLon * dLon);
+      if (dtMs > 120_000 && distM > 500) continue; // gap — don't draw a line
+      segments.push({
+        path: [[a.lon, a.lat], [b.lon, b.lat]],
+        speedKmh: a.speedKmh ?? 0,
+      });
+    }
     layers.push(
       new PathLayer({
         id: 'trip-live-path',

@@ -34,11 +34,27 @@ function segmentColor(speedKmh: number) {
   return '#dc2626';
 }
 
-export function LeafletMap({ points }: { points: MapPoint[] }) {
-  const line: [number, number][] = points.map(p => [p.lat, p.lon]);
+export function LeafletMap({ points }: { points: (MapPoint | null)[] }) {
+  // Filter out null gap markers
+  const valid = points.filter((p): p is MapPoint => p != null);
+  const line: [number, number][] = valid.map(p => [p.lat, p.lon]);
   const center: [number, number] = line.length
     ? line[Math.floor(line.length / 2)]
     : [17.42, 78.45];
+
+  // Build gap-aware speed-coloured segments
+  type Seg = { from: [number, number]; to: [number, number]; color: string };
+  const segs: Seg[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    if (a == null || b == null) continue;
+    segs.push({
+      from: [a.lat, a.lon],
+      to: [b.lat, b.lon],
+      color: segmentColor(a.speedKmh),
+    });
+  }
 
   return (
     <MapContainer
@@ -53,12 +69,12 @@ export function LeafletMap({ points }: { points: MapPoint[] }) {
       />
       <FitBounds line={line} />
 
-      {/* Speed-coloured polyline segments */}
-      {line.length > 1 && line.slice(1).map((_, i) => (
+      {/* Speed-coloured polyline segments (gap-aware) */}
+      {segs.map((s, i) => (
         <Polyline
           key={i}
-          positions={[line[i], line[i + 1]]}
-          pathOptions={{ color: segmentColor(points[i].speedKmh), weight: 5, opacity: 0.9 }}
+          positions={[s.from, s.to]}
+          pathOptions={{ color: s.color, weight: 5, opacity: 0.9 }}
         />
       ))}
 
@@ -69,7 +85,7 @@ export function LeafletMap({ points }: { points: MapPoint[] }) {
           radius={9}
           pathOptions={{ color: '#fff', weight: 2.5, fillColor: '#059669', fillOpacity: 1 }}
         >
-          <Popup><b>Trip start</b><br />{new Date(points[0].recordedAt).toLocaleTimeString()}</Popup>
+          <Popup><b>Trip start</b><br />{new Date(valid[0].recordedAt).toLocaleTimeString()}</Popup>
         </CircleMarker>
       )}
 
@@ -82,8 +98,8 @@ export function LeafletMap({ points }: { points: MapPoint[] }) {
         >
           <Popup>
             <b>Current position</b><br />
-            {Math.round(points[points.length - 1].speedKmh)} km/h<br />
-            {new Date(points[points.length - 1].recordedAt).toLocaleTimeString()}
+            {Math.round(valid[valid.length - 1].speedKmh)} km/h<br />
+            {new Date(valid[valid.length - 1].recordedAt).toLocaleTimeString()}
           </Popup>
         </CircleMarker>
       )}

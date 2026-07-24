@@ -8,10 +8,26 @@ export interface MapPoint {
 }
 
 function buildHtml(points: MapPoint[]): string {
-  const latlngs = JSON.stringify(points.map(p => [p.lat, p.lon]));
-  const speeds  = JSON.stringify(points.map(p => p.speedKmh));
-  const center  = points.length
-    ? [points[Math.floor(points.length / 2)].lat, points[Math.floor(points.length / 2)].lon]
+  // Filter out null gap markers for the WebView map
+  const valid = points.filter((p): p is MapPoint => p != null);
+  const latlngs = JSON.stringify(valid.map(p => [p.lat, p.lon]));
+  const speeds  = JSON.stringify(valid.map(p => p.speedKmh));
+  // Build a gap set: indices where a null appears between valid points
+  // so the polyline breaks at GPS gaps instead of drawing straight lines
+  const gapIndices = new Set<number>();
+  let validIdx = -1;
+  for (let i = 0; i < points.length; i++) {
+    if (points[i] == null) {
+      // The next valid point after this null should not connect to the previous
+      if (validIdx >= 0) gapIndices.add(validIdx);
+    } else {
+      validIdx++;
+    }
+  }
+  const gaps = JSON.stringify(Array.from(gapIndices));
+
+  const center  = valid.length
+    ? [valid[Math.floor(valid.length / 2)].lat, valid[Math.floor(valid.length / 2)].lon]
     : [17.42, 78.45];
 
   return `<!DOCTYPE html><html><head>
@@ -25,9 +41,10 @@ function buildHtml(points: MapPoint[]): string {
   var r=L.canvas({padding:0.5});
   var map=L.map('map',{zoomControl:true,renderer:r}).setView(${JSON.stringify(center)},14);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-  var ll=${latlngs}, sp=${speeds};
+  var ll=${latlngs}, sp=${speeds}, gaps=new Set(${gaps});
   if(!ll.length) return;
   for(var i=0;i<ll.length-1;i++){
+    if(gaps.has(i)) continue;
     var c=sp[i]<40?'#059669':sp[i]<80?'#d97706':'#dc2626';
     L.polyline([ll[i],ll[i+1]],{color:c,weight:5,opacity:0.9,renderer:r}).addTo(map);
   }

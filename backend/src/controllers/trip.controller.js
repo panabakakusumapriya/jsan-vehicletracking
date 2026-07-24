@@ -4,6 +4,7 @@ const LocationPoint = require('../models/LocationPoint');
 const asyncHandler = require('../utils/asyncHandler');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { buildKml, buildJson, baseFilename } = require('../utils/tripExport');
+const { cleanRoutePoints } = require('../utils/routeClean');
 
 // GET /api/trips?status=&driverId=&from=&to=&limit=&page=
 exports.list = asyncHandler(async (req, res) => {
@@ -47,9 +48,14 @@ exports.getOne = asyncHandler(async (req, res) => {
 
   let points;
   if (req.query.points === 'true') {
-    points = await LocationPoint.find({ tripId: trip._id })
+    const raw = await LocationPoint.find({ tripId: trip._id })
       .sort({ recordedAt: 1 })
       .select('lat lon speedKmh heading recordedAt');
+
+    // Clean the route: remove duplicates, outlier spikes, and detect gaps.
+    // This is defense-in-depth — the mobile tracker now filters at source,
+    // but older trips in the DB may have bad points from before the fix.
+    points = cleanRoutePoints(raw);
   }
   res.json({ trip, points });
 });

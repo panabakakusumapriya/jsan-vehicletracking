@@ -152,7 +152,7 @@ export default function MapScreen() {
             </Text>
           </View>
         ) : (
-          <LeafletMap points={points.map(p => ({ ...p, speedKmh: p.speedKmh ?? 0 }))} />
+          <LeafletMap points={points.filter(p => p != null).map(p => ({ ...p, speedKmh: p.speedKmh ?? 0 }))} />
         )}
       </View>
 

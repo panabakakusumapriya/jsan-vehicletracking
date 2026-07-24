@@ -32,7 +32,8 @@ export function SessionMap() {
         `/api/trips/${id}?points=true`
       );
       setTrip(r.trip);
-      setPoints(r.points ?? []);
+      // Backend may insert null gap markers — filter them for clean rendering
+      setPoints((r.points ?? []).filter((p): p is Point => p != null));
       setLastRefresh(new Date());
     } finally {
       if (!silent) setLoading(false);
