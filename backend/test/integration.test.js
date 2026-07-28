@@ -79,6 +79,61 @@ function assert(cond, msg) {
   assert(live.status === 200 && Array.isArray(live.body.drivers), 'admin live endpoint returns driver array');
   assert(live.body.drivers.length === 0, 'no active trips remain (both ended)');
 
+  // ── ALERTS: a driver that stops reporting must page their manager exactly once ──
+  const { tick } = require('../src/services/driverWatchdog');
+  const PushSub = require('../src/models/PushSubscription');
+  await PushSub.init();
+
+  const manager = new User({ name: 'M', email: 'm@x.com', role: 'manager' });
+  await manager.setPassword('pw123456'); await manager.save();
+  driver.managerId = manager._id;
+  await driver.save();
+
+  // A live trip whose last heartbeat is 10 min old — past DRIVER_OFFLINE_AFTER_SECONDS (180)
+  // but inside SESSION_DEAD_AFTER_SECONDS (900), so it is "offline", not yet "dead".
+  const silent = new Date(Date.now() - 10 * 60 * 1000);
+  const live2 = await Trip.create({
+    clientTripId: 't3', driverId: driver._id, managerId: manager._id, status: 'active',
+    startedAt: silent, lastLocation: { lat: 17.4, lon: 78.4, speed: 0, heading: 0, recordedAt: silent },
+  });
+
+  let swept = await tick();
+  assert(swept.offline === 1, 'watchdog raised exactly 1 driver-offline alert');
+  let flagged = await Trip.findById(live2._id);
+  assert(flagged.offlineNotifiedAt instanceof Date, 'trip carries the offlineNotifiedAt claim');
+
+  swept = await tick();
+  assert(swept.offline === 0, 'a second sweep does not re-alert the same silent trip');
+
+  // Device comes back: a fresh heartbeat clears the flag and raises the recovery alert.
+  await Trip.updateOne(
+    { _id: live2._id },
+    { $set: { 'lastLocation.recordedAt': new Date(), startedAt: new Date() } }
+  );
+  swept = await tick();
+  assert(swept.online === 1, 'watchdog raised the back-online alert once the driver reported');
+  flagged = await Trip.findById(live2._id);
+  assert(flagged.offlineNotifiedAt === null, 'offline claim cleared, so a later drop alerts again');
+
+  // Subscription registration is manager/admin only — drivers use the mobile app.
+  const ml = await request(app).post('/api/auth/login').send({ email: 'm@x.com', password: 'pw123456' });
+  const sub = { endpoint: 'https://push.example/abc', keys: { p256dh: 'k', auth: 'a' } };
+  let s = await request(app).post('/api/push/subscribe').set('Authorization', `Bearer ${ml.body.token}`).send(sub);
+  assert(s.status === 201, 'manager can register a push subscription');
+  s = await request(app).post('/api/push/subscribe').set('Authorization', `Bearer ${ml.body.token}`).send(sub);
+  assert(s.status === 201 && (await PushSub.countDocuments()) === 1, 're-registering the same endpoint upserts (no duplicate)');
+  s = await auth(request(app).post('/api/push/subscribe')).send(sub);
+  assert(s.status === 403, 'drivers cannot subscribe to panel alerts');
+
+  // A trip silent past the dead-session window is closed by the same sweep.
+  await Trip.updateOne(
+    { _id: live2._id },
+    { $set: { 'lastLocation.recordedAt': new Date(Date.now() - 60 * 60 * 1000) } }
+  );
+  swept = await tick();
+  assert(swept.closed === 1, 'watchdog closes trips silent past the dead-session window');
+  assert((await Trip.findById(live2._id)).status === 'timed_out', 'dead trip marked timed_out');
+
   console.log('\n🎉 ALL CORE FLOWS VERIFIED');
   await require('mongoose').disconnect();
   await mongod.stop();

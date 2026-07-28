@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { divIcon } from 'leaflet';
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
-import { Link } from 'react-router-dom';
-import type { Socket } from 'socket.io-client';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
-import { createSocket } from '../lib/socket';
+import { useSocket, useSocketEvent } from '../lib/socket';
 import { useAuth } from '../lib/auth';
 import { km } from '../lib/format';
 import type { LiveDriver, LocationEvent, ParkedDriver } from '../lib/types';
@@ -55,14 +54,16 @@ function parkedCarIcon() {
 
 export function LiveMap() {
   const { token } = useAuth();
+  const { connected } = useSocket();
   const [drivers, setDrivers] = useState<Record<string, LiveDriver>>({});
   const [parked, setParked] = useState<ParkedDriver[]>([]);
   const [focus, setFocus] = useState<[number, number] | null>(null);
-  const [connected, setConnected] = useState(false);
   const [countryFilter, setCountryFilter] = useState('');
+  // Tapping a "driver offline" notification lands on /?driver=<id> — see AlertToaster.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkDriver = searchParams.get('driver');
 
   useEffect(() => {
-    let socket: Socket | undefined;
     (async () => {
       try {
         const [liveRes, parkedRes] = await Promise.all([
@@ -74,35 +75,42 @@ export function LiveMap() {
         setDrivers(map);
         setParked(parkedRes.parked ?? []);
       } catch {}
-
-      if (!token) return;
-      socket = createSocket(token);
-      socket.on('connect', () => setConnected(true));
-      socket.on('disconnect', () => setConnected(false));
-      socket.on('location', (e: LocationEvent) => {
-        setDrivers(prev => {
-          if (e.ended) { const next = { ...prev }; delete next[e.driverId]; return next; }
-          const existing = prev[e.driverId];
-          return {
-            ...prev,
-            [e.driverId]: {
-              tripId: e.tripId,
-              driver: existing?.driver ?? { _id: e.driverId, name: e.driverName, email: '' },
-              vehicle: existing?.vehicle ?? null,
-              location: { lat: e.lat, lon: e.lon, speed: e.speedKmh, heading: e.heading, recordedAt: e.recordedAt },
-              startedAt: existing?.startedAt ?? e.recordedAt,
-              distanceMeters: existing?.distanceMeters ?? 0,
-              maxSpeedKmh: Math.max(existing?.maxSpeedKmh ?? 0, e.speedKmh),
-              stale: false,
-            },
-          };
-        });
-        // Remove from parked list when a driver goes active.
-        setParked(prev => prev.filter(p => p.driver._id !== e.driverId));
-      });
     })();
-    return () => { socket?.close(); };
   }, [token]);
+
+  useSocketEvent<LocationEvent>('location', useCallback((e: LocationEvent) => {
+    setDrivers(prev => {
+      if (e.ended) { const next = { ...prev }; delete next[e.driverId]; return next; }
+      const existing = prev[e.driverId];
+      return {
+        ...prev,
+        [e.driverId]: {
+          tripId: e.tripId,
+          driver: existing?.driver ?? { _id: e.driverId, name: e.driverName, email: '' },
+          vehicle: existing?.vehicle ?? null,
+          location: { lat: e.lat, lon: e.lon, speed: e.speedKmh, heading: e.heading, recordedAt: e.recordedAt },
+          startedAt: existing?.startedAt ?? e.recordedAt,
+          distanceMeters: existing?.distanceMeters ?? 0,
+          maxSpeedKmh: Math.max(existing?.maxSpeedKmh ?? 0, e.speedKmh),
+          stale: false,
+        },
+      };
+    });
+    // Remove from parked list when a driver goes active.
+    setParked(prev => prev.filter(p => p.driver._id !== e.driverId));
+  }, []));
+
+  // Centre on the driver named in the URL once we know where they are, then drop the param
+  // so a later manual pan isn't yanked back on the next render.
+  useEffect(() => {
+    if (!deepLinkDriver) return;
+    const hit =
+      drivers[deepLinkDriver]?.location ??
+      parked.find(p => p.driver._id === deepLinkDriver)?.location;
+    if (!hit) return;
+    setFocus([hit.lat, hit.lon]);
+    setSearchParams({}, { replace: true });
+  }, [deepLinkDriver, drivers, parked, setSearchParams]);
 
   const allList   = Object.values(drivers);
   const withLoc   = allList.filter(d => d.location);

@@ -65,6 +65,25 @@ export interface ParkedDriver {
   endedAt?: string | null;
 }
 
+// Socket 'alert' event — and the identical JSON body delivered by Web Push when the panel
+// is closed. Raised by the backend watchdog (services/driverWatchdog.js).
+export interface AlertEvent {
+  type: 'driver-offline' | 'driver-online' | 'test';
+  title: string;
+  body: string;
+  driverId: string | null;
+  driverName: string | null;
+  managerId?: string | null;
+  tripId?: string;
+  vehiclePlate?: string | null;
+  country?: string | null;
+  lastSeenAt?: string | null;
+  silentMinutes?: number | null;
+  tag?: string;
+  url?: string;
+  ts: string;
+}
+
 // Socket 'location' event payload emitted by the backend on each ingest.
 export interface LocationEvent {
   driverId: string;

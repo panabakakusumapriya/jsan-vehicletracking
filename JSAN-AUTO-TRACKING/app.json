@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "JSAN-AUTO-TRACKING",
-    "slug": "jsan-auto-tracking",
+    "slug": "jsanvtsauto",
     "version": "1.0.7",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -77,9 +77,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "2d9c89c0-d7f7-4dee-921f-a2fd1244801c"
+        "projectId": "c93779a1-773a-4616-a209-5b10f542422a"
       }
     },
-    "owner": "panabakakusumapriya"
+    "owner": "jsanconsulting"
   }
 }

@@ -42,4 +42,13 @@ function emitLocation(payload) {
   if (payload.managerId) io.to(`manager:${payload.managerId}`).emit('location', payload);
 }
 
-module.exports = { initSocket, emitLocation, getIO: () => io };
+// Push a fleet alert (driver offline / back online) to any panel that is open right now.
+// This is the in-app half of an alert; the web-push half reaches closed panels. Both are
+// sent so a manager watching the map sees it instantly even if they denied notifications.
+function emitAlert(payload) {
+  if (!io) return;
+  io.to('admins').emit('alert', payload);
+  if (payload.managerId) io.to(`manager:${payload.managerId}`).emit('alert', payload);
+}
+
+module.exports = { initSocket, emitLocation, emitAlert, getIO: () => io };

@@ -1,5 +1,10 @@
+import { useEffect } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
+import { syncExistingSubscription } from '../lib/push';
+import { AlertsBell } from './AlertsBell';
+import { AlertToaster } from './AlertToaster';
+import { PwaBanner } from './PwaBanner';
 
 const MapIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -69,6 +74,12 @@ export function Layout() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
 
+  // Re-bind this browser's push subscription to whoever is signed in now. Covers a rotated
+  // endpoint and a shared machine where a different manager logs in.
+  useEffect(() => {
+    if (user) syncExistingSubscription();
+  }, [user]);
+
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -114,6 +125,7 @@ export function Layout() {
             <div className="who-name">{user?.name}</div>
             <div className="who-role">{user?.role}</div>
           </div>
+          <AlertsBell />
           <button
             className="btn-ghost"
             onClick={() => { signOut(); navigate('/login', { replace: true }); }}
@@ -128,6 +140,10 @@ export function Layout() {
       <main className="content">
         <Outlet />
       </main>
+
+      {/* App-wide overlays: one-time install/alerts nudge and live alert toasts. */}
+      <PwaBanner />
+      <AlertToaster />
     </div>
   );
 }

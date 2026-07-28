@@ -1,5 +1,11 @@
 node_modules/
 
+# Secrets — .env is currently TRACKED in this repo's history. Untrack it with:
+#   git rm --cached .env && git commit -m "stop tracking .env"
+# then rotate the Mongo password, JWT_SECRET and VAPID_PRIVATE_KEY it contains.
+.env
+.env.local
+
 *.log
 npm-debug.log*
 .DS_Store

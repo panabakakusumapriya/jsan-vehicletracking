@@ -38,6 +38,7 @@ function createApp() {
   app.use('/api/trips', require('./routes/trip.routes'));
   app.use('/api/tracking', require('./routes/tracking.routes'));
   app.use('/api/app', require('./routes/appVersion.routes'));
+  app.use('/api/push', require('./routes/push.routes'));
 
   // SPA fallback — serve index.html for non-API routes
   app.get('*', (req, res, next) => {

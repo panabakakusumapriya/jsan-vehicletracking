@@ -57,6 +57,12 @@ Socket.IO connects with `{ auth: { token } }`.
 - `POST /api/tracking/ingest`  (driver) — **the core endpoint**
 - `GET  /api/tracking/live`  (admin, manager) — snapshot of active drivers
 
+### Push / alerts  (admin, manager — used by the panel PWA)
+- `GET  /api/push/public-key` (no auth) → `{ publicKey, configured, alertsEnabled }`
+- `POST /api/push/subscribe` `{ endpoint, keys:{p256dh,auth} }` — idempotent by endpoint
+- `POST /api/push/unsubscribe` `{ endpoint }`
+- `POST /api/push/test` — fire a notification at your own devices (rate-limited 5/min)
+
 ## The ingest model (heartbeat + offline sync in one)
 
 The mobile app records a point roughly every 10s. Each point gets a device-side
@@ -91,6 +97,32 @@ Idempotency:
 
 On each ingest the freshest position per trip is emitted over Socket.IO
 (`location` event) to `admins` and the owning `manager:<id>` room.
+
+## Driver-offline alerts
+
+Ingest only runs when a device talks to us, so "this driver went silent" — the absence of
+traffic — needs a clock, not a request. `services/driverWatchdog.js` sweeps every
+`WATCHDOG_INTERVAL_SECONDS` (30s) and, for each **active** trip whose last heartbeat is
+older than `DRIVER_OFFLINE_AFTER_SECONDS` (3 min, comfortably above the device's 30s
+stationary keep-alive), raises an alert to the driver's manager **and** every admin:
+
+- **Web Push** → lands on the installed admin-panel PWA even with every tab closed.
+- **Socket.IO `alert` event** → in-app toast for panels that are open right now.
+
+De-duping is a conditional update, not in-memory state: an alert is only sent by whoever
+wins `Trip.offlineNotifiedAt: null -> now`, so a restart or a second instance can't re-send
+it. The flag is cleared (and a "back online" alert sent, if `ALERT_ON_BACK_ONLINE`) as soon
+as the device reports again. The same sweep also closes trips silent past
+`SESSION_DEAD_AFTER_SECONDS`, so the live map self-heals even on days nobody opens it.
+
+Set up push once:
+
+```bash
+npm run vapid     # prints VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY
+```
+
+Put **both** in the environment (locally and on Railway). Without them the watchdog still
+runs and still emits socket alerts — only the "panel is closed" delivery is skipped.
 
 ## curl smoke test
 

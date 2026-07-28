@@ -39,6 +39,11 @@ const tripSchema = new mongoose.Schema(
     distanceMeters: { type: Number, default: 0 },
     maxSpeedKmh: { type: Number, default: 0 },
     pointCount: { type: Number, default: 0 },
+    // Set when the watchdog raised a "driver offline" alert for this trip, cleared when the
+    // device starts reporting again. Doubles as the de-dupe lock: the watchdog only alerts
+    // on a conditional update from null, so a restart (or a second server instance) can
+    // never send the same alert twice. See services/driverWatchdog.js.
+    offlineNotifiedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -50,5 +55,7 @@ tripSchema.index(
   { unique: true, partialFilterExpression: { clientTripId: { $type: 'string' } } }
 );
 tripSchema.index({ driverId: 1, startedAt: -1 });
+// The watchdog sweeps active trips by last-heartbeat every WATCHDOG_INTERVAL_SECONDS.
+tripSchema.index({ status: 1, 'lastLocation.recordedAt': 1 });
 
 module.exports = mongoose.model('Trip', tripSchema);

@@ -1,0 +1,37 @@
+{
+  "id": "/",
+  "name": "JSAN Fleet — Admin",
+  "short_name": "JSAN Fleet",
+  "description": "Live vehicle tracking for JSAN fleet managers: real-time map, trips, and driver-offline alerts.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d0d14",
+  "theme_color": "#0d0d14",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["business", "productivity", "navigation"],
+  "prefer_related_applications": false,
+  "related_applications": [{ "platform": "webapp", "url": "/manifest.webmanifest" }],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-192-maskable.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Live Map",
+      "short_name": "Live",
+      "url": "/",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Trips",
+      "short_name": "Trips",
+      "url": "/trips",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
