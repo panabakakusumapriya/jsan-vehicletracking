@@ -59,3 +59,14 @@ exports.logout = asyncHandler(async (req, res) => {
 exports.me = asyncHandler(async (req, res) => {
   res.json({ user: req.user.toSafeJSON() });
 });
+
+// PATCH /api/auth/timezone  { timezone, country?, lat?, lon? }
+// Called by the mobile app to persist the auto-detected timezone.
+exports.updateTimezone = asyncHandler(async (req, res) => {
+  const { timezone, country } = req.body || {};
+  if (!timezone) return res.status(400).json({ error: 'timezone is required' });
+  req.user.timezone = timezone;
+  if (country) req.user.country = country;
+  await req.user.save();
+  res.json({ ok: true, timezone: req.user.timezone, country: req.user.country });
+});

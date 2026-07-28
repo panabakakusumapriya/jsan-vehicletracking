@@ -31,6 +31,16 @@ export type TrackerStatus = {
   apiBaseUrl: string | null;
 };
 
+export type DaylightInfo = {
+  timezoneId: string;
+  daylightOnly: boolean;
+  lat: number | null;
+  lon: number | null;
+  sunrise?: string;
+  sunset?: string;
+  isDaylight?: boolean;
+};
+
 const isAndroid = Platform.OS === 'android';
 
 // Only require the native module on Android; keeps iOS/web from throwing.
@@ -59,6 +69,19 @@ export async function getStatus(): Promise<TrackerStatus> {
   return { enabled: false, queued: 0, currentTripId: null, driverId: null, apiBaseUrl: null };
 }
 
+export async function getDaylightInfo(): Promise<DaylightInfo> {
+  if (native) return native.getDaylightInfo();
+  return { timezoneId: Intl.DateTimeFormat().resolvedOptions().timeZone, daylightOnly: true, lat: null, lon: null };
+}
+
+export async function setDaylightOnly(enabled: boolean): Promise<void> {
+  if (native) await native.setDaylightOnly(enabled);
+}
+
+export async function setTimezone(timezoneId: string): Promise<void> {
+  if (native) await native.setTimezone(timezoneId);
+}
+
 export function addLocationListener(cb: (e: LocationEvent) => void): EventSubscription | null {
   return native ? native.addListener('onLocation', cb) : null;
 }
@@ -82,6 +105,9 @@ export default {
   stop,
   flushNow,
   getStatus,
+  getDaylightInfo,
+  setDaylightOnly,
+  setTimezone,
   addLocationListener,
   addTripStartListener,
   addTripEndListener,

@@ -63,6 +63,7 @@ exports.ingest = asyncHandler(async (req, res) => {
         status: 'active',
         startedAt: new Date(first.recordedAt),
         startLocation: { lat: first.lat, lon: first.lon },
+        timezone: driver.timezone || null,
       });
     }
 

@@ -8,5 +8,6 @@ const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHead
 router.post('/login', loginLimiter, ctrl.login);
 router.post('/logout', authenticate, ctrl.logout);
 router.get('/me', authenticate, ctrl.me);
+router.patch('/timezone', authenticate, ctrl.updateTimezone);
 
 module.exports = router;

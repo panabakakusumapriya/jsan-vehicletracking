@@ -52,5 +52,37 @@ class VehicleTrackerModule : Module() {
                 "apiBaseUrl" to TrackingConfig.apiBaseUrl(context)
             )
         }
+
+        AsyncFunction("getDaylightInfo") {
+            val tzId = TrackingConfig.timezoneId(context) ?: java.util.TimeZone.getDefault().id
+            val lat = TrackingConfig.lastLat(context)
+            val lon = TrackingConfig.lastLon(context)
+            val daylightOnly = TrackingConfig.isDaylightOnly(context)
+
+            val result = mutableMapOf<String, Any?>(
+                "timezoneId" to tzId,
+                "daylightOnly" to daylightOnly,
+                "lat" to if (lat.isNaN()) null else lat,
+                "lon" to if (lon.isNaN()) null else lon,
+            )
+
+            if (!lat.isNaN() && !lon.isNaN()) {
+                val daylight = SunTimes.today(lat, lon, tzId)
+                if (daylight != null) {
+                    result["sunrise"] = daylight.sunriseFormatted()
+                    result["sunset"] = daylight.sunsetFormatted()
+                    result["isDaylight"] = daylight.isDaylight(System.currentTimeMillis())
+                }
+            }
+            result
+        }
+
+        AsyncFunction("setDaylightOnly") { enabled: Boolean ->
+            TrackingConfig.setDaylightOnly(context, enabled)
+        }
+
+        AsyncFunction("setTimezone") { timezoneId: String ->
+            TrackingConfig.setTimezoneId(context, timezoneId)
+        }
     }
 }

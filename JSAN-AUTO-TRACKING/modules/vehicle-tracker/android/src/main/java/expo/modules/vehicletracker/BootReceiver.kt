@@ -26,6 +26,20 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
+        // Skip boot-start if it's outside daylight hours
+        if (TrackingConfig.isDaylightOnly(context)) {
+            val tzId = TrackingConfig.timezoneId(context)
+            val lat = TrackingConfig.lastLat(context)
+            val lon = TrackingConfig.lastLon(context)
+            if (tzId != null && !lat.isNaN() && !lon.isNaN()) {
+                val daylight = SunTimes.today(lat, lon, tzId)
+                if (daylight != null && !daylight.isDaylight(System.currentTimeMillis())) {
+                    Log.i("JSANBoot", "Skipping auto-start: outside daylight hours (sunrise ${daylight.sunriseFormatted()})")
+                    return
+                }
+            }
+        }
+
         Log.i("JSANBoot", "Restarting TrackingService after $action")
         TrackingService.start(context)
     }

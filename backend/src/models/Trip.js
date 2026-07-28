@@ -36,6 +36,7 @@ const tripSchema = new mongoose.Schema(
       ),
       default: null,
     },
+    timezone: { type: String, default: null },
     distanceMeters: { type: Number, default: 0 },
     maxSpeedKmh: { type: Number, default: 0 },
     pointCount: { type: Number, default: 0 },

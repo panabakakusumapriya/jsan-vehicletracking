@@ -16,7 +16,7 @@ import { useAuth } from '@/src/lib/auth';
 import { ensurePermissions } from '@/src/lib/permissions';
 import { TabBar } from '@/src/components/TabBar';
 
-type UiState = 'starting' | 'idle' | 'tracking' | 'blocked';
+type UiState = 'starting' | 'idle' | 'tracking' | 'blocked' | 'night';
 type UploadError = { reason: string; message: string; code?: number } | null;
 
 // Brand palette
@@ -47,6 +47,7 @@ const STATE = {
   blocked:  { label: 'Action needed',           sub: '',                                                              color: C.red,   bg: C.redBg,   bd: C.redBd   },
   starting: { label: 'Starting…',              sub: 'Setting up background tracking.',                              color: C.amber, bg: C.amberBg, bd: C.amberBd },
   idle:     { label: 'Ready — auto-tracking',  sub: 'Just drive. A trip starts automatically above 10 km/h.',      color: C.brand, bg: C.brandSoft, bd: '#d8b4fe' },
+  night:    { label: 'Night mode',             sub: 'Tracking paused — resumes at sunrise.',                        color: C.muted, bg: '#f1f5f9',   bd: C.border   },
 };
 
 export default function Home() {
@@ -57,6 +58,7 @@ export default function Home() {
   const [lastFix, setLastFix] = useState<VehicleTracker.LocationEvent | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadError, setUploadError] = useState<UploadError>(null);
+  const [daylightInfo, setDaylightInfo] = useState<VehicleTracker.DaylightInfo | null>(null);
   const started = useRef(false);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
@@ -76,7 +78,16 @@ export default function Home() {
 
   const refreshStatus = useCallback(async () => {
     try { setStatus(await VehicleTracker.getStatus()); } catch {}
-  }, []);
+    try {
+      const dl = await VehicleTracker.getDaylightInfo();
+      setDaylightInfo(dl);
+      if (dl.isDaylight === false && uiState !== 'starting' && uiState !== 'blocked') {
+        setUiState('night');
+      } else if (dl.isDaylight === true && uiState === 'night') {
+        setUiState('idle');
+      }
+    } catch {}
+  }, [uiState]);
 
   useEffect(() => {
     if (started.current || !user || !token) return;
@@ -95,6 +106,11 @@ export default function Home() {
         setUiState('blocked');
         setPermMsg('Configuration error — please sign out and sign in again.');
         return;
+      }
+
+      // Set timezone in native module from user profile before starting
+      if (user.timezone) {
+        await VehicleTracker.setTimezone(user.timezone);
       }
 
       await VehicleTracker.configure(API_BASE_URL, token, user._id);
@@ -197,6 +213,25 @@ export default function Home() {
         )}
       </View>
 
+      {/* ── Daylight info ── */}
+      {daylightInfo?.sunrise && daylightInfo?.sunset && (
+        <View style={s.daylightCard}>
+          <Text style={s.daylightTitle}>Daylight tracking</Text>
+          <View style={s.daylightRow}>
+            <Text style={s.daylightLabel}>Sunrise</Text>
+            <Text style={s.daylightValue}>{daylightInfo.sunrise}</Text>
+          </View>
+          <View style={s.daylightRow}>
+            <Text style={s.daylightLabel}>Sunset</Text>
+            <Text style={s.daylightValue}>{daylightInfo.sunset}</Text>
+          </View>
+          <View style={s.daylightRow}>
+            <Text style={s.daylightLabel}>Timezone</Text>
+            <Text style={s.daylightValue}>{daylightInfo.timezoneId}</Text>
+          </View>
+        </View>
+      )}
+
       {/* ── Stats grid ── */}
       <View style={s.grid}>
         <StatTile label="Speed"   value={lastFix ? `${Math.round(lastFix.speedKmh)}` : '—'} unit="km/h"  color={C.brand}   />
@@ -271,6 +306,15 @@ const s = StyleSheet.create({
   },
   uploadErrText: { flex: 1, fontSize: 12.5, color: C.amber, fontWeight: '600', lineHeight: 17 },
   uploadErrDismiss: { fontSize: 14, color: C.muted, fontWeight: '700', paddingHorizontal: 4 },
+
+  daylightCard: {
+    backgroundColor: C.surface, borderRadius: 16, borderWidth: 1, borderColor: C.border,
+    padding: 14,
+  },
+  daylightTitle: { fontSize: 12, fontWeight: '700', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 },
+  daylightRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
+  daylightLabel: { fontSize: 13, color: C.text2 },
+  daylightValue: { fontSize: 13, fontWeight: '700', color: C.text },
 });
 
 const st = StyleSheet.create({

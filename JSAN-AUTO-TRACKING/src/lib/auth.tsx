@@ -2,7 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
 import * as VehicleTracker from '@/modules/vehicle-tracker';
-import { apiLogin, apiLogout, type AuthUser } from './api';
+import { apiLogin, apiLogout, apiMe, type AuthUser } from './api';
 
 type AuthState = {
   loading: boolean;
@@ -13,6 +13,7 @@ type AuthState = {
 type AuthContextValue = AuthState & {
   signIn: (email: string, password: string) => Promise<AuthUser>;
   signOut: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 };
 
 const TOKEN_KEY = 'jsan_token';
@@ -43,6 +44,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return user;
   };
 
+  const refreshUser = async () => {
+    if (!state.token) return;
+    try {
+      const { user } = await apiMe(state.token);
+      await SecureStore.setItemAsync(USER_KEY, JSON.stringify(user));
+      setState((prev) => ({ ...prev, user }));
+    } catch { /* offline — keep local copy */ }
+  };
+
   const signOut = async () => {
     try {
       await VehicleTracker.stop();
@@ -58,7 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ loading: false, token: null, user: null });
   };
 
-  const value = useMemo<AuthContextValue>(() => ({ ...state, signIn, signOut }), [state]);
+  const value = useMemo<AuthContextValue>(() => ({ ...state, signIn, signOut, refreshUser }), [state]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

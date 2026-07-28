@@ -100,6 +100,12 @@ export function TripDetail() {
           <div className="v" style={{ fontSize: 15 }}>{dt(trip.endedAt)}</div>
           <div className="k">Ended</div>
         </div>
+        {trip.timezone && (
+          <div className="stat">
+            <div className="v" style={{ fontSize: 14 }}>{trip.timezone}</div>
+            <div className="k">Timezone</div>
+          </div>
+        )}
       </div>
 
       <div className="map-wrap" style={{ height: 'calc(100vh - 340px)', minHeight: 380 }}>

@@ -47,7 +47,12 @@ export default function Login() {
         setError('This app is for drivers only. Admins/managers use the web panel.');
         return;
       }
-      router.replace('/home');
+      // If no timezone is set, redirect to timezone setup first
+      if (!user.timezone) {
+        router.replace('/timezone-setup' as any);
+      } else {
+        router.replace('/home');
+      }
     } catch (e: any) {
       // Someone is already signed in with this account on another device — surface a popup.
       if (e?.code === 'ALREADY_LOGGED_IN') {

@@ -49,4 +49,28 @@ object TrackingConfig {
     fun isStill(ctx: Context): Boolean = prefs(ctx).getBoolean("activityStill", false)
     fun setStill(ctx: Context, still: Boolean) =
         prefs(ctx).edit().putBoolean("activityStill", still).apply()
+
+    // ---- Timezone / daylight tracking ----
+
+    /** IANA timezone ID auto-detected from the device (e.g. "Asia/Kolkata"). */
+    fun timezoneId(ctx: Context): String? = prefs(ctx).getString("timezoneId", null)
+    fun setTimezoneId(ctx: Context, tzId: String) =
+        prefs(ctx).edit().putString("timezoneId", tzId).apply()
+
+    /** Last known latitude — used for sunrise/sunset calculation. */
+    fun lastLat(ctx: Context): Double =
+        Double.fromBits(prefs(ctx).getLong("lastLat", Double.NaN.toBits()))
+    fun setLastLat(ctx: Context, lat: Double) =
+        prefs(ctx).edit().putLong("lastLat", lat.toBits()).apply()
+
+    /** Last known longitude — used for sunrise/sunset calculation. */
+    fun lastLon(ctx: Context): Double =
+        Double.fromBits(prefs(ctx).getLong("lastLon", Double.NaN.toBits()))
+    fun setLastLon(ctx: Context, lon: Double) =
+        prefs(ctx).edit().putLong("lastLon", lon.toBits()).apply()
+
+    /** Whether daylight-only tracking is enabled (default: true). */
+    fun isDaylightOnly(ctx: Context): Boolean = prefs(ctx).getBoolean("daylightOnly", true)
+    fun setDaylightOnly(ctx: Context, enabled: Boolean) =
+        prefs(ctx).edit().putBoolean("daylightOnly", enabled).apply()
 }

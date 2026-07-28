@@ -6,6 +6,8 @@ export type AuthUser = {
   email: string;
   role: 'admin' | 'manager' | 'user';
   vehicleId?: string | null;
+  timezone?: string | null;
+  country?: string | null;
 };
 
 async function request(path: string, options: RequestInit = {}, token?: string | null) {
@@ -42,3 +44,17 @@ export function apiLogout(token: string): Promise<{ ok: boolean }> {
 export function apiMe(token: string): Promise<{ user: AuthUser }> {
   return request('/api/auth/me', {}, token);
 }
+
+export function apiUpdateTimezone(
+  token: string,
+  data: { timezone: string; country?: string },
+): Promise<{ ok: boolean; timezone: string; country: string }> {
+  return request('/api/auth/timezone', { method: 'PATCH', body: JSON.stringify(data) }, token);
+}
+
+export type ReverseGeoResult = {
+  timezone: string;
+  country: string;
+  countryCode: string;
+  displayName: string;
+};

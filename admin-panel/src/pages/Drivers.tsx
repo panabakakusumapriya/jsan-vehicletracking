@@ -79,6 +79,7 @@ export function Drivers() {
               <th>Email</th>
               <th>Phone</th>
               <th>Country</th>
+              <th>Timezone</th>
               <th>Vehicle</th>
               <th>Status</th>
               <th></th>
@@ -103,6 +104,7 @@ export function Drivers() {
                 <td style={{ color: 'var(--muted)' }}>{d.email}</td>
                 <td>{d.phone || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                 <td>{d.country || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
+                <td style={{ fontSize: 12 }}>{d.timezone || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
                 <td>
                   {vehiclePlate(d.vehicleId) !== '—'
                     ? <span style={{ background: 'var(--panel-2)', border: '1px solid var(--line-2)', borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>{vehiclePlate(d.vehicleId)}</span>
@@ -118,7 +120,7 @@ export function Drivers() {
             ))}
             {drivers.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
+                <td colSpan={8} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
                   No drivers yet — add one to get started.
                 </td>
               </tr>

@@ -6,6 +6,7 @@ export interface User {
   email: string;
   phone?: string | null;
   country?: string | null;
+  timezone?: string | null;
   role: Role;
   managerId?: string | null;
   vehicleId?: { _id: string; plateNumber: string; model?: string } | string | null;
@@ -41,6 +42,7 @@ export interface Trip {
   startLocation?: Coord | null;
   endLocation?: Coord | null;
   lastLocation?: Coord | null;
+  timezone?: string | null;
   distanceMeters: number;
   maxSpeedKmh: number;
   pointCount: number;
