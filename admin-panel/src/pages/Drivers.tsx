@@ -4,8 +4,6 @@ import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import type { User, Vehicle } from '../lib/types';
 
-const vehiclePlate = (v: User['vehicleId']) => (v && typeof v === 'object' ? v.plateNumber : '—');
-
 export function Drivers() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
@@ -30,7 +28,6 @@ export function Drivers() {
 
   const active   = drivers.filter(d => d.active).length;
   const inactive = drivers.length - active;
-  const assigned = drivers.filter(d => d.vehicleId).length;
 
   return (
     <div>
@@ -38,49 +35,42 @@ export function Drivers() {
         <div>
           <h1 className="page-title">Drivers</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            Manage driver accounts and vehicle assignments
+            Manage driver accounts and assignments
           </p>
         </div>
-        <button className="btn" onClick={() => setShowAdd(true)}>
-          + Add driver
-        </button>
+        <button className="btn" onClick={() => setShowAdd(true)}>+ Add driver</button>
       </div>
 
-      {/* Stats */}
       <div className="stat-row">
-        <div className="stat">
-          <div className="icon">👤</div>
-          <div className="v">{drivers.length}</div>
-          <div className="k">Total drivers</div>
-        </div>
-        <div className="stat">
-          <div className="icon">✅</div>
-          <div className="v">{active}</div>
-          <div className="k">Active</div>
-        </div>
-        <div className="stat">
-          <div className="icon">🚗</div>
-          <div className="v">{assigned}</div>
-          <div className="k">Assigned vehicle</div>
-        </div>
-        <div className="stat">
-          <div className="icon">⛔</div>
-          <div className="v">{inactive}</div>
-          <div className="k">Inactive</div>
-        </div>
+        <div className="stat"><div className="v">{drivers.length}</div><div className="k">Total</div></div>
+        <div className="stat"><div className="v">{active}</div><div className="k">Active</div></div>
+        <div className="stat"><div className="v">{inactive}</div><div className="k">Inactive</div></div>
       </div>
 
-      {/* Table */}
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      <div className="card" style={{ padding: 0, overflow: 'auto' }}>
         <table>
           <thead>
             <tr>
-              <th>Driver</th>
-              <th>Email</th>
-              <th>Phone</th>
+              <th>Project</th>
+              <th>Driver ID</th>
+              <th>Driver Name</th>
+              <th>Scope</th>
+              <th>Region</th>
               <th>Country</th>
-              <th>Timezone</th>
-              <th>Vehicle</th>
+              <th>Driving Location</th>
+              <th>Driver Mode</th>
+              <th>POC</th>
+              <th>Contact</th>
+              <th>Personal Mail</th>
+              <th>Driver Address</th>
+              <th>CTS Mail</th>
+              <th>Driver Status</th>
+              <th>Joining Date</th>
+              <th>Exit Date</th>
+              <th>Price/Hour</th>
+              <th>Per Diem</th>
+              <th>Currency</th>
+              <th>Language</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -88,134 +78,176 @@ export function Drivers() {
           <tbody>
             {drivers.map(d => (
               <tr key={d._id}>
-                <td>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div style={{
-                      width: 32, height: 32, borderRadius: 10,
-                      background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.2)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      color: 'var(--brand)', fontSize: 11, fontWeight: 800, flexShrink: 0,
-                    }}>
-                      {d.name.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase()}
-                    </div>
-                    {d.name}
-                  </div>
-                </td>
-                <td style={{ color: 'var(--muted)' }}>{d.email}</td>
-                <td>{d.phone || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
-                <td>{d.country || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
-                <td style={{ fontSize: 12 }}>{d.timezone || <span style={{ color: 'var(--muted)' }}>—</span>}</td>
-                <td>
-                  {vehiclePlate(d.vehicleId) !== '—'
-                    ? <span style={{ background: 'var(--panel-2)', border: '1px solid var(--line-2)', borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>{vehiclePlate(d.vehicleId)}</span>
-                    : <span style={{ color: 'var(--muted)' }}>—</span>
-                  }
-                </td>
+                <td>{d.project || <M />}</td>
+                <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{d.driverId || <M />}</td>
+                <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{d.name}</td>
+                <td>{d.scope || <M />}</td>
+                <td>{d.region || <M />}</td>
+                <td>{d.country || <M />}</td>
+                <td>{d.drivingLocation || <M />}</td>
+                <td>{d.driverMode || <M />}</td>
+                <td>{d.poc || <M />}</td>
+                <td>{d.contact || <M />}</td>
+                <td>{d.personalMail || d.email || <M />}</td>
+                <td>{d.driverAddress || <M />}</td>
+                <td>{d.ctsMail || <M />}</td>
+                <td>{d.driverStatus || <M />}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{d.joiningDate ? new Date(d.joiningDate).toLocaleDateString() : <M />}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{d.exitDate ? new Date(d.exitDate).toLocaleDateString() : <M />}</td>
+                <td>{d.pricePerHour ?? <M />}</td>
+                <td>{d.perDiem ?? <M />}</td>
+                <td>{d.currency || <M />}</td>
+                <td>{d.language || <M />}</td>
                 <td><span className={`badge ${d.active ? 'green' : 'red'}`}>{d.active ? 'Active' : 'Inactive'}</span></td>
-                <td style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
                   <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(d)}>Edit</button>
                   {d.active && <button className="btn-danger" onClick={() => deactivate(d)}>Deactivate</button>}
                 </td>
               </tr>
             ))}
             {drivers.length === 0 && (
-              <tr>
-                <td colSpan={8} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
-                  No drivers yet — add one to get started.
-                </td>
-              </tr>
+              <tr><td colSpan={22} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
-      {showAdd && (
-        <AddDriver
-          vehicles={vehicles}
-          managers={managers}
-          isAdmin={isAdmin}
-          onClose={() => setShowAdd(false)}
-          onSaved={() => { setShowAdd(false); load(); }}
-        />
-      )}
-
-      {editing && (
-        <EditDriver
-          driver={editing}
-          vehicles={vehicles}
-          managers={managers}
-          isAdmin={isAdmin}
-          onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); load(); }}
-        />
-      )}
+      {showAdd && <AddDriver vehicles={vehicles} managers={managers} isAdmin={isAdmin} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />}
+      {editing && <EditDriver driver={editing} vehicles={vehicles} managers={managers} isAdmin={isAdmin} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     </div>
   );
 }
+
+function M() { return <span style={{ color: 'var(--muted)' }}>—</span>; }
+
+const EMPTY_FORM = {
+  name: '', email: '', password: '', phone: '', country: '', vehicleId: '', managerId: '',
+  driverId: '', project: '', scope: '', region: '', drivingLocation: '', driverMode: '',
+  poc: '', contact: '', personalMail: '', driverAddress: '', ctsMail: '',
+  driverStatus: '', joiningDate: '', exitDate: '',
+  pricePerHour: '', perDiem: '', currency: '', language: '',
+};
 
 function AddDriver({ vehicles, managers, isAdmin, onClose, onSaved }: {
   vehicles: Vehicle[]; managers: User[];
   isAdmin: boolean; onClose: () => void; onSaved: () => void;
 }) {
-  const [form, setForm] = useState({ name: '', email: '', password: '', phone: '', country: '', vehicleId: '', managerId: '' });
+  const [form, setForm] = useState(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
-    if (!form.country.trim()) { setError('Country is required'); return; }
+    if (!form.name.trim()) { setError('Name is required'); return; }
+    if (!form.email.trim()) { setError('Email is required'); return; }
+    if (!form.password.trim()) { setError('Password is required'); return; }
     setError(null); setBusy(true);
     try {
       await api.post('/api/users', {
         name: form.name, email: form.email, password: form.password,
         phone: form.phone || undefined, role: 'user',
-        country: form.country.trim(),
+        country: form.country.trim() || undefined,
         vehicleId: form.vehicleId || undefined,
         managerId: isAdmin ? form.managerId || undefined : undefined,
+        driverId: form.driverId || undefined,
+        project: form.project || undefined,
+        scope: form.scope || undefined,
+        region: form.region || undefined,
+        drivingLocation: form.drivingLocation || undefined,
+        driverMode: form.driverMode || undefined,
+        poc: form.poc || undefined,
+        contact: form.contact || undefined,
+        personalMail: form.personalMail || undefined,
+        driverAddress: form.driverAddress || undefined,
+        ctsMail: form.ctsMail || undefined,
+        driverStatus: form.driverStatus || undefined,
+        joiningDate: form.joiningDate || undefined,
+        exitDate: form.exitDate || undefined,
+        pricePerHour: form.pricePerHour ? Number(form.pricePerHour) : undefined,
+        perDiem: form.perDiem ? Number(form.perDiem) : undefined,
+        currency: form.currency || undefined,
+        language: form.language || undefined,
       });
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create driver');
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
 
   return (
     <Modal title="Add new driver" onClose={onClose}>
-      <div className="field"><label>Full name</label>
-        <input className="input" value={form.name} onChange={e => set('name', e.target.value)} placeholder="John Smith" />
-      </div>
-      <div className="field"><label>Email</label>
-        <input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="driver@company.com" />
-      </div>
-      <div className="field"><label>Password</label>
-        <input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Temporary password" />
-      </div>
-      <div className="field"><label>Phone (optional)</label>
-        <input className="input" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="+91 9876543210" />
-      </div>
-      <div className="field"><label>Country</label>
-        <input className="input" value={form.country} onChange={e => set('country', e.target.value)} placeholder="India" />
-      </div>
-      {isAdmin && (
-        <div className="field"><label>Manager</label>
-          <select className="input" value={form.managerId} onChange={e => set('managerId', e.target.value)}>
-            <option value="">— Unassigned —</option>
-            {managers.map(m => <option key={m._id} value={m._id}>{m.name} ({m.email})</option>)}
+      <div style={{ maxHeight: '70vh', overflowY: 'auto', paddingRight: 8 }}>
+        <SectionLabel text="Account" />
+        <Row>
+          <F label="Full name *"><input className="input" value={form.name} onChange={e => set('name', e.target.value)} placeholder="John Smith" /></F>
+          <F label="Email *"><input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} placeholder="driver@company.com" /></F>
+        </Row>
+        <Row>
+          <F label="Password *"><input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Temporary password" /></F>
+          <F label="Phone"><input className="input" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="+91 9876543210" /></F>
+        </Row>
+
+        <SectionLabel text="Project & Location" />
+        <Row>
+          <F label="Project"><input className="input" value={form.project} onChange={e => set('project', e.target.value)} /></F>
+          <F label="Driver ID"><input className="input" value={form.driverId} onChange={e => set('driverId', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Scope"><input className="input" value={form.scope} onChange={e => set('scope', e.target.value)} /></F>
+          <F label="Region"><input className="input" value={form.region} onChange={e => set('region', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Country"><input className="input" value={form.country} onChange={e => set('country', e.target.value)} placeholder="India" /></F>
+          <F label="Driving Location"><input className="input" value={form.drivingLocation} onChange={e => set('drivingLocation', e.target.value)} /></F>
+        </Row>
+        <F label="Driver Mode"><input className="input" value={form.driverMode} onChange={e => set('driverMode', e.target.value)} /></F>
+
+        <SectionLabel text="Contact & POC" />
+        <Row>
+          <F label="POC"><input className="input" value={form.poc} onChange={e => set('poc', e.target.value)} /></F>
+          <F label="Contact"><input className="input" value={form.contact} onChange={e => set('contact', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Personal Mail"><input className="input" type="email" value={form.personalMail} onChange={e => set('personalMail', e.target.value)} /></F>
+          <F label="CTS Mail"><input className="input" type="email" value={form.ctsMail} onChange={e => set('ctsMail', e.target.value)} /></F>
+        </Row>
+        <F label="Driver Address"><input className="input" value={form.driverAddress} onChange={e => set('driverAddress', e.target.value)} /></F>
+
+        <SectionLabel text="Employment" />
+        <Row>
+          <F label="Driver Status"><input className="input" value={form.driverStatus} onChange={e => set('driverStatus', e.target.value)} placeholder="Active / On Leave / Resigned" /></F>
+          <F label="Language"><input className="input" value={form.language} onChange={e => set('language', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Joining Date"><input className="input" type="date" value={form.joiningDate} onChange={e => set('joiningDate', e.target.value)} /></F>
+          <F label="Exit Date"><input className="input" type="date" value={form.exitDate} onChange={e => set('exitDate', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Price/Hour"><input className="input" type="number" value={form.pricePerHour} onChange={e => set('pricePerHour', e.target.value)} /></F>
+          <F label="Per Diem"><input className="input" type="number" value={form.perDiem} onChange={e => set('perDiem', e.target.value)} /></F>
+        </Row>
+        <F label="Currency"><input className="input" value={form.currency} onChange={e => set('currency', e.target.value)} placeholder="INR / EUR / USD" /></F>
+
+        <SectionLabel text="Assignment" />
+        {isAdmin && (
+          <F label="Manager">
+            <select className="input" value={form.managerId} onChange={e => set('managerId', e.target.value)}>
+              <option value="">— Unassigned —</option>
+              {managers.map(m => <option key={m._id} value={m._id}>{m.name} ({m.email})</option>)}
+            </select>
+          </F>
+        )}
+        <F label="Vehicle">
+          <select className="input" value={form.vehicleId} onChange={e => set('vehicleId', e.target.value)}>
+            <option value="">— None —</option>
+            {vehicles.map(v => <option key={v._id} value={v._id}>{v.plateNumber}{v.model ? ` · ${v.model}` : ''}</option>)}
           </select>
-        </div>
-      )}
-      <div className="field"><label>Vehicle (optional)</label>
-        <select className="input" value={form.vehicleId} onChange={e => set('vehicleId', e.target.value)}>
-          <option value="">— None —</option>
-          {vehicles.map(v => <option key={v._id} value={v._id}>{v.plateNumber}{v.model ? ` · ${v.model}` : ''}</option>)}
-        </select>
+        </F>
       </div>
       {error && <div className="error-text">{error}</div>}
       <div className="modal-actions">
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn" onClick={save} disabled={busy}>{busy ? 'Creating…' : 'Create driver'}</button>
+        <button className="btn" onClick={save} disabled={busy}>{busy ? 'Creating...' : 'Create driver'}</button>
       </div>
     </Modal>
   );
@@ -234,6 +266,24 @@ function EditDriver({ driver, vehicles, managers, isAdmin, onClose, onSaved }: {
     vehicleId: vehicleIdVal as string,
     managerId: managerIdVal as string,
     password: '',
+    driverId: driver.driverId || '',
+    project: driver.project || '',
+    scope: driver.scope || '',
+    region: driver.region || '',
+    drivingLocation: driver.drivingLocation || '',
+    driverMode: driver.driverMode || '',
+    poc: driver.poc || '',
+    contact: driver.contact || '',
+    personalMail: driver.personalMail || '',
+    driverAddress: driver.driverAddress || '',
+    ctsMail: driver.ctsMail || '',
+    driverStatus: driver.driverStatus || '',
+    joiningDate: driver.joiningDate ? driver.joiningDate.slice(0, 10) : '',
+    exitDate: driver.exitDate ? driver.exitDate.slice(0, 10) : '',
+    pricePerHour: driver.pricePerHour != null ? String(driver.pricePerHour) : '',
+    perDiem: driver.perDiem != null ? String(driver.perDiem) : '',
+    currency: driver.currency || '',
+    language: driver.language || '',
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -247,6 +297,24 @@ function EditDriver({ driver, vehicles, managers, isAdmin, onClose, onSaved }: {
         phone: form.phone || null,
         country: form.country || null,
         vehicleId: form.vehicleId || null,
+        driverId: form.driverId || null,
+        project: form.project || null,
+        scope: form.scope || null,
+        region: form.region || null,
+        drivingLocation: form.drivingLocation || null,
+        driverMode: form.driverMode || null,
+        poc: form.poc || null,
+        contact: form.contact || null,
+        personalMail: form.personalMail || null,
+        driverAddress: form.driverAddress || null,
+        ctsMail: form.ctsMail || null,
+        driverStatus: form.driverStatus || null,
+        joiningDate: form.joiningDate || null,
+        exitDate: form.exitDate || null,
+        pricePerHour: form.pricePerHour ? Number(form.pricePerHour) : null,
+        perDiem: form.perDiem ? Number(form.perDiem) : null,
+        currency: form.currency || null,
+        language: form.language || null,
       };
       if (isAdmin) body.managerId = form.managerId || null;
       if (form.password) body.password = form.password;
@@ -254,44 +322,93 @@ function EditDriver({ driver, vehicles, managers, isAdmin, onClose, onSaved }: {
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to update driver');
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
 
   return (
     <Modal title={`Edit · ${driver.name}`} onClose={onClose}>
-      <div className="field"><label>Full name</label>
-        <input className="input" value={form.name} onChange={e => set('name', e.target.value)} />
-      </div>
-      <div className="field"><label>Phone</label>
-        <input className="input" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="+91 9876543210" />
-      </div>
-      <div className="field"><label>Country</label>
-        <input className="input" value={form.country} onChange={e => set('country', e.target.value)} placeholder="India" />
-      </div>
-      {isAdmin && (
-        <div className="field"><label>Manager</label>
-          <select className="input" value={form.managerId} onChange={e => set('managerId', e.target.value)}>
-            <option value="">— Unassigned —</option>
-            {managers.map(m => <option key={m._id} value={m._id}>{m.name} ({m.email})</option>)}
+      <div style={{ maxHeight: '70vh', overflowY: 'auto', paddingRight: 8 }}>
+        <SectionLabel text="Account" />
+        <Row>
+          <F label="Full name"><input className="input" value={form.name} onChange={e => set('name', e.target.value)} /></F>
+          <F label="Phone"><input className="input" value={form.phone} onChange={e => set('phone', e.target.value)} /></F>
+        </Row>
+
+        <SectionLabel text="Project & Location" />
+        <Row>
+          <F label="Project"><input className="input" value={form.project} onChange={e => set('project', e.target.value)} /></F>
+          <F label="Driver ID"><input className="input" value={form.driverId} onChange={e => set('driverId', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Scope"><input className="input" value={form.scope} onChange={e => set('scope', e.target.value)} /></F>
+          <F label="Region"><input className="input" value={form.region} onChange={e => set('region', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Country"><input className="input" value={form.country} onChange={e => set('country', e.target.value)} /></F>
+          <F label="Driving Location"><input className="input" value={form.drivingLocation} onChange={e => set('drivingLocation', e.target.value)} /></F>
+        </Row>
+        <F label="Driver Mode"><input className="input" value={form.driverMode} onChange={e => set('driverMode', e.target.value)} /></F>
+
+        <SectionLabel text="Contact & POC" />
+        <Row>
+          <F label="POC"><input className="input" value={form.poc} onChange={e => set('poc', e.target.value)} /></F>
+          <F label="Contact"><input className="input" value={form.contact} onChange={e => set('contact', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Personal Mail"><input className="input" type="email" value={form.personalMail} onChange={e => set('personalMail', e.target.value)} /></F>
+          <F label="CTS Mail"><input className="input" type="email" value={form.ctsMail} onChange={e => set('ctsMail', e.target.value)} /></F>
+        </Row>
+        <F label="Driver Address"><input className="input" value={form.driverAddress} onChange={e => set('driverAddress', e.target.value)} /></F>
+
+        <SectionLabel text="Employment" />
+        <Row>
+          <F label="Driver Status"><input className="input" value={form.driverStatus} onChange={e => set('driverStatus', e.target.value)} /></F>
+          <F label="Language"><input className="input" value={form.language} onChange={e => set('language', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Joining Date"><input className="input" type="date" value={form.joiningDate} onChange={e => set('joiningDate', e.target.value)} /></F>
+          <F label="Exit Date"><input className="input" type="date" value={form.exitDate} onChange={e => set('exitDate', e.target.value)} /></F>
+        </Row>
+        <Row>
+          <F label="Price/Hour"><input className="input" type="number" value={form.pricePerHour} onChange={e => set('pricePerHour', e.target.value)} /></F>
+          <F label="Per Diem"><input className="input" type="number" value={form.perDiem} onChange={e => set('perDiem', e.target.value)} /></F>
+        </Row>
+        <F label="Currency"><input className="input" value={form.currency} onChange={e => set('currency', e.target.value)} /></F>
+
+        <SectionLabel text="Assignment" />
+        {isAdmin && (
+          <F label="Manager">
+            <select className="input" value={form.managerId} onChange={e => set('managerId', e.target.value)}>
+              <option value="">— Unassigned —</option>
+              {managers.map(m => <option key={m._id} value={m._id}>{m.name} ({m.email})</option>)}
+            </select>
+          </F>
+        )}
+        <F label="Vehicle">
+          <select className="input" value={form.vehicleId} onChange={e => set('vehicleId', e.target.value)}>
+            <option value="">— None —</option>
+            {vehicles.map(v => <option key={v._id} value={v._id}>{v.plateNumber}{v.model ? ` · ${v.model}` : ''}</option>)}
           </select>
-        </div>
-      )}
-      <div className="field"><label>Vehicle</label>
-        <select className="input" value={form.vehicleId} onChange={e => set('vehicleId', e.target.value)}>
-          <option value="">— None —</option>
-          {vehicles.map(v => <option key={v._id} value={v._id}>{v.plateNumber}{v.model ? ` · ${v.model}` : ''}</option>)}
-        </select>
-      </div>
-      <div className="field"><label>New password (leave blank to keep current)</label>
-        <input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Leave blank to keep current" />
+        </F>
+        <F label="New password (leave blank to keep current)">
+          <input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Leave blank to keep current" />
+        </F>
       </div>
       {error && <div className="error-text">{error}</div>}
       <div className="modal-actions">
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+        <button className="btn" onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save changes'}</button>
       </div>
     </Modal>
   );
+}
+
+function SectionLabel({ text }: { text: string }) {
+  return <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--muted)', margin: '16px 0 8px', borderBottom: '1px solid var(--line-2)', paddingBottom: 4 }}>{text}</div>;
+}
+function Row({ children }: { children: React.ReactNode }) {
+  return <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>{children}</div>;
+}
+function F({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div className="field"><label>{label}</label>{children}</div>;
 }

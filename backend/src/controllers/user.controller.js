@@ -26,7 +26,8 @@ exports.getOne = asyncHandler(async (req, res) => {
 
 // POST /api/users  (admin creates admin/manager/driver; manager creates drivers only)
 exports.create = asyncHandler(async (req, res) => {
-  const { name, email, password, phone, role = 'user', managerId, vehicleId, country, timezone } = req.body || {};
+  const b = req.body || {};
+  const { name, email, password, role = 'user', managerId, vehicleId } = b;
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'name, email and password are required' });
   }
@@ -34,7 +35,7 @@ exports.create = asyncHandler(async (req, res) => {
   let finalRole = role;
   let finalManager = managerId || null;
   if (req.user.role === 'manager') {
-    finalRole = 'user'; // managers can only create drivers, always under themselves
+    finalRole = 'user';
     finalManager = req.user._id;
   }
   if (!User.ROLES.includes(finalRole)) return res.status(400).json({ error: 'invalid role' });
@@ -45,12 +46,36 @@ exports.create = asyncHandler(async (req, res) => {
   const user = new User({
     name,
     email,
-    phone: phone || null,
-    country: country || null,
-    timezone: timezone || null,
+    phone: b.phone || null,
+    country: b.country || null,
+    timezone: b.timezone || null,
     role: finalRole,
     managerId: finalRole === 'user' ? finalManager : null,
     vehicleId: vehicleId || null,
+    driverId: b.driverId || null,
+    project: b.project || null,
+    scope: b.scope || null,
+    region: b.region || null,
+    drivingLocation: b.drivingLocation || null,
+    driverMode: b.driverMode || null,
+    poc: b.poc || null,
+    contact: b.contact || null,
+    personalMail: b.personalMail || null,
+    driverAddress: b.driverAddress || null,
+    ctsMail: b.ctsMail || null,
+    driverStatus: b.driverStatus || null,
+    joiningDate: b.joiningDate || null,
+    exitDate: b.exitDate || null,
+    pricePerHour: b.pricePerHour ?? null,
+    perDiem: b.perDiem ?? null,
+    currency: b.currency || null,
+    language: b.language || null,
+    workPhone: b.workPhone || null,
+    imei: b.imei || null,
+    phoneModel: b.phoneModel || null,
+    androidVersion: b.androidVersion || null,
+    phoneCase: b.phoneCase || null,
+    phoneScreenguard: b.phoneScreenguard || null,
   });
   await user.setPassword(password);
   await user.save();
@@ -67,22 +92,30 @@ exports.update = asyncHandler(async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!canManageDriver(req.user, user)) return res.status(403).json({ error: 'Forbidden' });
 
-  const { name, phone, active, vehicleId, managerId, password, role, country, timezone } = req.body || {};
-  if (name !== undefined) user.name = name;
-  if (phone !== undefined) user.phone = phone;
-  if (country !== undefined) user.country = country || null;
-  if (timezone !== undefined) user.timezone = timezone || null;
-  if (active !== undefined) user.active = active;
-  if (vehicleId !== undefined) {
-    user.vehicleId = vehicleId || null;
-    if (vehicleId) await Vehicle.findByIdAndUpdate(vehicleId, { assignedDriverId: user._id });
+  const b = req.body || {};
+  const strFields = [
+    'name', 'phone', 'country', 'timezone', 'driverId', 'project', 'scope', 'region',
+    'drivingLocation', 'driverMode', 'poc', 'contact', 'personalMail',
+    'driverAddress', 'ctsMail', 'driverStatus', 'currency', 'language',
+    'workPhone', 'imei', 'phoneModel', 'androidVersion', 'phoneCase', 'phoneScreenguard',
+  ];
+  for (const f of strFields) {
+    if (b[f] !== undefined) user[f] = b[f] || null;
   }
-  // Only admins may change role / reassign manager.
+  if (b.joiningDate !== undefined) user.joiningDate = b.joiningDate || null;
+  if (b.exitDate !== undefined) user.exitDate = b.exitDate || null;
+  if (b.pricePerHour !== undefined) user.pricePerHour = b.pricePerHour ?? null;
+  if (b.perDiem !== undefined) user.perDiem = b.perDiem ?? null;
+  if (b.active !== undefined) user.active = b.active;
+  if (b.vehicleId !== undefined) {
+    user.vehicleId = b.vehicleId || null;
+    if (b.vehicleId) await Vehicle.findByIdAndUpdate(b.vehicleId, { assignedDriverId: user._id });
+  }
   if (req.user.role === 'admin') {
-    if (role !== undefined && User.ROLES.includes(role)) user.role = role;
-    if (managerId !== undefined) user.managerId = managerId || null;
+    if (b.role !== undefined && User.ROLES.includes(b.role)) user.role = b.role;
+    if (b.managerId !== undefined) user.managerId = b.managerId || null;
   }
-  if (password) await user.setPassword(password);
+  if (b.password) await user.setPassword(b.password);
 
   await user.save();
   res.json({ user: user.toSafeJSON() });

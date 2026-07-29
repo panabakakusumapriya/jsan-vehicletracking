@@ -4,7 +4,7 @@ import { ExportButtons } from '../components/ExportButtons';
 import { api, downloadFile } from '../lib/api';
 import { dt, km, statusBadge } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
-import { buildReplayLayers } from '../lib/map3d/TripPathLayer';
+import { buildReplayLayers, vehicleAtElapsed } from '../lib/map3d/TripPathLayer';
 import { useTripPlayback } from '../lib/map3d/useTripPlayback';
 import type { Trip } from '../lib/types';
 
@@ -33,6 +33,7 @@ export function TripDetail() {
   const [points, setPoints] = useState<PathPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const mapRef = useRef<Map3DHandle>(null);
+  const lastFlyRef = useRef(0);
 
   useEffect(() => {
     if (!id) return;
@@ -40,8 +41,7 @@ export function TripDetail() {
       .get<{ trip: Trip; points?: PathPoint[] }>(`/api/trips/${id}?points=true`)
       .then((r) => {
         setTrip(r.trip);
-        // Backend may insert null gap markers — filter them for clean rendering
-        setPoints((r.points ?? []).filter((p): p is PathPoint => p != null));
+        setPoints(r.points ?? []);
       })
       .finally(() => setLoading(false));
   }, [id]);
@@ -54,6 +54,19 @@ export function TripDetail() {
   }, [points]);
 
   const playback = useTripPlayback(points);
+
+  // Auto-zoom to vehicle position during playback (throttled to ~1s)
+  useEffect(() => {
+    if (!playback.playing || points.length === 0) return;
+    const now = Date.now();
+    if (now - lastFlyRef.current < 1000) return;
+    lastFlyRef.current = now;
+    const vehicle = vehicleAtElapsed(points, playback.currentTimeMs);
+    if (vehicle) {
+      mapRef.current?.flyTo([vehicle.lon, vehicle.lat], 16);
+    }
+  }, [playback.currentTimeMs, playback.playing, points]);
+
   const layers = useMemo(
     () => buildReplayLayers(points, playback.currentTimeMs, playback.playing),
     [points, playback.currentTimeMs, playback.playing]
@@ -123,7 +136,24 @@ export function TripDetail() {
           <button
             className="btn"
             style={{ minWidth: 72 }}
-            onClick={() => (playback.playing ? playback.pause() : playback.play())}
+            onClick={() => {
+              if (playback.playing) {
+                playback.pause();
+                // Zoom back to full route on pause
+                if (points.length > 0) {
+                  mapRef.current?.fitToRoute(points.map(p => [p.lon, p.lat]));
+                }
+              } else {
+                playback.play();
+                lastFlyRef.current = 0;
+                // Immediately zoom to vehicle position on play start
+                const startMs = playback.currentTimeMs >= playback.durationMs ? 0 : playback.currentTimeMs;
+                const pos = vehicleAtElapsed(points, startMs);
+                if (pos) {
+                  mapRef.current?.flyTo([pos.lon, pos.lat], 16);
+                }
+              }
+            }}
           >
             {playback.playing ? '⏸ Pause' : '▶ Play'}
           </button>

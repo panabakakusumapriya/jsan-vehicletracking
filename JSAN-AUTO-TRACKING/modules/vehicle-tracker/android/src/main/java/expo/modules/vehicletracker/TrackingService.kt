@@ -40,23 +40,17 @@ import kotlin.math.roundToInt
  * Distance-based tracking service — same core approach as MyCarTracks.
  *
  * Pipeline per GPS fix:
- *   fix → Kalman smooth → distance check → trip state machine → SQLite → upload
+ *   fix → accuracy gate → distance check → trip state machine → SQLite → upload
  *
  * Trip lifecycle:
  *   IDLE:     watch for 50 m of movement at avg speed ≥ 10 km/h → START trip
- *             (50 m rejects GPS drift; the avg-speed check uses the Kalman-smoothed
- *             position, not the raw fix -- a single noisy fix while someone is simply
- *             walking to their vehicle could otherwise make a short walk look like a
- *             50 m dash at driving speed. NOTE: 10 km/h sits close to jogging pace
- *             (~10 km/h) -- this threshold was lowered from 15 km/h on request; a
- *             sustained jog can legitimately cross it, the smoothing only helps with
- *             GPS-noise false positives, not genuine jogging speed.)
+ *             (30 m rejects GPS drift; the avg-speed check prevents walking
+ *             from starting a trip.)
  *
- *   TRACKING: record a point every 50 m moved from the last recorded point.
- *             No speed check needed during a trip — the 50 m rule naturally ignores
- *             GPS noise (drift is < 30 m) and records real movement at any speed.
+ *   TRACKING: record a point every 10 m moved from the last recorded point.
+ *             High resolution for accurate road-following traces.
  *
- *   END:      no 50 m movement for TRIP_END_NO_MOVE_MS (10 min) → end trip.
+ *   END:      no 10 m movement for TRIP_END_NO_MOVE_MS (10 min) → end trip.
  *             Checked by the GPS-independent ticker so it fires even when GPS goes
  *             quiet on a parked vehicle.
  *
@@ -76,21 +70,16 @@ class TrackingService : Service() {
         private const val WAKE_TAG   = "jsan:tracking"
 
         /** Distance the vehicle must travel from the watch position to start a trip. */
-        const val TRIP_START_DISTANCE_M     = 50f
+        const val TRIP_START_DISTANCE_M     = 30f
 
         /**
          * Minimum average speed over the first TRIP_START_DISTANCE_M to confirm a
          * vehicle trip (not walking/jogging).
-         * Walking ~5 km/h, jogging ~10 km/h, slowest vehicle ~15 km/h -- lowered to
-         * 10 from the original 15 on request. This narrows the margin against
-         * jogging specifically (a sustained jog can now cross this bar); the
-         * Kalman-smoothing fix below only rejects noise-driven false positives,
-         * not genuine sustained jogging speed.
          */
         const val TRIP_START_MIN_SPEED_KMH  = 10.0
 
         /** Distance from the last recorded point that triggers saving a new point. */
-        const val POINT_DISTANCE_M          = 50f
+        const val POINT_DISTANCE_M          = 10f
 
         /**
          * If the vehicle has not moved POINT_DISTANCE_M for this long, the trip ends.
@@ -109,8 +98,8 @@ class TrackingService : Service() {
         const val TICK_INTERVAL_MS          = 20_000L
 
         /** GPS fix request interval. */
-        const val LOCATION_INTERVAL_MS      = 10_000L
-        const val FASTEST_MS                = 5_000L
+        const val LOCATION_INTERVAL_MS      = 3_000L
+        const val FASTEST_MS                = 1_000L
 
         /**
          * While the vehicle is stopped (within the 10 min grace) we re-send the last
@@ -143,8 +132,7 @@ class TrackingService : Service() {
     private var startWatchTime: Long = 0L
 
     // ── In-trip recording state ───────────────────────────────────────────────
-    /** Smoothed lat/lon of the last point written to SQLite — distance checks
-     *  use this so saved coordinates and distance gates are always in sync. */
+    /** Last recorded position — distance checks use this. */
     private var lastRecordedLat: Double = 0.0
     private var lastRecordedLon: Double = 0.0
     private var hasLastRecorded: Boolean = false
@@ -156,8 +144,6 @@ class TrackingService : Service() {
     // ── Misc ─────────────────────────────────────────────────────────────────
     private var lastLocation: Location? = null   // for speed derivation
 
-    /** Max plausible speed between two consecutive fixes — anything above is a GPS spike. */
-    private val MAX_PLAUSIBLE_SPEED_KMH = 250.0
     /** Reject fixes with accuracy worse than this — underground, urban canyon reflections. */
     private val MAX_ACCURACY_M = 100f
 
@@ -180,21 +166,6 @@ class TrackingService : Service() {
     }
 
     /**
-     * Distance confidence weight based on GPS accuracy (modelled after MyCarTracks w0()).
-     * Poor-accuracy fixes get their distance contribution scaled down so they
-     * don't inflate the total distance with noise.
-     */
-    private fun distanceConfidence(accuracyM: Float): Double {
-        return when {
-            accuracyM <= 10f  -> 1.0
-            accuracyM <= 30f  -> 1.0
-            accuracyM <= 50f  -> 0.9
-            accuracyM <= 100f -> 0.7
-            else -> 0.0  // should never reach here (rejected above)
-        }
-    }
-
-    /**
      * GPS-independent ticker:
      *   • Detects trip end when GPS goes quiet on a parked vehicle.
      *   • Sends keep-alive heartbeats so the live-map session never goes stale.
@@ -208,44 +179,6 @@ class TrackingService : Service() {
         }
     }
 
-    /**
-     * 1-D Kalman smoother (lat + lon independently).
-     *
-     * Smooths GPS jitter without ever dropping a fix — every satellite reading
-     * is blended in, weighted by its reported accuracy (R = accuracy²). A parked
-     * device's smoothed position barely moves even when raw fixes jitter ±20 m,
-     * so the 50 m distance check naturally ignores that drift.
-     */
-    private inner class KalmanGPS {
-        var lat = 0.0
-        var lon = 0.0
-        private var varianceM2  = -1.0
-        private var lastTimeMs  = 0L
-        private val Q_M_PER_SEC = 3.0   // process noise: expected movement m/s
-
-        fun process(rawLat: Double, rawLon: Double, accuracyM: Float, timeMs: Long): Pair<Double, Double> {
-            val acc = accuracyM.toDouble().coerceAtLeast(1.0)
-            if (varianceM2 < 0 || lastTimeMs == 0L) {
-                lat = rawLat; lon = rawLon
-                varianceM2 = acc * acc
-                lastTimeMs = timeMs
-                return Pair(rawLat, rawLon)
-            }
-            val dtSec = ((timeMs - lastTimeMs) / 1000.0).coerceIn(0.0, 60.0)
-            lastTimeMs = timeMs
-            varianceM2 += dtSec * Q_M_PER_SEC * Q_M_PER_SEC
-            val R = acc * acc
-            val K = varianceM2 / (varianceM2 + R)
-            lat += K * (rawLat - lat)
-            lon += K * (rawLon - lon)
-            varianceM2 *= (1.0 - K)
-            return Pair(lat, lon)
-        }
-
-        fun reset() { varianceM2 = -1.0; lastTimeMs = 0L }
-    }
-
-    private val kalman = KalmanGPS()
 
     /** Whether we've already auto-detected and persisted the timezone this session. */
     private var timezoneDetected = false
@@ -338,42 +271,22 @@ class TrackingService : Service() {
         val now = System.currentTimeMillis()
 
         // ── Hard reject: awful accuracy ─────────────────────────────────────
-        // Fixes with accuracy > 100 m come from network location, underground,
-        // or heavy urban-canyon multipath. They shift the Kalman filter and
-        // produce invalid route lines. Reject them entirely.
         val accuracy = if (location.hasAccuracy()) location.accuracy else 30f
         if (accuracy > MAX_ACCURACY_M) return
 
-        // ── Spike rejection: impossible speed between consecutive raw fixes ──
-        // A GPS spike (multipath reflection) can report a position km away.
-        // If the implied speed from the previous raw fix exceeds 250 km/h,
-        // the fix is physically impossible — skip it to protect Kalman and route.
-        val prevRaw = lastLocation
-        if (prevRaw != null) {
-            val dtSec = (location.time - prevRaw.time) / 1000.0
-            if (dtSec > 0.1) {
-                val impliedKmh = (prevRaw.distanceTo(location) / dtSec) * 3.6
-                if (impliedKmh > MAX_PLAUSIBLE_SPEED_KMH) {
-                    // Don't update lastLocation — next fix will be checked
-                    // against the last known-good fix.
-                    return
-                }
-            }
-        }
-
-        // ── Kalman smooth ────────────────────────────────────────────────────
-        val (smoothLat, smoothLon) = kalman.process(
-            location.latitude, location.longitude, accuracy, location.time
-        )
+        // Use raw GPS coordinates directly — no smoothing, no spike rejection.
+        // OSRM map-matching will be added server-side later for road snapping.
+        val rawLat = location.latitude
+        val rawLon = location.longitude
 
         // ── Auto-detect timezone from GPS + persist location for sun calc ──
         if (!timezoneDetected) {
-            val tzId = SunTimes.detectTimezone(location.latitude, location.longitude, this)
+            val tzId = SunTimes.detectTimezone(rawLat, rawLon, this)
             TrackingConfig.setTimezoneId(this, tzId)
             timezoneDetected = true
         }
-        TrackingConfig.setLastLat(this, location.latitude)
-        TrackingConfig.setLastLon(this, location.longitude)
+        TrackingConfig.setLastLat(this, rawLat)
+        TrackingConfig.setLastLon(this, rawLon)
 
         // ── Daylight gate: skip tracking outside sunrise–sunset ─────────
         if (TrackingConfig.isDaylightOnly(this)) {
@@ -397,25 +310,14 @@ class TrackingService : Service() {
         val tripId   = TrackingConfig.currentTripId(this)
 
         if (tripId == null) {
-            // ── IDLE: watch for a vehicle-speed 50 m run ────────────────────
-            // Anchored and measured on the Kalman-smoothed position, not the raw
-            // fix -- a single noisy fix (common indoors/near buildings) could
-            // otherwise make a short walk look like a fast 50 m dash and start
-            // a trip incorrectly. See KalmanGPS above.
-            val smoothedFix = Location("smoothed").apply {
-                latitude  = smoothLat
-                longitude = smoothLon
-                time      = location.time
-            }
-
+            // ── IDLE: watch for a vehicle-speed movement to start a trip ────
             if (startWatchPos == null) {
-                // First fix after idle — anchor the watch position here.
-                startWatchPos  = smoothedFix
+                startWatchPos  = location
                 startWatchTime = now
                 return
             }
 
-            val distFromWatch = startWatchPos!!.distanceTo(smoothedFix)
+            val distFromWatch = startWatchPos!!.distanceTo(location)
 
             if (distFromWatch >= TRIP_START_DISTANCE_M) {
                 val elapsedSec    = ((now - startWatchTime) / 1000.0).coerceAtLeast(0.1)
@@ -427,31 +329,22 @@ class TrackingService : Service() {
                     TrackingConfig.setCurrentTripId(this, newId)
                     TrackingConfig.setIdleSince(this, 0L)
 
-                    // Reset Kalman so it converges to the trip-start position
-                    // instead of dragging in stale idle-period drift.
-                    kalman.reset()
-                    val (startLat, startLon) = kalman.process(
-                        location.latitude, location.longitude, accuracy, location.time
-                    )
-
-                    lastRecordedLat  = startLat
-                    lastRecordedLon  = startLon
+                    lastRecordedLat  = rawLat
+                    lastRecordedLon  = rawLon
                     hasLastRecorded  = true
                     lastMovedMs      = now
                     lastHeartbeatMs  = now
                     startWatchPos    = null
                     recentSpeeds.clear()
 
-                    savePoint(startLat, startLon, location, speedKmh, newId, "active", now)
+                    savePoint(rawLat, rawLon, location, speedKmh, newId, "active", now)
                     TrackerEvents.emit("onTripStart", mapOf("tripId" to newId, "recordedAt" to iso(location.time)))
-                    TrackerEvents.emit("onLocation",  locMap(startLat, startLon, speedKmh, newId, "active", location.time))
+                    TrackerEvents.emit("onLocation",  locMap(rawLat, rawLon, speedKmh, newId, "active", location.time))
                     emitState("tracking")
                     updateNotification("Trip started • ${speedKmh.roundToInt()} km/h")
                     triggerUpload()
                 } else {
-                    // Speed too low — person is walking. Reset watch to the
-                    // current (smoothed) position and try again from here.
-                    startWatchPos  = smoothedFix
+                    startWatchPos  = location
                     startWatchTime = now
                 }
             } else {
@@ -463,30 +356,27 @@ class TrackingService : Service() {
             }
 
         } else {
-            // ── TRACKING: record every 50 m of real movement ─────────────────
+            // ── TRACKING: record every POINT_DISTANCE_M of real movement ────
             if (!hasLastRecorded) {
-                // START_STICKY restart mid-trip — re-anchor at smoothed position.
-                lastRecordedLat = smoothLat
-                lastRecordedLon = smoothLon
+                lastRecordedLat = rawLat
+                lastRecordedLon = rawLon
                 hasLastRecorded = true
                 lastMovedMs     = now
                 return
             }
 
-            // Distance check uses smoothed coords consistently — same coordinate
-            // space as what we save, so no raw-vs-smooth mismatch.
             val distFromLast = haversineMeters(
-                lastRecordedLat, lastRecordedLon, smoothLat, smoothLon
+                lastRecordedLat, lastRecordedLon, rawLat, rawLon
             )
 
             if (distFromLast >= POINT_DISTANCE_M) {
-                lastRecordedLat  = smoothLat
-                lastRecordedLon  = smoothLon
+                lastRecordedLat  = rawLat
+                lastRecordedLon  = rawLon
                 lastMovedMs      = now
                 lastHeartbeatMs  = now
 
-                savePoint(smoothLat, smoothLon, location, speedKmh, tripId, "active", now)
-                TrackerEvents.emit("onLocation", locMap(smoothLat, smoothLon, speedKmh, tripId, "active", location.time))
+                savePoint(rawLat, rawLon, location, speedKmh, tripId, "active", now)
+                TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, tripId, "active", location.time))
                 updateNotification("Trip • ${speedKmh.roundToInt()} km/h")
                 triggerUpload()
             }
@@ -509,7 +399,7 @@ class TrackingService : Service() {
     /**
      * Runs every TICK_INTERVAL_MS regardless of GPS activity.
      *
-     *  • Trip end detection: if the vehicle has not moved 50 m in TRIP_END_NO_MOVE_MS,
+     *  • Trip end detection: if the vehicle has not moved 10 m in TRIP_END_NO_MOVE_MS,
      *    end the trip. This fires even when the GPS provider stops delivering fixes
      *    on a parked vehicle (fused provider often goes quiet when stationary).
      *
@@ -561,8 +451,7 @@ class TrackingService : Service() {
 
         // Still within the grace window — keep the server session alive.
         // Only emit a JS event for the live-map; do NOT insert a DB point.
-        // Heartbeat points at the same location clutter the route with
-        // micro-segments and inflate distance via Kalman drift.
+        // Heartbeat points at the same location clutter the route.
         if (now - lastHeartbeatMs >= STATIONARY_HEARTBEAT_MS) {
             lastHeartbeatMs = now
             if (!hasLastRecorded) return
@@ -582,11 +471,8 @@ class TrackingService : Service() {
     // ── Trip end ──────────────────────────────────────────────────────────────
 
     private fun endTrip(tripId: String, now: Long) {
-        // Record the final position at speed 0 with status "ended".
-        // Use the last recorded smoothed position (not current Kalman which may
-        // have drifted during the stationary period).
-        val endLat = if (hasLastRecorded) lastRecordedLat else kalman.lat
-        val endLon = if (hasLastRecorded) lastRecordedLon else kalman.lon
+        val endLat = lastRecordedLat
+        val endLon = lastRecordedLon
         insertPoint(endLat, endLon, 0.0, tripId, "ended", now)
         TrackingConfig.setCurrentTripId(this, null)
         TrackingConfig.setIdleSince(this, now)
@@ -596,7 +482,6 @@ class TrackingService : Service() {
         startWatchPos   = null
         startWatchTime  = 0L
         recentSpeeds.clear()
-        kalman.reset()
         triggerUpload()
         TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(now)))
         emitState("idle")
@@ -606,15 +491,15 @@ class TrackingService : Service() {
     // ── Persistence helpers ───────────────────────────────────────────────────
 
     private fun savePoint(
-        smoothLat: Double, smoothLon: Double,
+        lat: Double, lon: Double,
         location: Location, speedKmh: Double,
         tripId: String, status: String, now: Long,
     ) {
         db.insert(QueuedPoint(
             clientId     = UUID.randomUUID().toString(),
             clientTripId = tripId,
-            lat          = smoothLat,
-            lon          = smoothLon,
+            lat          = lat,
+            lon          = lon,
             speedKmh     = speedKmh,
             heading      = if (location.hasBearing()) location.bearing.toDouble() else null,
             accuracy     = if (location.hasAccuracy()) location.accuracy.toDouble() else null,

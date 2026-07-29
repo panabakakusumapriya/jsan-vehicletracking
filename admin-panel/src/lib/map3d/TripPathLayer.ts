@@ -45,7 +45,7 @@ function startEndMarkerLayers(idPrefix: string, points: TripPoint[], endColor: [
 }
 
 /** Vehicle's interpolated lat/lon/heading at `elapsedMs` since the trip's first point, tracing the real recorded points -- not a simplified path. */
-function vehicleAtElapsed(points: TripPoint[], elapsedMs: number) {
+export function vehicleAtElapsed(points: TripPoint[], elapsedMs: number) {
   if (points.length === 0) return null;
   if (points.length === 1) {
     return { lat: points[0].lat, lon: points[0].lon, heading: points[0].heading ?? 0 };
@@ -138,18 +138,10 @@ export function buildLivePathLayers(
 ) {
   const layers = [];
   if (points.length > 1) {
-    // Skip segments that span a GPS gap (> 2 min AND > 500 m) to avoid
-    // invalid straight lines across signal-loss periods.
     const segments: { path: number[][]; speedKmh: number }[] = [];
     for (let i = 0; i < points.length - 1; i++) {
       const a = points[i];
       const b = points[i + 1];
-      const dtMs = new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime();
-      // Quick equirectangular distance approximation (good enough for gap detection)
-      const dLat = (b.lat - a.lat) * 111320;
-      const dLon = (b.lon - a.lon) * 111320 * Math.cos((a.lat * Math.PI) / 180);
-      const distM = Math.sqrt(dLat * dLat + dLon * dLon);
-      if (dtMs > 120_000 && distM > 500) continue; // gap — don't draw a line
       segments.push({
         path: [[a.lon, a.lat], [b.lon, b.lat]],
         speedKmh: a.speedKmh ?? 0,

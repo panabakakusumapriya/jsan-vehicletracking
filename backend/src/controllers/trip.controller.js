@@ -3,8 +3,7 @@ const Trip = require('../models/Trip');
 const LocationPoint = require('../models/LocationPoint');
 const asyncHandler = require('../utils/asyncHandler');
 const { accessibleDriverFilter } = require('../utils/scope');
-const { buildKml, buildJson, baseFilename } = require('../utils/tripExport');
-const { cleanRoutePoints } = require('../utils/routeClean');
+const { buildKml, buildJson, buildMergedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate } = require('../utils/tripExport');
 
 // GET /api/trips?status=&driverId=&from=&to=&limit=&page=
 exports.list = asyncHandler(async (req, res) => {
@@ -52,10 +51,8 @@ exports.getOne = asyncHandler(async (req, res) => {
       .sort({ recordedAt: 1 })
       .select('lat lon speedKmh heading recordedAt');
 
-    // Clean the route: remove duplicates, outlier spikes, and detect gaps.
-    // This is defense-in-depth — the mobile tracker now filters at source,
-    // but older trips in the DB may have bad points from before the fix.
-    points = cleanRoutePoints(raw);
+    // Raw points — no cleaning. OSRM road-snapping will be added later.
+    points = raw;
   }
   res.json({ trip, points });
 });
@@ -82,6 +79,161 @@ exports.exportOne = asyncHandler(async (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.google-earth.kml+xml');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}.kml"`);
   res.send(buildKml(trip, points));
+});
+
+// GET /api/trips/export-merged?driverId=&date=&format=kml|json
+// Merges ALL trips for a single driver on a single date into one file.
+exports.exportMerged = asyncHandler(async (req, res) => {
+  const { driverId, date, format: fmt } = req.query;
+  const format = fmt === 'json' ? 'json' : 'kml';
+  if (!driverId || !date) return res.status(400).json({ error: 'driverId and date are required' });
+
+  const scope = await accessibleDriverFilter(req.user);
+  const dayStart = new Date(date);
+  const dayEnd = new Date(date);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const trips = await Trip.find({
+    driverId,
+    startedAt: { $gte: dayStart, $lte: dayEnd },
+    ...scope,
+  })
+    .sort({ startedAt: 1 })
+    .populate('driverId', 'name email')
+    .populate('vehicleId', 'plateNumber');
+
+  if (!trips.length) return res.status(404).json({ error: 'No trips found for this driver on this date' });
+
+  const tripsWithPoints = [];
+  for (const trip of trips) {
+    const points = await LocationPoint.find({ tripId: trip._id })
+      .sort({ recordedAt: 1 })
+      .select('lat lon speedKmh heading recordedAt');
+    tripsWithPoints.push({ trip, points });
+  }
+
+  const dName = driverName(trips[0]);
+  const vPlate = vehiclePlate(trips[0]);
+  const filename = `merged_${slug(dName)}_${date}`;
+
+  if (format === 'json') {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}.json"`);
+    return res.send(JSON.stringify(buildMergedJson(dName, vPlate, date, tripsWithPoints), null, 2));
+  }
+  res.setHeader('Content-Type', 'application/vnd.google-earth.kml+xml');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}.kml"`);
+  res.send(buildMergedKml(dName, vPlate, date, tripsWithPoints));
+});
+
+// GET /api/trips/merged-points?driverId=&date=
+// Returns all points for a driver on a single date, merged across trips, for map display.
+exports.mergedPoints = asyncHandler(async (req, res) => {
+  const { driverId, date } = req.query;
+  if (!driverId || !date) return res.status(400).json({ error: 'driverId and date are required' });
+
+  const scope = await accessibleDriverFilter(req.user);
+  const dayStart = new Date(date);
+  const dayEnd = new Date(date);
+  dayEnd.setHours(23, 59, 59, 999);
+
+  const trips = await Trip.find({
+    driverId,
+    startedAt: { $gte: dayStart, $lte: dayEnd },
+    ...scope,
+  })
+    .sort({ startedAt: 1 })
+    .populate('driverId', 'name email')
+    .populate('vehicleId', 'plateNumber');
+
+  const tripsData = [];
+  let totalDistance = 0;
+  let maxSpeed = 0;
+  let totalPoints = 0;
+
+  for (const trip of trips) {
+    const raw = await LocationPoint.find({ tripId: trip._id })
+      .sort({ recordedAt: 1 })
+      .select('lat lon speedKmh heading recordedAt');
+    const points = raw;
+    tripsData.push({
+      tripId: trip._id,
+      status: trip.status,
+      startedAt: trip.startedAt,
+      endedAt: trip.endedAt,
+      distanceMeters: trip.distanceMeters,
+      maxSpeedKmh: trip.maxSpeedKmh,
+      points,
+    });
+    totalDistance += trip.distanceMeters || 0;
+    maxSpeed = Math.max(maxSpeed, trip.maxSpeedKmh || 0);
+    totalPoints += points.length;
+  }
+
+  res.json({
+    driverName: trips.length ? driverName(trips[0]) : '',
+    vehiclePlate: trips.length ? vehiclePlate(trips[0]) : null,
+    date,
+    totalTrips: trips.length,
+    totalDistance,
+    maxSpeed,
+    totalPoints,
+    trips: tripsData,
+  });
+});
+
+// GET /api/trips/merged-summary?limit=&page=
+// Returns grouped driver+date trip summaries for the reports overview.
+exports.mergedSummary = asyncHandler(async (req, res) => {
+  const scope = await accessibleDriverFilter(req.user);
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+  const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+
+  const matchStage = Object.keys(scope).length ? scope : {};
+
+  const pipeline = [
+    { $match: matchStage },
+    {
+      $addFields: {
+        dateStr: {
+          $dateToString: { format: '%Y-%m-%d', date: '$startedAt' },
+        },
+      },
+    },
+    {
+      $group: {
+        _id: { driverId: '$driverId', date: '$dateStr' },
+        totalTrips: { $sum: 1 },
+        totalDistance: { $sum: '$distanceMeters' },
+        maxSpeed: { $max: '$maxSpeedKmh' },
+        firstStart: { $min: '$startedAt' },
+        lastEnd: { $max: '$endedAt' },
+      },
+    },
+    { $sort: { firstStart: -1 } },
+    { $skip: (page - 1) * limit },
+    { $limit: limit },
+  ];
+
+  const results = await Trip.aggregate(pipeline);
+
+  const User = require('../models/User');
+  const driverIds = [...new Set(results.map((r) => r._id.driverId.toString()))];
+  const users = await User.find({ _id: { $in: driverIds } }).select('name');
+  const userMap = Object.fromEntries(users.map((u) => [u._id.toString(), u.name]));
+
+  const summaries = results.map((r) => ({
+    driverId: r._id.driverId,
+    driverName: userMap[r._id.driverId.toString()] || 'Unknown',
+    date: r._id.date,
+    totalTrips: r.totalTrips,
+    totalDistance: r.totalDistance || 0,
+    maxSpeed: r.maxSpeed || 0,
+    firstStart: r.firstStart,
+    lastEnd: r.lastEnd,
+  }));
+
+  res.json({ summaries });
 });
 
 // GET /api/trips/export?format=kml|json&status=&driverId=&driverIds=&from=&to=

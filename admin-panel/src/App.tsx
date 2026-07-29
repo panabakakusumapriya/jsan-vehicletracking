@@ -9,6 +9,8 @@ import { Managers } from './pages/Managers';
 import { SessionMap } from './pages/SessionMap';
 import { TripDetail } from './pages/TripDetail';
 import { Trips } from './pages/Trips';
+import { Mobiles } from './pages/Mobiles';
+import { Reports } from './pages/Reports';
 import { Vehicles } from './pages/Vehicles';
 
 export default function App() {
@@ -26,7 +28,9 @@ export default function App() {
         <Route path="/trips" element={<Trips />} />
         <Route path="/trips/:id" element={<TripDetail />} />
         <Route path="/trips/:id/map" element={<SessionMap />} />
+        <Route path="/reports" element={<Reports />} />
         <Route path="/drivers" element={<Drivers />} />
+        <Route path="/mobiles" element={<Mobiles />} />
         <Route path="/vehicles" element={<Vehicles />} />
         <Route
           path="/managers"

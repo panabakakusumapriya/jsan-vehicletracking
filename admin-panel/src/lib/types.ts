@@ -13,6 +13,32 @@ export interface User {
   active: boolean;
   createdAt?: string;
   lastLoginAt?: string | null;
+  // Driver profile
+  driverId?: string | null;
+  project?: string | null;
+  scope?: string | null;
+  region?: string | null;
+  drivingLocation?: string | null;
+  driverMode?: string | null;
+  poc?: string | null;
+  contact?: string | null;
+  personalMail?: string | null;
+  driverAddress?: string | null;
+  ctsMail?: string | null;
+  driverStatus?: string | null;
+  joiningDate?: string | null;
+  exitDate?: string | null;
+  pricePerHour?: number | null;
+  perDiem?: number | null;
+  currency?: string | null;
+  language?: string | null;
+  // Mobile/device
+  workPhone?: string | null;
+  imei?: string | null;
+  phoneModel?: string | null;
+  androidVersion?: string | null;
+  phoneCase?: string | null;
+  phoneScreenguard?: string | null;
 }
 
 export interface Vehicle {
