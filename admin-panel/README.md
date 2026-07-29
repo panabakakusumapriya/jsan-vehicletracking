@@ -59,21 +59,25 @@ The panel installs to a phone home screen / desktop dock and keeps receiving
 | Always-available toggle | `src/components/AlertsBell.tsx` (sidebar footer) |
 | In-app toasts | `src/components/AlertToaster.tsx` |
 
-**The flow.** After signing in, a banner offers *Install app* — **once per browser, ever**, and
-never at all if the app is already installed. Two details make that true rather than
-aspirational:
+**The flow.** After signing in, a banner offers *Install app*. The gate is **state, not
+history**: not installed → ask; installed → never ask again, in any window.
 
-- the "already asked" key is written **when the banner reaches the screen**, not when a
-  button is clicked, so ignoring it or reloading does not bring it back;
-- "already installed" is answered by `isInstalled()`, which combines `display-mode`,
-  `navigator.getInstalledRelatedApps()` and a sticky local flag set by the `appinstalled`
-  event. `display-mode` alone is not enough — it is `false` in an ordinary tab even when the
-  app *is* installed, so someone who installed via Chrome's address-bar button would
-  otherwise be nagged forever in the tab they left open.
+- Shown **once per sitting**, not once per page load: the marker lives in `sessionStorage`
+  and is written when the banner reaches the screen (not when a button is clicked), so
+  ignoring it, navigating or reloading will not bring it back. A new sitting while still
+  uninstalled asks again — a permanent dismissal would quietly strand someone with no app,
+  no push and no prompt to fix it.
+- "Already installed" is answered by `isInstalled()`, in strict priority order:
+  `isStandalone()` → `canInstall()` → `getInstalledRelatedApps()` → sticky local flag.
+  `display-mode` alone is not enough (it is `false` in an ordinary tab even when the app
+  *is* installed, so a Chrome address-bar install would otherwise be nagged forever), and
+  the sticky flag must come **last** — Chrome only offers an install for an app it does not
+  have, so that live offer both proves "not installed" and self-corrects the flag after an
+  uninstall.
 
-The sidebar bell is the way back in after either banner is gone. Accepting the install leads
-straight into *Turn on alerts*, which asks for notification permission and registers a Web
-Push subscription with
+The sidebar bell is the manual way in after either banner is gone. Accepting the install
+leads straight into *Turn on alerts*, which asks for notification permission and registers a
+Web Push subscription with
 `POST /api/push/subscribe`. From then on the backend watchdog pushes a notification whenever
 one of that manager's drivers stops reporting for ~3 min. Tapping it opens the live map
 centred on that driver (`/?driver=<id>`).
@@ -96,5 +100,6 @@ never come from a cache.
   recovery, non-managers rejected).
 - ✅ Real end-to-end push: `POST /api/push/test` → Chrome push service → service worker
   `push` handler → system notification (`sent: 1`, correct title/body/tag).
-- ✅ Install banner: shows once on a fresh browser, does **not** return after a reload with
-  no click, and is fully suppressed when the app is already installed.
+- ✅ Install banner, driven in a real browser: shows when not installed; does **not** return
+  after a reload in the same sitting; **does** ask again in a new sitting while still not
+  installed; retracts immediately on `appinstalled` and stops asking.

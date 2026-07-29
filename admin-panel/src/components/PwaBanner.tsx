@@ -3,15 +3,21 @@ import { canInstall, isIOS, isInstalled, onInstallStateChange, promptInstall } f
 import { enablePush, getPushState, type PushState } from '../lib/push';
 
 /**
- * The one-time "install this app" nudge, followed by the one-time "turn on alerts" nudge.
+ * The "install this app" nudge, followed by the "turn on alerts" nudge.
  *
- * Two rules, both of which cost more than they look:
+ * The gate is STATE, not history:
  *
- *  1. ONCE, EVER. The key is burned the moment a banner reaches the screen — not when a
- *     button is clicked — so ignoring it, navigating away or reloading does not bring it
- *     back. The sidebar bell is the always-available way back in.
- *  2. NEVER WHEN INSTALLED. `isInstalled()` answers for the whole browser, not just this
- *     window, so the tab someone keeps open alongside the installed app stops asking too.
+ *  - not installed  -> offer the install
+ *  - installed      -> never offer it again, in any window (see `isInstalled()`, which
+ *                      answers for the whole browser rather than just this tab)
+ *  - alerts off     -> offer to turn them on
+ *  - alerts on      -> nothing to ask
+ *
+ * "Once" is scoped to a sitting, not to a lifetime: the shown-marker lives in
+ * sessionStorage, so ignoring the banner, navigating or reloading will not bring it back —
+ * but someone who still hasn't installed gets asked again next time they open the panel.
+ * A permanent dismissal would quietly strand them: no install, no push, no driver alerts,
+ * and no prompt to fix it. The sidebar bell remains the manual way in either way.
  *
  * Install comes first on purpose: on iOS, web push only works from an installed app, so
  * asking for notification permission in a Safari tab there would fail outright.
@@ -21,8 +27,22 @@ const ALERTS_KEY = 'jsan_pwa_alerts_prompt_v1';
 
 type Step = 'install' | 'ios-install' | 'alerts' | null;
 
-const seen = (key: string) => localStorage.getItem(key) === 'done';
-const markSeen = (key: string) => localStorage.setItem(key, 'done');
+// sessionStorage, deliberately — see the note above. Wrapped because both accessors throw
+// in some privacy modes, and a storage failure must not take the panel down.
+const seen = (key: string) => {
+  try {
+    return sessionStorage.getItem(key) === 'done';
+  } catch {
+    return false;
+  }
+};
+const markSeen = (key: string) => {
+  try {
+    sessionStorage.setItem(key, 'done');
+  } catch {
+    /* nothing to remember with — the banner just reappears next navigation */
+  }
+};
 
 const TruckMark = () => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -50,9 +70,12 @@ export function PwaBanner() {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   // null on both = still probing. Nothing is shown until they answer, so a slow probe can
-  // never flash the wrong banner (and burn its once-ever key on the way past).
+  // never flash the wrong banner (and burn its shown-marker on the way past).
   const [installed, setInstalled] = useState<boolean | null>(null);
   const [pushState, setPushState] = useState<PushState | null>(null);
+  // Mirrored into state because `canInstall()` is a plain module read: without this, a
+  // `beforeinstallprompt` that lands after mount would never re-run the decision.
+  const [installable, setInstallable] = useState(canInstall());
 
   useEffect(() => {
     let alive = true;
@@ -71,15 +94,15 @@ export function PwaBanner() {
   /** Which nudge is due right now — pure, so it can be consulted from several places. */
   const decide = useCallback((): Step => {
     if (installed === null || pushState === null) return null;
-    if (!seen(INSTALL_KEY) && !installed) {
-      if (canInstall()) return 'install';
+    if (!installed && !seen(INSTALL_KEY)) {
+      if (installable) return 'install';
       // iOS never fires beforeinstallprompt — Add to Home Screen is a manual gesture.
       if (isIOS()) return 'ios-install';
       // Desktop Safari/Firefox: no install to offer, so don't pretend there is one.
       return null;
     }
     return alertsDue() ? 'alerts' : null;
-  }, [installed, pushState, alertsDue]);
+  }, [installed, installable, pushState, alertsDue]);
 
   // `?? decide()` and never a plain overwrite: once a banner is up it stays up until the
   // person acts on it. A late-resolving probe must not swap the card out mid-read.
@@ -87,10 +110,19 @@ export function PwaBanner() {
     setStep((current) => current ?? decide());
   }, [decide]);
 
-  useEffect(() => onInstallStateChange(() => setStep((c) => c ?? decide())), [decide]);
+  // Chrome can hand us the install offer well after mount; re-probe when it does, since
+  // that offer is itself proof the app is not installed.
+  useEffect(
+    () =>
+      onInstallStateChange(() => {
+        setInstallable(canInstall());
+        isInstalled().then(setInstalled);
+      }),
+    []
+  );
 
-  // Burn the key on display, not on click — that is what makes it once rather than
-  // once-per-page-load.
+  // Mark on display, not on click — that is what stops a reload or a route change from
+  // bringing the same card back within one sitting.
   useEffect(() => {
     if (step === 'install' || step === 'ios-install') markSeen(INSTALL_KEY);
     else if (step === 'alerts') markSeen(ALERTS_KEY);

@@ -50,38 +50,55 @@ export function isStandalone(): boolean {
   );
 }
 
-export function markInstalled(): void {
+function memoInstalled(value: boolean): void {
   try {
-    localStorage.setItem(INSTALLED_KEY, 'yes');
+    if (value) localStorage.setItem(INSTALLED_KEY, 'yes');
+    else localStorage.removeItem(INSTALLED_KEY);
   } catch {
     /* private mode — we just lose the memo */
   }
 }
 
+function memoSaysInstalled(): boolean {
+  try {
+    return localStorage.getItem(INSTALLED_KEY) === 'yes';
+  } catch {
+    return false;
+  }
+}
+
+export function markInstalled(): void {
+  memoInstalled(true);
+}
+
 /**
- * Has this browser got the app installed, whichever window we're asked from?
+ * Has this browser got the app installed, asked from any window?
  *
- * Three signals, because no single one covers every case:
- *   1. running as the installed app right now (display-mode / navigator.standalone);
- *   2. `getInstalledRelatedApps()` — the only signal that answers "yes" from an ordinary
- *      browser tab, so it catches the person who installed via Chrome's address-bar button
- *      and never touched our banner. Chromium-only, needs the manifest's
- *      `related_applications` entry, and resolves to [] elsewhere;
- *   3. a sticky local flag written by (1), (2) and the `appinstalled` event, which is what
- *      covers Safari/Firefox, where nothing else can be asked.
+ * Four signals in strict priority order, because no single one covers every case and two of
+ * them can go stale:
  *
- * Deliberately one-way: it never flips back to false. Uninstalling won't re-offer the
- * banner, and that's the trade for "ask once, ever" — the sidebar bell is the way back in.
+ *   1. `isStandalone()` — we ARE the installed app. Unambiguous.
+ *   2. `canInstall()` — Chrome only fires `beforeinstallprompt` for an app it does NOT
+ *      already have, so a live install offer is an authoritative "not installed". This is
+ *      also what makes the answer self-correcting: uninstall the app and Chrome starts
+ *      offering again, so the memo below gets cleared and the banner returns.
+ *   3. `getInstalledRelatedApps()` — the only signal that says "yes" from an ordinary
+ *      browser tab, catching whoever installed via Chrome's address-bar button without ever
+ *      touching our banner. Chromium-only; needs the manifest `related_applications` entry.
+ *   4. the sticky memo — last resort for Safari/Firefox, where neither 2 nor 3 exists.
+ *
+ * Order matters: checking the memo before (2) is what would wrongly silence the banner
+ * forever after an uninstall.
  */
 export async function isInstalled(): Promise<boolean> {
   if (isStandalone()) {
-    markInstalled();
+    memoInstalled(true);
     return true;
   }
-  try {
-    if (localStorage.getItem(INSTALLED_KEY) === 'yes') return true;
-  } catch {
-    /* ignore */
+
+  if (canInstall()) {
+    memoInstalled(false); // the browser is offering an install: it is not installed
+    return false;
   }
 
   const nav = navigator as Navigator & {
@@ -91,14 +108,15 @@ export async function isInstalled(): Promise<boolean> {
     try {
       const apps = await nav.getInstalledRelatedApps();
       if (apps.length > 0) {
-        markInstalled();
+        memoInstalled(true);
         return true;
       }
     } catch {
       /* not a secure top-level context, or unsupported — fall through */
     }
   }
-  return false;
+
+  return memoSaysInstalled();
 }
 
 export function isIOS(): boolean {
@@ -125,6 +143,9 @@ if (typeof window !== 'undefined') {
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault(); // keep the event alive so we can fire it from our own banner
     deferredPrompt = e as BeforeInstallPromptEvent;
+    // An install offer means the app is not installed — drop a memo left over from before
+    // an uninstall, so the banner is free to come back.
+    memoInstalled(false);
     notify();
   });
 
