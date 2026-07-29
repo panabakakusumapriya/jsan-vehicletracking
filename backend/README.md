@@ -25,6 +25,24 @@ npm run dev               # http://localhost:4000  (npm start for prod)
 
 Health check: `GET http://localhost:4000/health`
 
+### Seeding a real driver roster
+
+`src/seed/seedDrivers.js` holds a roster (name / phone / email) and creates those drivers
+against one manager. Edit the `ROSTER` array and run:
+
+```bash
+npm run seed:drivers -- --dry-run          # preview, writes nothing
+npm run seed:drivers                       # create the missing ones
+npm run seed:drivers -- --manager=boss@example.com --password=Other123
+npm run seed:drivers -- --reset-passwords  # also reset EXISTING accounts to the default
+```
+
+Idempotent: accounts are matched on email, so a re-run creates nothing twice and only tops
+up profile fields. Passwords are **not** touched on re-run unless `--reset-passwords` is
+given — otherwise a routine re-seed would silently hand every account back to the shared
+default after drivers had changed it. Phone numbers are normalised to `+<code><number>` and
+`country` is inferred from the dialling code (only used by the live map's country filter).
+
 Seeded logins (change in production):
 - admin  — `admin@jsan.local` / `Admin@12345`
 - manager — `manager@jsan.local` / `Manager@12345`
