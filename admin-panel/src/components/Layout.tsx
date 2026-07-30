@@ -1,5 +1,5 @@
-import { useEffect } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { syncExistingSubscription } from '../lib/push';
 import { AlertsBell } from './AlertsBell';
@@ -52,11 +52,13 @@ const ManagerIcon = () => (
     <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
   </svg>
 );
-const TruckIcon = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 17H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v9a2 2 0 0 1-2 2h-1"/>
-    <circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>
-    <path d="M9 3v5h6"/>
+/** The three-line hamburger. Always three lines — it never morphs into an X, so the control
+ *  reads the same whatever state the menu is in. */
+const MenuIcon = () => (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="3" y1="6" x2="21" y2="6" />
+    <line x1="3" y1="12" x2="21" y2="12" />
+    <line x1="3" y1="18" x2="21" y2="18" />
   </svg>
 );
 const SignOutIcon = () => (
@@ -95,9 +97,19 @@ function getInitials(name: string) {
   return name.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
 }
 
+/** Below this width the sidebar is a drawer rather than a column. Matches the CSS breakpoint. */
+const DRAWER_BREAKPOINT = 820;
+const isNarrow = () => typeof window !== 'undefined' && window.innerWidth <= DRAWER_BREAKPOINT;
+
 export function Layout() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Two separate states rather than one overloaded flag: `rail` is the desktop collapse,
+  // `drawerOpen` is the mobile slide-in. They never interact, so neither breakpoint can
+  // end up showing the opposite of what was asked for.
+  const [rail, setRail] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   // Re-bind this browser's push subscription to whoever is signed in now. Covers a rotated
   // endpoint and a shared machine where a different manager logs in.
@@ -105,15 +117,45 @@ export function Layout() {
     if (user) syncExistingSubscription();
   }, [user]);
 
+  // Navigating dismisses the drawer — otherwise it covers the page you just asked for.
+  useEffect(() => {
+    setDrawerOpen(false);
+  }, [location.pathname]);
+
+  // Esc closes the drawer, the expected way out of any overlay.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDrawerOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  /** The sidebar hamburger: rails the column on desktop, closes the drawer on mobile. */
+  const toggleFromSidebar = () => {
+    if (isNarrow()) setDrawerOpen(false);
+    else setRail(v => !v);
+  };
+
   return (
-    <div className="shell">
+    <div className={`shell${rail ? ' rail' : ''}${drawerOpen ? ' drawer-open' : ''}`}>
       <aside className="sidebar">
-        {/* Brand */}
+        {/* Brand, with the hamburger on the right of the sidebar header. */}
         <div className="sidebar-top">
           <div className="brand">
-            <div className="brand-icon"><TruckIcon /></div>
-            JSAN<span>Fleet</span>
+            <div className="brand-logo">
+              <img src="/brand/logo.png" alt="JSAN" />
+            </div>
+            <div className="brand-name">JSAN ATLAS <span>ops</span></div>
           </div>
+          <button
+            className="hamburger"
+            onClick={toggleFromSidebar}
+            aria-label={rail ? 'Expand menu' : 'Collapse menu'}
+            title={rail ? 'Expand menu' : 'Collapse menu'}
+          >
+            <MenuIcon />
+          </button>
         </div>
 
         {/* Nav */}
@@ -123,19 +165,21 @@ export function Layout() {
             <NavLink
               key={to} to={to} end={end}
               className={({ isActive }) => isActive ? 'active' : ''}
+              title={label}
             >
-              <Icon />{label}
+              {/* Wrapped so rail mode can hide the text and leave the icon. */}
+              <Icon /><span className="nav-label">{label}</span>
             </NavLink>
           ))}
 
           {user?.role === 'admin' && (
             <>
               <div className="nav-section-label" style={{ marginTop: 8 }}>Admin</div>
-              <NavLink to="/managers" className={({ isActive }) => isActive ? 'active' : ''}>
-                <ManagerIcon />Managers
+              <NavLink to="/managers" title="Managers" className={({ isActive }) => isActive ? 'active' : ''}>
+                <ManagerIcon /><span className="nav-label">Managers</span>
               </NavLink>
-              <NavLink to="/app-updates" className={({ isActive }) => isActive ? 'active' : ''}>
-                <UpdateIcon />App Updates
+              <NavLink to="/app-updates" title="App Updates" className={({ isActive }) => isActive ? 'active' : ''}>
+                <UpdateIcon /><span className="nav-label">App Updates</span>
               </NavLink>
             </>
           )}
@@ -162,7 +206,22 @@ export function Layout() {
         </div>
       </aside>
 
+      {/* Scrim behind the mobile drawer; CSS keeps it inert on desktop. */}
+      <div className="nav-backdrop" onClick={() => setDrawerOpen(false)} aria-hidden="true" />
+
       <main className="content">
+        {/* Mobile only (CSS-gated): the drawer is off-screen, so it needs an opener out here. */}
+        <div className="topbar">
+          <button
+            className="mobile-menu-btn"
+            onClick={() => setDrawerOpen(true)}
+            aria-label="Show menu"
+            aria-expanded={drawerOpen}
+          >
+            <MenuIcon />
+          </button>
+          <img className="topbar-logo" src="/brand/logo.png" alt="JSAN" />
+        </div>
         <Outlet />
       </main>
 

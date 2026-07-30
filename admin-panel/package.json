@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "icons": "node scripts/generate-icons.mjs"
+    "brand": "node scripts/generate-brand.mjs"
   },
   "dependencies": {
     "@deck.gl/core": "^9.3.7",

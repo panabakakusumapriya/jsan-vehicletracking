@@ -399,7 +399,7 @@ export function Reports() {
           </div>
 
           {/* Map */}
-          <div className="map-wrap" style={{ height: 'calc(100vh - 480px)', minHeight: 380 }}>
+          <div className="map-wrap" style={{ height: 'calc(100vh - 480px - var(--topbar-h))', minHeight: 380 }}>
             <Map3D ref={mapRef} center={center} zoom={14} layers={layers} />
           </div>
 

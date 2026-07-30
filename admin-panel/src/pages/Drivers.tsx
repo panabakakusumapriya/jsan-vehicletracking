@@ -53,7 +53,7 @@ export function Drivers() {
   const inactive = drivers.length - active;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
       <div className="page-head">
         <div>
           <h1 className="page-title">Drivers</h1>

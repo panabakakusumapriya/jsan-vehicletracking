@@ -42,6 +42,18 @@
   --shadow-sm:  0 1px 3px rgba(17,24,39,0.05);
   --shadow-md:  0 4px 16px rgba(17,24,39,0.09);
 
+  /* Company blue, sampled from the supplied logo. Used only where brand identity shows —
+     the wordmark accent and the logo plate's shadow — so the rest of the palette is
+     untouched. A light tint is needed for the accent because the true blue is too dark to
+     read on the near-black sidebar. */
+  --logo-blue:       #00558c;
+  --logo-blue-light: #62b4e8;
+
+  /* Height reserved for the mobile menu bar. Zero on desktop, where the sidebar carries its
+     own hamburger and no bar is drawn. Shared as a variable because several pages size
+     themselves against the viewport and would otherwise be wrong by exactly this much. */
+  --topbar-h: 0px;
+
   color-scheme: light;
 }
 
@@ -60,11 +72,50 @@ a:hover { color: var(--brand-hover); }
 /* ══════════════════════════════════════
    SHELL + SIDEBAR
 ══════════════════════════════════════ */
+/* Two independent, POSITIVE state classes — `rail` for the desktop collapse and
+   `drawer-open` for the mobile slide-in. Deliberately not one flag with `:not()`: each
+   breakpoint then reads only its own class, so neither can invert the other. */
 .shell {
   display: grid;
   grid-template-columns: 228px 1fr;
   height: 100%;
+  transition: grid-template-columns 0.18s ease;
 }
+/* Collapsed to an icon rail rather than to nothing, so the hamburger inside it stays
+   reachable — a hamburger you can't get back to is a trap. */
+.shell.rail { grid-template-columns: 64px 1fr; }
+
+/* ── Hamburger, top-right of the sidebar ── */
+.sidebar-top {
+  display: flex; align-items: flex-start; gap: 10px;
+}
+/* Pushed to the right edge; when the brand is hidden in rail mode it centres instead. */
+.hamburger { margin-left: auto; }
+.hamburger {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; flex-shrink: 0;
+  background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.75);
+  border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;
+  cursor: pointer; padding: 0;
+  transition: background 0.13s, color 0.13s, border-color 0.13s;
+}
+.hamburger:hover {
+  background: rgba(255,255,255,0.12); color: #fff;
+  border-color: rgba(255,255,255,0.22);
+}
+/* In rail mode the brand plate is hidden, leaving the hamburger centred on its own. */
+.shell.rail .brand { display: none; }
+.shell.rail .sidebar-top { justify-content: center; padding: 18px 0 14px; }
+.shell.rail .hamburger { margin-left: 0; }
+.shell.rail .nav-label,
+.shell.rail .nav-section-label,
+.shell.rail .who { display: none; }
+.shell.rail .sidebar nav { padding: 14px 8px; }
+.shell.rail .sidebar nav a { justify-content: center; padding: 10px 0; }
+.shell.rail .sidebar-foot { flex-direction: column; gap: 8px; padding: 12px 8px; }
+
+/* Drawer scrim — mobile only; inert and invisible on desktop. */
+.nav-backdrop { display: none; }
 
 /* ── Sidebar ── */
 .sidebar {
@@ -95,13 +146,23 @@ a:hover { color: var(--brand-hover); }
   display: flex; align-items: center; gap: 10px;
   font-size: 16px; font-weight: 800; letter-spacing: -0.3px; color: #fff;
 }
-.brand-icon {
-  width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
-  background: linear-gradient(135deg, #7c3aed, #5b21b6);
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 2px 10px rgba(124,58,237,0.5);
+/* The logo goes on white. Its lettering is near-black, so on the near-black sidebar it would
+   simply disappear — a light plate keeps the artwork exactly as supplied instead of
+   recolouring or cropping it. */
+.brand { flex-direction: column; align-items: flex-start; gap: 9px; }
+.brand-logo {
+  background: #fff;
+  border-radius: 8px;
+  padding: 7px 11px;
+  display: inline-flex;
+  box-shadow: 0 2px 10px rgba(0,85,140,0.35);
 }
-.brand span { color: #a78bfa; }
+.brand-logo img { height: 19px; width: auto; display: block; }
+.brand-name {
+  font-size: 12.5px; font-weight: 800; color: #fff;
+  letter-spacing: 0.2px; text-transform: uppercase;
+}
+.brand-name span { color: var(--logo-blue-light); text-transform: none; }
 
 /* Nav */
 .sidebar nav {
@@ -181,6 +242,22 @@ a:hover { color: var(--brand-hover); }
 
 /* ── Content ── */
 .content { overflow: auto; padding: 28px 30px; background: var(--bg); }
+
+/* Opens the drawer on narrow screens. Hidden on desktop, where the sidebar's own hamburger
+   does the job; the media query above turns it on. */
+.topbar { height: var(--topbar-h); display: flex; align-items: center; gap: 12px; margin: -6px 0 6px; }
+.mobile-menu-btn {
+  display: none;
+  align-items: center; justify-content: center;
+  width: 34px; height: 34px; flex-shrink: 0;
+  background: var(--panel); color: var(--text-2);
+  border: 1px solid var(--line-2); border-radius: 9px;
+  cursor: pointer; padding: 0;
+}
+.mobile-menu-btn:hover { background: var(--brand-light); color: var(--brand); border-color: var(--brand); }
+.topbar-logo { height: 19px; width: auto; display: none; }
+/* No bar at all on desktop — the sidebar's hamburger is the control there. */
+.topbar { display: none; }
 
 /* ══════════════════════════════════════
    PAGE STRUCTURE
@@ -386,7 +463,7 @@ select.input { cursor: pointer; }
 ══════════════════════════════════════ */
 .live-grid {
   display: grid; grid-template-columns: 300px 1fr;
-  gap: 16px; height: calc(100vh - 86px);
+  gap: 16px; height: calc(100vh - 86px - var(--topbar-h));
 }
 .live-list { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
 
@@ -464,13 +541,23 @@ select.input { cursor: pointer; }
 
 .login-brand-row { display:flex; align-items:center; gap:11px; position:relative; z-index:1; }
 .login-brand-icon {
-  width:38px; height:38px; border-radius:11px; flex-shrink:0;
-  background: linear-gradient(135deg, #7c3aed, #5b21b6);
-  display:flex; align-items:center; justify-content:center;
-  box-shadow: 0 4px 16px rgba(109,40,217,0.45);
+  border-radius:10px; flex-shrink:0;
+  background:#fff; padding:8px 12px;
+  display:inline-flex; align-items:center;
+  box-shadow: 0 4px 16px rgba(0,85,140,0.4);
 }
-.login-brand-name { font-size:18px; font-weight:800; color:#fff; letter-spacing:-0.3px; }
-.login-brand-name span { color:#a78bfa; }
+.login-brand-icon img { height:21px; width:auto; display:block; }
+.login-brand-name {
+  font-size:14px; font-weight:800; color:#fff;
+  letter-spacing:0.3px; text-transform:uppercase;
+}
+.login-brand-name span { color: var(--logo-blue-light); text-transform:none; }
+
+/* The full wordmark, at full fidelity, on the white half of the login screen. */
+.login-wordmark {
+  height: 40px; width: auto; display: block;
+  margin: 0 0 26px;
+}
 
 .login-left-content { position:relative; z-index:1; }
 
@@ -593,6 +680,15 @@ select.input { cursor: pointer; }
   color: #fff;
   box-shadow: 0 4px 14px rgba(124,58,237,0.4);
 }
+/* Company logo variant: a light plate wide enough for the wordmark, so the artwork keeps
+   its own colours instead of being cropped to fit a square. */
+.pwa-banner-icon.brand {
+  width: auto; height: auto; padding: 9px 11px;
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 14px rgba(0,85,140,0.2);
+}
+.pwa-banner-icon.brand img { height: 20px; width: auto; display: block; }
 .pwa-banner-text { flex: 1; min-width: 0; }
 .pwa-banner-text strong {
   display: block; font-size: 13.5px; font-weight: 800;
@@ -684,16 +780,46 @@ select.input { cursor: pointer; }
    pocket: the sidebar becomes a bottom tab bar and the live map stacks above its list.
 ══════════════════════════════════════ */
 @media (max-width: 820px) {
-  .shell { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
-  .content { grid-row: 1; padding: 16px 14px 14px; }
+  /* One column: the sidebar leaves the grid and becomes an off-canvas drawer. The rail is
+     meaningless here, hence both states collapse to a single column. */
+  .shell, .shell.rail { grid-template-columns: 1fr; }
+  .content { padding: 14px 14px 18px; }
 
-  .sidebar { grid-row: 2; }
-  .sidebar::before, .sidebar-top { display: none; }
-  .sidebar nav { flex-direction: row; overflow-x: auto; padding: 7px 8px 4px; gap: 4px; flex: 0 0 auto; }
-  .sidebar nav a { flex-direction: column; gap: 4px; padding: 7px 13px; font-size: 10.5px; white-space: nowrap; }
-  .sidebar nav a.active::before { display: none; }
-  .nav-section-label { display: none; }
-  .sidebar-foot { padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0;
+    width: 262px; max-width: 84vw;
+    z-index: 1050;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 6px 0 30px rgba(13,13,20,0.35);
+  }
+  .shell.drawer-open .sidebar { transform: none; }
+  /* Rail styling must not leak into the drawer, which is always full width. */
+  .shell.rail .brand,
+  .shell.rail .nav-label,
+  .shell.rail .nav-section-label,
+  .shell.rail .who { display: revert; }
+  .shell.rail .sidebar-top { justify-content: flex-start; padding: 20px 18px 16px; }
+  .shell.rail .sidebar nav { padding: 14px 10px; }
+  .shell.rail .sidebar nav a { justify-content: flex-start; padding: 9px 12px; }
+  .shell.rail .sidebar-foot { flex-direction: row; gap: 10px; }
+
+  .nav-backdrop {
+    display: block; position: fixed; inset: 0;
+    background: rgba(13,13,20,0.5);
+    backdrop-filter: blur(2px);
+    z-index: 1045;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+  .shell.drawer-open .nav-backdrop { opacity: 1; pointer-events: auto; }
+
+  /* The drawer is off-screen, so the only way in is a button in the content area. */
+  :root { --topbar-h: 46px; }
+  .topbar { display: flex; }
+  .mobile-menu-btn { display: inline-flex; }
+  .topbar-logo { display: block; }
+  .sidebar-foot { padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px)); }
 
   .live-grid { grid-template-columns: 1fr; grid-template-rows: 280px auto; height: auto; gap: 12px; }
   .map-wrap { grid-row: 1; min-height: 280px; }

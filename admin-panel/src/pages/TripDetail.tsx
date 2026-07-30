@@ -121,7 +121,7 @@ export function TripDetail() {
         )}
       </div>
 
-      <div className="map-wrap" style={{ height: 'calc(100vh - 340px)', minHeight: 380 }}>
+      <div className="map-wrap" style={{ height: 'calc(100vh - 340px - var(--topbar-h))', minHeight: 380 }}>
         <Map3D ref={mapRef} center={start} zoom={14} layers={layers} />
       </div>
 

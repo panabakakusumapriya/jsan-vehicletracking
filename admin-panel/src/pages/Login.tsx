@@ -2,13 +2,6 @@ import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 
-const TruckSVG = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 17H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v9a2 2 0 0 1-2 2h-1"/>
-    <circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>
-    <path d="M9 3v5h6"/>
-  </svg>
-);
 const MailSVG = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="2" y="4" width="20" height="16" rx="2"/>
@@ -93,8 +86,10 @@ export function Login() {
       {/* ══ Left — dark brand panel ══ */}
       <div className="login-left">
         <div className="login-brand-row">
-          <div className="login-brand-icon"><TruckSVG /></div>
-          <div className="login-brand-name">JSAN<span>Fleet</span></div>
+          <div className="login-brand-icon">
+            <img src="/brand/logo.png" alt="JSAN" />
+          </div>
+          <div className="login-brand-name">JSAN ATLAS <span>ops</span></div>
         </div>
 
         <div className="login-left-content">
@@ -131,6 +126,8 @@ export function Login() {
         <div className="login-card">
 
           <div className="login-card-header">
+            {/* Full-colour wordmark — this half of the screen is white, so it needs no tile. */}
+            <img className="login-wordmark" src="/brand/logo.png" alt="JSAN ATLAS ops" />
             <h1 className="login-title">Sign in</h1>
             <p className="login-sub">
               Enter your credentials to access the fleet dashboard.

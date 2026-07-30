@@ -73,7 +73,20 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
     mapRef.current = map;
     overlayRef.current = overlay;
 
+    // MapLibre sizes its canvas once and then only on a window `resize`. Collapsing the
+    // sidebar changes this container's width with no window event, leaving a blank strip and
+    // a canvas whose coordinates no longer line up with the pointer. Observing the container
+    // catches the sidebar rail, the mobile drawer and ordinary window resizes alike.
+    let frame = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => map.resize());
+    });
+    resizeObserver.observe(containerRef.current);
+
     return () => {
+      resizeObserver.disconnect();
+      cancelAnimationFrame(frame);
       map.off('error', handleError);
       map.remove();
       mapRef.current = null;

@@ -151,7 +151,7 @@ export function SessionMap() {
       </div>
 
       {/* Map */}
-      <div className="map-wrap" style={{ height: 'calc(100vh - 300px)', minHeight: 420 }}>
+      <div className="map-wrap" style={{ height: 'calc(100vh - 300px - var(--topbar-h))', minHeight: 420 }}>
         <Map3D ref={mapRef} center={start} zoom={14} layers={layers} />
       </div>
 

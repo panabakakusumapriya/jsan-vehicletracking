@@ -3,6 +3,7 @@ import { divIcon } from 'leaflet';
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
+import { MapAutoResize } from '../lib/MapAutoResize';
 import { useSocket, useSocketEvent } from '../lib/socket';
 import { useAuth } from '../lib/auth';
 import { km } from '../lib/format';
@@ -329,6 +330,9 @@ export function LiveMap() {
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             attribution="&copy; OpenStreetMap contributors"
           />
+          {/* Collapsing the sidebar resizes this container without a window resize event, so
+              Leaflet has to be told or it leaves a blank strip on the right. */}
+          <MapAutoResize />
           <Recenter focus={focus} />
 
           {/* Active vehicles */}

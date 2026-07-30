@@ -44,12 +44,11 @@ const markSeen = (key: string) => {
   }
 };
 
-const TruckMark = () => (
-  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 17H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v9a2 2 0 0 1-2 2h-1" />
-    <circle cx="7" cy="17" r="2" /><circle cx="17" cy="17" r="2" />
-    <path d="M9 3v5h6" />
-  </svg>
+/** The company logo, on a light plate so its own colours are preserved. */
+const BrandMark = () => (
+  <div className="pwa-banner-icon brand">
+    <img src="/brand/logo.png" alt="JSAN" />
+  </div>
 );
 
 const BellMark = () => (
@@ -194,10 +193,10 @@ export function PwaBanner() {
 
   if (step === 'ios-install') {
     return (
-      <div className="pwa-banner" role="dialog" aria-label="Install JSAN Fleet">
-        <div className="pwa-banner-icon"><TruckMark /></div>
+      <div className="pwa-banner" role="dialog" aria-label="Install JSAN ATLAS ops">
+        <BrandMark />
         <div className="pwa-banner-text">
-          <strong>Install JSAN Fleet on this iPhone</strong>
+          <strong>Install JSAN ATLAS ops on this iPhone</strong>
           <span>
             Tap <ShareMark /> Share, then <b>Add to Home Screen</b>. iOS only delivers driver
             alerts to the installed app.
@@ -211,10 +210,10 @@ export function PwaBanner() {
   }
 
   return (
-    <div className="pwa-banner" role="dialog" aria-label="Install JSAN Fleet">
-      <div className="pwa-banner-icon"><TruckMark /></div>
+    <div className="pwa-banner" role="dialog" aria-label="Install JSAN ATLAS ops">
+      <BrandMark />
       <div className="pwa-banner-text">
-        <strong>Install JSAN Fleet</strong>
+        <strong>Install JSAN ATLAS ops</strong>
         <span>Add it once and get driver-offline alerts without keeping this tab open.</span>
       </div>
       <div className="pwa-banner-actions">

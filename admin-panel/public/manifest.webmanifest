@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "JSAN Fleet — Admin",
-  "short_name": "JSAN Fleet",
+  "name": "JSAN ATLAS ops",
+  "short_name": "ATLAS ops",
   "description": "Live vehicle tracking for JSAN fleet managers: real-time map, trips, and driver-offline alerts.",
   "start_url": "/",
   "scope": "/",
