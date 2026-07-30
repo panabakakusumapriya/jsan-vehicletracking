@@ -98,8 +98,13 @@ export function Mobiles() {
                   <td>{d.androidVersion || <M />}</td>
                   <td><span className={`badge ${STATUS_BADGE[d.status]}`}>{STATUS_LABEL[d.status]}</span></td>
                   <td>{holder ? holder.name : <M />}</td>
-                  <td style={{ fontSize: 12 }}>
-                    {[d.phoneCase, d.phoneScreenguard].filter(Boolean).join(' / ') || <M />}
+                  <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                    {d.phoneCase || d.phoneScreenguard ? (
+                      <span style={{ display: 'inline-flex', gap: 6 }}>
+                        <Accessory label="Case" value={d.phoneCase} />
+                        <Accessory label="Guard" value={d.phoneScreenguard} />
+                      </span>
+                    ) : <M />}
                   </td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     {/* Deliberately no Assign/Return here — allocation happens on the
@@ -132,7 +137,31 @@ export function Mobiles() {
 const btn = { fontSize: 12, padding: '4px 10px', marginRight: 6 } as const;
 function M() { return <span style={{ color: 'var(--muted)' }}>—</span>; }
 
-const FIELDS: { key: keyof MobileDevice; label: string; placeholder?: string }[] = [
+/** "Case Yes" reads; a bare "Yes / No" pair in a column does not. */
+function Accessory({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return <span className="badge gray" style={{ fontSize: 10 }}>{label} —</span>;
+  const yes = value.toLowerCase() === 'yes';
+  const no = value.toLowerCase() === 'no';
+  return (
+    <span className={`badge ${yes ? 'green' : no ? 'gray' : 'amber'}`} style={{ fontSize: 10 }}>
+      {label} {value}
+    </span>
+  );
+}
+
+const YES_NO = ['Yes', 'No'];
+
+/** Map any casing of yes/no onto the canonical option so "YES" isn't treated as odd text. */
+const canonicalYesNo = (raw: string) =>
+  YES_NO.find(v => v.toLowerCase() === raw.trim().toLowerCase()) ?? raw;
+
+const FIELDS: {
+  key: keyof MobileDevice;
+  label: string;
+  placeholder?: string;
+  /** 'yesno' renders a Yes/No dropdown instead of a free-text box. */
+  type?: 'text' | 'yesno';
+}[] = [
   { key: 'label', label: 'Label (e.g. Ops phone 07)' },
   { key: 'imei', label: 'IMEI number', placeholder: '15-digit IMEI' },
   { key: 'secondaryImei', label: 'Secondary IMEI', placeholder: '15-digit IMEI' },
@@ -140,8 +169,8 @@ const FIELDS: { key: keyof MobileDevice; label: string; placeholder?: string }[]
   { key: 'phoneModel', label: 'Phone model' },
   { key: 'androidVersion', label: 'Android version' },
   { key: 'serial', label: 'Serial' },
-  { key: 'phoneCase', label: 'Phone case' },
-  { key: 'phoneScreenguard', label: 'Phone screenguard' },
+  { key: 'phoneCase', label: 'Phone case', type: 'yesno' },
+  { key: 'phoneScreenguard', label: 'Phone screenguard', type: 'yesno' },
   { key: 'country', label: 'Country' },
 ];
 
@@ -150,7 +179,10 @@ function DeviceForm({ device, onClose, onSaved }: {
 }) {
   const [form, setForm] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
-    FIELDS.forEach(f => { init[f.key as string] = (device?.[f.key] as string) || ''; });
+    FIELDS.forEach(f => {
+      const raw = (device?.[f.key] as string) || '';
+      init[f.key as string] = f.type === 'yesno' && raw ? canonicalYesNo(raw) : raw;
+    });
     return init;
   });
   const [status, setStatus] = useState<DeviceStatus>(device?.status || 'in_stock');
@@ -178,17 +210,37 @@ function DeviceForm({ device, onClose, onSaved }: {
     >
       {error && <div className="error-text">{error}</div>}
       <div className="form-grid">
-        {FIELDS.map(f => (
-          <div className="field" key={f.key as string}>
-            <label>{f.label}</label>
-            <input
-              className="input"
-              placeholder={f.placeholder}
-              value={form[f.key as string]}
-              onChange={e => setForm(s => ({ ...s, [f.key as string]: e.target.value }))}
-            />
-          </div>
-        ))}
+        {FIELDS.map(f => {
+          const name = f.key as string;
+          const value = form[name];
+          return (
+            <div className="field" key={name}>
+              <label>{f.label}</label>
+              {f.type === 'yesno' ? (
+                <select
+                  className="input"
+                  value={value}
+                  onChange={e => setForm(s => ({ ...s, [name]: e.target.value }))}
+                >
+                  <option value="">— Not set —</option>
+                  {YES_NO.map(v => <option key={v} value={v}>{v}</option>)}
+                  {/* Devices recorded before this was a dropdown may hold free text. Keeping
+                      it as an option means opening the form doesn't quietly erase it. */}
+                  {value && !YES_NO.includes(value) && (
+                    <option value={value}>{value} (existing value)</option>
+                  )}
+                </select>
+              ) : (
+                <input
+                  className="input"
+                  placeholder={f.placeholder}
+                  value={value}
+                  onChange={e => setForm(s => ({ ...s, [name]: e.target.value }))}
+                />
+              )}
+            </div>
+          );
+        })}
         <div className="field">
           <label>Status</label>
           <select className="input" value={status} onChange={e => setStatus(e.target.value as DeviceStatus)}>
