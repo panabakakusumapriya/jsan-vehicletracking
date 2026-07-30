@@ -349,7 +349,22 @@ select.input { cursor: pointer; }
   border-radius: var(--radius-xl); padding: 28px;
   box-shadow: 0 20px 60px rgba(13,13,20,0.2);
   animation: slide-up 0.18s ease;
+  /* Without this a tall form simply overflows the viewport and its Save button becomes
+     unreachable — the backdrop centres the box and offers nowhere to scroll. */
+  max-height: 92vh; overflow-y: auto;
 }
+
+/* Two-column, roughly square. For forms with enough fields that one column would run off
+   the screen — the aim is no scrolling at all, with the cap above as the safety net. */
+.modal.wide { width: 680px; }
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 18px;
+}
+.form-grid .field { margin-bottom: 12px; }
+/* Let a field span the full width when its content deserves it. */
+.form-grid .field.span-2 { grid-column: 1 / -1; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
 .modal h3 { margin: 0; font-size: 16px; font-weight: 800; color: var(--text); }
 .modal-close {
@@ -687,6 +702,10 @@ select.input { cursor: pointer; }
   .page-head { flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
   /* Wide tables scroll inside themselves rather than stretching the page. */
   .card table, .content > table { display: block; overflow-x: auto; white-space: nowrap; }
+
+  /* No room for two columns on a phone. */
+  .modal.wide { width: auto; }
+  .form-grid { grid-template-columns: 1fr; }
 
   .toast-stack { top: 12px; right: 12px; left: 12px; width: auto; }
   .pwa-banner {

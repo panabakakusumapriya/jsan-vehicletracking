@@ -9,8 +9,11 @@
     "dev": "node --watch src/server.js",
     "seed": "node src/seed/seed.js",
     "seed:drivers": "node src/seed/seedDrivers.js",
+    "backfill:custody": "node src/seed/backfillCustody.js",
+    "demo:custody": "node src/seed/demoCustody.js",
     "vapid": "node -e \"const k=require('web-push').generateVAPIDKeys();console.log('VAPID_PUBLIC_KEY='+k.publicKey+'\\nVAPID_PRIVATE_KEY='+k.privateKey)\"",
-    "test": "node test/integration.test.js"
+    "test": "node test/integration.test.js && node test/custody.test.js",
+    "test:custody": "node test/custody.test.js"
   },
   "engines": {
     "node": ">=18"

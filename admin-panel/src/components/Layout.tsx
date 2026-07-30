@@ -73,13 +73,22 @@ const PhoneIcon = () => (
   </svg>
 );
 
+const HistoryIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 3v5h5"/>
+    <path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/>
+    <path d="M12 7v5l4 2"/>
+  </svg>
+);
+
 const links = [
   { to: '/',         label: 'Live Map', end: true, Icon: MapIcon    },
   { to: '/trips',    label: 'Trips',              Icon: TripIcon   },
   { to: '/drivers',  label: 'Drivers',            Icon: DriverIcon },
   { to: '/mobiles',  label: 'Mobiles',            Icon: PhoneIcon  },
-  { to: '/reports',  label: 'Reports',             Icon: ReportIcon },
   { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon},
+  { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
+  { to: '/reports',  label: 'Reports',             Icon: ReportIcon },
 ];
 
 function getInitials(name: string) {

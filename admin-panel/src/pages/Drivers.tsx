@@ -2,13 +2,21 @@ import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import type { User, Vehicle } from '../lib/types';
+import type { MobileDevice, User, Vehicle } from '../lib/types';
 
+/**
+ * Drivers — and the ONE place assets are allocated.
+ *
+ * The Vehicles and Mobiles screens are inventory only. Picking a vehicle or a handset here
+ * writes a row to the custody ledger (closing whoever held it before), so "who had what last
+ * month" survives. See docs/asset-custody-design.md.
+ */
 export function Drivers() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
   const [drivers, setDrivers] = useState<User[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [devices, setDevices] = useState<MobileDevice[]>([]);
   const [managers, setManagers] = useState<User[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
@@ -19,6 +27,7 @@ export function Drivers() {
   const load = () => {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
     api.get<{ vehicles: Vehicle[] }>('/api/vehicles').then(r => setVehicles(r.vehicles));
+    api.get<{ devices: MobileDevice[] }>('/api/mobiles').then(r => setDevices(r.devices)).catch(() => {});
     if (isAdmin) api.get<{ users: User[] }>('/api/users?role=manager').then(r => setManagers(r.users));
   };
   useEffect(load, [isAdmin]);
@@ -84,6 +93,8 @@ export function Drivers() {
               <th>Project</th>
               <th>Driver ID</th>
               <th>Driver Name</th>
+              <th>Vehicle</th>
+              <th>Mobile</th>
               <th>Scope</th>
               <th>Region</th>
               <th>Country</th>
@@ -112,6 +123,8 @@ export function Drivers() {
                 <td>{d.project || <M />}</td>
                 <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{d.driverId || <M />}</td>
                 <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{d.name}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{plateOf(d) ?? <M />}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{deviceOf(d) ?? <M />}</td>
                 <td>{d.scope || <M />}</td>
                 <td>{d.region || <M />}</td>
                 <td>{d.country || <M />}</td>
@@ -138,30 +151,57 @@ export function Drivers() {
               </tr>
             ))}
             {drivers.length === 0 && (
-              <tr><td colSpan={22} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
+              <tr><td colSpan={24} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
-      {showAdd && <AddDriver vehicles={vehicles} managers={managers} isAdmin={isAdmin} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />}
-      {editing && <EditDriver driver={editing} vehicles={vehicles} managers={managers} isAdmin={isAdmin} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {showAdd && <AddDriver vehicles={vehicles} devices={devices} managers={managers} isAdmin={isAdmin} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />}
+      {editing && <EditDriver driver={editing} vehicles={vehicles} devices={devices} managers={managers} isAdmin={isAdmin} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     </div>
   );
 }
 
 function M() { return <span style={{ color: 'var(--muted)' }}>—</span>; }
 
+/** Populated refs come back as objects; fall back to nothing rather than a raw id. */
+const idOf = (ref: unknown): string =>
+  ref && typeof ref === 'object' ? String((ref as { _id: string })._id) : (ref ? String(ref) : '');
+
+function plateOf(d: User): string | null {
+  const v = d.vehicleId;
+  return v && typeof v === 'object' ? v.plateNumber : null;
+}
+
+function deviceOf(d: User): string | null {
+  const m = d.mobileDeviceId;
+  if (!m || typeof m !== 'object') return null;
+  return m.label || m.phoneModel || (m.imei ? `…${m.imei.slice(-5)}` : null);
+}
+
+/** Devices a driver may be given: free stock, plus whatever they already hold. */
+function allocatableDevices(devices: MobileDevice[], currentId: string) {
+  return devices.filter(
+    dev => dev._id === currentId || (dev.status === 'in_stock' && !dev.currentDriverId)
+  );
+}
+
+const deviceOptionLabel = (dev: MobileDevice) =>
+  [dev.label || dev.phoneModel || 'Device', dev.imei ? `…${dev.imei.slice(-5)}` : null]
+    .filter(Boolean)
+    .join(' · ');
+
 const EMPTY_FORM = {
-  name: '', email: '', password: '', phone: '', country: '', vehicleId: '', managerId: '',
+  name: '', email: '', password: '', phone: '', country: '', vehicleId: '', mobileDeviceId: '', managerId: '',
   driverId: '', project: '', scope: '', region: '', drivingLocation: '', driverMode: '',
   poc: '', contact: '', personalMail: '', driverAddress: '', ctsMail: '',
   driverStatus: '', joiningDate: '', exitDate: '',
   pricePerHour: '', perDiem: '', currency: '', language: '',
 };
 
-function AddDriver({ vehicles, managers, isAdmin, onClose, onSaved }: {
-  vehicles: Vehicle[]; managers: User[];
+function AddDriver({ vehicles, devices, managers, isAdmin, onClose, onSaved }: {
+  vehicles: Vehicle[]; devices: MobileDevice[]; managers: User[];
   isAdmin: boolean; onClose: () => void; onSaved: () => void;
 }) {
   const [form, setForm] = useState(EMPTY_FORM);
@@ -180,6 +220,7 @@ function AddDriver({ vehicles, managers, isAdmin, onClose, onSaved }: {
         phone: form.phone || undefined, role: 'user',
         country: form.country.trim() || undefined,
         vehicleId: form.vehicleId || undefined,
+        mobileDeviceId: form.mobileDeviceId || undefined,
         managerId: isAdmin ? form.managerId || undefined : undefined,
         driverId: form.driverId || undefined,
         project: form.project || undefined,
@@ -275,6 +316,15 @@ function AddDriver({ vehicles, managers, isAdmin, onClose, onSaved }: {
             {vehicles.map(v => <option key={v._id} value={v._id}>{v.plateNumber}{v.model ? ` · ${v.model}` : ''}</option>)}
           </select>
         </F>
+        <F label="Mobile device">
+          <select className="input" value={form.mobileDeviceId} onChange={e => set('mobileDeviceId', e.target.value)}>
+            <option value="">— None —</option>
+            {/* Only free stock — a handset already with someone can't be picked here. */}
+            {allocatableDevices(devices, '').map(dev => (
+              <option key={dev._id} value={dev._id}>{deviceOptionLabel(dev)}</option>
+            ))}
+          </select>
+        </F>
       </div>
       {error && <div className="error-text">{error}</div>}
       <div className="modal-actions">
@@ -285,17 +335,19 @@ function AddDriver({ vehicles, managers, isAdmin, onClose, onSaved }: {
   );
 }
 
-function EditDriver({ driver, vehicles, managers, isAdmin, onClose, onSaved }: {
-  driver: User; vehicles: Vehicle[]; managers: User[];
+function EditDriver({ driver, vehicles, devices, managers, isAdmin, onClose, onSaved }: {
+  driver: User; vehicles: Vehicle[]; devices: MobileDevice[]; managers: User[];
   isAdmin: boolean; onClose: () => void; onSaved: () => void;
 }) {
-  const vehicleIdVal = driver.vehicleId && typeof driver.vehicleId === 'object' ? driver.vehicleId._id : (driver.vehicleId || '');
+  const vehicleIdVal = idOf(driver.vehicleId);
+  const deviceIdVal = idOf(driver.mobileDeviceId);
   const managerIdVal = driver.managerId && typeof driver.managerId === 'object' ? (driver.managerId as any)._id : (driver.managerId || '');
   const [form, setForm] = useState({
     name: driver.name,
     phone: driver.phone || '',
     country: driver.country || '',
-    vehicleId: vehicleIdVal as string,
+    vehicleId: vehicleIdVal,
+    mobileDeviceId: deviceIdVal,
     managerId: managerIdVal as string,
     password: '',
     driverId: driver.driverId || '',
@@ -329,6 +381,7 @@ function EditDriver({ driver, vehicles, managers, isAdmin, onClose, onSaved }: {
         phone: form.phone || null,
         country: form.country || null,
         vehicleId: form.vehicleId || null,
+        mobileDeviceId: form.mobileDeviceId || null,
         driverId: form.driverId || null,
         project: form.project || null,
         scope: form.scope || null,
@@ -421,6 +474,18 @@ function EditDriver({ driver, vehicles, managers, isAdmin, onClose, onSaved }: {
             <option value="">— None —</option>
             {vehicles.map(v => <option key={v._id} value={v._id}>{v.plateNumber}{v.model ? ` · ${v.model}` : ''}</option>)}
           </select>
+        </F>
+        <F label="Mobile device">
+          <select className="input" value={form.mobileDeviceId} onChange={e => set('mobileDeviceId', e.target.value)}>
+            <option value="">— None —</option>
+            {/* Free stock, plus whatever this driver already holds. */}
+            {allocatableDevices(devices, deviceIdVal).map(dev => (
+              <option key={dev._id} value={dev._id}>{deviceOptionLabel(dev)}</option>
+            ))}
+          </select>
+          <p style={{ fontSize: 11, color: 'var(--muted)', margin: '5px 0 0', lineHeight: 1.5 }}>
+            Changing this returns the old handset to stock and records the handover.
+          </p>
         </F>
         <F label="New password (leave blank to keep current)">
           <input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Leave blank to keep current" />

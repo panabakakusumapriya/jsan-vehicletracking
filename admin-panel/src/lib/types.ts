@@ -9,7 +9,9 @@ export interface User {
   timezone?: string | null;
   role: Role;
   managerId?: string | null;
-  vehicleId?: { _id: string; plateNumber: string; model?: string } | string | null;
+  vehicleId?: { _id: string; plateNumber: string; model?: string; vid?: string | null } | string | null;
+  // Cache of the driver's open mobile assignment, set from the Drivers screen.
+  mobileDeviceId?: { _id: string; label?: string | null; imei?: string | null; phoneModel?: string | null } | string | null;
   active: boolean;
   createdAt?: string;
   lastLoginAt?: string | null;
@@ -50,6 +52,92 @@ export interface Vehicle {
   managerId?: string | null;
   assignedDriverId?: { _id: string; name: string; email: string } | string | null;
   active: boolean;
+}
+
+export type DeviceStatus = 'in_stock' | 'assigned' | 'repair' | 'lost' | 'retired';
+
+/** A physical handset, tracked as an asset in its own right (not fields on a driver). */
+export interface MobileDevice {
+  _id: string;
+  imei?: string | null;
+  secondaryImei?: string | null;
+  serial?: string | null;
+  label?: string | null;
+  displayLabel?: string;
+  phoneModel?: string | null;
+  androidVersion?: string | null;
+  workPhone?: string | null;
+  phoneCase?: string | null;
+  phoneScreenguard?: string | null;
+  country?: string | null;
+  notes?: string | null;
+  status: DeviceStatus;
+  currentDriverId?: { _id: string; name: string; email: string } | string | null;
+  managerId?: { _id: string; name: string } | string | null;
+  active: boolean;
+  createdAt?: string;
+}
+
+export type AssetKind = 'vehicle' | 'mobile';
+
+/** One stint of custody. `endedAt: null` (open: true) means still held. */
+export interface Assignment {
+  _id: string;
+  assetKind: AssetKind;
+  assetId: string;
+  driverId: { _id: string; name: string; email: string } | string;
+  driverName?: string | null;
+  assetLabel?: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  open: boolean;
+  country?: string | null;
+  project?: string | null;
+  backfilled?: boolean;
+  note?: string | null;
+  assignedBy?: { _id: string; name: string } | string | null;
+  releasedBy?: { _id: string; name: string } | string | null;
+}
+
+/** One asset held during the reported month, clipped to that month. */
+export interface CustodyStint {
+  assignmentId: string;
+  assetId: string;
+  label: string | null;
+  from: string;
+  to: string;
+  days: number;
+  startedBefore: boolean;
+  stillOpen: boolean;
+  backfilled: boolean;
+  country?: string | null;
+  project?: string | null;
+  note?: string | null;
+}
+
+export interface CustodyRow {
+  driver: { _id: string; name: string; email: string | null; country?: string | null; active: boolean; exitDate?: string | null };
+  vehicles: CustodyStint[];
+  mobiles: CustodyStint[];
+  vehicleDays: number;
+  mobileDays: number;
+}
+
+export interface CustodyReport {
+  month: string;
+  tz: string;
+  from: string;
+  to: string;
+  monthDays: number;
+  rows: CustodyRow[];
+  totals: {
+    drivers: number;
+    driversWithVehicle: number;
+    driversWithMobile: number;
+    driversWithNothing: number;
+    vehicleStints: number;
+    mobileStints: number;
+  };
 }
 
 export interface Coord {

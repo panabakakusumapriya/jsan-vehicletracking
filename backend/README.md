@@ -75,6 +75,37 @@ Socket.IO connects with `{ auth: { token } }`.
 - `POST /api/tracking/ingest`  (driver) — **the core endpoint**
 - `GET  /api/tracking/live`  (admin, manager) — snapshot of active drivers
 
+### Assets & custody history  (admin, manager)
+- `GET/POST /api/mobiles`, `GET/PATCH/DELETE /api/mobiles/:id` — device inventory
+  (`GET /:id` also returns that handset's full custody history)
+- `POST /api/assignments` `{ assetKind, assetId, driverId, startedAt?, note? }` — hand an
+  asset over; closes the previous stint and opens a new one atomically
+- `POST /api/assignments/:id/return` `{ endedAt?, note? }`
+- `GET  /api/assignments?from&to&driverId&assetId&assetKind&open=true`
+- `GET  /api/reports/custody?month=2026-06&tz=Australia/Sydney` — pivoted per driver + days
+- `GET  /api/reports/custody.csv?month&tz`
+
+Assignments are **intervals, not pointers**: reassigning a vehicle closes the old row and
+opens a new one, so "who had what last month" survives. `User.vehicleId`,
+`Vehicle.assignedDriverId` and `MobileDevice.currentDriverId` remain as caches of the open
+row. Changing them through the existing Drivers/Vehicles screens goes through the ledger too,
+so no assignment path bypasses history. Full rationale: `docs/asset-custody-design.md`.
+
+```bash
+npm run backfill:custody -- --dry-run   # preview importing today's assignments as history
+npm run backfill:custody                # apply (idempotent, additive only)
+npm run test:custody                    # 57 assertions: invariants, backdating, DST, scoping
+
+npm run demo:custody                    # a 3-month story to walk someone through
+npm run demo:custody -- --clean         # remove every trace of it
+```
+
+`demo:custody` builds two drivers, two vehicles and two handsets across May–July 2026 using
+the real assign/return calls, so what appears on screen is the system working rather than
+seeded rows. It prints a month-by-month table and a numbered walkthrough. Everything it
+creates is tagged (`@jsan.demo` emails, `DEMO-` plates, `DEMO` IMEIs) so `--clean` removes it
+exactly and can never touch real records.
+
 ### Push / alerts  (admin, manager — used by the panel PWA)
 - `GET  /api/push/public-key` (no auth) → `{ publicKey, configured, alertsEnabled }`
 - `POST /api/push/subscribe` `{ endpoint, keys:{p256dh,auth} }` — idempotent by endpoint

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { AssetHistory } from './pages/AssetHistory';
 import { Drivers } from './pages/Drivers';
 import { LiveMap } from './pages/LiveMap';
 import { Login } from './pages/Login';
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="/reports" element={<Reports />} />
         <Route path="/drivers" element={<Drivers />} />
         <Route path="/mobiles" element={<Mobiles />} />
+        <Route path="/asset-history" element={<AssetHistory />} />
         <Route path="/vehicles" element={<Vehicles />} />
         <Route
           path="/managers"

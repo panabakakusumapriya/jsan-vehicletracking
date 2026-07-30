@@ -12,6 +12,10 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ROLES, default: 'user', index: true },
     managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     vehicleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', default: null },
+    // Both of these are CACHES of the driver's open Assignment rows, kept in sync by
+    // services/assetCustody.js. The ledger is the source of truth; these exist so the
+    // Drivers screen can show and set the current allocation without a join.
+    mobileDeviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'MobileDevice', default: null },
     country: { type: String, trim: true, default: null },
     timezone: { type: String, trim: true, default: null },
     active: { type: Boolean, default: true },
