@@ -9,6 +9,7 @@ export function Vehicles() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<User[]>([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [editing, setEditing] = useState<Vehicle | null>(null);
 
   const load = () => {
     api.get<{ vehicles: Vehicle[] }>('/api/vehicles').then((r) => setVehicles(r.vehicles));
@@ -35,6 +36,7 @@ export function Vehicles() {
         <table>
           <thead>
             <tr>
+              <th>VID</th>
               <th>Plate</th>
               <th>Model</th>
               <th>Assigned driver</th>
@@ -45,13 +47,15 @@ export function Vehicles() {
           <tbody>
             {vehicles.map((v) => (
               <tr key={v._id}>
+                <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{v.vid || '—'}</td>
                 <td>{v.plateNumber}</td>
                 <td>{v.model || '—'}</td>
                 <td>{assigned(v.assignedDriverId)}</td>
                 <td>
                   <span className={`badge ${v.active ? 'green' : 'gray'}`}>{v.active ? 'active' : 'inactive'}</span>
                 </td>
-                <td>
+                <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+                  <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(v)}>Edit</button>
                   <button className="btn-danger" onClick={() => remove(v)}>
                     Delete
                   </button>
@@ -60,7 +64,7 @@ export function Vehicles() {
             ))}
             {vehicles.length === 0 && (
               <tr>
-                <td colSpan={5} className="muted" style={{ textAlign: 'center', padding: 28 }}>
+                <td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 28 }}>
                   No vehicles yet.
                 </td>
               </tr>
@@ -79,12 +83,23 @@ export function Vehicles() {
           }}
         />
       )}
+      {editing && (
+        <EditVehicle
+          vehicle={editing}
+          drivers={drivers}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            load();
+          }}
+        />
+      )}
     </div>
   );
 }
 
 function AddVehicle({ drivers, onClose, onSaved }: { drivers: User[]; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ plateNumber: '', model: '', assignedDriverId: '' });
+  const [form, setForm] = useState({ plateNumber: '', vid: '', model: '', assignedDriverId: '' });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -95,6 +110,7 @@ function AddVehicle({ drivers, onClose, onSaved }: { drivers: User[]; onClose: (
     try {
       await api.post('/api/vehicles', {
         plateNumber: form.plateNumber,
+        vid: form.vid || undefined,
         model: form.model || undefined,
         assignedDriverId: form.assignedDriverId || undefined,
       });
@@ -111,6 +127,10 @@ function AddVehicle({ drivers, onClose, onSaved }: { drivers: User[]; onClose: (
       <div className="field">
         <label>Plate number</label>
         <input className="input" value={form.plateNumber} onChange={(e) => set('plateNumber', e.target.value)} />
+      </div>
+      <div className="field">
+        <label>VID</label>
+        <input className="input" value={form.vid} onChange={(e) => set('vid', e.target.value)} />
       </div>
       <div className="field">
         <label>Model (optional)</label>
@@ -135,6 +155,88 @@ function AddVehicle({ drivers, onClose, onSaved }: { drivers: User[]; onClose: (
         </button>
         <button className="btn" onClick={save} disabled={busy}>
           {busy ? 'Saving…' : 'Create vehicle'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function EditVehicle({ vehicle, drivers, onClose, onSaved }: {
+  vehicle: Vehicle; drivers: User[]; onClose: () => void; onSaved: () => void;
+}) {
+  const assignedId = vehicle.assignedDriverId && typeof vehicle.assignedDriverId === 'object'
+    ? vehicle.assignedDriverId._id
+    : (vehicle.assignedDriverId || '');
+  const [form, setForm] = useState({
+    plateNumber: vehicle.plateNumber,
+    vid: vehicle.vid || '',
+    model: vehicle.model || '',
+    assignedDriverId: assignedId as string,
+    active: vehicle.active,
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      await api.patch(`/api/vehicles/${vehicle._id}`, {
+        plateNumber: form.plateNumber,
+        vid: form.vid || null,
+        model: form.model || null,
+        assignedDriverId: form.assignedDriverId || null,
+        active: form.active,
+      });
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update vehicle');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Edit · ${vehicle.plateNumber}`} onClose={onClose}>
+      <div className="field">
+        <label>Plate number</label>
+        <input className="input" value={form.plateNumber} onChange={(e) => set('plateNumber', e.target.value)} />
+      </div>
+      <div className="field">
+        <label>VID</label>
+        <input className="input" value={form.vid} onChange={(e) => set('vid', e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Model</label>
+        <input className="input" value={form.model} onChange={(e) => set('model', e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Assign driver</label>
+        <select className="input" value={form.assignedDriverId} onChange={(e) => set('assignedDriverId', e.target.value)}>
+          <option value="">— None —</option>
+          {drivers.map((d) => (
+            <option key={d._id} value={d._id}>
+              {d.name} ({d.email})
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="field">
+        <label>Status</label>
+        <select className="input" value={form.active ? 'active' : 'inactive'} onChange={(e) => setForm(f => ({ ...f, active: e.target.value === 'active' }))}>
+          <option value="active">Active</option>
+          <option value="inactive">Inactive</option>
+        </select>
+      </div>
+
+      {error && <div className="error-text">{error}</div>}
+      <div className="modal-actions">
+        <button className="btn-ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn" onClick={save} disabled={busy}>
+          {busy ? 'Saving…' : 'Save changes'}
         </button>
       </div>
     </Modal>

@@ -6,7 +6,7 @@ import { api } from '../lib/api';
 import { useSocket, useSocketEvent } from '../lib/socket';
 import { useAuth } from '../lib/auth';
 import { km } from '../lib/format';
-import type { LiveDriver, LocationEvent, ParkedDriver } from '../lib/types';
+import type { LiveDriver, LocationEvent, ParkedDriver, User } from '../lib/types';
 
 function Recenter({ focus }: { focus: [number, number] | null }) {
   const map = useMap();
@@ -57,8 +57,10 @@ export function LiveMap() {
   const { connected } = useSocket();
   const [drivers, setDrivers] = useState<Record<string, LiveDriver>>({});
   const [parked, setParked] = useState<ParkedDriver[]>([]);
+  const [allDriverUsers, setAllDriverUsers] = useState<User[]>([]);
   const [focus, setFocus] = useState<[number, number] | null>(null);
   const [countryFilter, setCountryFilter] = useState('');
+  const [projectFilter, setProjectFilter] = useState('');
   // Tapping a "driver offline" notification lands on /?driver=<id> — see AlertToaster.
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDriver = searchParams.get('driver');
@@ -66,10 +68,12 @@ export function LiveMap() {
   useEffect(() => {
     (async () => {
       try {
-        const [liveRes, parkedRes] = await Promise.all([
+        const [liveRes, parkedRes, usersRes] = await Promise.all([
           api.get<{ drivers: LiveDriver[] }>('/api/tracking/live'),
           api.get<{ parked: ParkedDriver[] }>('/api/tracking/parked'),
+          api.get<{ users: User[] }>('/api/users?role=user'),
         ]);
+        setAllDriverUsers(usersRes.users ?? []);
         const map: Record<string, LiveDriver> = {};
         liveRes.drivers.forEach(d => { map[d.driver._id] = d; });
         setDrivers(map);
@@ -115,20 +119,27 @@ export function LiveMap() {
   const allList   = Object.values(drivers);
   const withLoc   = allList.filter(d => d.location);
 
-  // Collect unique countries across active + parked drivers.
-  const countries = Array.from(new Set([
-    ...allList.map(d => d.driver.country).filter(Boolean),
-    ...parked.map(p => p.driver.country).filter(Boolean),
-  ])).sort() as string[];
+  // Collect unique countries and projects across active + parked drivers.
+  const countries = Array.from(new Set(
+    allDriverUsers.map(d => d.country).filter(Boolean)
+  )).sort() as string[];
 
-  // Apply country filter.
-  const list = countryFilter
-    ? allList.filter(d => d.driver.country === countryFilter)
-    : allList;
+  const projects = Array.from(new Set(
+    allDriverUsers.map(d => d.project).filter(Boolean)
+  )).sort() as string[];
+
+  // Apply filters.
+  const list = allList.filter(d => {
+    if (countryFilter && d.driver.country !== countryFilter) return false;
+    if (projectFilter && d.driver.project !== projectFilter) return false;
+    return true;
+  });
   const filteredWithLoc = list.filter(d => d.location);
-  const filteredParked  = countryFilter
-    ? parked.filter(p => p.driver.country === countryFilter)
-    : parked;
+  const filteredParked = parked.filter(p => {
+    if (countryFilter && p.driver.country !== countryFilter) return false;
+    if (projectFilter && p.driver.project !== projectFilter) return false;
+    return true;
+  });
 
   // Stable initial center.
   const initialCenter = useRef<[number, number]>([17.42, 78.45]);
@@ -153,7 +164,7 @@ export function LiveMap() {
           </p>
         </div>
 
-        {/* Country filter */}
+        {/* Filters */}
         <select
           className="input"
           style={{ width: '100%', margin: '8px 0 4px', fontSize: 13 }}
@@ -162,6 +173,15 @@ export function LiveMap() {
         >
           <option value="">All countries</option>
           {countries.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select
+          className="input"
+          style={{ width: '100%', margin: '4px 0 4px', fontSize: 13 }}
+          value={projectFilter}
+          onChange={e => setProjectFilter(e.target.value)}
+        >
+          <option value="">All projects</option>
+          {projects.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
 
         {/* Stat pills */}

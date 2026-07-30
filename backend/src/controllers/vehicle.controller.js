@@ -16,11 +16,12 @@ exports.list = asyncHandler(async (req, res) => {
 
 // POST /api/vehicles
 exports.create = asyncHandler(async (req, res) => {
-  const { plateNumber, model, managerId, assignedDriverId } = req.body || {};
+  const { plateNumber, vid, model, managerId, assignedDriverId } = req.body || {};
   if (!plateNumber) return res.status(400).json({ error: 'plateNumber is required' });
 
   const vehicle = await Vehicle.create({
     plateNumber,
+    vid: vid || null,
     model: model || null,
     managerId: req.user.role === 'manager' ? req.user._id : managerId || null,
     assignedDriverId: assignedDriverId || null,
@@ -38,8 +39,9 @@ exports.update = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  const { plateNumber, model, active, assignedDriverId } = req.body || {};
+  const { plateNumber, vid, model, active, assignedDriverId } = req.body || {};
   if (plateNumber !== undefined) vehicle.plateNumber = plateNumber;
+  if (vid !== undefined) vehicle.vid = vid;
   if (model !== undefined) vehicle.model = model;
   if (active !== undefined) vehicle.active = active;
   if (assignedDriverId !== undefined) {

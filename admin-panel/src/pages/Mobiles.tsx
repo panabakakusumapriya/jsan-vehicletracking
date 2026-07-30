@@ -39,6 +39,7 @@ export function Mobiles() {
               <th>Driver Name</th>
               <th>Work Phone Number</th>
               <th>IMEI Number</th>
+              <th>Secondary IMEI</th>
               <th>Phone Model</th>
               <th>Android Version</th>
               <th>Phone Case</th>
@@ -52,6 +53,7 @@ export function Mobiles() {
                 <td style={{ fontWeight: 600 }}>{d.name}</td>
                 <td>{d.workPhone || <M />}</td>
                 <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{d.imei || <M />}</td>
+                <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{d.secondaryImei || <M />}</td>
                 <td>{d.phoneModel || <M />}</td>
                 <td>{d.androidVersion || <M />}</td>
                 <td>{d.phoneCase || <M />}</td>
@@ -62,14 +64,14 @@ export function Mobiles() {
               </tr>
             ))}
             {drivers.length === 0 && (
-              <tr><td colSpan={8} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet.</td></tr>
+              <tr><td colSpan={9} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet.</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
       {showAdd && <AddMobile drivers={drivers} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />}
-      {editing && <EditMobile driver={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {editing && <EditMobile driver={editing} drivers={drivers} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     </div>
   );
 }
@@ -82,7 +84,7 @@ function AddMobile({ drivers, onClose, onSaved }: {
   const unassigned = drivers.filter(d => !d.workPhone && !d.imei);
   const [selectedId, setSelectedId] = useState('');
   const [form, setForm] = useState({
-    workPhone: '', imei: '', phoneModel: '', androidVersion: '', phoneCase: '', phoneScreenguard: '',
+    workPhone: '', imei: '', secondaryImei: '', phoneModel: '', androidVersion: '', phoneCase: '', phoneScreenguard: '',
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -95,6 +97,7 @@ function AddMobile({ drivers, onClose, onSaved }: {
       await api.patch(`/api/users/${selectedId}`, {
         workPhone: form.workPhone || null,
         imei: form.imei || null,
+        secondaryImei: form.secondaryImei || null,
         phoneModel: form.phoneModel || null,
         androidVersion: form.androidVersion || null,
         phoneCase: form.phoneCase || null,
@@ -122,6 +125,9 @@ function AddMobile({ drivers, onClose, onSaved }: {
       <div className="field"><label>IMEI Number</label>
         <input className="input" value={form.imei} onChange={e => set('imei', e.target.value)} placeholder="15-digit IMEI" />
       </div>
+      <div className="field"><label>Secondary IMEI Number (optional)</label>
+        <input className="input" value={form.secondaryImei} onChange={e => set('secondaryImei', e.target.value)} placeholder="15-digit IMEI" />
+      </div>
       <div className="field"><label>Phone Model</label>
         <input className="input" value={form.phoneModel} onChange={e => set('phoneModel', e.target.value)} placeholder="Samsung Galaxy A14" />
       </div>
@@ -129,10 +135,18 @@ function AddMobile({ drivers, onClose, onSaved }: {
         <input className="input" value={form.androidVersion} onChange={e => set('androidVersion', e.target.value)} placeholder="14" />
       </div>
       <div className="field"><label>Phone Case</label>
-        <input className="input" value={form.phoneCase} onChange={e => set('phoneCase', e.target.value)} placeholder="Yes / No" />
+        <select className="input" value={form.phoneCase} onChange={e => set('phoneCase', e.target.value)}>
+          <option value="">— Select —</option>
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+        </select>
       </div>
       <div className="field"><label>Phone Screenguard</label>
-        <input className="input" value={form.phoneScreenguard} onChange={e => set('phoneScreenguard', e.target.value)} placeholder="Yes / No" />
+        <select className="input" value={form.phoneScreenguard} onChange={e => set('phoneScreenguard', e.target.value)}>
+          <option value="">— Select —</option>
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+        </select>
       </div>
       {error && <div className="error-text">{error}</div>}
       <div className="modal-actions">
@@ -143,12 +157,13 @@ function AddMobile({ drivers, onClose, onSaved }: {
   );
 }
 
-function EditMobile({ driver, onClose, onSaved }: {
-  driver: User; onClose: () => void; onSaved: () => void;
+function EditMobile({ driver, drivers, onClose, onSaved }: {
+  driver: User; drivers: User[]; onClose: () => void; onSaved: () => void;
 }) {
+  const [selectedDriverId, setSelectedDriverId] = useState(driver._id);
   const [form, setForm] = useState({
     workPhone: driver.workPhone || '',
-    imei: driver.imei || '',
+    secondaryImei: driver.secondaryImei || '',
     phoneModel: driver.phoneModel || '',
     androidVersion: driver.androidVersion || '',
     phoneCase: driver.phoneCase || '',
@@ -161,9 +176,15 @@ function EditMobile({ driver, onClose, onSaved }: {
   const save = async () => {
     setError(null); setBusy(true);
     try {
-      await api.patch(`/api/users/${driver._id}`, {
+      // If driver changed, clear mobile data from old driver and set on new one
+      if (selectedDriverId !== driver._id) {
+        await api.patch(`/api/users/${driver._id}`, {
+          workPhone: null, imei: null, secondaryImei: null, phoneModel: null, androidVersion: null, phoneCase: null, phoneScreenguard: null,
+        });
+      }
+      await api.patch(`/api/users/${selectedDriverId}`, {
         workPhone: form.workPhone || null,
-        imei: form.imei || null,
+        secondaryImei: form.secondaryImei || null,
         phoneModel: form.phoneModel || null,
         androidVersion: form.androidVersion || null,
         phoneCase: form.phoneCase || null,
@@ -176,12 +197,19 @@ function EditMobile({ driver, onClose, onSaved }: {
   };
 
   return (
-    <Modal title={`Mobile · ${driver.name}`} onClose={onClose}>
+    <Modal title={`Mobile · ${driver.imei || 'No IMEI'}`} onClose={onClose}>
+      <div className="field"><label>Driver</label>
+        <select className="input" value={selectedDriverId} onChange={e => setSelectedDriverId(e.target.value)}>
+          {drivers.map(d => (
+            <option key={d._id} value={d._id}>{d.name}</option>
+          ))}
+        </select>
+      </div>
       <div className="field"><label>Work Phone Number</label>
         <input className="input" value={form.workPhone} onChange={e => set('workPhone', e.target.value)} placeholder="+91 9876543210" />
       </div>
-      <div className="field"><label>IMEI Number</label>
-        <input className="input" value={form.imei} onChange={e => set('imei', e.target.value)} placeholder="15-digit IMEI" />
+      <div className="field"><label>Secondary IMEI Number (optional)</label>
+        <input className="input" value={form.secondaryImei} onChange={e => set('secondaryImei', e.target.value)} placeholder="15-digit IMEI" />
       </div>
       <div className="field"><label>Phone Model</label>
         <input className="input" value={form.phoneModel} onChange={e => set('phoneModel', e.target.value)} placeholder="Samsung Galaxy A14" />
@@ -190,10 +218,18 @@ function EditMobile({ driver, onClose, onSaved }: {
         <input className="input" value={form.androidVersion} onChange={e => set('androidVersion', e.target.value)} placeholder="14" />
       </div>
       <div className="field"><label>Phone Case</label>
-        <input className="input" value={form.phoneCase} onChange={e => set('phoneCase', e.target.value)} placeholder="Yes / No" />
+        <select className="input" value={form.phoneCase} onChange={e => set('phoneCase', e.target.value)}>
+          <option value="">— Select —</option>
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+        </select>
       </div>
       <div className="field"><label>Phone Screenguard</label>
-        <input className="input" value={form.phoneScreenguard} onChange={e => set('phoneScreenguard', e.target.value)} placeholder="Yes / No" />
+        <select className="input" value={form.phoneScreenguard} onChange={e => set('phoneScreenguard', e.target.value)}>
+          <option value="">— Select —</option>
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+        </select>
       </div>
       {error && <div className="error-text">{error}</div>}
       <div className="modal-actions">

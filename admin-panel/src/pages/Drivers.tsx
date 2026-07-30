@@ -12,6 +12,9 @@ export function Drivers() {
   const [managers, setManagers] = useState<User[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
+  const [projectFilter, setProjectFilter] = useState('');
+  const [countryFilter, setCountryFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
 
   const load = () => {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
@@ -21,16 +24,27 @@ export function Drivers() {
   useEffect(load, [isAdmin]);
 
   const deactivate = async (d: User) => {
-    if (!confirm(`Deactivate ${d.name}? They will no longer be able to log in.`)) return;
+    if (!confirm(`Exit ${d.name}? They will no longer be able to log in.`)) return;
     await api.del(`/api/users/${d._id}`);
     load();
   };
+
+  const projects = Array.from(new Set(drivers.map(d => d.project).filter(Boolean))).sort() as string[];
+  const countries = Array.from(new Set(drivers.map(d => d.country).filter(Boolean))).sort() as string[];
+
+  const filtered = drivers.filter(d => {
+    if (projectFilter && d.project !== projectFilter) return false;
+    if (countryFilter && d.country !== countryFilter) return false;
+    if (statusFilter === 'active' && !d.active) return false;
+    if (statusFilter === 'inactive' && d.active) return false;
+    return true;
+  });
 
   const active   = drivers.filter(d => d.active).length;
   const inactive = drivers.length - active;
 
   return (
-    <div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px)' }}>
       <div className="page-head">
         <div>
           <h1 className="page-title">Drivers</h1>
@@ -38,7 +52,22 @@ export function Drivers() {
             Manage driver accounts and assignments
           </p>
         </div>
-        <button className="btn" onClick={() => setShowAdd(true)}>+ Add driver</button>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <select className="input" style={{ width: 90, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => setProjectFilter(e.target.value)}>
+            <option value="">Project</option>
+            {projects.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <select className="input" style={{ width: 90, fontSize: 12, padding: '4px 6px' }} value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
+            <option value="">Country</option>
+            {countries.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select className="input" style={{ width: 90, fontSize: 12, padding: '4px 6px' }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option value="">Status</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+          <button className="btn" onClick={() => setShowAdd(true)}>+ Add driver</button>
+        </div>
       </div>
 
       <div className="stat-row">
@@ -47,7 +76,8 @@ export function Drivers() {
         <div className="stat"><div className="v">{inactive}</div><div className="k">Inactive</div></div>
       </div>
 
-      <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+      <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
+        <style>{`.card table thead { position: sticky; top: 0; z-index: 1; }`}</style>
         <table>
           <thead>
             <tr>
@@ -76,7 +106,7 @@ export function Drivers() {
             </tr>
           </thead>
           <tbody>
-            {drivers.map(d => (
+            {filtered.map(d => (
               <tr key={d._id}>
                 <td>{d.project || <M />}</td>
                 <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{d.driverId || <M />}</td>
@@ -98,10 +128,10 @@ export function Drivers() {
                 <td>{d.perDiem ?? <M />}</td>
                 <td>{d.currency || <M />}</td>
                 <td>{d.language || <M />}</td>
-                <td><span className={`badge ${d.active ? 'green' : 'red'}`}>{d.active ? 'Active' : 'Inactive'}</span></td>
+                <td><span className={`badge ${d.active ? 'green' : 'red'}`}>{d.active ? 'Active' : 'Exit'}</span></td>
                 <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
                   <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(d)}>Edit</button>
-                  {d.active && <button className="btn-danger" onClick={() => deactivate(d)}>Deactivate</button>}
+                  {d.active && <button className="btn-danger" onClick={() => deactivate(d)}>Exit</button>}
                 </td>
               </tr>
             ))}

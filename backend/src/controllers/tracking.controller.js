@@ -201,7 +201,7 @@ exports.live = asyncHandler(async (req, res) => {
   await closeDeadTrips(scope);
 
   const trips = await Trip.find({ status: 'active', ...scope })
-    .populate('driverId', 'name email phone country')
+    .populate('driverId', 'name email phone country project')
     .populate('vehicleId', 'plateNumber model');
 
   const drivers = trips.map((t) => {
@@ -241,7 +241,7 @@ exports.parked = asyncHandler(async (req, res) => {
     lastLocation: { $ne: null },
     ...scope,
   })
-    .populate('driverId', 'name email phone country')
+    .populate('driverId', 'name email phone country project')
     .populate('vehicleId', 'plateNumber model')
     .sort({ endedAt: -1 });
 

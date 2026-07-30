@@ -35,6 +35,7 @@ export interface User {
   // Mobile/device
   workPhone?: string | null;
   imei?: string | null;
+  secondaryImei?: string | null;
   phoneModel?: string | null;
   androidVersion?: string | null;
   phoneCase?: string | null;
@@ -44,6 +45,7 @@ export interface User {
 export interface Vehicle {
   _id: string;
   plateNumber: string;
+  vid?: string | null;
   model?: string | null;
   managerId?: string | null;
   assignedDriverId?: { _id: string; name: string; email: string } | string | null;
@@ -76,7 +78,7 @@ export interface Trip {
 
 export interface LiveDriver {
   tripId: string;
-  driver: { _id: string; name: string; email: string; phone?: string; country?: string | null };
+  driver: { _id: string; name: string; email: string; phone?: string; country?: string | null; project?: string | null };
   vehicle?: { _id: string; plateNumber: string; model?: string } | null;
   location?: Coord | null;
   startedAt: string;
@@ -87,7 +89,7 @@ export interface LiveDriver {
 
 export interface ParkedDriver {
   tripId: string;
-  driver: { _id: string; name: string; email: string; phone?: string; country?: string | null };
+  driver: { _id: string; name: string; email: string; phone?: string; country?: string | null; project?: string | null };
   vehicle?: { _id: string; plateNumber: string; model?: string } | null;
   location?: Coord | null;
   endedAt?: string | null;

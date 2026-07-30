@@ -42,6 +42,7 @@ const userSchema = new mongoose.Schema(
     // Mobile/device fields
     workPhone: { type: String, trim: true, default: null },
     imei: { type: String, trim: true, default: null },
+    secondaryImei: { type: String, trim: true, default: null },
     phoneModel: { type: String, trim: true, default: null },
     androidVersion: { type: String, trim: true, default: null },
     phoneCase: { type: String, trim: true, default: null },
