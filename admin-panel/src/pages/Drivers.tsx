@@ -101,6 +101,7 @@ export function Drivers() {
               <th>Per Diem</th>
               <th>Currency</th>
               <th>Language</th>
+              <th>Timezone</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -128,6 +129,7 @@ export function Drivers() {
                 <td>{d.perDiem ?? <M />}</td>
                 <td>{d.currency || <M />}</td>
                 <td>{d.language || <M />}</td>
+                <td>{d.timezone || <M />}</td>
                 <td><span className={`badge ${d.active ? 'green' : 'red'}`}>{d.active ? 'Active' : 'Exit'}</span></td>
                 <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
                   <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(d)}>Edit</button>
