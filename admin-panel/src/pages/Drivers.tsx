@@ -90,7 +90,7 @@ export function Drivers() {
         <table>
           <thead>
             <tr>
-              <th>Project</th>
+              <th style={{ minWidth: 180 }}>Project</th>
               <th>Driver ID</th>
               <th>Driver Name</th>
               <th>Vehicle</th>
@@ -120,7 +120,7 @@ export function Drivers() {
           <tbody>
             {filtered.map(d => (
               <tr key={d._id}>
-                <td>{d.project || <M />}</td>
+                <td style={{ minWidth: 180, wordBreak: 'break-word' }}>{d.project || <M />}</td>
                 <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{d.driverId || <M />}</td>
                 <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{d.name}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{plateOf(d) ?? <M />}</td>
