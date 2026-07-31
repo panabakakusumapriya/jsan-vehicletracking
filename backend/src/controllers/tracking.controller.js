@@ -229,7 +229,7 @@ exports.live = asyncHandler(async (req, res) => {
  */
 exports.parked = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
-  const cutoff = new Date(Date.now() - 8 * 60 * 60 * 1000);
+  const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
 
   // Drivers who are currently active — exclude them from the parked view.
   const activeTrips = await Trip.find({ status: 'active', ...scope }).select('driverId');
