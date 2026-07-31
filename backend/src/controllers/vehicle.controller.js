@@ -31,8 +31,8 @@ async function applyDriverChange(vehicle, nextDriverId, actor) {
   return null;
 }
 
-function scopeFilter(req) {
-  return req.user.role === 'manager' ? { managerId: req.user._id } : {};
+function scopeFilter() {
+  return {};
 }
 
 // GET /api/vehicles
@@ -45,14 +45,15 @@ exports.list = asyncHandler(async (req, res) => {
 
 // POST /api/vehicles
 exports.create = asyncHandler(async (req, res) => {
-  const { plateNumber, vid, model, managerId, assignedDriverId } = req.body || {};
+  const { plateNumber, vid, model, country, managerId, assignedDriverId } = req.body || {};
   if (!plateNumber) return res.status(400).json({ error: 'plateNumber is required' });
 
   const vehicle = await Vehicle.create({
     plateNumber,
     vid: vid || null,
     model: model || null,
-    managerId: req.user.role === 'manager' ? req.user._id : managerId || null,
+    country: country || null,
+    managerId: ['manager', 'team_lead'].includes(req.user.role) ? req.user._id : managerId || null,
     assignedDriverId: null, // set below, via the ledger
   });
   if (assignedDriverId) {
@@ -68,14 +69,15 @@ exports.create = asyncHandler(async (req, res) => {
 exports.update = asyncHandler(async (req, res) => {
   const vehicle = await Vehicle.findById(req.params.id);
   if (!vehicle) return res.status(404).json({ error: 'Vehicle not found' });
-  if (req.user.role === 'manager' && String(vehicle.managerId) !== String(req.user._id)) {
+  if (['manager', 'team_lead'].includes(req.user.role) && String(vehicle.managerId) !== String(req.user._id)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  const { plateNumber, vid, model, active, assignedDriverId } = req.body || {};
+  const { plateNumber, vid, model, country, active, assignedDriverId } = req.body || {};
   if (plateNumber !== undefined) vehicle.plateNumber = plateNumber;
   if (vid !== undefined) vehicle.vid = vid;
   if (model !== undefined) vehicle.model = model;
+  if (country !== undefined) vehicle.country = country;
   if (active !== undefined) vehicle.active = active;
   if (assignedDriverId !== undefined) {
     const problem = await applyDriverChange(vehicle, assignedDriverId, req.user);
@@ -89,7 +91,7 @@ exports.update = asyncHandler(async (req, res) => {
 exports.remove = asyncHandler(async (req, res) => {
   const vehicle = await Vehicle.findById(req.params.id);
   if (!vehicle) return res.status(404).json({ error: 'Vehicle not found' });
-  if (req.user.role === 'manager' && String(vehicle.managerId) !== String(req.user._id)) {
+  if (['manager', 'team_lead'].includes(req.user.role) && String(vehicle.managerId) !== String(req.user._id)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   await vehicle.deleteOne();

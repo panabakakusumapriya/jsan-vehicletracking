@@ -1,4 +1,4 @@
-export type Role = 'admin' | 'manager' | 'user';
+export type Role = 'admin' | 'manager' | 'team_lead' | 'user';
 
 export interface User {
   _id: string;
@@ -8,7 +8,8 @@ export interface User {
   country?: string | null;
   timezone?: string | null;
   role: Role;
-  managerId?: string | null;
+  managerId?: string | { _id: string; name: string } | null;
+  teamLeadId?: string | { _id: string; name: string } | null;
   vehicleId?: { _id: string; plateNumber: string; model?: string; vid?: string | null } | string | null;
   // Cache of the driver's open mobile assignment, set from the Drivers screen.
   mobileDeviceId?: { _id: string; label?: string | null; imei?: string | null; phoneModel?: string | null } | string | null;
@@ -49,6 +50,7 @@ export interface Vehicle {
   plateNumber: string;
   vid?: string | null;
   model?: string | null;
+  country?: string | null;
   managerId?: string | null;
   assignedDriverId?: { _id: string; name: string; email: string } | string | null;
   active: boolean;

@@ -42,9 +42,9 @@ export function Vehicles() {
           <thead>
             <tr>
               <th>VID</th>
-              <th>Plate</th>
+              <th>Licence Plate</th>
               <th>Model</th>
-              <th>Assigned driver</th>
+              <th>Country</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -55,7 +55,7 @@ export function Vehicles() {
                 <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{v.vid || '—'}</td>
                 <td>{v.plateNumber}</td>
                 <td>{v.model || '—'}</td>
-                <td>{assigned(v.assignedDriverId)}</td>
+                <td>{v.country || '—'}</td>
                 <td>
                   <span className={`badge ${v.active ? 'green' : 'gray'}`}>{v.active ? 'active' : 'inactive'}</span>
                 </td>
@@ -102,7 +102,7 @@ export function Vehicles() {
 }
 
 function AddVehicle({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ plateNumber: '', vid: '', model: '' });
+  const [form, setForm] = useState({ plateNumber: '', vid: '', model: '', country: '' });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -115,6 +115,7 @@ function AddVehicle({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
         plateNumber: form.plateNumber,
         vid: form.vid || undefined,
         model: form.model || undefined,
+        country: form.country || undefined,
       });
       onSaved();
     } catch (e) {
@@ -137,6 +138,10 @@ function AddVehicle({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
       <div className="field">
         <label>Model (optional)</label>
         <input className="input" value={form.model} onChange={(e) => set('model', e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Country (optional)</label>
+        <input className="input" value={form.country} onChange={(e) => set('country', e.target.value)} />
       </div>
       <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '0 0 4px', lineHeight: 1.5 }}>
         Allocate this vehicle to a driver from the <b>Drivers</b> screen.
@@ -162,6 +167,7 @@ function EditVehicle({ vehicle, onClose, onSaved }: {
     plateNumber: vehicle.plateNumber,
     vid: vehicle.vid || '',
     model: vehicle.model || '',
+    country: vehicle.country || '',
     active: vehicle.active,
   });
   const [error, setError] = useState<string | null>(null);
@@ -176,6 +182,7 @@ function EditVehicle({ vehicle, onClose, onSaved }: {
         plateNumber: form.plateNumber,
         vid: form.vid || null,
         model: form.model || null,
+        country: form.country || null,
         active: form.active,
       });
       onSaved();
@@ -199,6 +206,10 @@ function EditVehicle({ vehicle, onClose, onSaved }: {
       <div className="field">
         <label>Model</label>
         <input className="input" value={form.model} onChange={(e) => set('model', e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Country</label>
+        <input className="input" value={form.country} onChange={(e) => set('country', e.target.value)} />
       </div>
       <div className="field">
         <label>Currently held by</label>

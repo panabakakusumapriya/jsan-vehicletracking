@@ -3,12 +3,12 @@ const Assignment = require('../models/Assignment');
 const asyncHandler = require('../utils/asyncHandler');
 const { releaseAllForDriver } = require('../services/assetCustody');
 
-function scopeFilter(req) {
-  return req.user.role === 'manager' ? { managerId: req.user._id } : {};
+function scopeFilter() {
+  return {};
 }
 
 function assertCanTouch(req, device) {
-  if (req.user.role === 'manager' && String(device.managerId) !== String(req.user._id)) {
+  if (['manager', 'team_lead'].includes(req.user.role) && String(device.managerId) !== String(req.user._id)) {
     const err = new Error('Forbidden');
     err.status = 403;
     throw err;
@@ -58,7 +58,7 @@ exports.create = asyncHandler(async (req, res) => {
 
   const doc = {};
   for (const f of EDITABLE) if (b[f] !== undefined) doc[f] = b[f] || null;
-  doc.managerId = req.user.role === 'manager' ? req.user._id : b.managerId || null;
+  doc.managerId = ['manager', 'team_lead'].includes(req.user.role) ? req.user._id : b.managerId || null;
   doc.status = b.status || 'in_stock';
 
   try {

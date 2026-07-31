@@ -40,13 +40,20 @@ exports.list = asyncHandler(async (req, res) => {
   const filter = {};
   if (req.query.role) filter.role = req.query.role;
   if (req.user.role === 'manager') {
+    // Manager sees all drivers assigned to them (including those delegated to team leads)
     filter.managerId = req.user._id;
+    if (!req.query.role) filter.role = 'user';
+  } else if (req.user.role === 'team_lead') {
+    // Team lead sees only drivers specifically assigned to them
+    filter.teamLeadId = req.user._id;
     filter.role = 'user';
   }
   const users = await User.find(filter)
     .sort({ createdAt: -1 })
     .populate('vehicleId', 'plateNumber model vid')
-    .populate('mobileDeviceId', 'label imei phoneModel');
+    .populate('mobileDeviceId', 'label imei phoneModel')
+    .populate('teamLeadId', 'name')
+    .populate('managerId', 'name');
   res.json({ users: users.map((u) => u.toSafeJSON()) });
 });
 
@@ -70,7 +77,7 @@ exports.create = asyncHandler(async (req, res) => {
 
   let finalRole = role;
   let finalManager = managerId || null;
-  if (req.user.role === 'manager') {
+  if (req.user.role === 'manager' || req.user.role === 'team_lead') {
     finalRole = 'user';
     finalManager = req.user._id;
   }
@@ -86,7 +93,8 @@ exports.create = asyncHandler(async (req, res) => {
     country: b.country || null,
     timezone: b.timezone || null,
     role: finalRole,
-    managerId: finalRole === 'user' ? finalManager : null,
+    managerId: finalRole === 'user' ? finalManager : (finalRole === 'team_lead' ? (b.managerId || null) : null),
+    teamLeadId: finalRole === 'user' ? (b.teamLeadId || null) : null,
     vehicleId: null, // allocated below through the ledger, so day one is on record too
     driverId: b.driverId || null,
     project: b.project || null,
@@ -139,6 +147,13 @@ exports.update = asyncHandler(async (req, res) => {
   if (!canManageDriver(req.user, user)) return res.status(403).json({ error: 'Forbidden' });
 
   const b = req.body || {};
+  // Allow email updates — validate uniqueness below.
+  if (b.email !== undefined && b.email !== user.email) {
+    const dup = await User.findOne({ email: String(b.email).toLowerCase(), _id: { $ne: user._id } });
+    if (dup) return res.status(409).json({ error: 'Email already in use' });
+    user.email = String(b.email).toLowerCase();
+  }
+
   const strFields = [
     'name', 'phone', 'country', 'timezone', 'driverId', 'project', 'scope', 'region',
     'drivingLocation', 'driverMode', 'poc', 'contact', 'personalMail',
@@ -183,10 +198,9 @@ exports.update = asyncHandler(async (req, res) => {
     const problem = await allocate(user, 'mobile', b.mobileDeviceId, req.user);
     if (problem) return res.status(problem.status).json({ error: problem.error });
   }
-  if (req.user.role === 'admin') {
-    if (b.role !== undefined && User.ROLES.includes(b.role)) user.role = b.role;
-    if (b.managerId !== undefined) user.managerId = b.managerId || null;
-  }
+  if (b.role !== undefined && User.ROLES.includes(b.role)) user.role = b.role;
+  if (b.teamLeadId !== undefined) user.teamLeadId = b.teamLeadId || null;
+  if (b.managerId !== undefined) user.managerId = b.managerId || null;
   if (b.password) await user.setPassword(b.password);
 
   await user.save();

@@ -17,7 +17,7 @@ const testLimiter = rateLimit({
 router.get('/public-key', ctrl.getPublicKey);
 
 // Alerts are a panel feature — drivers use the mobile app and never subscribe here.
-router.use(authenticate, requireRole('admin', 'manager'));
+router.use(authenticate, requireRole('admin', 'manager', 'team_lead'));
 router.post('/subscribe', ctrl.subscribe);
 router.post('/unsubscribe', ctrl.unsubscribe);
 router.post('/test', testLimiter, ctrl.test);

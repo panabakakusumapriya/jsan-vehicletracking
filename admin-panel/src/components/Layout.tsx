@@ -175,8 +175,8 @@ export function Layout() {
           {user?.role === 'admin' && (
             <>
               <div className="nav-section-label" style={{ marginTop: 8 }}>Admin</div>
-              <NavLink to="/managers" title="Managers" className={({ isActive }) => isActive ? 'active' : ''}>
-                <ManagerIcon /><span className="nav-label">Managers</span>
+              <NavLink to="/managers" title="Users" className={({ isActive }) => isActive ? 'active' : ''}>
+                <ManagerIcon /><span className="nav-label">Users</span>
               </NavLink>
               <NavLink to="/app-updates" title="App Updates" className={({ isActive }) => isActive ? 'active' : ''}>
                 <UpdateIcon /><span className="nav-label">App Updates</span>

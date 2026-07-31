@@ -2,7 +2,7 @@ const router = require('express').Router();
 const ctrl = require('../controllers/vehicle.controller');
 const { authenticate, requireRole } = require('../middleware/auth');
 
-router.use(authenticate, requireRole('admin', 'manager'));
+router.use(authenticate, requireRole('admin', 'manager', 'team_lead'));
 
 router.get('/', ctrl.list);
 router.post('/', ctrl.create);

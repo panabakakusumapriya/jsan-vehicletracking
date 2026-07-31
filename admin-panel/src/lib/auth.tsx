@@ -44,8 +44,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email,
       password,
     });
-    if (u.role !== 'admin' && u.role !== 'manager') {
-      throw new Error('This panel is for admins and managers only.');
+    if (!['admin', 'manager', 'team_lead'].includes(u.role)) {
+      throw new Error('This panel is for admins, managers and team leads only.');
     }
     tokenStore.set(t);
     localStorage.setItem(USER_KEY, JSON.stringify(u));

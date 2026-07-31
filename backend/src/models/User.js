@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const ROLES = ['admin', 'manager', 'user']; // 'user' == driver
+const ROLES = ['admin', 'manager', 'team_lead', 'user']; // 'user' == driver
 
 const userSchema = new mongoose.Schema(
   {
@@ -11,6 +11,7 @@ const userSchema = new mongoose.Schema(
     passwordHash: { type: String, required: true, select: false },
     role: { type: String, enum: ROLES, default: 'user', index: true },
     managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    teamLeadId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     vehicleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', default: null },
     // Both of these are CACHES of the driver's open Assignment rows, kept in sync by
     // services/assetCustody.js. The ledger is the source of truth; these exist so the

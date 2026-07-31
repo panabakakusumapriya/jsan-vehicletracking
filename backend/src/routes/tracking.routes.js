@@ -9,9 +9,9 @@ router.post('/ingest', authenticate, requireRole('user'), ctrl.ingest);
 router.get('/my-session', authenticate, requireRole('user'), ctrl.mySession);
 
 // Admins / managers read the live snapshot.
-router.get('/live', authenticate, requireRole('admin', 'manager'), ctrl.live);
+router.get('/live', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.live);
 
 // Admins / managers read parked (recently stopped) vehicles.
-router.get('/parked', authenticate, requireRole('admin', 'manager'), ctrl.parked);
+router.get('/parked', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.parked);
 
 module.exports = router;

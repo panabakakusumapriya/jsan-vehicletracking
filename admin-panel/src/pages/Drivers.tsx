@@ -14,10 +14,13 @@ import type { MobileDevice, User, Vehicle } from '../lib/types';
 export function Drivers() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
+  const isManager = user?.role === 'manager';
+  const canAssignTeamLead = isAdmin || isManager;
   const [drivers, setDrivers] = useState<User[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [devices, setDevices] = useState<MobileDevice[]>([]);
   const [managers, setManagers] = useState<User[]>([]);
+  const [teamLeads, setTeamLeads] = useState<User[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
   const [projectFilter, setProjectFilter] = useState('');
@@ -29,8 +32,9 @@ export function Drivers() {
     api.get<{ vehicles: Vehicle[] }>('/api/vehicles').then(r => setVehicles(r.vehicles));
     api.get<{ devices: MobileDevice[] }>('/api/mobiles').then(r => setDevices(r.devices)).catch(() => {});
     if (isAdmin) api.get<{ users: User[] }>('/api/users?role=manager').then(r => setManagers(r.users));
+    if (canAssignTeamLead) api.get<{ users: User[] }>('/api/users?role=team_lead').then(r => setTeamLeads(r.users));
   };
-  useEffect(load, [isAdmin]);
+  useEffect(load, [isAdmin, canAssignTeamLead]);
 
   const deactivate = async (d: User) => {
     if (!confirm(`Exit ${d.name}? They will no longer be able to log in.`)) return;
@@ -49,8 +53,8 @@ export function Drivers() {
     return true;
   });
 
-  const active   = drivers.filter(d => d.active).length;
-  const inactive = drivers.length - active;
+  const active   = filtered.filter(d => d.active).length;
+  const inactive = filtered.length - active;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
@@ -80,7 +84,7 @@ export function Drivers() {
       </div>
 
       <div className="stat-row">
-        <div className="stat"><div className="v">{drivers.length}</div><div className="k">Total</div></div>
+        <div className="stat"><div className="v">{filtered.length}</div><div className="k">Total</div></div>
         <div className="stat"><div className="v">{active}</div><div className="k">Active</div></div>
         <div className="stat"><div className="v">{inactive}</div><div className="k">Inactive</div></div>
       </div>
@@ -100,6 +104,7 @@ export function Drivers() {
               <th>Country</th>
               <th>Driving Location</th>
               <th>Driver Mode</th>
+              <th>Team Lead</th>
               <th>POC</th>
               <th>Contact</th>
               <th>Personal Mail</th>
@@ -130,6 +135,7 @@ export function Drivers() {
                 <td>{d.country || <M />}</td>
                 <td>{d.drivingLocation || <M />}</td>
                 <td>{d.driverMode || <M />}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{d.teamLeadId && typeof d.teamLeadId === 'object' ? d.teamLeadId.name : <M />}</td>
                 <td>{d.poc || <M />}</td>
                 <td>{d.contact || <M />}</td>
                 <td>{d.personalMail || d.email || <M />}</td>
@@ -151,14 +157,14 @@ export function Drivers() {
               </tr>
             ))}
             {drivers.length === 0 && (
-              <tr><td colSpan={24} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
+              <tr><td colSpan={25} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
-      {showAdd && <AddDriver vehicles={vehicles} devices={devices} managers={managers} isAdmin={isAdmin} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />}
-      {editing && <EditDriver driver={editing} vehicles={vehicles} devices={devices} managers={managers} isAdmin={isAdmin} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {showAdd && <AddDriver vehicles={vehicles} devices={devices} managers={managers} teamLeads={teamLeads} isAdmin={isAdmin} canAssignTeamLead={canAssignTeamLead} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />}
+      {editing && <EditDriver driver={editing} vehicles={vehicles} devices={devices} managers={managers} teamLeads={teamLeads} isAdmin={isAdmin} canAssignTeamLead={canAssignTeamLead} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
     </div>
   );
 }
@@ -193,16 +199,16 @@ const deviceOptionLabel = (dev: MobileDevice) =>
     .join(' · ');
 
 const EMPTY_FORM = {
-  name: '', email: '', password: '', phone: '', country: '', vehicleId: '', mobileDeviceId: '', managerId: '',
+  name: '', email: '', password: '', phone: '', country: '', vehicleId: '', mobileDeviceId: '', managerId: '', teamLeadId: '',
   driverId: '', project: '', scope: '', region: '', drivingLocation: '', driverMode: '',
   poc: '', contact: '', personalMail: '', driverAddress: '', ctsMail: '',
   driverStatus: '', joiningDate: '', exitDate: '',
   pricePerHour: '', perDiem: '', currency: '', language: '',
 };
 
-function AddDriver({ vehicles, devices, managers, isAdmin, onClose, onSaved }: {
-  vehicles: Vehicle[]; devices: MobileDevice[]; managers: User[];
-  isAdmin: boolean; onClose: () => void; onSaved: () => void;
+function AddDriver({ vehicles, devices, managers, teamLeads, isAdmin, canAssignTeamLead, onClose, onSaved }: {
+  vehicles: Vehicle[]; devices: MobileDevice[]; managers: User[]; teamLeads: User[];
+  isAdmin: boolean; canAssignTeamLead: boolean; onClose: () => void; onSaved: () => void;
 }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [error, setError] = useState<string | null>(null);
@@ -222,6 +228,7 @@ function AddDriver({ vehicles, devices, managers, isAdmin, onClose, onSaved }: {
         vehicleId: form.vehicleId || undefined,
         mobileDeviceId: form.mobileDeviceId || undefined,
         managerId: isAdmin ? form.managerId || undefined : undefined,
+        teamLeadId: canAssignTeamLead ? form.teamLeadId || undefined : undefined,
         driverId: form.driverId || undefined,
         project: form.project || undefined,
         scope: form.scope || undefined,
@@ -310,6 +317,14 @@ function AddDriver({ vehicles, devices, managers, isAdmin, onClose, onSaved }: {
             </select>
           </F>
         )}
+        {canAssignTeamLead && (
+          <F label="Team Lead">
+            <select className="input" value={form.teamLeadId} onChange={e => set('teamLeadId', e.target.value)}>
+              <option value="">— None —</option>
+              {teamLeads.map(t => <option key={t._id} value={t._id}>{t.name} ({t.email})</option>)}
+            </select>
+          </F>
+        )}
         <F label="Vehicle">
           <select className="input" value={form.vehicleId} onChange={e => set('vehicleId', e.target.value)}>
             <option value="">— None —</option>
@@ -319,7 +334,6 @@ function AddDriver({ vehicles, devices, managers, isAdmin, onClose, onSaved }: {
         <F label="Mobile device">
           <select className="input" value={form.mobileDeviceId} onChange={e => set('mobileDeviceId', e.target.value)}>
             <option value="">— None —</option>
-            {/* Only free stock — a handset already with someone can't be picked here. */}
             {allocatableDevices(devices, '').map(dev => (
               <option key={dev._id} value={dev._id}>{deviceOptionLabel(dev)}</option>
             ))}
@@ -335,13 +349,14 @@ function AddDriver({ vehicles, devices, managers, isAdmin, onClose, onSaved }: {
   );
 }
 
-function EditDriver({ driver, vehicles, devices, managers, isAdmin, onClose, onSaved }: {
-  driver: User; vehicles: Vehicle[]; devices: MobileDevice[]; managers: User[];
-  isAdmin: boolean; onClose: () => void; onSaved: () => void;
+function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, canAssignTeamLead, onClose, onSaved }: {
+  driver: User; vehicles: Vehicle[]; devices: MobileDevice[]; managers: User[]; teamLeads: User[];
+  isAdmin: boolean; canAssignTeamLead: boolean; onClose: () => void; onSaved: () => void;
 }) {
   const vehicleIdVal = idOf(driver.vehicleId);
   const deviceIdVal = idOf(driver.mobileDeviceId);
   const managerIdVal = driver.managerId && typeof driver.managerId === 'object' ? (driver.managerId as any)._id : (driver.managerId || '');
+  const teamLeadIdVal = driver.teamLeadId && typeof driver.teamLeadId === 'object' ? (driver.teamLeadId as any)._id : (driver.teamLeadId || '');
   const [form, setForm] = useState({
     name: driver.name,
     phone: driver.phone || '',
@@ -349,6 +364,7 @@ function EditDriver({ driver, vehicles, devices, managers, isAdmin, onClose, onS
     vehicleId: vehicleIdVal,
     mobileDeviceId: deviceIdVal,
     managerId: managerIdVal as string,
+    teamLeadId: teamLeadIdVal as string,
     password: '',
     driverId: driver.driverId || '',
     project: driver.project || '',
@@ -402,6 +418,7 @@ function EditDriver({ driver, vehicles, devices, managers, isAdmin, onClose, onS
         language: form.language || null,
       };
       if (isAdmin) body.managerId = form.managerId || null;
+      if (canAssignTeamLead) body.teamLeadId = form.teamLeadId || null;
       if (form.password) body.password = form.password;
       await api.patch(`/api/users/${driver._id}`, body);
       onSaved();
@@ -469,6 +486,14 @@ function EditDriver({ driver, vehicles, devices, managers, isAdmin, onClose, onS
             </select>
           </F>
         )}
+        {canAssignTeamLead && (
+          <F label="Team Lead">
+            <select className="input" value={form.teamLeadId} onChange={e => set('teamLeadId', e.target.value)}>
+              <option value="">— None —</option>
+              {teamLeads.map(t => <option key={t._id} value={t._id}>{t.name} ({t.email})</option>)}
+            </select>
+          </F>
+        )}
         <F label="Vehicle">
           <select className="input" value={form.vehicleId} onChange={e => set('vehicleId', e.target.value)}>
             <option value="">— None —</option>
@@ -478,7 +503,6 @@ function EditDriver({ driver, vehicles, devices, managers, isAdmin, onClose, onS
         <F label="Mobile device">
           <select className="input" value={form.mobileDeviceId} onChange={e => set('mobileDeviceId', e.target.value)}>
             <option value="">— None —</option>
-            {/* Free stock, plus whatever this driver already holds. */}
             {allocatableDevices(devices, deviceIdVal).map(dev => (
               <option key={dev._id} value={dev._id}>{deviceOptionLabel(dev)}</option>
             ))}
