@@ -14,6 +14,7 @@ import { Trips } from './pages/Trips';
 import { Mobiles } from './pages/Mobiles';
 import { Reports } from './pages/Reports';
 import { Vehicles } from './pages/Vehicles';
+import { Weather } from './pages/Weather';
 
 export default function App() {
   return (
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="/drivers" element={<Drivers />} />
         <Route path="/mobiles" element={<Mobiles />} />
         <Route path="/asset-history" element={<AssetHistory />} />
+        <Route path="/weather" element={<Weather />} />
         <Route path="/hotels" element={<Hotels />} />
         <Route path="/vehicles" element={<Vehicles />} />
         <Route
