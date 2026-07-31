@@ -10,6 +10,7 @@ import { SessionMap } from './pages/SessionMap';
 import { TripDetail } from './pages/TripDetail';
 import { Trips } from './pages/Trips';
 import { Vehicles } from './pages/Vehicles';
+import { Weather } from './pages/Weather';
 
 export default function App() {
   return (
@@ -27,6 +28,12 @@ export default function App() {
         <Route path="/trips/:id" element={<TripDetail />} />
         <Route path="/trips/:id/map" element={<SessionMap />} />
         <Route path="/drivers" element={<Drivers />} />
+<<<<<<< Updated upstream
+=======
+        <Route path="/mobiles" element={<Mobiles />} />
+        <Route path="/asset-history" element={<AssetHistory />} />
+        <Route path="/weather" element={<Weather />} />
+>>>>>>> Stashed changes
         <Route path="/vehicles" element={<Vehicles />} />
         <Route
           path="/managers"

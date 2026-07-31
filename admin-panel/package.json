@@ -7,7 +7,14 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+<<<<<<< Updated upstream
     "typecheck": "tsc --noEmit"
+=======
+    "typecheck": "tsc --noEmit",
+    "brand": "node scripts/generate-brand.mjs",
+    "dev:local": "vite --mode local",
+    "dev:prod": "vite --mode prod"
+>>>>>>> Stashed changes
   },
   "dependencies": {
     "leaflet": "^1.9.4",
