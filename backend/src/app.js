@@ -9,13 +9,19 @@ function createApp() {
   const app = express();
 
   app.use(helmet({
+    // This API is consumed cross-origin (the panel is deployed on Vercel, the API on
+    // Railway). Helmet's default CORP of `same-origin` is meant for a site serving its own
+    // assets and can block cross-origin delivery of responses; `cross-origin` is the correct
+    // setting for a public API. CORS itself still decides who is allowed in.
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'", "'unsafe-inline'", "unpkg.com", "cdnjs.cloudflare.com", "cdn.jsdelivr.net", "fonts.googleapis.com"],
         styleSrc: ["'self'", "'unsafe-inline'", "unpkg.com", "cdnjs.cloudflare.com", "fonts.googleapis.com"],
         fontSrc: ["'self'", "fonts.gstatic.com", "cdnjs.cloudflare.com"],
-        imgSrc: ["'self'", "data:", "*.tile.openstreetmap.org", "unpkg.com"],
+        // cf.bstatic.com serves Booking.com property photos on the Hotels tab.
+        imgSrc: ["'self'", "data:", "*.tile.openstreetmap.org", "unpkg.com", "cf.bstatic.com"],
         connectSrc: ["'self'", "ws:", "wss:"],
       },
     },
@@ -42,11 +48,7 @@ function createApp() {
   app.use('/api/mobiles', require('./routes/mobile.routes'));
   app.use('/api/assignments', require('./routes/assignment.routes'));
   app.use('/api/reports', require('./routes/report.routes'));
-<<<<<<< Updated upstream
-=======
-  app.use('/api/weather', require('./routes/weather.routes'));
   app.use('/api/hotels', require('./routes/hotel.routes'));
->>>>>>> Stashed changes
 
   // SPA fallback — serve index.html for non-API routes
   app.get('*', (req, res, next) => {

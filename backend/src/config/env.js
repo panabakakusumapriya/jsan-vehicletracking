@@ -44,8 +44,6 @@ module.exports = {
   VAPID_PRIVATE_KEY: process.env.VAPID_PRIVATE_KEY || '',
   VAPID_SUBJECT: process.env.VAPID_SUBJECT || 'mailto:admin@jsan.local',
 
-<<<<<<< Updated upstream
-=======
   // ---- Weather (Open-Meteo: no API key required) ----
   // Free endpoint. Open-Meteo licence the free tier for NON-COMMERCIAL use and sell a
   // commercial plan on a different host — point this at that host to switch, no code change.
@@ -66,7 +64,28 @@ module.exports = {
   WEATHER_WIND_CAUTION_KMH: parseInt(process.env.WEATHER_WIND_CAUTION_KMH || '40', 10),
   WEATHER_GUST_UNSAFE_KMH: parseInt(process.env.WEATHER_GUST_UNSAFE_KMH || '60', 10),
 
->>>>>>> Stashed changes
+  // ---- Hotels (Booking.com via RapidAPI — METERED, unlike the weather feed) ----
+  // Set RAPIDAPI_KEY in .env to override. The fallback below is the key supplied for this
+  // build; because it lives in the repo, treat it as public and rotate it before going live.
+  RAPIDAPI_KEY: process.env.RAPIDAPI_KEY || '8b971fb882msh8f6038d99f96281p1040a5jsn0a1a5df61c89',
+  // Every uncached search is a billable call, so results are held far longer than a forecast.
+  // Room availability moves in hours, not minutes.
+  HOTELS_CACHE_MINUTES: parseInt(process.env.HOTELS_CACHE_MINUTES || '60', 10),
+  // Hard stop per UTC day. A stuck page refreshing on a timer could otherwise spend a whole
+  // month's plan overnight; this fails loudly instead.
+  HOTELS_DAILY_CALL_CAP: parseInt(process.env.HOTELS_DAILY_CALL_CAP || '150', 10),
+  // Drivers within ~1 km share a cached search — they would be offered the same beds anyway.
+  HOTELS_GRID_DEGREES: parseFloat(process.env.HOTELS_GRID_DEGREES || '0.01'),
+  // Provider accepts 10–500 km. 30 km is a sensible night-stop radius for someone already
+  // tired; the manager can widen it per search.
+  HOTELS_DEFAULT_RADIUS_KM: parseInt(process.env.HOTELS_DEFAULT_RADIUS_KM || '30', 10),
+  HOTELS_MAX_NIGHTS: parseInt(process.env.HOTELS_MAX_NIGHTS || '30', 10),
+  HOTELS_CURRENCY: (process.env.HOTELS_CURRENCY || 'INR').toUpperCase(),
+  // Same position window the weather tab uses: an older fix could put a driver in the wrong
+  // city, and booking a room in the wrong city is worse than saying "unknown".
+  HOTELS_ACTIVE_DAYS: parseInt(process.env.HOTELS_ACTIVE_DAYS || '7', 10),
+  HOTELS_TIMEOUT_MS: parseInt(process.env.HOTELS_TIMEOUT_MS || '15000', 10),
+
   SEED_ADMIN_NAME: process.env.SEED_ADMIN_NAME || 'Super Admin',
   SEED_ADMIN_EMAIL: process.env.SEED_ADMIN_EMAIL || 'admin@jsan.local',
   SEED_ADMIN_PASSWORD: process.env.SEED_ADMIN_PASSWORD || 'Admin@12345',

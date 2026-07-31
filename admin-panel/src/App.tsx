@@ -3,6 +3,7 @@ import { Layout } from './components/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AssetHistory } from './pages/AssetHistory';
 import { Drivers } from './pages/Drivers';
+import { Hotels } from './pages/Hotels';
 import { LiveMap } from './pages/LiveMap';
 import { Login } from './pages/Login';
 import { AppUpdates } from './pages/AppUpdates';
@@ -33,10 +34,7 @@ export default function App() {
         <Route path="/drivers" element={<Drivers />} />
         <Route path="/mobiles" element={<Mobiles />} />
         <Route path="/asset-history" element={<AssetHistory />} />
-<<<<<<< Updated upstream
-=======
-        <Route path="/weather" element={<Weather />} />
->>>>>>> Stashed changes
+        <Route path="/hotels" element={<Hotels />} />
         <Route path="/vehicles" element={<Vehicles />} />
         <Route
           path="/managers"

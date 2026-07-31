@@ -8,13 +8,9 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-<<<<<<< Updated upstream
-    "brand": "node scripts/generate-brand.mjs"
-=======
     "brand": "node scripts/generate-brand.mjs",
     "dev:local": "vite --mode local",
     "dev:prod": "vite --mode prod"
->>>>>>> Stashed changes
   },
   "dependencies": {
     "@deck.gl/core": "^9.3.7",

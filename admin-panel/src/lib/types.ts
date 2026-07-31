@@ -56,8 +56,6 @@ export interface Vehicle {
   active: boolean;
 }
 
-<<<<<<< Updated upstream
-=======
 /* ── Driving weather ── */
 export type DrivingRisk = 'clear' | 'caution' | 'unsafe';
 
@@ -112,7 +110,6 @@ export interface DrivingWeather {
   };
 }
 
->>>>>>> Stashed changes
 export type DeviceStatus = 'in_stock' | 'assigned' | 'repair' | 'lost' | 'retired';
 
 /** A physical handset, tracked as an asset in its own right (not fields on a driver). */

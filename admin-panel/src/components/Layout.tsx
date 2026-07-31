@@ -83,16 +83,19 @@ const HistoryIcon = () => (
   </svg>
 );
 
+const BedIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/>
+  </svg>
+);
+
 const links = [
   { to: '/',         label: 'Live Map', end: true, Icon: MapIcon    },
   { to: '/trips',    label: 'Trips',              Icon: TripIcon   },
   { to: '/drivers',  label: 'Drivers',            Icon: DriverIcon },
   { to: '/mobiles',  label: 'Mobiles',            Icon: PhoneIcon  },
   { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon},
-<<<<<<< Updated upstream
-=======
-  { to: '/weather',  label: 'Weather',            Icon: WeatherIcon},
->>>>>>> Stashed changes
+  { to: '/hotels',   label: 'Hotels',             Icon: BedIcon    },
   { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
   { to: '/reports',  label: 'Reports',             Icon: ReportIcon },
 ];
