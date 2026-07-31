@@ -106,6 +106,48 @@ seeded rows. It prints a month-by-month table and a numbered walkthrough. Everyt
 creates is tagged (`@jsan.demo` emails, `DEMO-` plates, `DEMO` IMEIs) so `--clean` removes it
 exactly and can never touch real records.
 
+### Weather  (admin, manager, team lead)
+- `GET /api/weather/driving?day=0` — driving conditions per location, worst first.
+  `day` is an offset in **local** days (0–4).
+
+Answers "can today's driving happen", not "what's the weather". Every hour is scored against
+thresholds that matter to a vehicle, and a day takes its **worst remaining** hour — a clear
+morning doesn't cancel a dangerous evening.
+
+| Verdict | Triggers |
+|---|---|
+| do not drive | thunderstorm · heavy rain/snow · anything freezing (rain, drizzle, fog) · violent showers · visibility < 1 km · gusts ≥ `WEATHER_GUST_UNSAFE_KMH` |
+| caution | moderate rain · snow · fog · dense drizzle · visibility < 4 km · wind ≥ `WEATHER_WIND_CAUTION_KMH` · ≥ 60% chance of rain |
+
+Defaults (40 / 60 km/h) are set for **high-sided vans**, which catch crosswind far worse than
+cars. Raise both for a car-only fleet.
+
+**No API keys.** Forecasts come from [Open-Meteo](https://open-meteo.com) (hourly, 5 days,
+wind already in km/h); place names from OpenStreetMap Nominatim, cached permanently since the
+town at a coordinate never changes.
+
+> **Licensing:** Open-Meteo's free endpoint is licensed for **non-commercial** use; they sell
+> a commercial plan on a different host. `WEATHER_API_BASE` exists so switching to it is one
+> env var, not a code change. Nominatim requires an identifying `GEOCODER_USER_AGENT`.
+
+Three things keep this cheap and correct:
+- **Clustering + caching.** Drivers within ~25 km share one forecast, cached 30 min, so a
+  depot of twenty costs one call per half hour rather than twenty per page load.
+- **Local days.** "Today" uses each location's own UTC offset — a driver in Singapore and one
+  in France don't share a today.
+- **Hourly scoring, 3-hourly display.** All 24 hours are scored so a single bad hour is never
+  missed; the strip shows 8 blocks, each carrying the worst hour inside it.
+
+Positions come from each driver's most recent trip. Anyone without a trip in
+`WEATHER_ACTIVE_DAYS` is listed as "no recent location" rather than being shown the weather
+for a city they may have left. If the forecast service is unreachable, the last known forecast
+is served tagged `stale` rather than an error page.
+
+```bash
+npm run test:weather            # 45 assertions: WMO codes, day logic, timezones, clustering
+npm run test:weather:pipeline   # 20 assertions: clustering, caching, scoping, outage fallback
+```
+
 ### Push / alerts  (admin, manager — used by the panel PWA)
 - `GET  /api/push/public-key` (no auth) → `{ publicKey, configured, alertsEnabled }`
 - `POST /api/push/subscribe` `{ endpoint, keys:{p256dh,auth} }` — idempotent by endpoint

@@ -75,6 +75,13 @@ const PhoneIcon = () => (
   </svg>
 );
 
+const WeatherIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17.5 19a4.5 4.5 0 0 0 0-9 6 6 0 0 0-11.6 1.6A3.7 3.7 0 0 0 6.5 19z"/>
+    <line x1="8" y1="21" x2="8" y2="23"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="16" y1="21" x2="16" y2="23"/>
+  </svg>
+);
+
 const HistoryIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 3v5h5"/>
@@ -95,6 +102,7 @@ const links = [
   { to: '/drivers',  label: 'Drivers',            Icon: DriverIcon },
   { to: '/mobiles',  label: 'Mobiles',            Icon: PhoneIcon  },
   { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon},
+  { to: '/weather',  label: 'Weather',            Icon: WeatherIcon},
   { to: '/hotels',   label: 'Hotels',             Icon: BedIcon    },
   { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
   { to: '/reports',  label: 'Reports',             Icon: ReportIcon },

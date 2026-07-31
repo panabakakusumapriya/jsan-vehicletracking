@@ -3,7 +3,6 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const env = require('./config/env');
 
 function createApp() {
   const app = express();
@@ -29,7 +28,12 @@ function createApp() {
   // exposedHeaders lets the admin panel read the server-chosen filename off
   // Content-Disposition when it calls the API cross-origin (prod deploys
   // with no dev proxy) -- browsers hide response headers by default in CORS.
-  app.use(cors({ origin: env.CORS_ORIGIN, exposedHeaders: ['Content-Disposition'] }));
+  // Wildcard, always. The API is public-by-token: every route is guarded by a Bearer JWT,
+  // never by cookies, so the origin is not what protects anything here. Making it a config
+  // knob only created a way to deploy a backend the panel could not talk to.
+  // NOTE: '*' and credentialed requests are mutually exclusive per the CORS spec — if cookie
+  // auth is ever introduced, this has to become an explicit origin list again.
+  app.use(cors({ origin: '*', exposedHeaders: ['Content-Disposition'] }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(express.json({ limit: '5mb' })); // offline batches can be large
   app.use(morgan('dev'));
@@ -48,6 +52,7 @@ function createApp() {
   app.use('/api/mobiles', require('./routes/mobile.routes'));
   app.use('/api/assignments', require('./routes/assignment.routes'));
   app.use('/api/reports', require('./routes/report.routes'));
+  app.use('/api/weather', require('./routes/weather.routes'));
   app.use('/api/hotels', require('./routes/hotel.routes'));
 
   // SPA fallback — serve index.html for non-API routes
