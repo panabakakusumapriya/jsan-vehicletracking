@@ -33,6 +33,10 @@ export default function App() {
         <Route path="/drivers" element={<Drivers />} />
         <Route path="/mobiles" element={<Mobiles />} />
         <Route path="/asset-history" element={<AssetHistory />} />
+<<<<<<< Updated upstream
+=======
+        <Route path="/weather" element={<Weather />} />
+>>>>>>> Stashed changes
         <Route path="/vehicles" element={<Vehicles />} />
         <Route
           path="/managers"

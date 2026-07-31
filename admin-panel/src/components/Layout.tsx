@@ -89,6 +89,10 @@ const links = [
   { to: '/drivers',  label: 'Drivers',            Icon: DriverIcon },
   { to: '/mobiles',  label: 'Mobiles',            Icon: PhoneIcon  },
   { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon},
+<<<<<<< Updated upstream
+=======
+  { to: '/weather',  label: 'Weather',            Icon: WeatherIcon},
+>>>>>>> Stashed changes
   { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
   { to: '/reports',  label: 'Reports',             Icon: ReportIcon },
 ];

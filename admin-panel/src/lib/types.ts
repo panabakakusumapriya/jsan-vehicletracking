@@ -56,6 +56,63 @@ export interface Vehicle {
   active: boolean;
 }
 
+<<<<<<< Updated upstream
+=======
+/* ── Driving weather ── */
+export type DrivingRisk = 'clear' | 'caution' | 'unsafe';
+
+export interface WeatherSlot {
+  dt: number;
+  at: string;            // "HH:MM" at the forecast location
+  risk: DrivingRisk;
+  reasons: string[];
+  tempC: number | null;
+  feelsLikeC: number | null;
+  windKmh: number | null;
+  gustKmh: number | null;
+  popPct: number;
+  visibilityKm: number | null;
+  rainMm: number;
+  snowMm: number;
+  icon: string | null;
+  description: string;
+}
+
+export interface WeatherGroup {
+  key: string;
+  lat: number;
+  lon: number;
+  place: string | null;
+  country: string | null;
+  localTimeNow: string;
+  verdict: DrivingRisk | null;
+  headline: string;
+  date: string | null;
+  slots: WeatherSlot[];
+  worstWindowFrom: string | null;
+  worstWindowTo: string | null;
+  stale: boolean;
+  cachedAgeSeconds: number;
+  drivers: { _id: string; name: string; country?: string | null; project?: string | null; lastSeenAt?: string }[];
+}
+
+export interface DrivingWeather {
+  configured: boolean;
+  generatedAt?: string;
+  dayOffset?: number;
+  groups: WeatherGroup[];
+  unplaced: { _id: string; name: string; country?: string | null; project?: string | null }[];
+  failures?: string[];
+  totals: {
+    clear: number; caution: number; unsafe: number; unplaced: number;
+    locations?: number; apiCalls?: number;
+  };
+  thresholds?: {
+    windCautionKmh: number; gustUnsafeKmh: number; activeDays: number; cacheMinutes: number;
+  };
+}
+
+>>>>>>> Stashed changes
 export type DeviceStatus = 'in_stock' | 'assigned' | 'repair' | 'lost' | 'retired';
 
 /** A physical handset, tracked as an asset in its own right (not fields on a driver). */

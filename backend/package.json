@@ -12,8 +12,15 @@
     "backfill:custody": "node src/seed/backfillCustody.js",
     "demo:custody": "node src/seed/demoCustody.js",
     "vapid": "node -e \"const k=require('web-push').generateVAPIDKeys();console.log('VAPID_PUBLIC_KEY='+k.publicKey+'\\nVAPID_PRIVATE_KEY='+k.privateKey)\"",
+<<<<<<< Updated upstream
     "test": "node test/integration.test.js && node test/custody.test.js",
     "test:custody": "node test/custody.test.js"
+=======
+    "test": "node test/integration.test.js && node test/custody.test.js && node test/weather.test.js && node test/weatherPipeline.test.js",
+    "test:custody": "node test/custody.test.js",
+    "test:weather": "node test/weather.test.js",
+    "test:weather:pipeline": "node test/weatherPipeline.test.js"
+>>>>>>> Stashed changes
   },
   "engines": {
     "node": ">=18"
