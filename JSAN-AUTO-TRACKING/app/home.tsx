@@ -46,7 +46,7 @@ const STATE = {
   tracking: { label: 'Trip in progress',       sub: 'Your location is being recorded.',                              color: C.green, bg: C.greenBg, bd: C.greenBd },
   blocked:  { label: 'Action needed',           sub: '',                                                              color: C.red,   bg: C.redBg,   bd: C.redBd   },
   starting: { label: 'Starting…',              sub: 'Setting up background tracking.',                              color: C.amber, bg: C.amberBg, bd: C.amberBd },
-  idle:     { label: 'Ready — auto-tracking',  sub: 'Just drive. A trip starts automatically above 10 km/h.',      color: C.brand, bg: C.brandSoft, bd: '#d8b4fe' },
+  idle:     { label: 'Ready',                   sub: '',                                                             color: C.brand, bg: C.brandSoft, bd: '#d8b4fe' },
   night:    { label: 'Night mode',             sub: 'Tracking paused — resumes at sunrise.',                        color: C.muted, bg: '#f1f5f9',   bd: C.border   },
 };
 
@@ -240,9 +240,8 @@ export default function Home() {
         <StatTile label="Lon"     value={lastFix ? lastFix.lon.toFixed(4) : '—'}              unit=""      color="#d97706"   />
       </View>
 
-      <Text style={s.note}>
-        Close the app anytime — tracking continues in the background.
-      </Text>
+      {/* spacer */}
+      <View style={{ paddingBottom: 20 }} />
     </ScrollView>
     <TabBar />
     </View>

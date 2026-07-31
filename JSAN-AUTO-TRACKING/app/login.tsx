@@ -158,9 +158,7 @@ export default function Login() {
           </TouchableOpacity>
         </View>
 
-        <Text style={s.foot}>
-          Tracking runs automatically in the background
-        </Text>
+        <View style={{ paddingBottom: 8 }} />
       </ScrollView>
     </KeyboardAvoidingView>
   );

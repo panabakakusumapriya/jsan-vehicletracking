@@ -10,7 +10,6 @@ const C = {
 
 const TABS = [
   { path: '/home', label: 'Dashboard', icon: '⚡' },
-  { path: '/map',  label: 'My Route',  icon: '🗺️' },
 ];
 
 export function TabBar() {
