@@ -16,9 +16,7 @@ module.exports = {
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_SECRET: process.env.JWT_SECRET,
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '30d',
-  // '*' must stay a bare string (wildcard). A comma list becomes an array of exact
-  // origins. NOTE: `['*']` is NOT a wildcard in the cors package — it's an exact match.
-  CORS_ORIGIN: parseCorsOrigin(process.env.CORS_ORIGIN),
+  // CORS is no longer configurable — it is always '*'. See the note in app.js.
   HEARTBEAT_INTERVAL_SECONDS: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '10', 10),
   STALE_AFTER_SECONDS: parseInt(process.env.STALE_AFTER_SECONDS || '60', 10),
   // An active trip silent longer than this is treated as dead (app killed / long signal
@@ -90,12 +88,3 @@ module.exports = {
   SEED_ADMIN_EMAIL: process.env.SEED_ADMIN_EMAIL || 'admin@jsan.local',
   SEED_ADMIN_PASSWORD: process.env.SEED_ADMIN_PASSWORD || 'Admin@12345',
 };
-
-function parseCorsOrigin(raw) {
-  const list = (raw || '*')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  // Single '*' -> allow all (bare string wildcard). Otherwise -> exact-match list.
-  return list.length === 1 && list[0] === '*' ? '*' : list;
-}

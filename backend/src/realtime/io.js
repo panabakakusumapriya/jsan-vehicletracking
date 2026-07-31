@@ -1,13 +1,13 @@
 const { Server } = require('socket.io');
 const { verifyToken } = require('../utils/jwt');
 const User = require('../models/User');
-const env = require('../config/env');
 
 let io = null;
 
 function initSocket(server) {
   io = new Server(server, {
-    cors: { origin: env.CORS_ORIGIN, methods: ['GET', 'POST'] },
+    // Wildcard, matching the HTTP API — see the note in app.js.
+    cors: { origin: '*', methods: ['GET', 'POST'] },
   });
 
   // Authenticate every socket with the same JWT used for REST.
