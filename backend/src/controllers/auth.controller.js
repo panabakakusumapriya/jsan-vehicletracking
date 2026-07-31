@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const User = require('../models/User');
+const Trip = require('../models/Trip');
 const { signToken } = require('../utils/jwt');
+const { isValidTimeZone } = require('../utils/timezone');
 const asyncHandler = require('../utils/asyncHandler');
 
 // A driver session is considered dead once no authed request has arrived for this long,
@@ -60,13 +62,36 @@ exports.me = asyncHandler(async (req, res) => {
   res.json({ user: req.user.toSafeJSON() });
 });
 
-// PATCH /api/auth/timezone  { timezone, country?, lat?, lon? }
-// Called by the mobile app to persist the auto-detected timezone.
+// PATCH /api/auth/timezone  { timezone, country? }
+// The mobile app calls this on every sign-in with the device's own IANA zone, and again
+// whenever it changes — a driver who crosses into another zone re-reports without being asked.
 exports.updateTimezone = asyncHandler(async (req, res) => {
   const { timezone, country } = req.body || {};
   if (!timezone) return res.status(400).json({ error: 'timezone is required' });
+
+  // Validate before storing. A junk value here would not fail loudly — it would quietly
+  // corrupt every local-day calculation downstream (weather's "today", hotel check-in dates,
+  // custody month boundaries), so a bad zone is rejected rather than persisted.
+  if (!isValidTimeZone(timezone)) {
+    return res.status(400).json({
+      error: 'INVALID_TIMEZONE',
+      message: `"${timezone}" is not a recognised IANA timezone (expected something like "Asia/Kolkata").`,
+    });
+  }
+
+  const changed = req.user.timezone !== timezone;
   req.user.timezone = timezone;
   if (country) req.user.country = country;
   await req.user.save();
-  res.json({ ok: true, timezone: req.user.timezone, country: req.user.country });
+
+  // A trip already running when the zone arrived would otherwise keep a null timezone for its
+  // whole life, since the stamp happens at creation. Fill it in rather than lose the day.
+  if (changed) {
+    await Trip.updateOne(
+      { driverId: req.user._id, status: 'active', timezone: null },
+      { $set: { timezone } }
+    );
+  }
+
+  res.json({ ok: true, timezone: req.user.timezone, country: req.user.country, user: req.user.toSafeJSON() });
 });

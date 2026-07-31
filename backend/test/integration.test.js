@@ -41,6 +41,13 @@ function assert(cond, msg) {
   assert(r.status === 200 && r.body.accepted === 1, 'first heartbeat accepted (1 point)');
   assert((await Trip.countDocuments()) === 1, 'exactly one trip created');
 
+  // TIMEZONE FROM COORDINATES: the driver is never asked, and the phone is never consulted.
+  // These coordinates are Hyderabad, so the trip and the driver must both land on Asia/Kolkata.
+  const tzTrip = await Trip.findOne({ clientTripId: 't1' });
+  assert(tzTrip.timezone === 'Asia/Kolkata', `trip timezone derived from position (${tzTrip.timezone})`);
+  const tzDriver = await User.findById(driver._id);
+  assert(tzDriver.timezone === 'Asia/Kolkata', 'driver record picked up the same zone');
+
   // second point ~1.5km away advances distance
   const p2 = { clientId: 'c2', clientTripId: 't1', lat: 17.4223, lon: 78.4556, speedKmh: 45, recordedAt: '2026-07-08T10:00:10.000Z', tripStatus: 'active' };
   r = await auth(request(app).post('/api/tracking/ingest')).send({ points: [p2] });
@@ -70,6 +77,24 @@ function assert(cond, msg) {
   assert(r.body.accepted === 30, 'offline batch of 30 accepted at once');
   const t2 = await Trip.findOne({ clientTripId: 't2' });
   assert(t2.pointCount === 30 && t2.status === 'completed', 'offline trip built + closed from batch');
+
+  // CROSSING A ZONE: re-derived from the new position. This is the case that a login-time or
+  // handset-based detection cannot see at all — the phone never moved zones, the driver did.
+  await auth(request(app).post('/api/tracking/ingest')).send({
+    points: [{ clientId: 'tz-move', clientTripId: 'tz-trip', lat: -31.95, lon: 115.86, speedKmh: 10, recordedAt: '2026-07-08T12:00:00.000Z', tripStatus: 'active' }],
+  });
+  const moved = await User.findById(driver._id);
+  assert(moved.timezone === 'Australia/Perth', `driver now in Perth re-derives (${moved.timezone})`);
+  assert(
+    (await Trip.findOne({ clientTripId: 'tz-trip' })).timezone === 'Australia/Perth',
+    'the new trip is stamped where it started'
+  );
+  assert(
+    (await Trip.findOne({ clientTripId: 't1' })).timezone === 'Asia/Kolkata',
+    'the earlier trip keeps its own zone — a later move never rewrites history'
+  );
+  // Leave no active trip behind, so the live-snapshot assertion below still means something.
+  await Trip.updateOne({ clientTripId: 'tz-trip' }, { $set: { status: 'completed', endedAt: new Date() } });
 
   // admin live snapshot (should now show 0 active for this driver, both trips closed)
   const admin = new User({ name: 'A', email: 'a@x.com', role: 'admin' });

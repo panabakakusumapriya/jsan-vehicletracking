@@ -48,7 +48,7 @@ export function apiMe(token: string): Promise<{ user: AuthUser }> {
 export function apiUpdateTimezone(
   token: string,
   data: { timezone: string; country?: string },
-): Promise<{ ok: boolean; timezone: string; country: string }> {
+): Promise<{ ok: boolean; timezone: string; country: string; user?: AuthUser }> {
   return request('/api/auth/timezone', { method: 'PATCH', body: JSON.stringify(data) }, token);
 }
 
