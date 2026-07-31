@@ -17,8 +17,9 @@ export default function Index() {
 
   // Only drivers ('user') use this app; admins/managers use the web panel.
   if (token && user?.role === 'user') {
-    // If no timezone is set, redirect to timezone setup first
-    if (!user.timezone) return <Redirect href={'/timezone-setup' as any} />;
+    // No timezone gate. The server resolves the zone from the driver's own coordinates on the
+    // first location it receives, so asking them to pick one from a list was both an extra
+    // step before they could start work and less accurate than the answer we can derive.
     return <Redirect href="/home" />;
   }
   return <Redirect href="/login" />;

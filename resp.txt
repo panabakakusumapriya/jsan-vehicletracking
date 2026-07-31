@@ -1,0 +1,31 @@
+HTTP/1.1 200 OK
+access-control-allow-origin: *
+access-control-expose-headers: Content-Disposition
+content-security-policy: default-src 'self';script-src 'self' 'unsafe-inline' unpkg.com cdnjs.cloudflare.com cdn.jsdelivr.net fonts.googleapis.com;style-src 'self' 'unsafe-inline' unpkg.com cdnjs.cloudflare.com fonts.googleapis.com;font-src 'self' fonts.gstatic.com cdnjs.cloudflare.com;img-src 'self' data: *.tile.openstreetmap.org unpkg.com cf.bstatic.com;connect-src 'self' ws: wss:;base-uri 'self';form-action 'self';frame-ancestors 'self';object-src 'none';script-src-attr 'none';upgrade-insecure-requests
+Content-Type: application/json; charset=utf-8
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: cross-origin
+Date: Fri, 31 Jul 2026 14:33:55 GMT
+etag: W/"3e2-PFazSxfcOSYE0qZBt32TsbR9jIs"
+origin-agent-cluster: ?1
+ratelimit-limit: 30
+ratelimit-policy: 30;w=900
+ratelimit-remaining: 29
+ratelimit-reset: 900
+referrer-policy: no-referrer
+Server: railway-hikari
+strict-transport-security: max-age=15552000; includeSubDomains
+x-content-type-options: nosniff
+x-dns-prefetch-control: off
+x-download-options: noopen
+x-frame-options: SAMEORIGIN
+x-permitted-cross-domain-policies: none
+x-railway-request-id: fXoZ7HKHRHet3UoEV7rehQ
+x-xss-protection: 0
+Content-Length: 994
+x-hikari-trace: sin1.hs0s
+x-railway-edge: sin1
+vary: accept-encoding
+Connection: keep-alive
+
+{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2YTRlNDBmZGU2MjRkZWNkNjQ0YWJkY2QiLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3ODU1MDg0MzUsImV4cCI6MTc4ODEwMDQzNX0.R5YzGlefwO7EOF0ZqOx3wQqpQUbAM8ya-HGq4SblQNc","user":{"teamLeadId":null,"mobileDeviceId":null,"country":null,"timezone":null,"driverId":null,"project":null,"scope":null,"region":null,"drivingLocation":null,"driverMode":null,"poc":null,"contact":null,"personalMail":null,"driverAddress":null,"ctsMail":null,"driverStatus":null,"joiningDate":null,"exitDate":null,"pricePerHour":null,"perDiem":null,"currency":null,"language":null,"workPhone":null,"imei":null,"secondaryImei":null,"phoneModel":null,"androidVersion":null,"phoneCase":null,"phoneScreenguard":null,"_id":"6a4e40fde624decd644abdcd","name":"Super Admin","email":"admin@jsan.local","phone":null,"role":"admin","managerId":null,"vehicleId":null,"active":true,"lastLoginAt":"2026-07-31T14:33:55.242Z","createdAt":"2026-07-08T12:22:21.908Z","updatedAt":"2026-07-31T14:33:55.246Z"}}

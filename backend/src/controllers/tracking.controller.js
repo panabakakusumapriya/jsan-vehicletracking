@@ -1,7 +1,9 @@
 const Trip = require('../models/Trip');
+const User = require('../models/User');
 const LocationPoint = require('../models/LocationPoint');
 const asyncHandler = require('../utils/asyncHandler');
 const { haversineMeters } = require('../utils/geo');
+const { timezoneFromCoords } = require('../utils/tzFromCoords');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { emitLocation } = require('../realtime/io');
 const env = require('../config/env');
@@ -62,7 +64,10 @@ exports.ingest = asyncHandler(async (req, res) => {
         status: 'active',
         startedAt: new Date(first.recordedAt),
         startLocation: { lat: first.lat, lon: first.lon },
-        timezone: driver.timezone || null,
+        // Derived from where the trip actually STARTED, not from the driver's profile. A trip
+        // is a fixed piece of history: reassigning the driver's zone later must not silently
+        // reinterpret last month's start and end times.
+        timezone: timezoneFromCoords(first.lat, first.lon) || driver.timezone || null,
       });
     }
 
@@ -131,6 +136,18 @@ exports.ingest = asyncHandler(async (req, res) => {
     if (Object.keys(update).length) await Trip.updateOne({ _id: trip._id }, update);
 
     if (last) liveUpdates.push({ trip, last, ended: !!endSignal });
+  }
+
+  // Keep the driver's own zone current from their newest position, so a driver who crosses a
+  // border is right on the panel before their next trip begins. The lookup is in-process and
+  // costs nothing; the write only happens on an actual change, which is rare.
+  const newest = liveUpdates.length ? liveUpdates[liveUpdates.length - 1].last : null;
+  if (newest) {
+    const zone = timezoneFromCoords(newest.lat, newest.lon);
+    if (zone && zone !== driver.timezone) {
+      driver.timezone = zone;
+      await User.updateOne({ _id: driver._id }, { $set: { timezone: zone } });
+    }
   }
 
   // Push the freshest position per trip to live watchers (admins + owning manager).

@@ -1,14 +1,32 @@
 /**
- * Timezone detection via LocationIQ reverse geocoding + country→timezone mapping.
+ * Timezone detection.
  *
- * Flow:
- *  1. Get GPS coordinates from expo-location
- *  2. Reverse geocode via LocationIQ to get country
- *  3. Map country code to primary IANA timezone
- *  4. Allow manual override via dropdown
+ * PRIMARY SOURCE IS THE DEVICE (`deviceTimezone` below). The handset already knows its exact
+ * IANA zone — it is instant, works offline, needs no permission or API key, and is DST-aware.
+ *
+ * The GPS + reverse-geocode path underneath it is a manual-override aid only. It resolves a
+ * country and then picks that country's *primary* zone, which is simply wrong wherever a
+ * country spans several: Australia has five, so "AU" cannot distinguish Perth from Brisbane —
+ * and this fleet is mostly Australian. It also needs a permission, a network round-trip and a
+ * third-party key, any of which can fail while the device answer never does.
  */
 
 const LOCATIONIQ_KEY = 'pk.81814d1a4f682831b30412723b3c4a08';
+
+/**
+ * The device's own IANA timezone, e.g. "Australia/Brisbane".
+ *
+ * Returns null rather than a guess if the runtime cannot say — the caller then leaves the
+ * stored value alone instead of overwriting a good zone with a bad one.
+ */
+export function deviceTimezone(): string | null {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof tz === 'string' && tz.length > 0 ? tz : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Reverse geocode lat/lon → country + timezone using LocationIQ. */
 export async function reverseGeocode(lat: number, lon: number): Promise<{

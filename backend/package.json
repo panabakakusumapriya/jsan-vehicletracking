@@ -12,7 +12,8 @@
     "backfill:custody": "node src/seed/backfillCustody.js",
     "demo:custody": "node src/seed/demoCustody.js",
     "vapid": "node -e \"const k=require('web-push').generateVAPIDKeys();console.log('VAPID_PUBLIC_KEY='+k.publicKey+'\\nVAPID_PRIVATE_KEY='+k.privateKey)\"",
-    "test": "node test/integration.test.js && node test/custody.test.js && node test/weather.test.js && node test/weatherPipeline.test.js && node test/hotels.test.js",
+    "test": "node test/integration.test.js && node test/custody.test.js && node test/weather.test.js && node test/weatherPipeline.test.js && node test/hotels.test.js && node test/tzcoords.test.js",
+    "test:tz": "node test/tzcoords.test.js",
     "test:custody": "node test/custody.test.js",
     "test:weather": "node test/weather.test.js",
     "test:weather:pipeline": "node test/weatherPipeline.test.js",
@@ -33,6 +34,7 @@
     "mongoose": "^8.6.0",
     "morgan": "^1.10.0",
     "socket.io": "^4.7.5",
+    "tz-lookup": "^6.1.25",
     "web-push": "^3.6.7"
   },
   "devDependencies": {

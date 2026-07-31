@@ -14,6 +14,7 @@ import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
 import { ensurePermissions } from '@/src/lib/permissions';
+import { deviceTimezone } from '@/src/lib/timezone';
 import { TabBar } from '@/src/components/TabBar';
 
 type UiState = 'starting' | 'idle' | 'tracking' | 'blocked' | 'night';
@@ -108,9 +109,12 @@ export default function Home() {
         return;
       }
 
-      // Set timezone in native module from user profile before starting
-      if (user.timezone) {
-        await VehicleTracker.setTimezone(user.timezone);
+      // Sunrise/sunset start-stop needs a zone before the first GPS point exists. Prefer the
+      // server's coordinate-derived one; fall back to the device's rather than leaving the
+      // schedule on whatever the native default happens to be.
+      const tz = user.timezone ?? deviceTimezone();
+      if (tz) {
+        await VehicleTracker.setTimezone(tz);
       }
 
       await VehicleTracker.configure(API_BASE_URL, token, user._id);
