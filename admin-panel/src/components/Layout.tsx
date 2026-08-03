@@ -102,7 +102,7 @@ const links = [
   { to: '/drivers',  label: 'Drivers',            Icon: DriverIcon },
   { to: '/mobiles',  label: 'Mobiles',            Icon: PhoneIcon  },
   { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon},
-  { to: '/weather',  label: 'Weather',            Icon: WeatherIcon},
+  { to: '/weather',  label: 'Predictive Weather',  Icon: WeatherIcon},
   { to: '/hotels',   label: 'Hotels',             Icon: BedIcon    },
   { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
   { to: '/reports',  label: 'Reports',             Icon: ReportIcon },

@@ -19,6 +19,8 @@ export interface Map3DHandle {
   /** Adjusts the camera so the whole route is on screen -- without this, the
    * fixed initial center/zoom often leaves most of a recorded path off-screen. */
   fitToRoute(coords: [number, number][]): void;
+  /** Smooth camera follow that rotates the map to face the driving direction. */
+  driveTo(center: [number, number], bearing: number): void;
 }
 
 interface Map3DProps {
@@ -114,6 +116,11 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
         const map = mapRef.current;
         if (!map) return;
         map.flyTo({ center: target, zoom: targetZoom ?? map.getZoom(), pitch: DEFAULT_PITCH, essential: true });
+      },
+      driveTo(target, bearing) {
+        const map = mapRef.current;
+        if (!map) return;
+        map.easeTo({ center: target, zoom: 17.5, pitch: 65, bearing, duration: 600, essential: true });
       },
       fitToRoute(coords) {
         const map = mapRef.current;

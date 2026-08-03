@@ -55,15 +55,17 @@ export function TripDetail() {
 
   const playback = useTripPlayback(points);
 
-  // Auto-zoom to vehicle position during playback (throttled to ~1s)
+  // Camera follows the vehicle during playback — rotates to face the driving
+  // direction so it feels like you're travelling along the route. Throttled to
+  // ~500ms for smooth continuous movement without overwhelming the map.
   useEffect(() => {
     if (!playback.playing || points.length === 0) return;
     const now = Date.now();
-    if (now - lastFlyRef.current < 1000) return;
+    if (now - lastFlyRef.current < 500) return;
     lastFlyRef.current = now;
     const vehicle = vehicleAtElapsed(points, playback.currentTimeMs);
     if (vehicle) {
-      mapRef.current?.flyTo([vehicle.lon, vehicle.lat], 16);
+      mapRef.current?.driveTo([vehicle.lon, vehicle.lat], vehicle.heading);
     }
   }, [playback.currentTimeMs, playback.playing, points]);
 
@@ -146,11 +148,11 @@ export function TripDetail() {
               } else {
                 playback.play();
                 lastFlyRef.current = 0;
-                // Immediately zoom to vehicle position on play start
+                // Immediately enter driving view on play start
                 const startMs = playback.currentTimeMs >= playback.durationMs ? 0 : playback.currentTimeMs;
                 const pos = vehicleAtElapsed(points, startMs);
                 if (pos) {
-                  mapRef.current?.flyTo([pos.lon, pos.lat], 16);
+                  mapRef.current?.driveTo([pos.lon, pos.lat], pos.heading);
                 }
               }
             }}
