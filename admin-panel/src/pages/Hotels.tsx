@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { divIcon, type Marker as LeafletMarker, type LatLngBoundsExpression } from 'leaflet';
+import { Circle, MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import { api } from '../lib/api';
+import { MapAutoResize } from '../lib/MapAutoResize';
 import { dt } from '../lib/format';
 
 /**
- * Hotels near a driver.
+ * Hotels near a driver — as a MAP, not a list.
  *
- * The manager never types a location — it comes from the driver's own last reported position,
- * the same feed the live map uses. What they choose is WHO, and the page answers WHERE.
+ * The question a manager actually has is spatial: "where is my driver, and which beds are
+ * closest to them right now?" A stack of price cards answers the wrong question. So the driver's
+ * own last reported position (the end of their most recent trip — the same feed the live map
+ * uses) is the anchor, the search radius is drawn around it, and every hotel is a pin placed at
+ * its real coordinates. The list on the right is a synced index into the map, not the main view.
  *
- * One driver is searched at a time on purpose: this provider bills per call, so a fan-out
- * across the fleet on every page load would be expensive and mostly unread.
+ * One driver is searched at a time on purpose: this provider bills per call, so a fan-out across
+ * the fleet on every page load would be expensive and mostly unread.
  */
 
 interface Money { value: number; label: string | null; currency: string | null }
@@ -90,15 +96,24 @@ const FilterIcon = () => (
 
 const CURRENCIES = ['INR', 'AUD', 'GBP', 'EUR', 'USD', 'AED', 'SGD'];
 const RADII = [10, 20, 30, 50, 100, 200];
+const CURRENCY_SYMBOL: Record<string, string> = {
+  INR: '₹', AUD: '$', USD: '$', SGD: '$', GBP: '£', EUR: '€', AED: 'AED ',
+};
+
+/** A pin label has to be tiny, so "Rs. 41,318" becomes "₹41k". Full price lives in the popup. */
+function shortPrice(m: Money | null): string {
+  if (!m || typeof m.value !== 'number') return '—';
+  const sym = CURRENCY_SYMBOL[m.currency ?? ''] ?? `${m.currency ?? ''} `;
+  const v = m.value;
+  if (v >= 1000) return `${sym}${Math.round(v / 1000)}k`;
+  return `${sym}${Math.round(v)}`;
+}
 
 /** Booking.com has no stable per-property URL in this payload, so this opens a scoped search. */
 function bookingUrl(p: Property, arrival: string, departure: string, adults: number, rooms: number) {
   const q = new URLSearchParams({
-    ss: p.name,
-    checkin: arrival,
-    checkout: departure,
-    group_adults: String(adults),
-    no_rooms: String(rooms),
+    ss: p.name, checkin: arrival, checkout: departure,
+    group_adults: String(adults), no_rooms: String(rooms),
   });
   if (p.lat != null && p.lon != null) {
     q.set('latitude', String(p.lat));
@@ -121,6 +136,49 @@ function lateArrivalRisk(until: string | null) {
   return Number.isFinite(h) && h < 21 && h > 0;
 }
 
+// ── Map markers ──────────────────────────────────────────────────────────────
+
+/** The driver: a violet pulse, deliberately unlike a hotel so "where they are" reads instantly. */
+function driverPin() {
+  return divIcon({
+    className: 'hotel-driver-pin',
+    html: `<div style="position:relative;width:26px;height:26px;">
+      <span style="position:absolute;inset:0;border-radius:50%;background:rgba(124,58,237,0.28);animation:hotelpulse 2s ease-out infinite;"></span>
+      <span style="position:absolute;inset:6px;border-radius:50%;background:#7c3aed;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></span>
+    </div>`,
+    iconSize: [26, 26], iconAnchor: [13, 13], popupAnchor: [0, -13],
+  });
+}
+
+/**
+ * A hotel: a price tag. Green when it has free parking (what a driver in a van actually needs),
+ * violet otherwise; the focused one is filled and lifted so the map and list stay in step.
+ */
+function hotelPin(label: string, freeParking: boolean, active: boolean) {
+  const base = freeParking ? '#059669' : '#7c3aed';
+  const bg = active ? base : '#ffffff';
+  const fg = active ? '#ffffff' : base;
+  const scale = active ? 1.12 : 1;
+  return divIcon({
+    className: 'hotel-price-pin',
+    html: `<div style="transform:scale(${scale});transform-origin:bottom center;">
+      <div style="background:${bg};color:${fg};border:1.5px solid ${base};border-radius:999px;
+        padding:2px 8px;font:700 11.5px/1.3 Inter,sans-serif;white-space:nowrap;
+        box-shadow:0 2px 6px rgba(0,0,0,${active ? 0.35 : 0.2});">${label}</div>
+    </div>`,
+    iconSize: [0, 0], iconAnchor: [0, 0], popupAnchor: [0, -10],
+  });
+}
+
+/** Fit the map to the driver + every hotel whenever the result set changes. */
+function FitToData({ bounds }: { bounds: LatLngBoundsExpression | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (bounds) map.fitBounds(bounds, { padding: [50, 50], maxZoom: 14, animate: true });
+  }, [bounds, map]);
+  return null;
+}
+
 export function Hotels() {
   const [data, setData] = useState<HotelResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -138,6 +196,8 @@ export function Hotels() {
 
   // A search is a paid call, so it runs when the manager asks for one — not on every keystroke.
   const [runId, setRunId] = useState(0);
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const markerRefs = useRef<Record<string, LeafletMarker | null>>({});
 
   useEffect(() => {
     setLoading(true);
@@ -153,7 +213,7 @@ export function Hotels() {
     api.get<HotelResponse>(`/api/hotels/near-driver?${q}`)
       .then(r => {
         setData(r);
-        // Adopt whatever the server settled on, so the controls show the real search.
+        setFocusId(null);
         if (r.search) { setArrival(r.search.arrival); setDeparture(r.search.departure); }
         if (r.selected && !driverId) setDriverId(String(r.selected._id));
       })
@@ -167,6 +227,27 @@ export function Hotels() {
   const located = useMemo(() => (data?.drivers ?? []).filter(d => d.located), [data]);
   const selected = data?.selected ?? null;
   const props = data?.properties ?? [];
+  const mapped = useMemo(
+    () => props.filter(p => typeof p.lat === 'number' && typeof p.lon === 'number'),
+    [props]
+  );
+
+  const anchor: [number, number] | null =
+    selected && selected.lat != null && selected.lon != null ? [selected.lat, selected.lon] : null;
+
+  // Frame the driver plus every placeable hotel. Null until we have one, so the map waits.
+  const bounds = useMemo<LatLngBoundsExpression | null>(() => {
+    const pts: [number, number][] = [];
+    if (anchor) pts.push(anchor);
+    for (const p of mapped) pts.push([p.lat as number, p.lon as number]);
+    return pts.length ? pts : null;
+  }, [anchor, mapped]);
+
+  const focusHotel = (id: string) => {
+    setFocusId(id);
+    const m = markerRefs.current[id];
+    if (m) m.openPopup();
+  };
 
   return (
     <div>
@@ -176,7 +257,7 @@ export function Hotels() {
             <BedIcon /> Hotels
           </h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            Rooms near a driver&apos;s last reported position — no address needed
+            Rooms around a driver&apos;s last reported position — shown where they actually are
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -209,7 +290,7 @@ export function Hotels() {
       </div>
 
       {/* Secondary controls */}
-      <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 18, fontSize: 13 }}>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14, fontSize: 13 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           Guests
           <input className="input" type="number" min={1} max={30} style={{ width: 64, margin: 0 }}
@@ -224,10 +305,16 @@ export function Hotels() {
           <input type="checkbox" checked={parkingOnly} onChange={e => setParkingOnly(e.target.checked)} />
           Free parking only
         </label>
+        {selected && data?.search && (
+          <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
+            <strong>{selected.name}</strong> · {mapped.length} within {data.search.radiusKm} km of {data.totalFound} ·{' '}
+            {data.search.nights} night{data.search.nights === 1 ? '' : 's'} ({data.search.arrival} → {data.search.departure})
+          </span>
+        )}
         {data?.budget && (
           <span className="muted" style={{ marginLeft: 'auto', fontSize: 12 }}>
             {data.budget.remaining} of {data.budget.cap} searches left today
-            {data.fromCache ? ' · served from cache' : ''}
+            {data.fromCache ? ' · from cache' : ''}
           </span>
         )}
       </div>
@@ -249,148 +336,146 @@ export function Hotels() {
         </div>
       )}
 
-      {selected && data?.search && (
-        <div className="stat-row">
-          <div className="stat">
-            <div className="icon">👤</div>
-            <div className="v" style={{ fontSize: 18 }}>{selected.name}</div>
-            <div className="k">Searching around this driver</div>
-          </div>
-          <div className="stat">
-            <div className="icon">📍</div>
-            <div className="v" style={{ fontSize: 15, fontFamily: 'monospace' }}>
-              {selected.lat?.toFixed(3)}, {selected.lon?.toFixed(3)}
-            </div>
-            <div className="k">Last position · {dt(selected.lastSeenAt)}</div>
-          </div>
-          <div className="stat">
-            <div className="icon">🌙</div>
-            <div className="v">{data.search.nights}</div>
-            <div className="k">{data.search.arrival} → {data.search.departure}</div>
-          </div>
-          <div className="stat">
-            <div className="icon">🏨</div>
-            <div className="v">{props.length}</div>
-            <div className="k">Within {data.search.radiusKm} km of {data.totalFound} found</div>
-          </div>
-        </div>
-      )}
-
       {loading && !data && (
         <div className="muted" style={{ padding: 40, textAlign: 'center' }}>Searching for rooms…</div>
       )}
 
-      {!loading && selected && props.length === 0 && !error && !data?.message && (
-        <div className="card" style={{ textAlign: 'center', padding: '46px 24px', color: 'var(--muted)' }}>
-          <div style={{ fontSize: 36, marginBottom: 10 }}>🛏️</div>
-          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
-            Nothing bookable within {data?.search?.radiusKm} km
+      {/* Map + synced list */}
+      {anchor && !error && !data?.message && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 340px', gap: 14, alignItems: 'stretch' }}>
+          <div className="map-wrap" style={{ height: 'calc(100vh - 250px)', minHeight: 460 }}>
+            <MapContainer center={anchor} zoom={12} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
+              <TileLayer
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                attribution="&copy; OpenStreetMap contributors"
+              />
+              <MapAutoResize />
+              <FitToData bounds={bounds} />
+
+              {/* Search radius around the driver — the night-stop zone. */}
+              {data?.search && (
+                <Circle
+                  center={anchor}
+                  radius={data.search.radiusKm * 1000}
+                  pathOptions={{ color: '#7c3aed', weight: 1, fillColor: '#7c3aed', fillOpacity: 0.05 }}
+                />
+              )}
+
+              {/* The driver. */}
+              <Marker position={anchor} icon={driverPin()}>
+                <Popup>
+                  <b>{selected!.name}</b><br />
+                  <span style={{ color: '#64748b' }}>Last reported position</span><br />
+                  {dt(selected!.lastSeenAt)}
+                </Popup>
+              </Marker>
+
+              {/* The hotels. */}
+              {mapped.map((p, i) => {
+                const id = `${p.id}-${i}`;
+                return (
+                  <Marker
+                    key={id}
+                    position={[p.lat as number, p.lon as number]}
+                    icon={hotelPin(shortPrice(p.perNight), p.freeParking, focusId === id)}
+                    ref={(m) => { markerRefs.current[id] = m; }}
+                    eventHandlers={{ click: () => setFocusId(id) }}
+                  >
+                    <Popup>
+                      <div style={{ width: 210 }}>
+                        {p.photo && (
+                          <img src={p.photo.replace('/square60/', '/max300/')} alt="" loading="lazy"
+                            style={{ width: '100%', height: 110, objectFit: 'cover', borderRadius: 6, marginBottom: 6 }} />
+                        )}
+                        <div style={{ fontWeight: 700, fontSize: 13.5, lineHeight: 1.3 }}>{p.name}</div>
+                        <div style={{ color: '#64748b', fontSize: 11.5, marginTop: 2 }}>
+                          {p.city}{p.countryCode ? `, ${p.countryCode}` : ''}
+                          {p.distanceKm != null ? ` · ${p.distanceKm} km away` : ''}
+                        </div>
+                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+                          {p.score != null && <span className={`badge ${scoreTone(p.score)}`}>{p.score.toFixed(1)}</span>}
+                          {p.freeParking && <span className="badge green">Free parking</span>}
+                          {lateArrivalRisk(p.checkinUntil) && <span className="badge amber">Check in by {p.checkinUntil}</span>}
+                        </div>
+                        <div style={{ marginTop: 8, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+                          <div>
+                            <span style={{ fontWeight: 800, fontSize: 15 }}>{p.perNight?.label ?? '—'}</span>
+                            <span style={{ color: '#64748b', fontSize: 11 }}> / night</span>
+                            {p.localPrice && p.localPrice.currency !== p.perNight?.currency && (
+                              <div style={{ color: '#64748b', fontSize: 11 }}>
+                                charged as {p.localPrice.currency} {p.localPrice.value.toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                          {data?.search && (
+                            <a className="btn" style={{ padding: '5px 11px', fontSize: 12 }}
+                              href={bookingUrl(p, data.search.arrival, data.search.departure, data.search.adults, data.search.rooms)}
+                              target="_blank" rel="noopener noreferrer">Book</a>
+                          )}
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
+            </MapContainer>
           </div>
-          <div style={{ fontSize: 13 }}>
-            Try a wider radius{parkingOnly ? ', or turn off the free-parking filter' : ''}.
+
+          {/* Synced list — a scannable index into the map, not the main view. */}
+          <div className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 250px)', minHeight: 460 }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)', fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)' }}>
+              {mapped.length} hotel{mapped.length === 1 ? '' : 's'} on map
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1 }}>
+              {mapped.map((p, i) => {
+                const id = `${p.id}-${i}`;
+                const active = focusId === id;
+                return (
+                  <button
+                    key={id}
+                    onClick={() => focusHotel(id)}
+                    style={{
+                      display: 'flex', gap: 10, width: '100%', textAlign: 'left', cursor: 'pointer',
+                      padding: '10px 12px', border: 'none', borderBottom: '1px solid var(--line)',
+                      background: active ? 'var(--brand-light)' : 'transparent', fontFamily: 'inherit',
+                    }}
+                  >
+                    <div style={{ width: 54, height: 54, flexShrink: 0, borderRadius: 8, overflow: 'hidden', background: 'var(--panel-2)' }}>
+                      {p.photo && (
+                        <img src={p.photo} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      )}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 12.5, lineHeight: 1.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {p.name}
+                      </div>
+                      <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 2 }}>
+                        {p.distanceKm != null ? `${p.distanceKm} km` : ''}
+                        {p.score != null ? ` · ★ ${p.score.toFixed(1)}` : ''}
+                        {p.freeParking ? ' · P' : ''}
+                      </div>
+                      <div style={{ fontWeight: 800, fontSize: 13, marginTop: 3 }}>
+                        {p.perNight?.label ?? '—'}
+                        <span style={{ color: 'var(--muted)', fontWeight: 500, fontSize: 10.5 }}> /night</span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+              {mapped.length === 0 && (
+                <div className="muted" style={{ padding: '30px 16px', textAlign: 'center', fontSize: 13 }}>
+                  Nothing bookable within {data?.search?.radiusKm} km.
+                  {parkingOnly ? ' Try turning off the free-parking filter.' : ' Try a wider radius.'}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      {/* Results */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))', gap: 16 }}>
-        {props.map((p, i) => (
-          <div className="card" key={`${p.id}-${i}`} style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ position: 'relative', height: 150, background: 'var(--panel-2)' }}>
-              {p.photo && (
-                <img
-                  src={p.photo.replace('/square60/', '/max500/')}
-                  alt=""
-                  loading="lazy"
-                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                  // Booking serves several sizes; if the larger one 404s, fall back to the original.
-                  onError={e => { (e.currentTarget as HTMLImageElement).src = p.photo as string; }}
-                />
-              )}
-              {p.distanceKm != null && (
-                <span style={{
-                  position: 'absolute', left: 10, top: 10, background: 'rgba(13,13,20,0.82)', color: '#fff',
-                  fontSize: 12, fontWeight: 700, padding: '3px 9px', borderRadius: 999,
-                }}>
-                  {p.distanceKm} km away
-                </span>
-              )}
-              {p.score != null && (
-                <span className={`badge ${scoreTone(p.score)}`} style={{ position: 'absolute', right: 10, top: 10 }}>
-                  {p.score.toFixed(1)} {p.scoreWord ?? ''}
-                </span>
-              )}
-            </div>
-
-            <div style={{ padding: '13px 15px 15px', display: 'flex', flexDirection: 'column', flex: 1 }}>
-              <div style={{ fontWeight: 700, fontSize: 14.5, lineHeight: 1.3 }}>{p.name}</div>
-              <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>
-                {p.city}{p.countryCode ? `, ${p.countryCode}` : ''}
-                {p.stars ? ` · ${'★'.repeat(p.stars)}${p.starsEstimated ? '≈' : ''}` : ''}
-                {p.reviews ? ` · ${p.reviews} reviews` : ''}
-              </div>
-
-              {p.roomLabel && (
-                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>{p.roomLabel}</div>
-              )}
-
-              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', margin: '10px 0 0' }}>
-                {p.freeParking && <span className="badge green">Free parking</span>}
-                {p.freeCancellation && <span className="badge green">Free cancellation</span>}
-                {p.breakfastIncluded && <span className="badge gray">Breakfast</span>}
-                {p.noPrepayment && <span className="badge gray">No prepayment</span>}
-                {lateArrivalRisk(p.checkinUntil) && (
-                  <span className="badge amber">Check in by {p.checkinUntil}</span>
-                )}
-              </div>
-
-              <div style={{ marginTop: 'auto', paddingTop: 12, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 10 }}>
-                <div>
-                  {p.wasPerNight?.label && (
-                    <span className="muted" style={{ fontSize: 12, textDecoration: 'line-through', marginRight: 6 }}>
-                      {p.wasPerNight.label}
-                    </span>
-                  )}
-                  <span style={{ fontWeight: 800, fontSize: 17 }}>{p.perNight?.label ?? '—'}</span>
-                  <div className="muted" style={{ fontSize: 11.5, marginTop: 2 }}>
-                    per night
-                    {p.totalWithTaxes?.label && p.nights >= 1 && (
-                      <> · {p.totalWithTaxes.label} total inc. tax</>
-                    )}
-                  </div>
-                  {p.localPrice && p.localPrice.currency !== p.perNight?.currency && (
-                    <div className="muted" style={{ fontSize: 11.5, marginTop: 1 }}>
-                      charged as {p.localPrice.currency} {p.localPrice.value.toLocaleString()}
-                    </div>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {p.lat != null && p.lon != null && (
-                    <a className="btn-ghost" style={{ padding: '6px 9px', fontSize: 12 }}
-                      href={`https://www.google.com/maps/search/?api=1&query=${p.lat},${p.lon}`}
-                      target="_blank" rel="noopener noreferrer">Map</a>
-                  )}
-                  {data?.search && (
-                    <a className="btn" style={{ padding: '6px 11px', fontSize: 12 }}
-                      href={bookingUrl(p, data.search.arrival, data.search.departure, data.search.adults, data.search.rooms)}
-                      target="_blank" rel="noopener noreferrer">Book</a>
-                  )}
-                </div>
-              </div>
-
-              {p.urgency && (
-                <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--amber)', fontWeight: 600 }}>{p.urgency}</div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
       {(data?.unplaced?.length ?? 0) > 0 && (
-        <div className="card" style={{ marginTop: 20, padding: '14px 18px' }}>
-          <div style={{ fontWeight: 700, fontSize: 13 }}>
-            No recent position ({data!.unplaced.length})
-          </div>
+        <div className="card" style={{ marginTop: 14, padding: '12px 16px' }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>No recent position ({data!.unplaced.length})</div>
           <div className="muted" style={{ fontSize: 12.5, marginTop: 5 }}>
             {data!.unplaced.map(d => d.name).join(' · ')}
           </div>

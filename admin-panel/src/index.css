@@ -498,6 +498,11 @@ select.input { cursor: pointer; }
 .leaflet-container { height: 100%; width: 100%; }
 
 @keyframes pulse-text { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
+
+/* Driver anchor pulse on the Hotels map. */
+@keyframes hotelpulse { 0% { transform:scale(0.6); opacity:0.8 } 100% { transform:scale(2); opacity:0 } }
+/* Price-tag hotel pins should overflow their zero-size Leaflet icon box freely. */
+.hotel-price-pin, .hotel-driver-pin { background: none; border: none; }
 .live-dot { position:relative; display:inline-flex; align-items:center; gap:6px; }
 .live-dot::before { content:'●'; font-size:8px; color:var(--green); animation:pulse-text 2s ease-in-out infinite; }
 
