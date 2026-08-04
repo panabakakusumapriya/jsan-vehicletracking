@@ -24,13 +24,16 @@ const ICONS: Record<string, string> = {
 };
 const glyphFor = (icon: string | null) => (icon && ICONS[icon]) || '·';
 
-const DAYS = [
-  { offset: 0, label: 'Today' },
-  { offset: 1, label: 'Tomorrow' },
-  { offset: 2, label: '+2 days' },
-  { offset: 3, label: '+3 days' },
-  { offset: 4, label: '+4 days' },
-];
+function dayOption(offset: number) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  if (offset === 0) return `Today (${dateStr})`;
+  if (offset === 1) return `Tomorrow (${dateStr})`;
+  return `+${offset} days (${dateStr})`;
+}
+
+const DAYS = [0, 1, 2, 3, 4];
 
 /* ── Map marker icon ── */
 function parkedCarIcon(risk: DrivingRisk | null, selected: boolean) {
@@ -351,7 +354,13 @@ export function Weather() {
         <div>
           <h1 className="page-title">Predictive Weather</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            Weather forecast at drivers' last parked locations
+            {(() => {
+              const d = new Date();
+              d.setDate(d.getDate() + day);
+              const label = day === 0 ? 'Today' : day === 1 ? 'Tomorrow' : null;
+              const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+              return label ? `${label} · ${dateStr}` : dateStr;
+            })()}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -376,8 +385,8 @@ export function Weather() {
             <option value="">All drivers</option>
             {driverOptions.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
-          <select className="input" style={{ width: 130 }} value={day} onChange={e => setDay(Number(e.target.value))}>
-            {DAYS.map(d => <option key={d.offset} value={d.offset}>{d.label}</option>)}
+          <select className="input" style={{ width: 170 }} value={day} onChange={e => setDay(Number(e.target.value))}>
+            {DAYS.map(offset => <option key={offset} value={offset}>{dayOption(offset)}</option>)}
           </select>
           <button className="btn-ghost" onClick={() => setReloadKey(k => k + 1)} disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}

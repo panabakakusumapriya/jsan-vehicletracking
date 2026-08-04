@@ -1,24 +1,29 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
-import type { Vehicle } from '../lib/types';
+import type { User, Vehicle } from '../lib/types';
 
 /**
  * Vehicle inventory — add, edit and retire vehicles.
- *
- * Allocation to a driver is NOT done here; it lives on the Drivers screen, so there is one
- * place to do it and no chance of two screens disagreeing about who holds what. The
- * "Assigned driver" column below is read-only, reflecting the current custody row.
+ * Driver assignment is done here via the custody ledger (same as Drivers screen).
  */
 const assigned = (v: Vehicle['assignedDriverId']) => (v && typeof v === 'object' ? v.name : '—');
+const assignedId = (v: Vehicle['assignedDriverId']) => (v && typeof v === 'object' ? v._id : (v as string | null | undefined) ?? '');
 
 export function Vehicles() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [drivers, setDrivers] = useState<User[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<Vehicle | null>(null);
 
   const load = () => {
-    api.get<{ vehicles: Vehicle[] }>('/api/vehicles').then((r) => setVehicles(r.vehicles));
+    Promise.all([
+      api.get<{ vehicles: Vehicle[] }>('/api/vehicles'),
+      api.get<{ users: User[] }>('/api/users?role=user'),
+    ]).then(([vr, ur]) => {
+      setVehicles(vr.vehicles);
+      setDrivers(ur.users ?? []);
+    });
   };
   useEffect(load, []);
 
@@ -45,6 +50,7 @@ export function Vehicles() {
               <th>Licence Plate</th>
               <th>Model</th>
               <th>Country</th>
+              <th>Assigned Driver</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -56,6 +62,7 @@ export function Vehicles() {
                 <td>{v.plateNumber}</td>
                 <td>{v.model || '—'}</td>
                 <td>{v.country || '—'}</td>
+                <td>{assigned(v.assignedDriverId)}</td>
                 <td>
                   <span className={`badge ${v.active ? 'green' : 'gray'}`}>{v.active ? 'active' : 'inactive'}</span>
                 </td>
@@ -69,7 +76,7 @@ export function Vehicles() {
             ))}
             {vehicles.length === 0 && (
               <tr>
-                <td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 28 }}>
+                <td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 28 }}>
                   No vehicles yet.
                 </td>
               </tr>
@@ -80,6 +87,7 @@ export function Vehicles() {
 
       {showAdd && (
         <AddVehicle
+          drivers={drivers}
           onClose={() => setShowAdd(false)}
           onSaved={() => {
             setShowAdd(false);
@@ -90,6 +98,7 @@ export function Vehicles() {
       {editing && (
         <EditVehicle
           vehicle={editing}
+          drivers={drivers}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -101,8 +110,8 @@ export function Vehicles() {
   );
 }
 
-function AddVehicle({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ plateNumber: '', vid: '', model: '', country: '' });
+function AddVehicle({ drivers, onClose, onSaved }: { drivers: User[]; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({ plateNumber: '', vid: '', model: '', country: '', assignedDriverId: '' });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -116,6 +125,7 @@ function AddVehicle({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
         vid: form.vid || undefined,
         model: form.model || undefined,
         country: form.country || undefined,
+        assignedDriverId: form.assignedDriverId || undefined,
       });
       onSaved();
     } catch (e) {
@@ -143,9 +153,15 @@ function AddVehicle({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
         <label>Country (optional)</label>
         <input className="input" value={form.country} onChange={(e) => set('country', e.target.value)} />
       </div>
-      <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '0 0 4px', lineHeight: 1.5 }}>
-        Allocate this vehicle to a driver from the <b>Drivers</b> screen.
-      </p>
+      <div className="field">
+        <label>Assign to driver (optional)</label>
+        <select className="input" value={form.assignedDriverId} onChange={(e) => set('assignedDriverId', e.target.value)}>
+          <option value="">— Unassigned —</option>
+          {drivers.map(d => (
+            <option key={d._id} value={d._id}>{d.name}{d.country ? ` (${d.country})` : ''}</option>
+          ))}
+        </select>
+      </div>
 
       {error && <div className="error-text">{error}</div>}
       <div className="modal-actions">
@@ -160,8 +176,8 @@ function AddVehicle({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
   );
 }
 
-function EditVehicle({ vehicle, onClose, onSaved }: {
-  vehicle: Vehicle; onClose: () => void; onSaved: () => void;
+function EditVehicle({ vehicle, drivers, onClose, onSaved }: {
+  vehicle: Vehicle; drivers: User[]; onClose: () => void; onSaved: () => void;
 }) {
   const [form, setForm] = useState({
     plateNumber: vehicle.plateNumber,
@@ -169,6 +185,7 @@ function EditVehicle({ vehicle, onClose, onSaved }: {
     model: vehicle.model || '',
     country: vehicle.country || '',
     active: vehicle.active,
+    assignedDriverId: assignedId(vehicle.assignedDriverId),
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -184,6 +201,7 @@ function EditVehicle({ vehicle, onClose, onSaved }: {
         model: form.model || null,
         country: form.country || null,
         active: form.active,
+        assignedDriverId: form.assignedDriverId || null,
       });
       onSaved();
     } catch (e) {
@@ -212,11 +230,13 @@ function EditVehicle({ vehicle, onClose, onSaved }: {
         <input className="input" value={form.country} onChange={(e) => set('country', e.target.value)} />
       </div>
       <div className="field">
-        <label>Currently held by</label>
-        <input className="input" value={assigned(vehicle.assignedDriverId)} disabled readOnly />
-        <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
-          Change this from the <b>Drivers</b> screen — every handover is recorded there.
-        </p>
+        <label>Assigned driver</label>
+        <select className="input" value={form.assignedDriverId} onChange={(e) => set('assignedDriverId', e.target.value)}>
+          <option value="">— Unassigned —</option>
+          {drivers.map(d => (
+            <option key={d._id} value={d._id}>{d.name}{d.country ? ` (${d.country})` : ''}</option>
+          ))}
+        </select>
       </div>
       <div className="field">
         <label>Status</label>
