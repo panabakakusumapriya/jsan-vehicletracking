@@ -55,10 +55,16 @@ const assignmentSchema = new mongoose.Schema(
 );
 
 // ---- Invariants, enforced by the database rather than by code that might forget ----
-// Because "open" is a fixed value, these plain unique indexes make a double-assignment a
+// Because "open" is a fixed value, this plain unique index makes a double-assignment a
 // write error (E11000) instead of a corruption discovered months later in a report.
+// An asset still has exactly ONE holder at a time — a truck can't be driven by two people at
+// once, and a handset can't be in two pockets. Enforced here.
 assignmentSchema.index({ assetKind: 1, assetId: 1, endedAt: 1 }, { unique: true });
-assignmentSchema.index({ assetKind: 1, driverId: 1, endedAt: 1 }, { unique: true });
+// NOT unique: a driver may hold several assets of the same kind at once (several vehicles,
+// several handsets) — that's the whole point of the multi-asset Drivers screen. Kept as a
+// plain index for the "what does this driver hold right now" lookups in
+// assetCustody.syncAssignments and the cache-recompute in clearCaches.
+assignmentSchema.index({ assetKind: 1, driverId: 1, endedAt: 1 });
 
 // ---- Read paths ----
 assignmentSchema.index({ startedAt: 1, endedAt: 1 }); // month-overlap report

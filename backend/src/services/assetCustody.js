@@ -113,25 +113,38 @@ async function closeRow(row, endedAt, actorId, session) {
   return row;
 }
 
+/**
+ * Clear an asset's own holder pointer, then re-derive the driver's cache pointer for this
+ * kind from whatever open assignments remain — the most recently started one, or null if the
+ * driver now holds none of this kind. An unconditional recompute (rather than "only if it was
+ * pointing at this row") means the cache can never drift from the ledger, even though a
+ * driver can now hold several assets of the same kind at once.
+ */
 async function clearCaches(row, session) {
   const opts = session ? { session } : {};
+  const cacheField = row.assetKind === 'vehicle' ? 'vehicleId' : 'mobileDeviceId';
+
   if (row.assetKind === 'vehicle') {
     await Vehicle.updateOne({ _id: row.assetId, assignedDriverId: row.driverId }, { $set: { assignedDriverId: null } }, opts);
-    await User.updateOne({ _id: row.driverId, vehicleId: row.assetId }, { $set: { vehicleId: null } }, opts);
   } else {
     await MobileDevice.updateOne(
       { _id: row.assetId, currentDriverId: row.driverId },
       { $set: { currentDriverId: null, status: 'in_stock' } },
       opts
     );
-    await User.updateOne(
-      { _id: row.driverId, mobileDeviceId: row.assetId },
-      { $set: { mobileDeviceId: null } },
-      opts
-    );
   }
+
+  const next = await Assignment.findOne({ assetKind: row.assetKind, driverId: row.driverId, endedAt: OPEN })
+    .sort({ startedAt: -1 })
+    .session(session || null);
+  await User.updateOne({ _id: row.driverId }, { $set: { [cacheField]: next ? next.assetId : null } }, opts);
 }
 
+/**
+ * The newest assignment becomes the driver's cache pointer for this kind — the one trip
+ * ingestion and the Drivers table read. Older ones the driver still holds stay open in the
+ * ledger, just not the pointer.
+ */
 async function applyCaches(row, session) {
   const opts = session ? { session } : {};
   if (row.assetKind === 'vehicle') {
@@ -150,8 +163,12 @@ async function applyCaches(row, session) {
 /**
  * Give `assetId` to `driverId` from `startedAt` (default: now).
  *
- * Closes whatever the asset and the driver were holding, then opens the new stint — all in
- * one transaction where the deployment allows it.
+ * Closes whoever currently holds the ASSET — one asset still has exactly one holder at a
+ * time — then opens the new stint. Deliberately does NOT touch the driver's other open
+ * assignments of this kind: a driver may hold several vehicles or several handsets at once.
+ * The new assignment becomes the driver's cache pointer (`User.vehicleId` /
+ * `mobileDeviceId`), so "the vehicle this driver is on right now" — what trip ingestion reads
+ * — stays well-defined even while they hold more than one.
  */
 async function assign({ assetKind, assetId, driverId, startedAt, note, backfilled, actor }) {
   const start = startedAt ? new Date(startedAt) : new Date();
@@ -178,20 +195,11 @@ async function assign({ assetKind, assetId, driverId, startedAt, note, backfille
       { match: { assetKind, assetId }, start, label: `${asset.label}` },
       session
     );
-    await assertNoOverlap(
-      { match: { assetKind, driverId }, start, label: `${driver.name}` },
-      session
-    );
 
-    // Release the asset from whoever holds it, and release whatever the driver holds of
-    // this kind — the "one each" rule from the design.
-    const toClose = await Assignment.find({
-      endedAt: OPEN,
-      $or: [
-        { assetKind, assetId },
-        { assetKind, driverId },
-      ],
-    }).session(session || null);
+    // Release the asset from whoever holds it now — an asset still has exactly one holder at
+    // a time. The driver's OTHER open assignments of this kind are left untouched: that is
+    // precisely what lets them hold more than one.
+    const toClose = await Assignment.find({ endedAt: OPEN, assetKind, assetId }).session(session || null);
     for (const row of toClose) await closeRow(row, start, actor?._id, session);
 
     const [created] = await Assignment.create(
@@ -263,10 +271,48 @@ async function releaseAllForDriver({ driverId, endedAt, note, actor }) {
   });
 }
 
+/**
+ * Make a driver's open assignments of one kind match `assetIds` exactly: release whatever
+ * they hold that isn't in the list, assign whatever's in the list that they don't hold yet.
+ * This is the shape the Drivers screen's multi-select already thinks in — "here is the full
+ * set this driver should hold now" — so the controller can hand it the desired state directly
+ * instead of diffing itself.
+ *
+ * Best-effort: one asset failing (already held elsewhere and blocked by an overlap, say) is
+ * collected and reported back rather than aborting the rest of the batch.
+ */
+async function syncAssignments({ driverId, assetKind, assetIds, actor }) {
+  const wanted = new Set((assetIds || []).map(String));
+  const current = await Assignment.find({ assetKind, driverId, endedAt: OPEN });
+  const currentIds = new Set(current.map((row) => String(row.assetId)));
+
+  const errors = [];
+  for (const row of current) {
+    if (wanted.has(String(row.assetId))) continue;
+    try {
+      await release({ assignmentId: row._id, actor });
+    } catch (err) {
+      if (err instanceof CustodyError) errors.push({ assetId: String(row.assetId), error: err.message });
+      else throw err;
+    }
+  }
+  for (const assetId of wanted) {
+    if (currentIds.has(assetId)) continue;
+    try {
+      await assign({ assetKind, assetId, driverId, actor });
+    } catch (err) {
+      if (err instanceof CustodyError) errors.push({ assetId, error: err.message });
+      else throw err;
+    }
+  }
+  return { errors };
+}
+
 module.exports = {
   assign,
   release,
   releaseAllForDriver,
+  syncAssignments,
   CustodyError,
   OPEN,
 };

@@ -1,37 +1,21 @@
 const User = require('../models/User');
 const asyncHandler = require('../utils/asyncHandler');
 const { canManageDriver } = require('../utils/scope');
-const Assignment = require('../models/Assignment');
 const custody = require('../services/assetCustody');
 const { releaseAllForDriver } = custody;
 
 /**
- * Allocate (or clear) one asset for a driver, through the custody ledger.
- *
- * All allocation happens on the Drivers screen — the Mobiles and Vehicles screens are
- * inventory only — so this is the single path both dropdowns take. Returns an error object
- * for the caller to send, or null on success. The in-memory cache field is updated too, so a
- * later user.save() in the same request cannot write the stale value back over it.
+ * Make a driver's open assets of one kind match the given id list, through the custody
+ * ledger. All allocation happens on the Drivers screen — the Mobiles and Vehicles screens are
+ * inventory only — so this is the single path the multi-select controls take. `assetIds`
+ * being `undefined` means "field not sent, leave it alone"; `[]` means "hold none of this
+ * kind". Returns per-asset problems (or null if everything went through) for the caller to
+ * surface as a warning rather than failing the whole request over one bad id.
  */
-async function allocate(user, assetKind, nextId, actor) {
-  const cacheField = assetKind === 'vehicle' ? 'vehicleId' : 'mobileDeviceId';
-  const next = nextId || null;
-  const current = user[cacheField] ? String(user[cacheField]) : null;
-  if (String(next || '') === (current || '')) return null;
-
-  try {
-    if (next) {
-      await custody.assign({ assetKind, assetId: next, driverId: user._id, actor });
-    } else {
-      const open = await Assignment.findOne({ assetKind, driverId: user._id, endedAt: Assignment.OPEN });
-      if (open) await custody.release({ assignmentId: open._id, actor });
-    }
-  } catch (err) {
-    if (err instanceof custody.CustodyError) return { status: err.status, error: err.message };
-    throw err;
-  }
-  user[cacheField] = next;
-  return null;
+async function syncAssets(user, assetKind, assetIds, actor) {
+  if (assetIds === undefined) return null;
+  const { errors } = await custody.syncAssignments({ driverId: user._id, assetKind, assetIds, actor });
+  return errors.length ? errors : null;
 }
 
 // GET /api/users?role=user|manager
@@ -70,7 +54,7 @@ exports.getOne = asyncHandler(async (req, res) => {
 // POST /api/users  (admin creates admin/manager/driver; manager creates drivers only)
 exports.create = asyncHandler(async (req, res) => {
   const b = req.body || {};
-  const { name, email, password, role = 'user', managerId, vehicleId } = b;
+  const { name, email, password, role = 'user', managerId } = b;
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'name, email and password are required' });
   }
@@ -124,19 +108,23 @@ exports.create = asyncHandler(async (req, res) => {
   await user.setPassword(password);
   await user.save();
 
-  // Anything picked in the Add-driver dropdowns is allocated through the ledger, so a
-  // driver's very first vehicle and phone are on record from day one rather than appearing
-  // out of nowhere the first time someone edits them.
-  for (const [kind, id] of [['vehicle', vehicleId], ['mobile', b.mobileDeviceId]]) {
-    if (!id) continue;
-    const problem = await allocate(user, kind, id, req.user);
-    if (problem) {
-      // The driver exists; only the allocation failed. Say which, rather than 500-ing.
-      return res.status(201).json({ user: user.toSafeJSON(), warning: problem.error });
-    }
+  // Anything picked in the Add-driver multi-selects is allocated through the ledger, so a
+  // driver's very first vehicles and phones are on record from day one rather than appearing
+  // out of nowhere the first time someone edits them. A driver can be given several of each.
+  const assetProblems = [];
+  for (const [kind, ids] of [['vehicle', b.vehicleIds], ['mobile', b.mobileDeviceIds]]) {
+    const problems = await syncAssets(user, kind, ids, req.user);
+    if (problems) assetProblems.push(...problems);
   }
   if (user.isModified()) await user.save();
 
+  if (assetProblems.length) {
+    // The driver exists; only some allocations failed. Say which, rather than 500-ing.
+    return res.status(201).json({
+      user: user.toSafeJSON(),
+      warning: assetProblems.map((p) => p.error).join('; '),
+    });
+  }
   res.status(201).json({ user: user.toSafeJSON() });
 });
 
@@ -188,15 +176,14 @@ exports.update = asyncHandler(async (req, res) => {
   if (b.pricePerHour !== undefined) user.pricePerHour = b.pricePerHour ?? null;
   if (b.perDiem !== undefined) user.perDiem = b.perDiem ?? null;
   if (b.active !== undefined) user.active = b.active;
-  // Allocation from the Drivers screen. Goes through the ledger so the previous holder is
-  // recorded rather than erased — see docs/asset-custody-design.md.
-  if (b.vehicleId !== undefined) {
-    const problem = await allocate(user, 'vehicle', b.vehicleId, req.user);
-    if (problem) return res.status(problem.status).json({ error: problem.error });
-  }
-  if (b.mobileDeviceId !== undefined) {
-    const problem = await allocate(user, 'mobile', b.mobileDeviceId, req.user);
-    if (problem) return res.status(problem.status).json({ error: problem.error });
+  // Allocation from the Drivers screen's multi-selects. Goes through the ledger so the
+  // previous holder is recorded rather than erased — see docs/asset-custody-design.md.
+  // vehicleIds/mobileDeviceIds is the FULL set the driver should hold now; syncAssets diffs
+  // it against what's currently open and adds/releases only what changed.
+  const assetProblems = [];
+  for (const [kind, ids] of [['vehicle', b.vehicleIds], ['mobile', b.mobileDeviceIds]]) {
+    const problems = await syncAssets(user, kind, ids, req.user);
+    if (problems) assetProblems.push(...problems);
   }
   if (b.role !== undefined && User.ROLES.includes(b.role)) user.role = b.role;
   if (b.teamLeadId !== undefined) user.teamLeadId = b.teamLeadId || null;
@@ -204,6 +191,9 @@ exports.update = asyncHandler(async (req, res) => {
   if (b.password) await user.setPassword(b.password);
 
   await user.save();
+  if (assetProblems.length) {
+    return res.json({ user: user.toSafeJSON(), warning: assetProblems.map((p) => p.error).join('; ') });
+  }
   res.json({ user: user.toSafeJSON() });
 });
 
