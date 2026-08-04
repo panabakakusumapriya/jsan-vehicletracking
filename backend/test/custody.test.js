@@ -69,16 +69,28 @@ async function rejects(fn, msg) {
   assert((await Assignment.countDocuments({ assetId: truck._id, endedAt: Assignment.OPEN })) === 1, 'exactly one open stint for the truck');
   assert((await User.findById(alice._id)).vehicleId === null, "Alice's cache pointer cleared");
 
-  console.log('\n── the DB enforces one holder / one asset ──');
+  console.log('\n── the DB enforces one holder per asset, but not one asset per driver ──');
   await rejects(
     () => Assignment.create({ assetKind: 'vehicle', assetId: truck._id, driverId: alice._id, startedAt: new Date(), endedAt: Assignment.OPEN }),
     'a second open stint for the same vehicle is rejected by the unique index'
   );
   await custody.assign({ assetKind: 'vehicle', assetId: van._id, driverId: bob._id, startedAt: D('2026-06-15'), actor: admin });
-  assert((await Assignment.countDocuments({ driverId: bob._id, assetKind: 'vehicle', endedAt: Assignment.OPEN })) === 1,
-    'giving Bob a second vehicle auto-returned the first (one each)');
+  assert((await Assignment.countDocuments({ driverId: bob._id, assetKind: 'vehicle', endedAt: Assignment.OPEN })) === 2,
+    'Bob now holds the truck AND the van at once — concurrent assets of the same kind are allowed');
+  assert(String((await User.findById(bob._id)).vehicleId) === String(van._id),
+    "the driver's cache pointer follows the most recently assigned vehicle");
+  assert(String((await Vehicle.findById(truck._id)).assignedDriverId) === String(bob._id),
+    'the truck itself is untouched — still shows Bob as its one holder');
+
+  // Return the truck explicitly, so the rest of this test's day-count narrative below (which
+  // was written assuming the old "one each" auto-return) sees the same end state: Bob holds
+  // only the van from 15 June.
+  const bobTruckRow = await Assignment.findOne({ assetId: truck._id, driverId: bob._id, endedAt: Assignment.OPEN });
+  await custody.release({ assignmentId: bobTruckRow._id, endedAt: D('2026-06-15'), actor: admin });
   assert((await Assignment.findOne({ assetId: truck._id, driverId: bob._id })).endedAt.getTime() === D('2026-06-15').getTime(),
-    "Bob's truck stint closed when he took the van");
+    "Bob's truck stint closed when it was returned");
+  assert(String((await User.findById(bob._id)).vehicleId) === String(van._id),
+    "returning the truck leaves the van as Bob's cache pointer");
 
   console.log('\n── a mobile is independent of the vehicle ──');
   await custody.assign({ assetKind: 'mobile', assetId: phone._id, driverId: bob._id, startedAt: D('2026-06-05'), actor: admin });
@@ -170,8 +182,8 @@ async function rejects(fn, msg) {
   const lorry = await Vehicle.create({ plateNumber: 'KA01ZZ0001', managerId: manager._id });
 
   const before = await Assignment.countDocuments({ assetKind: 'vehicle' });
-  let r = await asAdmin(request(app).patch(`/api/users/${carol._id}`)).send({ vehicleId: String(lorry._id) });
-  assert(r.status === 200, 'PATCH /api/users with a vehicleId succeeds');
+  let r = await asAdmin(request(app).patch(`/api/users/${carol._id}`)).send({ vehicleIds: [String(lorry._id)] });
+  assert(r.status === 200, 'PATCH /api/users with vehicleIds succeeds');
   assert((await Assignment.countDocuments({ assetKind: 'vehicle' })) === before + 1,
     'assigning from the Drivers screen writes a custody row (does not just move the pointer)');
   assert(String((await Vehicle.findById(lorry._id)).assignedDriverId) === String(carol._id), 'vehicle cache in sync');
@@ -184,45 +196,63 @@ async function rejects(fn, msg) {
   assert((await Assignment.countDocuments({ assetId: lorry._id })) === 2, 'both holders are on record');
   assert((await User.findById(carol._id)).vehicleId === null, "Carol's pointer cleared");
 
-  // Clearing the pointer must close the stint rather than orphan it.
-  r = await asAdmin(request(app).patch(`/api/users/${alice._id}`)).send({ vehicleId: null });
-  assert(r.status === 200, 'clearing a driver\'s vehicle succeeds');
+  // Clearing the array must close the stint rather than orphan it.
+  r = await asAdmin(request(app).patch(`/api/users/${alice._id}`)).send({ vehicleIds: [] });
+  assert(r.status === 200, "clearing a driver's vehicles succeeds");
   assert((await Assignment.countDocuments({ assetId: lorry._id, endedAt: Assignment.OPEN })) === 0,
-    'clearing the pointer closes the open stint');
+    'clearing the array closes the open stint');
 
   console.log('\n── the Drivers screen is the ONLY allocation path ──');
-  // Both dropdowns post to PATCH /api/users. Mobiles and Vehicles are inventory-only now, so
-  // if this path didn't write history there would be no way to record a handover at all.
+  // Both multi-selects post to PATCH /api/users. Mobiles and Vehicles are inventory-only now,
+  // so if this path didn't write history there would be no way to record a handover at all.
   const spare = await MobileDevice.create({ imei: '356100000000009', phoneModel: 'Nokia', managerId: manager._id });
-  r = await asAdmin(request(app).patch(`/api/users/${carol._id}`)).send({ mobileDeviceId: String(spare._id) });
-  assert(r.status === 200, 'PATCH /api/users accepts mobileDeviceId');
+  r = await asAdmin(request(app).patch(`/api/users/${carol._id}`)).send({ mobileDeviceIds: [String(spare._id)] });
+  assert(r.status === 200, 'PATCH /api/users accepts mobileDeviceIds');
   const mobRow = await Assignment.findOne({ assetKind: 'mobile', assetId: spare._id, endedAt: Assignment.OPEN });
   assert(mobRow && String(mobRow.driverId) === String(carol._id), 'picking a device writes an open custody row');
   assert(String((await User.findById(carol._id)).mobileDeviceId) === String(spare._id), 'driver cache points at the device');
   assert((await MobileDevice.findById(spare._id)).status === 'assigned', 'device flips to assigned');
 
-  // Swapping to another handset must close the first stint, not overwrite it.
+  // Swapping to another handset (replacing the array) must close the first stint, not overwrite it.
   const spare2 = await MobileDevice.create({ imei: '356100000000010', phoneModel: 'Moto', managerId: manager._id });
-  await asAdmin(request(app).patch(`/api/users/${carol._id}`)).send({ mobileDeviceId: String(spare2._id) });
+  await asAdmin(request(app).patch(`/api/users/${carol._id}`)).send({ mobileDeviceIds: [String(spare2._id)] });
   assert((await Assignment.countDocuments({ assetKind: 'mobile', driverId: carol._id })) === 2,
     'swapping handsets leaves two rows — the old one closed, not erased');
   assert((await MobileDevice.findById(spare._id)).status === 'in_stock', 'the replaced handset returns to stock');
 
-  // Clearing it hands the device back.
-  await asAdmin(request(app).patch(`/api/users/${carol._id}`)).send({ mobileDeviceId: null });
+  // Clearing the array hands the device back.
+  await asAdmin(request(app).patch(`/api/users/${carol._id}`)).send({ mobileDeviceIds: [] });
   assert((await Assignment.countDocuments({ assetKind: 'mobile', driverId: carol._id, endedAt: Assignment.OPEN })) === 0,
-    'setting the dropdown to None closes the stint');
+    'setting the multi-select to empty closes the stint');
   assert((await User.findById(carol._id)).mobileDeviceId === null, 'driver cache cleared');
 
-  // And a brand-new driver created with both dropdowns filled gets history from day one.
+  // And a brand-new driver created with both multi-selects filled gets history from day one.
   const dora = await asAdmin(request(app).post('/api/users')).send({
     name: 'Dora', email: 'dora@x.com', password: 'pw123456', role: 'user',
-    managerId: String(manager._id), vehicleId: String(lorry._id), mobileDeviceId: String(spare._id),
+    managerId: String(manager._id), vehicleIds: [String(lorry._id)], mobileDeviceIds: [String(spare._id)],
   });
-  assert(dora.status === 201, 'creating a driver with both dropdowns filled succeeds');
+  assert(dora.status === 201, 'creating a driver with both multi-selects filled succeeds');
   const doraId = dora.body.user._id;
   assert((await Assignment.countDocuments({ driverId: doraId, endedAt: Assignment.OPEN })) === 2,
     'a new driver\'s first vehicle AND phone are both on record immediately');
+
+  console.log('\n── a driver can be given several vehicles at once, through the real API ──');
+  const van2 = await Vehicle.create({ plateNumber: 'KA02AA0002', managerId: manager._id });
+  r = await asAdmin(request(app).patch(`/api/users/${doraId}`)).send({ vehicleIds: [String(lorry._id), String(van2._id)] });
+  assert(r.status === 200, 'PATCH with two vehicleIds succeeds');
+  assert((await Assignment.countDocuments({ driverId: doraId, assetKind: 'vehicle', endedAt: Assignment.OPEN })) === 2,
+    'Dora now holds two vehicles at once, via the multi-select');
+  r = await asAdmin(request(app).get(`/api/assignments/driver/${doraId}`));
+  assert(r.body.assignments.filter((a) => a.assetKind === 'vehicle' && a.open).length === 2,
+    "the driver's timeline shows both open vehicle stints");
+
+  // Dropping one from the array returns just that one, keeping the other held.
+  r = await asAdmin(request(app).patch(`/api/users/${doraId}`)).send({ vehicleIds: [String(van2._id)] });
+  assert(r.status === 200, 'PATCH with a shorter vehicleIds array succeeds');
+  assert((await Assignment.countDocuments({ driverId: doraId, assetKind: 'vehicle', endedAt: Assignment.OPEN })) === 1,
+    'Dora holds one vehicle again — the one left in the array');
+  assert((await Vehicle.findById(lorry._id)).assignedDriverId === null, 'the dropped vehicle is free again');
+  assert(String((await Vehicle.findById(van2._id)).assignedDriverId) === String(doraId), 'the kept vehicle is still hers');
 
   console.log('\n── report endpoint ──');
   const rep = await asAdmin(request(app).get('/api/reports/custody?month=2026-06&tz=UTC'));
