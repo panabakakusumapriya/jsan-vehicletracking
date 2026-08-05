@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import type { Assignment, MobileDevice, User, Vehicle } from '../lib/types';
+import type { Assignment, MobileDevice, Project, User, Vehicle } from '../lib/types';
 
 /**
  * Drivers — and the ONE place assets are allocated.
@@ -24,6 +24,7 @@ export function Drivers() {
   const [openAssignments, setOpenAssignments] = useState<Assignment[]>([]);
   const [managers, setManagers] = useState<User[]>([]);
   const [teamLeads, setTeamLeads] = useState<User[]>([]);
+  const [projectOptions, setProjectOptions] = useState<Project[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
   const [projectFilter, setProjectFilter] = useState('');
@@ -35,9 +36,15 @@ export function Drivers() {
     api.get<{ vehicles: Vehicle[] }>('/api/vehicles').then(r => setVehicles(r.vehicles));
     api.get<{ devices: MobileDevice[] }>('/api/mobiles').then(r => setDevices(r.devices)).catch(() => {});
     api.get<{ assignments: Assignment[] }>('/api/assignments?open=true').then(r => setOpenAssignments(r.assignments)).catch(() => {});
+    api.get<{ projects: Project[] }>('/api/projects').then(r => setProjectOptions(r.projects)).catch(() => {});
     if (isAdmin) api.get<{ users: User[] }>('/api/users?role=manager').then(r => setManagers(r.users));
     if (canAssignTeamLead) api.get<{ users: User[] }>('/api/users?role=team_lead').then(r => setTeamLeads(r.users));
   };
+  // A manager/team lead's own project(s) — a new driver they create must land in one of
+  // these, never outside (enforced server-side too; this just keeps the form honest about
+  // what will happen). Usually one project, but a manager can run several at once.
+  const ownProjectIds = (user?.projectIds || []).map(idOf);
+  const ownProjects = projectOptions.filter(p => ownProjectIds.includes(p._id));
   useEffect(load, [isAdmin, canAssignTeamLead]);
 
   const deactivate = async (d: User) => {
@@ -196,7 +203,15 @@ export function Drivers() {
         </table>
       </div>
 
-      {showAdd && <AddDriver vehicles={vehicles} devices={devices} managers={managers} teamLeads={teamLeads} isAdmin={isAdmin} canAssignTeamLead={canAssignTeamLead} existingDriverIds={new Set(drivers.map(d => d.driverId).filter(Boolean) as string[])} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }} />}
+      {showAdd && (
+        <AddDriver
+          vehicles={vehicles} devices={devices} managers={managers} teamLeads={teamLeads}
+          isAdmin={isAdmin} canAssignTeamLead={canAssignTeamLead}
+          projectOptions={projectOptions} ownProjects={ownProjects}
+          existingDriverIds={new Set(drivers.map(d => d.driverId).filter(Boolean) as string[])}
+          onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); load(); }}
+        />
+      )}
       {editing && (
         <EditDriver
           driver={editing}
@@ -206,6 +221,7 @@ export function Drivers() {
           teamLeads={teamLeads}
           isAdmin={isAdmin}
           canAssignTeamLead={canAssignTeamLead}
+          projectOptions={projectOptions} ownProjects={ownProjects}
           existingDriverIds={new Set(drivers.filter(d => d._id !== editing._id).map(d => d.driverId).filter(Boolean) as string[])}
           driverVehicleIds={openAssetIds(openAssignments, editing._id, 'vehicle')}
           driverMobileIds={openAssetIds(openAssignments, editing._id, 'mobile')}
@@ -330,19 +346,58 @@ function AssetPicker<T extends { _id: string }>({
   );
 }
 
+/**
+ * Admins pick from every project. Managers/team leads never do — a new driver of theirs must
+ * land inside one of THEIR OWN projects, never outside it (enforced server-side regardless of
+ * what this renders). Most have exactly one, shown locked; a manager running several gets a
+ * dropdown restricted to just their own set, since which one this particular driver belongs
+ * to is a real choice, not a formality.
+ */
+function ProjectField({ isAdmin, projectId, setProjectId, projectOptions, ownProjects, required }: {
+  isAdmin: boolean; projectId: string; setProjectId: (id: string) => void;
+  projectOptions: Project[]; ownProjects: Project[]; required?: boolean;
+}) {
+  if (!isAdmin) {
+    if (ownProjects.length <= 1) {
+      return (
+        <input
+          className="input" disabled readOnly
+          value={ownProjects[0]?.name || '— no project assigned to your account —'}
+          style={{ background: 'var(--panel-2)', color: 'var(--muted)' }}
+        />
+      );
+    }
+    return (
+      <select className="input" value={projectId} onChange={e => setProjectId(e.target.value)}>
+        <option value="">— Select one of your projects —</option>
+        {ownProjects.map(p => <option key={p._id} value={p._id}>{p.name}</option>)}
+      </select>
+    );
+  }
+  return (
+    <select className="input" value={projectId} onChange={e => setProjectId(e.target.value)}>
+      <option value="">{required ? '— Select project —' : '— None assigned yet —'}</option>
+      {projectOptions.map(p => <option key={p._id} value={p._id}>{p.name}</option>)}
+    </select>
+  );
+}
+
 const EMPTY_FORM = {
   name: '', email: '', password: '', phone: '', country: '', managerId: '', teamLeadId: '',
-  driverId: '', project: '', scope: '', region: '', drivingLocation: '', driverMode: '',
+  driverId: '', scope: '', region: '', drivingLocation: '', driverMode: '',
   poc: '', contact: '', personalMail: '', driverAddress: '', ctsMail: '',
   driverStatus: '', joiningDate: '', exitDate: '',
   pricePerHour: '', perDiem: '', currency: '', language: '',
 };
 
-function AddDriver({ vehicles, devices, managers, teamLeads, isAdmin, canAssignTeamLead, existingDriverIds, onClose, onSaved }: {
+function AddDriver({ vehicles, devices, managers, teamLeads, isAdmin, canAssignTeamLead, projectOptions, ownProjects, existingDriverIds, onClose, onSaved }: {
   vehicles: Vehicle[]; devices: MobileDevice[]; managers: User[]; teamLeads: User[];
-  isAdmin: boolean; canAssignTeamLead: boolean; existingDriverIds: Set<string>; onClose: () => void; onSaved: () => void;
+  isAdmin: boolean; canAssignTeamLead: boolean;
+  projectOptions: Project[]; ownProjects: Project[];
+  existingDriverIds: Set<string>; onClose: () => void; onSaved: () => void;
 }) {
   const [form, setForm] = useState(EMPTY_FORM);
+  const [projectId, setProjectId] = useState(isAdmin ? '' : (ownProjects[0]?._id || ''));
   const [vehicleIds, setVehicleIds] = useState<string[]>([]);
   const [mobileIds, setMobileIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -356,6 +411,9 @@ function AddDriver({ vehicles, devices, managers, teamLeads, isAdmin, canAssignT
     if (!form.email.trim()) { setError('Email is required'); return; }
     if (!form.password.trim()) { setError('Password is required'); return; }
     if (form.driverId && existingDriverIds.has(form.driverId.trim())) { setError('Driver ID already exists. Please use a unique Driver ID.'); return; }
+    if (isAdmin && !projectId) { setError('Please select a project'); return; }
+    if (!isAdmin && !ownProjects.length) { setError('Your account has no project assigned — ask an admin to fix that before adding drivers.'); return; }
+    if (!isAdmin && ownProjects.length > 1 && !projectId) { setError('Please select which of your projects this driver belongs to'); return; }
     setError(null); setBusy(true);
     try {
       await api.post('/api/users', {
@@ -366,7 +424,7 @@ function AddDriver({ vehicles, devices, managers, teamLeads, isAdmin, canAssignT
         managerId: isAdmin ? form.managerId || undefined : undefined,
         teamLeadId: canAssignTeamLead ? form.teamLeadId || undefined : undefined,
         driverId: form.driverId || undefined,
-        project: form.project || undefined,
+        projectId,
         scope: form.scope || undefined,
         region: form.region || undefined,
         drivingLocation: form.drivingLocation || undefined,
@@ -405,7 +463,9 @@ function AddDriver({ vehicles, devices, managers, teamLeads, isAdmin, canAssignT
 
         <SectionLabel text="Project & Location" />
         <Row>
-          <F label="Project"><input className="input" value={form.project} onChange={e => set('project', e.target.value)} /></F>
+          <F label="Project *">
+            <ProjectField isAdmin={isAdmin} projectId={projectId} setProjectId={setProjectId} projectOptions={projectOptions} ownProjects={ownProjects} required />
+          </F>
           <F label="Driver ID (unique)"><input className="input" value={form.driverId} onChange={e => set('driverId', e.target.value)} /></F>
         </Row>
         <Row>
@@ -492,9 +552,11 @@ function AddDriver({ vehicles, devices, managers, teamLeads, isAdmin, canAssignT
   );
 }
 
-function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, canAssignTeamLead, existingDriverIds, driverVehicleIds, driverMobileIds, onClose, onSaved }: {
+function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, canAssignTeamLead, projectOptions, ownProjects, existingDriverIds, driverVehicleIds, driverMobileIds, onClose, onSaved }: {
   driver: User; vehicles: Vehicle[]; devices: MobileDevice[]; managers: User[]; teamLeads: User[];
-  isAdmin: boolean; canAssignTeamLead: boolean; existingDriverIds: Set<string>;
+  isAdmin: boolean; canAssignTeamLead: boolean;
+  projectOptions: Project[]; ownProjects: Project[];
+  existingDriverIds: Set<string>;
   driverVehicleIds: string[]; driverMobileIds: string[];
   onClose: () => void; onSaved: () => void;
 }) {
@@ -502,6 +564,15 @@ function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, c
   const activeMobileId = idOf(driver.mobileDeviceId);
   const managerIdVal = driver.managerId && typeof driver.managerId === 'object' ? (driver.managerId as any)._id : (driver.managerId || '');
   const teamLeadIdVal = driver.teamLeadId && typeof driver.teamLeadId === 'object' ? (driver.teamLeadId as any)._id : (driver.teamLeadId || '');
+  const driverProjectId = idOf(driver.projectIds?.[0]);
+  // Non-admins can't change a driver's project — but if the driver has none yet (a legacy
+  // record from before Projects existed), it's reasonable to fill that gap with the editor's
+  // own project (or let them pick among several, if they run more than one). If the driver
+  // already HAS a project, leave it alone entirely: this form must never silently reassign it
+  // as a side effect of editing something unrelated like a phone number.
+  const [projectId, setProjectId] = useState(
+    isAdmin ? driverProjectId : (driverProjectId || (ownProjects.length === 1 ? ownProjects[0]._id : ''))
+  );
   const [form, setForm] = useState({
     name: driver.name,
     phone: driver.phone || '',
@@ -510,7 +581,6 @@ function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, c
     teamLeadId: teamLeadIdVal as string,
     password: '',
     driverId: driver.driverId || '',
-    project: driver.project || '',
     scope: driver.scope || '',
     region: driver.region || '',
     drivingLocation: driver.drivingLocation || '',
@@ -549,7 +619,6 @@ function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, c
         vehicleIds,
         mobileDeviceIds: mobileIds,
         driverId: form.driverId || null,
-        project: form.project || null,
         scope: form.scope || null,
         region: form.region || null,
         drivingLocation: form.drivingLocation || null,
@@ -569,6 +638,10 @@ function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, c
       };
       if (isAdmin) body.managerId = form.managerId || null;
       if (canAssignTeamLead) body.teamLeadId = form.teamLeadId || null;
+      // Admin: sent only when actually picked (never wipes an existing project by omission).
+      // Non-admin: sent ONLY to fill a gap (driver had none) — never to overwrite one they
+      // already have, since a non-admin can't legitimately change it to anything else anyway.
+      if (isAdmin ? projectId : (!driverProjectId && projectId)) body.projectId = projectId;
       if (form.password) body.password = form.password;
       await api.patch(`/api/users/${driver._id}`, body);
       onSaved();
@@ -588,7 +661,19 @@ function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, c
 
         <SectionLabel text="Project & Location" />
         <Row>
-          <F label="Project"><input className="input" value={form.project} onChange={e => set('project', e.target.value)} /></F>
+          <F label="Project">
+            {!isAdmin && driverProjectId ? (
+              // The driver already has a project — always read-only here, regardless of how
+              // many projects the editor themself runs. This form must never reassign it as a
+              // side effect of an unrelated edit.
+              <input
+                className="input" disabled readOnly value={driver.project || ''}
+                style={{ background: 'var(--panel-2)', color: 'var(--muted)' }}
+              />
+            ) : (
+              <ProjectField isAdmin={isAdmin} projectId={projectId} setProjectId={setProjectId} projectOptions={projectOptions} ownProjects={ownProjects} />
+            )}
+          </F>
           <F label="Driver ID (unique)"><input className="input" value={form.driverId} onChange={e => set('driverId', e.target.value)} /></F>
         </Row>
         <Row>

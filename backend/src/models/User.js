@@ -24,6 +24,17 @@ const userSchema = new mongoose.Schema(
     activeSessionId: { type: String, default: null },
     sessionLastSeenAt: { type: Date, default: null },
 
+    // The tenancy boundary(-ies) this account operates inside. Required for
+    // manager/team_lead/user at creation time (enforced in user.controller.js, not here, so
+    // legacy accounts created before this field existed can still be read and edited without
+    // being force-migrated). A driver always holds exactly one; a manager/team lead can hold
+    // several — real fleets have one manager running more than one project at once, so a
+    // single ObjectId isn't enough. `project` below is a denormalized display copy (names
+    // joined with ", "), kept in sync by the controller — the same "cache mirrors the source
+    // of truth" pattern used for vehicleId/mobileDeviceId — so every existing screen that
+    // reads the plain string keeps working untouched.
+    projectIds: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Project' }], default: [], index: true },
+
     // Driver profile fields
     driverId: { type: String, trim: true, default: null },
     project: { type: String, trim: true, default: null },

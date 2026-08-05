@@ -1,5 +1,15 @@
 export type Role = 'admin' | 'manager' | 'team_lead' | 'user';
 
+/** The tenancy boundary managers/team leads/drivers operate inside. Admin-managed. */
+export interface Project {
+  _id: string;
+  name: string;
+  code?: string | null;
+  country?: string | null;
+  active: boolean;
+  createdAt?: string;
+}
+
 export interface User {
   _id: string;
   name: string;
@@ -13,6 +23,12 @@ export interface User {
   vehicleId?: { _id: string; plateNumber: string; model?: string; vid?: string | null } | string | null;
   // Cache of the driver's open mobile assignment, set from the Drivers screen.
   mobileDeviceId?: { _id: string; label?: string | null; imei?: string | null; phoneModel?: string | null } | string | null;
+  // Required for manager/team_lead/user at creation (see backend user.controller.js). A driver
+  // always holds exactly one; a manager/team lead can hold several (one manager can run more
+  // than one project at once). A driver creator (manager/team lead) can only ever place a new
+  // driver inside one of THEIR OWN projects. `project` below is a denormalized display copy of
+  // the name(s), kept in sync by the server.
+  projectIds?: (string | { _id: string; name: string; code?: string | null; country?: string | null })[];
   active: boolean;
   createdAt?: string;
   lastLoginAt?: string | null;

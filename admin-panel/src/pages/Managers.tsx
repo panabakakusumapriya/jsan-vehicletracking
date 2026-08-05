@@ -2,11 +2,48 @@ import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import { dt } from '../lib/format';
-import type { User } from '../lib/types';
+import type { Project, User } from '../lib/types';
+
+const idOf = (ref: unknown): string =>
+  ref && typeof ref === 'object' ? String((ref as { _id: string })._id) : (ref ? String(ref) : '');
+const idsOf = (refs: User['projectIds']): string[] => (refs || []).map(idOf).filter(Boolean);
+const namesOf = (refs: User['projectIds']): string[] =>
+  (refs || []).map((r) => (r && typeof r === 'object' ? r.name : null)).filter((x): x is string => Boolean(x));
+
+/**
+ * Checkbox list rather than a native multi-select — a manager can run more than one project at
+ * once (129 drivers split across 3 projects under a single manager, observed directly in this
+ * fleet's data), so a single dropdown isn't enough for that tier.
+ */
+function ProjectPicker({ projects, selectedIds, onToggle }: {
+  projects: Project[]; selectedIds: string[]; onToggle: (id: string) => void;
+}) {
+  return (
+    <div style={{ border: '1px solid var(--line-2)', borderRadius: 'var(--radius)', maxHeight: 160, overflowY: 'auto', background: 'var(--panel)' }}>
+      {projects.length === 0 && (
+        <div style={{ padding: '10px 12px', fontSize: 12.5, color: 'var(--muted)' }}>No projects yet — add one on the Projects tab.</div>
+      )}
+      {projects.map((p) => {
+        const checked = selectedIds.includes(p._id);
+        return (
+          <label key={p._id} style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '7px 10px', fontSize: 12.5, cursor: 'pointer',
+            borderBottom: '1px solid var(--line)',
+          }}>
+            <input type="checkbox" checked={checked} onChange={() => onToggle(p._id)} />
+            <span style={{ flex: 1 }}>{p.name}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
 
 export function Managers() {
   const [users, setUsers] = useState<User[]>([]);
   const [managers, setManagers] = useState<User[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
 
@@ -18,6 +55,7 @@ export function Managers() {
       setManagers(mgrs.users);
       setUsers([...mgrs.users, ...leads.users]);
     });
+    api.get<{ projects: Project[] }>('/api/projects').then((r) => setProjects(r.projects));
   };
   useEffect(() => { load(); }, []);
 
@@ -44,6 +82,7 @@ export function Managers() {
               <th>Email</th>
               <th>Phone</th>
               <th>Role</th>
+              <th>Project(s)</th>
               <th>Manager</th>
               <th>Created</th>
               <th>Status</th>
@@ -51,26 +90,30 @@ export function Managers() {
             </tr>
           </thead>
           <tbody>
-            {users.map((m) => (
-              <tr key={m._id}>
-                <td>{m.name}</td>
-                <td>{m.email}</td>
-                <td>{m.phone || '—'}</td>
-                <td><span className="badge gray" style={{ textTransform: 'capitalize' }}>{m.role === 'team_lead' ? 'Team Lead' : m.role}</span></td>
-                <td>{m.role === 'team_lead' && m.managerId && typeof m.managerId === 'object' ? m.managerId.name : '—'}</td>
-                <td>{dt(m.createdAt)}</td>
-                <td>
-                  <span className={`badge ${m.active ? 'green' : 'red'}`}>{m.active ? 'active' : 'inactive'}</span>
-                </td>
-                <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
-                  <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(m)}>Edit</button>
-                  {m.active && <button className="btn-danger" onClick={() => deactivate(m)}>Deactivate</button>}
-                </td>
-              </tr>
-            ))}
+            {users.map((m) => {
+              const projectNames = namesOf(m.projectIds);
+              return (
+                <tr key={m._id}>
+                  <td>{m.name}</td>
+                  <td>{m.email}</td>
+                  <td>{m.phone || '—'}</td>
+                  <td><span className="badge gray" style={{ textTransform: 'capitalize' }}>{m.role === 'team_lead' ? 'Team Lead' : m.role}</span></td>
+                  <td title={projectNames.join(', ')}>{projectNames.length ? projectNames.join(', ') : '—'}</td>
+                  <td>{m.role === 'team_lead' && m.managerId && typeof m.managerId === 'object' ? m.managerId.name : '—'}</td>
+                  <td>{dt(m.createdAt)}</td>
+                  <td>
+                    <span className={`badge ${m.active ? 'green' : 'red'}`}>{m.active ? 'active' : 'inactive'}</span>
+                  </td>
+                  <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+                    <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(m)}>Edit</button>
+                    {m.active && <button className="btn-danger" onClick={() => deactivate(m)}>Deactivate</button>}
+                  </td>
+                </tr>
+              );
+            })}
             {users.length === 0 && (
               <tr>
-                <td colSpan={8} className="muted" style={{ textAlign: 'center', padding: 28 }}>
+                <td colSpan={9} className="muted" style={{ textAlign: 'center', padding: 28 }}>
                   No users yet.
                 </td>
               </tr>
@@ -82,6 +125,7 @@ export function Managers() {
       {showAdd && (
         <AddUser
           managers={managers}
+          projects={projects}
           onClose={() => setShowAdd(false)}
           onSaved={() => { setShowAdd(false); load(); }}
         />
@@ -90,6 +134,7 @@ export function Managers() {
         <EditUser
           user={editing}
           managers={managers}
+          projects={projects}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load(); }}
         />
@@ -98,15 +143,23 @@ export function Managers() {
   );
 }
 
-function AddUser({ managers, onClose, onSaved }: { managers: User[]; onClose: () => void; onSaved: () => void }) {
+function AddUser({ managers, projects, onClose, onSaved }: {
+  managers: User[]; projects: Project[]; onClose: () => void; onSaved: () => void;
+}) {
   const [form, setForm] = useState({ name: '', email: '', password: '', phone: '', role: 'manager', managerId: '' });
+  const [projectIds, setProjectIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const toggleProject = (id: string) => setProjectIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
 
   const save = async () => {
     if (form.role === 'team_lead' && !form.managerId) {
       setError('Please select a manager for this team lead');
+      return;
+    }
+    if (!projectIds.length) {
+      setError('Please select at least one project');
       return;
     }
     setError(null);
@@ -119,6 +172,7 @@ function AddUser({ managers, onClose, onSaved }: { managers: User[]; onClose: ()
         phone: form.phone || undefined,
         role: form.role,
         managerId: form.role === 'team_lead' ? form.managerId : undefined,
+        projectIds,
       });
       onSaved();
     } catch (e) {
@@ -153,6 +207,10 @@ function AddUser({ managers, onClose, onSaved }: { managers: User[]; onClose: ()
           <option value="team_lead">Team Lead</option>
         </select>
       </div>
+      <div className="field">
+        <label>Project(s) * {projectIds.length ? `· ${projectIds.length} selected` : ''}</label>
+        <ProjectPicker projects={projects} selectedIds={projectIds} onToggle={toggleProject} />
+      </div>
       {form.role === 'team_lead' && (
         <div className="field">
           <label>Assign to Manager *</label>
@@ -176,14 +234,19 @@ function AddUser({ managers, onClose, onSaved }: { managers: User[]; onClose: ()
   );
 }
 
-function EditUser({ user, managers, onClose, onSaved }: {
-  user: User; managers: User[]; onClose: () => void; onSaved: () => void;
+function EditUser({ user, managers, projects, onClose, onSaved }: {
+  user: User; managers: User[]; projects: Project[]; onClose: () => void; onSaved: () => void;
 }) {
   const currentManagerId = user.managerId && typeof user.managerId === 'object' ? user.managerId._id : (user.managerId || '');
-  const [form, setForm] = useState({ name: user.name, email: user.email, phone: user.phone || '', password: '', role: user.role, managerId: currentManagerId as string });
+  const [form, setForm] = useState({
+    name: user.name, email: user.email, phone: user.phone || '', password: '', role: user.role,
+    managerId: currentManagerId as string,
+  });
+  const [projectIds, setProjectIds] = useState<string[]>(idsOf(user.projectIds));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
+  const toggleProject = (id: string) => setProjectIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
 
   const save = async () => {
     if (form.role === 'team_lead' && !form.managerId) {
@@ -199,6 +262,10 @@ function EditUser({ user, managers, onClose, onSaved }: {
         role: form.role,
         managerId: form.role === 'team_lead' ? form.managerId : null,
       };
+      // Only sent when non-empty — clearing every checkbox on a legacy account (created before
+      // Projects existed) must not silently wipe an already-assigned set just because this
+      // edit didn't mean to touch it, and must not block unrelated edits.
+      if (projectIds.length) body.projectIds = projectIds;
       if (form.password) body.password = form.password;
       await api.patch(`/api/users/${user._id}`, body);
       onSaved();
@@ -227,6 +294,10 @@ function EditUser({ user, managers, onClose, onSaved }: {
           <option value="manager">Manager</option>
           <option value="team_lead">Team Lead</option>
         </select>
+      </div>
+      <div className="field">
+        <label>Project(s) {projectIds.length ? `· ${projectIds.length} selected` : '· none assigned yet'}</label>
+        <ProjectPicker projects={projects} selectedIds={projectIds} onToggle={toggleProject} />
       </div>
       {form.role === 'team_lead' && (
         <div className="field">

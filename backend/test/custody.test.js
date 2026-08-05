@@ -26,13 +26,15 @@ async function rejects(fn, msg) {
   const Vehicle = require('../src/models/Vehicle');
   const MobileDevice = require('../src/models/MobileDevice');
   const Assignment = require('../src/models/Assignment');
+  const Project = require('../src/models/Project');
   const custody = require('../src/services/assetCustody');
   const { monthRange, formatDateInZone } = require('../src/utils/timezone');
-  await Promise.all([User.init(), Vehicle.init(), MobileDevice.init(), Assignment.init()]);
+  await Promise.all([User.init(), Vehicle.init(), MobileDevice.init(), Assignment.init(), Project.init()]);
 
   const admin = await new User({ name: 'Admin', email: 'a@x.com', role: 'admin' });
   await admin.setPassword('pw123456'); await admin.save();
-  const manager = await new User({ name: 'Mgr', email: 'm@x.com', role: 'manager' });
+  const project = await Project.create({ name: 'Fleet North' });
+  const manager = await new User({ name: 'Mgr', email: 'm@x.com', role: 'manager', projectIds: [project._id] });
   await manager.setPassword('pw123456'); await manager.save();
 
   const mkDriver = async (name, email) => {
@@ -229,7 +231,8 @@ async function rejects(fn, msg) {
   // And a brand-new driver created with both multi-selects filled gets history from day one.
   const dora = await asAdmin(request(app).post('/api/users')).send({
     name: 'Dora', email: 'dora@x.com', password: 'pw123456', role: 'user',
-    managerId: String(manager._id), vehicleIds: [String(lorry._id)], mobileDeviceIds: [String(spare._id)],
+    managerId: String(manager._id), projectId: String(project._id),
+    vehicleIds: [String(lorry._id)], mobileDeviceIds: [String(spare._id)],
   });
   assert(dora.status === 201, 'creating a driver with both multi-selects filled succeeds');
   const doraId = dora.body.user._id;

@@ -8,6 +8,7 @@ import { LiveMap } from './pages/LiveMap';
 import { Login } from './pages/Login';
 import { AppUpdates } from './pages/AppUpdates';
 import { Managers } from './pages/Managers';
+import { Projects } from './pages/Projects';
 import { SessionMap } from './pages/SessionMap';
 import { TripDetail } from './pages/TripDetail';
 import { Trips } from './pages/Trips';
@@ -43,6 +44,14 @@ export default function App() {
           element={
             <ProtectedRoute adminOnly>
               <Managers />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/projects"
+          element={
+            <ProtectedRoute adminOnly>
+              <Projects />
             </ProtectedRoute>
           }
         />

@@ -1,8 +1,76 @@
 const User = require('../models/User');
+const Project = require('../models/Project');
 const asyncHandler = require('../utils/asyncHandler');
 const { canManageDriver } = require('../utils/scope');
 const custody = require('../services/assetCustody');
 const { releaseAllForDriver } = custody;
+
+/**
+ * Which project(s) a new user lands in, and whether that's even optional for their role.
+ *
+ * A driver always holds exactly one project. A manager or team lead can hold several — real
+ * fleets have one manager running more than one project at once (129 drivers split across 3
+ * projects under a single manager, observed directly in this fleet's data), so a single
+ * project isn't enough for that tier. Admins pick freely, from either shape. Managers and team
+ * leads only ever create drivers (`create` below forces finalRole to 'user' for them), and
+ * that driver always lands inside ONE of the creator's OWN projects — never one outside it —
+ * so "role management is project-scoped" holds structurally, not by convention.
+ */
+async function resolveProjectsForCreate(req, b, finalRole) {
+  const requiresProject = ['manager', 'team_lead', 'user'].includes(finalRole);
+  const multi = finalRole === 'manager' || finalRole === 'team_lead';
+
+  if (req.user.role !== 'admin') {
+    const own = (req.user.projectIds || []).map(String);
+    if (!own.length) {
+      return { error: 'Your account has no project assigned — ask an admin to fix that before adding drivers.' };
+    }
+    const requested = b.projectId ? String(b.projectId) : null;
+    const chosen = requested && own.includes(requested) ? requested : own[0];
+    const project = await Project.findById(chosen);
+    if (!project) return { error: 'Your assigned project no longer exists' };
+    return { projectIds: [project._id], projectNames: [project.name] };
+  }
+
+  const raw = multi
+    ? (Array.isArray(b.projectIds) ? b.projectIds.filter(Boolean) : [])
+    : (b.projectId ? [b.projectId] : []);
+  if (!raw.length) {
+    return requiresProject ? { error: 'Project is required' } : { projectIds: [], projectNames: [] };
+  }
+  const projects = await Project.find({ _id: { $in: raw }, active: true });
+  if (projects.length !== raw.length) return { error: 'One or more selected projects were not found or are inactive' };
+  return { projectIds: projects.map((p) => p._id), projectNames: projects.map((p) => p.name) };
+}
+
+/**
+ * Only touches project(s) when the request actually sends the relevant field
+ * (`projectId` for a driver target, `projectIds` for a manager/team_lead target) — legacy
+ * accounts predating this field must stay editable without being force-migrated on their next
+ * unrelated edit. Same "own project(s) only" rule as create for non-admins.
+ */
+async function resolveProjectsForUpdate(req, b, targetRole) {
+  const multi = targetRole === 'manager' || targetRole === 'team_lead';
+  const touched = multi ? b.projectIds !== undefined : b.projectId !== undefined;
+  if (!touched) return null;
+
+  if (req.user.role !== 'admin') {
+    const own = (req.user.projectIds || []).map(String);
+    if (!own.length) return { projectIds: [], projectNames: [] };
+    const requested = b.projectId ? String(b.projectId) : null;
+    const chosen = requested && own.includes(requested) ? requested : own[0];
+    const project = await Project.findById(chosen);
+    return project ? { projectIds: [project._id], projectNames: [project.name] } : { projectIds: [], projectNames: [] };
+  }
+
+  const raw = multi
+    ? (Array.isArray(b.projectIds) ? b.projectIds.filter(Boolean) : [])
+    : (b.projectId ? [b.projectId] : []);
+  if (!raw.length) return { projectIds: [], projectNames: [] };
+  const projects = await Project.find({ _id: { $in: raw }, active: true });
+  if (projects.length !== raw.length) return { error: 'One or more selected projects were not found or are inactive' };
+  return { projectIds: projects.map((p) => p._id), projectNames: projects.map((p) => p.name) };
+}
 
 /**
  * Make a driver's open assets of one kind match the given id list, through the custody
@@ -37,7 +105,8 @@ exports.list = asyncHandler(async (req, res) => {
     .populate('vehicleId', 'plateNumber model vid')
     .populate('mobileDeviceId', 'label imei phoneModel')
     .populate('teamLeadId', 'name')
-    .populate('managerId', 'name');
+    .populate('managerId', 'name')
+    .populate('projectIds', 'name code country');
   res.json({ users: users.map((u) => u.toSafeJSON()) });
 });
 
@@ -45,7 +114,8 @@ exports.list = asyncHandler(async (req, res) => {
 exports.getOne = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id)
     .populate('vehicleId', 'plateNumber model vid')
-    .populate('mobileDeviceId', 'label imei phoneModel');
+    .populate('mobileDeviceId', 'label imei phoneModel')
+    .populate('projectIds', 'name code country');
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!canManageDriver(req.user, user)) return res.status(403).json({ error: 'Forbidden' });
   res.json({ user: user.toSafeJSON() });
@@ -67,6 +137,9 @@ exports.create = asyncHandler(async (req, res) => {
   }
   if (!User.ROLES.includes(finalRole)) return res.status(400).json({ error: 'invalid role' });
 
+  const projectResolved = await resolveProjectsForCreate(req, b, finalRole);
+  if (projectResolved.error) return res.status(400).json({ error: projectResolved.error });
+
   const exists = await User.findOne({ email: String(email).toLowerCase() });
   if (exists) return res.status(409).json({ error: 'email already in use' });
 
@@ -80,8 +153,9 @@ exports.create = asyncHandler(async (req, res) => {
     managerId: finalRole === 'user' ? finalManager : (finalRole === 'team_lead' ? (b.managerId || null) : null),
     teamLeadId: finalRole === 'user' ? (b.teamLeadId || null) : null,
     vehicleId: null, // allocated below through the ledger, so day one is on record too
+    projectIds: projectResolved.projectIds,
     driverId: b.driverId || null,
-    project: b.project || null,
+    project: projectResolved.projectNames.join(', ') || null,
     scope: b.scope || null,
     region: b.region || null,
     drivingLocation: b.drivingLocation || null,
@@ -143,13 +217,21 @@ exports.update = asyncHandler(async (req, res) => {
   }
 
   const strFields = [
-    'name', 'phone', 'country', 'timezone', 'driverId', 'project', 'scope', 'region',
+    'name', 'phone', 'country', 'timezone', 'driverId', 'scope', 'region',
     'drivingLocation', 'driverMode', 'poc', 'contact', 'personalMail',
     'driverAddress', 'ctsMail', 'driverStatus', 'currency', 'language',
     'workPhone', 'imei', 'phoneModel', 'androidVersion', 'phoneCase', 'phoneScreenguard',
   ];
   for (const f of strFields) {
     if (b[f] !== undefined) user[f] = b[f] || null;
+  }
+  // project/projectIds move together — see resolveProjectsForUpdate. `project` (the display
+  // string) is no longer directly settable; it's always derived from the Project docs.
+  const projectResolved = await resolveProjectsForUpdate(req, b, user.role);
+  if (projectResolved?.error) return res.status(400).json({ error: projectResolved.error });
+  if (projectResolved) {
+    user.projectIds = projectResolved.projectIds;
+    user.project = projectResolved.projectNames.join(', ') || null;
   }
   if (b.joiningDate !== undefined) user.joiningDate = b.joiningDate || null;
   if (b.exitDate !== undefined) {
