@@ -221,19 +221,21 @@ exports.live = asyncHandler(async (req, res) => {
     .populate('driverId', 'name email phone country project')
     .populate('vehicleId', 'plateNumber model');
 
-  const drivers = trips.map((t) => {
-    const recordedAt = t.lastLocation?.recordedAt ? new Date(t.lastLocation.recordedAt).getTime() : null;
-    return {
-      tripId: t._id,
-      driver: t.driverId,
-      vehicle: t.vehicleId,
-      location: t.lastLocation,
-      startedAt: t.startedAt,
-      distanceMeters: t.distanceMeters,
-      maxSpeedKmh: t.maxSpeedKmh,
-      stale: recordedAt ? (now - recordedAt) / 1000 > env.STALE_AFTER_SECONDS : true,
-    };
-  });
+  const drivers = trips
+    .filter((t) => t.driverId && t.driverId._id) // skip trips whose driver was deleted
+    .map((t) => {
+      const recordedAt = t.lastLocation?.recordedAt ? new Date(t.lastLocation.recordedAt).getTime() : null;
+      return {
+        tripId: t._id,
+        driver: t.driverId,
+        vehicle: t.vehicleId,
+        location: t.lastLocation,
+        startedAt: t.startedAt,
+        distanceMeters: t.distanceMeters,
+        maxSpeedKmh: t.maxSpeedKmh,
+        stale: recordedAt ? (now - recordedAt) / 1000 > env.STALE_AFTER_SECONDS : true,
+      };
+    });
 
   res.json({ drivers, serverTime: new Date().toISOString() });
 });
@@ -246,7 +248,7 @@ exports.live = asyncHandler(async (req, res) => {
  */
 exports.parked = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
-  const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000);
+  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
 
   // Drivers who are currently active — exclude them from the parked view.
   const activeTrips = await Trip.find({ status: 'active', ...scope }).select('driverId');
@@ -267,7 +269,7 @@ exports.parked = asyncHandler(async (req, res) => {
   const parked = [];
   for (const t of recentEnded) {
     const dId = t.driverId?._id?.toString() ?? t.driverId?.toString();
-    if (!dId || seen.has(dId) || activeDriverIds.includes(dId)) continue;
+    if (!dId || !t.driverId?._id || seen.has(dId) || activeDriverIds.includes(dId)) continue;
     seen.add(dId);
     parked.push({
       tripId: t._id,

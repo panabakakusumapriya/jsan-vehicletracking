@@ -20,6 +20,7 @@ export function Trips() {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('');
   const [driverId, setDriverId] = useState('');
+  const [project, setProject] = useState('');
   const [country, setCountry] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -41,18 +42,34 @@ export function Trips() {
       .finally(() => setLoading(false));
   }, [status, driverId, from, to]);
 
-  // Derive unique countries from loaded drivers
-  const countries = Array.from(new Set(drivers.map(d => d.country).filter(Boolean))).sort() as string[];
+  // Derive unique projects from loaded drivers
+  const projects = Array.from(new Set(drivers.map(d => d.project).filter(Boolean))).sort() as string[];
 
-  // Driver IDs belonging to the selected country (for client-side country filter)
-  const countryDriverIds = country
-    ? new Set(drivers.filter(d => d.country === country).map(d => d._id))
+  // Countries scoped to selected project
+  const countries = Array.from(new Set(
+    drivers.filter(d => !project || d.project === project).map(d => d.country).filter(Boolean)
+  )).sort() as string[];
+
+  // Drivers available in the dropdown, scoped to project + country
+  const driversForSelect = drivers.filter(d => {
+    if (project && d.project !== project) return false;
+    if (country && d.country !== country) return false;
+    return true;
+  });
+
+  // Build client-side filter set when project or country is selected
+  const clientFilterIds = (project || country)
+    ? new Set(drivers.filter(d => {
+        if (project && d.project !== project) return false;
+        if (country && d.country !== country) return false;
+        return true;
+      }).map(d => d._id))
     : null;
 
-  const filteredTrips = countryDriverIds
+  const filteredTrips = clientFilterIds
     ? trips.filter(t => {
         const id = typeof t.driverId === 'object' ? t.driverId._id : t.driverId;
-        return countryDriverIds.has(id);
+        return clientFilterIds.has(id);
       })
     : trips;
 
@@ -65,8 +82,8 @@ export function Trips() {
     // only, so translate it into the exact driver IDs it currently matches).
     if (driverId) {
       params.set('driverId', driverId);
-    } else if (countryDriverIds) {
-      params.set('driverIds', Array.from(countryDriverIds).join(','));
+    } else if (clientFilterIds) {
+      params.set('driverIds', Array.from(clientFilterIds).join(','));
     }
     return downloadFile(`/api/trips/export?${params.toString()}`);
   };
@@ -85,74 +102,85 @@ export function Trips() {
             Full history of driver trips and routes
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <FilterIcon />
-          <select
-            className="input"
-            style={{ width: 140, margin: 0 }}
-            value={country}
-            onChange={e => { setCountry(e.target.value); setDriverId(''); }}
+      </div>
+
+      {/* Filters bar — below title */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
+        <FilterIcon />
+        <select
+          className="input"
+          style={{ width: 140, margin: 0 }}
+          value={project}
+          onChange={e => { setProject(e.target.value); setCountry(''); setDriverId(''); }}
+        >
+          <option value="">All projects</option>
+          {projects.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select
+          className="input"
+          style={{ width: 140, margin: 0 }}
+          value={country}
+          onChange={e => { setCountry(e.target.value); setDriverId(''); }}
+        >
+          <option value="">All countries</option>
+          {countries.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select
+          className="input"
+          style={{ width: 150, margin: 0 }}
+          value={status}
+          onChange={e => setStatus(e.target.value)}
+        >
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="completed">Completed</option>
+          <option value="timed_out">Timed out</option>
+        </select>
+        <select
+          className="input"
+          style={{ width: 170, margin: 0 }}
+          value={driverId}
+          onChange={e => setDriverId(e.target.value)}
+        >
+          <option value="">All drivers</option>
+          {driversForSelect.map(d => (
+            <option key={d._id} value={d._id}>{d.name}</option>
+          ))}
+        </select>
+        <input
+          className="input"
+          type="date"
+          style={{ width: 150, margin: 0 }}
+          value={from}
+          max={to || undefined}
+          onChange={e => setFrom(e.target.value)}
+        />
+        <span style={{ color: 'var(--muted)', fontSize: 13 }}>to</span>
+        <input
+          className="input"
+          type="date"
+          style={{ width: 150, margin: 0 }}
+          value={to}
+          min={from || undefined}
+          onChange={e => setTo(e.target.value)}
+        />
+        {(status || driverId || project || country || from || to) && (
+          <button
+            className="btn-ghost"
+            style={{ padding: '6px 10px', fontSize: 12.5 }}
+            onClick={() => { setStatus(''); setDriverId(''); setProject(''); setCountry(''); setFrom(''); setTo(''); }}
           >
-            <option value="">All countries</option>
-            {countries.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <select
-            className="input"
-            style={{ width: 150, margin: 0 }}
-            value={status}
-            onChange={e => setStatus(e.target.value)}
-          >
-            <option value="">All statuses</option>
-            <option value="active">Active</option>
-            <option value="completed">Completed</option>
-            <option value="timed_out">Timed out</option>
-          </select>
-          <select
-            className="input"
-            style={{ width: 170, margin: 0 }}
-            value={driverId}
-            onChange={e => setDriverId(e.target.value)}
-          >
-            <option value="">All drivers</option>
-            {(country ? drivers.filter(d => d.country === country) : drivers).map(d => (
-              <option key={d._id} value={d._id}>{d.name}</option>
-            ))}
-          </select>
-          <input
-            className="input"
-            type="date"
-            style={{ width: 150, margin: 0 }}
-            value={from}
-            max={to || undefined}
-            onChange={e => setFrom(e.target.value)}
-          />
-          <span style={{ color: 'var(--muted)', fontSize: 13 }}>to</span>
-          <input
-            className="input"
-            type="date"
-            style={{ width: 150, margin: 0 }}
-            value={to}
-            min={from || undefined}
-            onChange={e => setTo(e.target.value)}
-          />
-          {(status || driverId || country || from || to) && (
-            <button
-              className="btn-ghost"
-              style={{ padding: '6px 10px', fontSize: 12.5 }}
-              onClick={() => { setStatus(''); setDriverId(''); setCountry(''); setFrom(''); setTo(''); }}
-            >
-              Clear
-            </button>
-          )}
-          <ExportButtons onExport={handleExport} disabled={filteredTrips.length === 0} />
-        </div>
+            Clear
+          </button>
+        )}
+        <ExportButtons onExport={handleExport} disabled={filteredTrips.length === 0} />
       </div>
 
       {/* Stats */}
       <div className="stat-row">
         <div className="stat">
           <div className="icon">🗺️</div>
-          <div className="v">{trips.length}</div>
+          <div className="v">{filteredTrips.length}</div>
           <div className="k">Total trips</div>
         </div>
         <div className="stat">

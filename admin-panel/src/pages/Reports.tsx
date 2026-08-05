@@ -372,6 +372,7 @@ export function Reports() {
                   <th>Max speed</th>
                   <th>Points</th>
                   <th>Status</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -391,6 +392,16 @@ export function Reports() {
                       <span className={`badge ${t.status === 'active' ? 'green' : t.status === 'timed_out' ? 'amber' : 'gray'}`}>
                         {t.status.replace('_', ' ')}
                       </span>
+                    </td>
+                    <td>
+                      <a
+                        href={`/trips/${t.tripId}/map`}
+                        className="btn-ghost"
+                        style={{ padding: '4px 10px', fontSize: 12 }}
+                        onClick={e => e.stopPropagation()}
+                      >
+                        View
+                      </a>
                     </td>
                   </tr>
                 ))}

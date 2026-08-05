@@ -204,7 +204,9 @@ export function LiveMap() {
     return true;
   });
 
-  const totalFiltered = filteredWithLoc.length + filteredParked.length;
+  // Total = active drivers (on duty + parked) matching the current filters.
+  // Derived from the combined on-duty and parked lists so it stays consistent.
+  const totalActive = list.length + filteredParked.length;
 
   // Stable initial center.
   const initialCenter = useRef<[number, number]>([17.42, 78.45]);
@@ -252,7 +254,7 @@ export function LiveMap() {
         {/* Stat pills — Total | On Duty | Stale | Parked */}
         <div className="live-stats">
           <div className="live-stat-pill">
-            <div className="v">{totalFiltered}</div>
+            <div className="v">{totalActive}</div>
             <div className="k">Total</div>
           </div>
           <div className="live-stat-pill">
@@ -432,7 +434,10 @@ export function LiveMap() {
                     {d.stale ? 'Stale' : 'Moving'}
                   </span><br />
                   {Math.round(d.location!.speed ?? 0)} km/h · {km(d.distanceMeters)}<br />
-                  {d.location!.recordedAt ? new Date(d.location!.recordedAt).toLocaleTimeString() : ''}
+                  {d.location!.recordedAt ? new Date(d.location!.recordedAt).toLocaleTimeString() : ''}<br />
+                  <span style={{ fontSize: 10, color: '#6b7280' }}>
+                    {d.location!.lat.toFixed(6)}, {d.location!.lon.toFixed(6)}
+                  </span>
                 </Popup>
               </Marker>
             );
@@ -454,7 +459,10 @@ export function LiveMap() {
                   {project && <><span style={{ color: '#6366f1' }}>{project}</span><br /></>}
                   {country && <><span>{country}</span><br /></>}
                   <span style={{ color: '#f97316', fontWeight: 600, fontSize: 11 }}>Parked</span><br />
-                  {p.endedAt ? new Date(p.endedAt).toLocaleTimeString() : ''}
+                  {p.endedAt ? new Date(p.endedAt).toLocaleTimeString() : ''}<br />
+                  <span style={{ fontSize: 10, color: '#6b7280' }}>
+                    {p.location!.lat.toFixed(6)}, {p.location!.lon.toFixed(6)}
+                  </span>
                 </Popup>
               </Marker>
             );

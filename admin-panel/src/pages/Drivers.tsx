@@ -54,7 +54,9 @@ export function Drivers() {
   };
 
   const projects = Array.from(new Set(drivers.map(d => d.project).filter(Boolean))).sort() as string[];
-  const countries = Array.from(new Set(drivers.map(d => d.country).filter(Boolean))).sort() as string[];
+  const countries = Array.from(new Set(
+    drivers.filter(d => !projectFilter || d.project === projectFilter).map(d => d.country).filter(Boolean)
+  )).sort() as string[];
 
   const filtered = drivers.filter(d => {
     if (projectFilter && d.project !== projectFilter) return false;
@@ -83,7 +85,7 @@ export function Drivers() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <select className="input" style={{ width: 90, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => setProjectFilter(e.target.value)}>
+          <select className="input" style={{ width: 90, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
             <option value="">Project</option>
             {projects.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
