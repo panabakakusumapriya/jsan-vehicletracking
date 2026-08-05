@@ -100,13 +100,24 @@ export function Drivers() {
       </div>
 
       <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
-        <style>{`.card table thead { position: sticky; top: 0; z-index: 1; } .card table td { white-space: nowrap; }`}</style>
+        <style>{`
+          .card table thead { position: sticky; top: 0; z-index: 3; }
+          .card table td { white-space: nowrap; }
+          .card table th.sticky-col, .card table td.sticky-col { position: sticky; overflow: hidden; text-overflow: ellipsis; }
+          .card table td.sticky-col { background: var(--panel); z-index: 1; }
+          .card table th.sticky-col { background: var(--sb-bg); z-index: 4; }
+          .card table tbody tr:hover td.sticky-col { background: var(--brand-light); }
+          .card table .sl-1 { left: 0; width: 190px; min-width: 190px; max-width: 190px; }
+          .card table .sl-2 { left: 190px; width: 110px; min-width: 110px; max-width: 110px; }
+          .card table .sl-3 { left: 300px; width: 170px; min-width: 170px; max-width: 170px; box-shadow: 2px 0 4px -2px rgba(0,0,0,0.15); }
+          .card table .sr-2 { right: 0; width: 100px; min-width: 100px; max-width: 100px; box-shadow: -2px 0 4px -2px rgba(0,0,0,0.15); }
+        `}</style>
         <table>
           <thead>
             <tr>
-              <th style={{ minWidth: 180 }}>Project</th>
-              <th>Driver ID</th>
-              <th>Driver Name</th>
+              <th className="sticky-col sl-1">Project</th>
+              <th className="sticky-col sl-2">Driver ID</th>
+              <th className="sticky-col sl-3">Driver Name</th>
               <th>Vehicles</th>
               <th>VIDs</th>
               <th>Mobiles</th>
@@ -129,7 +140,7 @@ export function Drivers() {
               <th>Currency</th>
               <th>Language</th>
               <th>Timezone</th>
-              <th>Status</th>
+              <th className="sticky-col sr-2">Status</th>
               <th></th>
             </tr>
           </thead>
@@ -139,9 +150,9 @@ export function Drivers() {
               const dDevices = devicesOf(d);
               return (
                 <tr key={d._id}>
-                  <td>{d.project || <M />}</td>
-                  <td>{d.driverId || <M />}</td>
-                  <td style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{d.name}</td>
+                  <td className="sticky-col sl-1" title={d.project || ''}>{d.project || <M />}</td>
+                  <td className="sticky-col sl-2" title={d.driverId || ''}>{d.driverId || <M />}</td>
+                  <td className="sticky-col sl-3" style={{ fontWeight: 600 }} title={d.name}>{d.name}</td>
                   <td style={{ whiteSpace: 'nowrap', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }} title={dVehicles.map(v => v.plateNumber).join(', ')}>
                     {dVehicles.length ? dVehicles.map(v => v.plateNumber).join(', ') : <M />}
                   </td>
@@ -170,8 +181,8 @@ export function Drivers() {
                   <td>{d.currency || <M />}</td>
                   <td>{d.language || <M />}</td>
                   <td>{d.timezone || <M />}</td>
-                  <td><span className={`badge ${d.active ? 'green' : 'red'}`}>{d.active ? 'Active' : 'Exit'}</span></td>
-                  <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
+                  <td className="sticky-col sr-2"><span className={`badge ${d.active ? 'green' : 'red'}`}>{d.active ? 'Active' : 'Exit'}</span></td>
+                  <td style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                     <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(d)}>Edit</button>
                     {d.active && <button className="btn-danger" onClick={() => deactivate(d)}>Exit</button>}
                   </td>
