@@ -90,7 +90,10 @@ export function Mobiles() {
       </div>
 
       <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
-        <table>
+        <style>{`
+          .mobiles-table td, .mobiles-table th { white-space: nowrap; }
+        `}</style>
+        <table className="mobiles-table">
           <thead>
             <tr>
               <th>Country</th>
