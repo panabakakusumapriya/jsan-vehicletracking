@@ -13,9 +13,10 @@
     "backfill:projects": "node src/seed/backfillProjects.js",
     "demo:custody": "node src/seed/demoCustody.js",
     "vapid": "node -e \"const k=require('web-push').generateVAPIDKeys();console.log('VAPID_PUBLIC_KEY='+k.publicKey+'\\nVAPID_PRIVATE_KEY='+k.privateKey)\"",
-    "test": "node test/integration.test.js && node test/custody.test.js && node test/weather.test.js && node test/weatherPipeline.test.js && node test/hotels.test.js && node test/tzcoords.test.js",
+    "test": "node test/integration.test.js && node test/custody.test.js && node test/tripDriverIdsFilter.test.js && node test/weather.test.js && node test/weatherPipeline.test.js && node test/hotels.test.js && node test/tzcoords.test.js",
     "test:tz": "node test/tzcoords.test.js",
     "test:custody": "node test/custody.test.js",
+    "test:trip-filter": "node test/tripDriverIdsFilter.test.js",
     "test:weather": "node test/weather.test.js",
     "test:weather:pipeline": "node test/weatherPipeline.test.js",
     "test:hotels": "node test/hotels.test.js"

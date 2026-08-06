@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, downloadFile } from '../lib/api';
-import { dt, km, statusBadge } from '../lib/format';
+import { km, sessionDt, statusBadge } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 import { buildReplayLayers, vehicleAtElapsed } from '../lib/map3d/TripPathLayer';
 import { useTripPlayback } from '../lib/map3d/useTripPlayback';
@@ -108,19 +108,13 @@ export function TripDetail() {
           <div className="k">Points</div>
         </div>
         <div className="stat">
-          <div className="v" style={{ fontSize: 15 }}>{dt(trip.startedAt)}</div>
+          <div className="v" style={{ fontSize: 15 }}>{sessionDt(trip.startedAt)}</div>
           <div className="k">Started</div>
         </div>
         <div className="stat">
-          <div className="v" style={{ fontSize: 15 }}>{dt(trip.endedAt)}</div>
+          <div className="v" style={{ fontSize: 15 }}>{sessionDt(trip.endedAt)}</div>
           <div className="k">Ended</div>
         </div>
-        {trip.timezone && (
-          <div className="stat">
-            <div className="v" style={{ fontSize: 14 }}>{trip.timezone}</div>
-            <div className="k">Timezone</div>
-          </div>
-        )}
       </div>
 
       <div className="map-wrap" style={{ height: 'calc(100vh - 340px - var(--topbar-h))', minHeight: 380 }}>

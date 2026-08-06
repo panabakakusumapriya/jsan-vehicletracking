@@ -6,19 +6,28 @@ const { accessibleDriverFilter } = require('../utils/scope');
 const { buildKml, buildJson, buildMergedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate } = require('../utils/tripExport');
 
 // GET /api/trips?status=&driverId=&from=&to=&limit=&page=
+//
+// from/to are plain YYYY-MM-DD strings, matched with no timezone conversion: `from` parses as
+// UTC midnight, `to` parses in the server's own local time. Deliberate — this endpoint does
+// not know or care what timezone the viewer or the driver is in. See the Trips page for how
+// the result is displayed (also deliberately viewer-local, with no conversion either).
 exports.list = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
   const filter = { ...scope };
   if (req.query.status) filter.status = req.query.status;
-  if (req.query.driverId) filter.driverId = req.query.driverId;
+  if (req.query.driverId) {
+    filter.driverId = req.query.driverId;
+  } else if (req.query.driverIds !== undefined) {
+    // Present-but-possibly-empty means "match exactly this set" — a project/country combo
+    // that resolves to zero drivers must return zero trips, not silently fall through to
+    // "no filter at all" and show the whole fleet. `{ $in: [] }` correctly matches nothing.
+    const ids = String(req.query.driverIds).split(',').map((s) => s.trim()).filter(Boolean);
+    filter.driverId = { $in: ids };
+  }
   if (req.query.from || req.query.to) {
     filter.startedAt = {};
     if (req.query.from) filter.startedAt.$gte = new Date(req.query.from);
-    if (req.query.to) {
-      const to = new Date(req.query.to);
-      to.setHours(23, 59, 59, 999);
-      filter.startedAt.$lte = to;
-    }
+    if (req.query.to) filter.startedAt.$lte = new Date(`${req.query.to}T23:59:59`);
   }
 
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
@@ -244,18 +253,19 @@ exports.exportBulk = asyncHandler(async (req, res) => {
   if (req.query.status) filter.status = req.query.status;
   if (req.query.driverId) {
     filter.driverId = req.query.driverId;
-  } else if (req.query.driverIds) {
+  } else if (req.query.driverIds !== undefined) {
+    // Present-but-possibly-empty means "match exactly this set" — see the identical comment
+    // on list() above. Exporting "my project" must never silently fall back to exporting
+    // everyone just because that project currently has zero drivers.
     const ids = String(req.query.driverIds).split(',').map((s) => s.trim()).filter(Boolean);
-    if (ids.length) filter.driverId = { $in: ids };
+    filter.driverId = { $in: ids };
   }
+  // Same no-conversion matching as list() above: from parses as UTC midnight, to parses in
+  // the server's own local time. No per-driver or per-trip timezone awareness here either.
   if (req.query.from || req.query.to) {
     filter.startedAt = {};
     if (req.query.from) filter.startedAt.$gte = new Date(req.query.from);
-    if (req.query.to) {
-      const to = new Date(req.query.to);
-      to.setHours(23, 59, 59, 999);
-      filter.startedAt.$lte = to;
-    }
+    if (req.query.to) filter.startedAt.$lte = new Date(`${req.query.to}T23:59:59`);
   }
 
   const trips = await Trip.find(filter)
