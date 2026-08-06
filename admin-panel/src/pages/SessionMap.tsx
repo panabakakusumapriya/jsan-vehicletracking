@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../lib/api';
-import { km, dt } from '../lib/format';
+import { km, sessionDt } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 import { buildLivePathLayers } from '../lib/map3d/TripPathLayer';
 import { useInterpolatedPosition } from '../lib/map3d/useInterpolatedPosition';
@@ -97,7 +97,7 @@ export function SessionMap() {
             </span>
           </h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            {driverName}{plate ? ` · ${plate}` : ''} · Started {dt(trip.startedAt)}
+            {driverName}{plate ? ` · ${plate}` : ''} · Started {sessionDt(trip.startedAt)}
             {lastRefresh && trip.status === 'active' && (
               <span style={{ marginLeft: 8, color: 'var(--muted)' }}>
                 · updated {lastRefresh.toLocaleTimeString()}
@@ -128,12 +128,12 @@ export function SessionMap() {
           <div className="k">GPS points</div>
         </div>
         <div className="stat">
-          <div className="v" style={{ fontSize: 14 }}>{dt(trip.startedAt)}</div>
+          <div className="v" style={{ fontSize: 14 }}>{sessionDt(trip.startedAt)}</div>
           <div className="k">Started</div>
         </div>
         {trip.endedAt && (
           <div className="stat">
-            <div className="v" style={{ fontSize: 14 }}>{dt(trip.endedAt)}</div>
+            <div className="v" style={{ fontSize: 14 }}>{sessionDt(trip.endedAt)}</div>
             <div className="k">Ended</div>
           </div>
         )}
