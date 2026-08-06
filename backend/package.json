@@ -9,6 +9,7 @@
     "dev": "node --watch src/server.js",
     "seed": "node src/seed/seed.js",
     "seed:drivers": "node src/seed/seedDrivers.js",
+    "seed:mobiles": "node src/seed/seedMobiles.js",
     "backfill:custody": "node src/seed/backfillCustody.js",
     "backfill:projects": "node src/seed/backfillProjects.js",
     "demo:custody": "node src/seed/demoCustody.js",

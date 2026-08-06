@@ -68,7 +68,7 @@ export interface Vehicle {
   model?: string | null;
   country?: string | null;
   managerId?: string | null;
-  assignedDriverId?: { _id: string; name: string; email: string } | string | null;
+  assignedDriverId?: { _id: string; name: string; email: string; country?: string; project?: string } | string | null;
   active: boolean;
 }
 
@@ -131,6 +131,8 @@ export type DeviceStatus = 'in_stock' | 'assigned' | 'repair' | 'lost' | 'retire
 /** A physical handset, tracked as an asset in its own right (not fields on a driver). */
 export interface MobileDevice {
   _id: string;
+  driverName?: string | null;
+  workMail?: string | null;
   imei?: string | null;
   secondaryImei?: string | null;
   serial?: string | null;
@@ -144,7 +146,7 @@ export interface MobileDevice {
   country?: string | null;
   notes?: string | null;
   status: DeviceStatus;
-  currentDriverId?: { _id: string; name: string; email: string } | string | null;
+  currentDriverId?: { _id: string; name: string; email: string; country?: string; project?: string } | string | null;
   managerId?: { _id: string; name: string } | string | null;
   active: boolean;
   createdAt?: string;

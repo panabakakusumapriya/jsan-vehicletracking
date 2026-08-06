@@ -16,7 +16,7 @@ function assertCanTouch(req, device) {
 }
 
 const EDITABLE = [
-  'imei', 'secondaryImei', 'serial', 'label', 'phoneModel', 'androidVersion',
+  'driverName', 'workMail', 'imei', 'secondaryImei', 'serial', 'label', 'phoneModel', 'androidVersion',
   'workPhone', 'phoneCase', 'phoneScreenguard', 'country', 'notes',
 ];
 
@@ -28,7 +28,7 @@ exports.list = asyncHandler(async (req, res) => {
 
   const devices = await MobileDevice.find(filter)
     .sort({ createdAt: -1 })
-    .populate('currentDriverId', 'name email country')
+    .populate('currentDriverId', 'name email country project')
     .populate('managerId', 'name email');
 
   res.json({
