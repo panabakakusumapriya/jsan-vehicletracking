@@ -13,6 +13,8 @@ const STATUSES = ['in_stock', 'assigned', 'repair', 'lost', 'retired'];
  */
 const mobileDeviceSchema = new mongoose.Schema(
   {
+    driverName: { type: String, trim: true, default: null },
+    workMail: { type: String, trim: true, default: null },
     imei: { type: String, trim: true, default: null },
     // Dual-SIM handsets carry a second IMEI. Not uniqueness-checked: it is a property of the
     // same physical device, and `imei` is already the identity.

@@ -39,7 +39,7 @@ function scopeFilter() {
 exports.list = asyncHandler(async (req, res) => {
   const vehicles = await Vehicle.find(scopeFilter(req))
     .sort({ createdAt: -1 })
-    .populate('assignedDriverId', 'name email');
+    .populate('assignedDriverId', 'name email country project');
   res.json({ vehicles });
 });
 

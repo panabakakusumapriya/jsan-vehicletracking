@@ -1,23 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
-import type { Assignment, DeviceStatus, MobileDevice } from '../lib/types';
-
-/**
- * Device inventory.
- *
- * Phones used to be six fields on the driver record, which meant a handset could not exist
- * unless somebody was holding it. They are assets now: they sit in stock, move between
- * drivers, and keep their custody history when a driver leaves. Handing one over writes a
- * row to the assignment ledger rather than overwriting the last value.
- *
- * This screen is INVENTORY ONLY — add, edit and inspect handsets. Allocating one to a driver
- * happens on the Drivers screen, so there is exactly one place to do it and no chance of two
- * screens disagreeing about who holds what.
- *
- * `secondaryImei` came from the branch that kept these as driver fields; it lives on the
- * device now, so nothing from that work is lost.
- */
+import type { Assignment, DeviceStatus, MobileDevice, Project } from '../lib/types';
 
 const STATUS_LABEL: Record<DeviceStatus, string> = {
   in_stock: 'In stock',
@@ -39,21 +23,45 @@ const driverOf = (d: MobileDevice) =>
 
 export function Mobiles() {
   const [devices, setDevices] = useState<MobileDevice[]>([]);
+  const [projectOptions, setProjectOptions] = useState<Project[]>([]);
   const [editing, setEditing] = useState<MobileDevice | null>(null);
   const [history, setHistory] = useState<MobileDevice | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [projectFilter, setProjectFilter] = useState('');
+  const [countryFilter, setCountryFilter] = useState('');
 
   const load = () => {
     api.get<{ devices: MobileDevice[] }>('/api/mobiles').then(r => setDevices(r.devices)).catch(() => {});
+    api.get<{ projects: Project[] }>('/api/projects').then(r => setProjectOptions(r.projects)).catch(() => {});
   };
   useEffect(load, []);
 
-  const inStock = devices.filter(d => d.status === 'in_stock').length;
-  const assigned = devices.filter(d => d.status === 'assigned').length;
-  const outOfService = devices.filter(d => ['repair', 'lost', 'retired'].includes(d.status)).length;
+  // Derive project for each device from its assigned driver
+  const deviceProject = (d: MobileDevice): string | null => {
+    const holder = driverOf(d);
+    return holder?.project || null;
+  };
+
+  // Build country options filtered by selected project
+  const filteredByProject = projectFilter
+    ? devices.filter(d => deviceProject(d) === projectFilter)
+    : devices;
+
+  const countries = Array.from(new Set(
+    filteredByProject.map(d => d.country).filter(Boolean)
+  )).sort() as string[];
+
+  const filtered = filteredByProject.filter(d => {
+    if (countryFilter && d.country !== countryFilter) return false;
+    return true;
+  });
+
+  const inStock = filtered.filter(d => d.status === 'in_stock').length;
+  const assigned = filtered.filter(d => d.status === 'assigned').length;
+  const outOfService = filtered.filter(d => ['repair', 'lost', 'retired'].includes(d.status)).length;
 
   return (
-    <div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
       <div className="page-head">
         <div>
           <h1 className="page-title">Mobiles</h1>
@@ -61,65 +69,73 @@ export function Mobiles() {
             Device inventory — every handover is recorded, so you can see who had which phone in any month
           </p>
         </div>
-        <button className="btn" onClick={() => setShowAdd(true)}>+ Add device</button>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <select className="input" style={{ width: 120, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
+            <option value="">Project</option>
+            {projectOptions.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
+          </select>
+          <select className="input" style={{ width: 100, fontSize: 12, padding: '4px 6px' }} value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
+            <option value="">Country</option>
+            {countries.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button className="btn" onClick={() => setShowAdd(true)}>+ Add device</button>
+        </div>
       </div>
 
       <div className="stat-row">
-        <div className="stat"><div className="v">{devices.length}</div><div className="k">Devices</div></div>
+        <div className="stat"><div className="v">{filtered.length}</div><div className="k">Devices</div></div>
         <div className="stat"><div className="v" style={{ color: 'var(--green)' }}>{assigned}</div><div className="k">Assigned</div></div>
         <div className="stat"><div className="v">{inStock}</div><div className="k">In stock</div></div>
         <div className="stat"><div className="v" style={{ color: 'var(--amber)' }}>{outOfService}</div><div className="k">Out of service</div></div>
       </div>
 
-      <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+      <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
         <table>
           <thead>
             <tr>
-              <th>Device</th>
+              <th>Country</th>
+              <th>Driver Name</th>
+              <th>Work Mail</th>
+              <th>Work Phone</th>
               <th>IMEI</th>
               <th>Secondary IMEI</th>
-              <th>Work phone</th>
+              <th>Phone Model</th>
               <th>Android</th>
               <th>Status</th>
               <th>Held by</th>
-              <th>Case / guard</th>
+              <th>Phone Case</th>
+              <th>Phone Screenguard</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {devices.map(d => {
+            {filtered.map(d => {
               const holder = driverOf(d);
               return (
                 <tr key={d._id}>
-                  <td style={{ fontWeight: 600 }}>{d.displayLabel || d.label || d.phoneModel || '—'}</td>
+                  <td>{d.country || <M />}</td>
+                  <td>{d.driverName || <M />}</td>
+                  <td>{d.workMail || <M />}</td>
+                  <td>{d.workPhone || <M />}</td>
                   <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{d.imei || <M />}</td>
                   <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{d.secondaryImei || <M />}</td>
-                  <td>{d.workPhone || <M />}</td>
+                  <td>{d.phoneModel || <M />}</td>
                   <td>{d.androidVersion || <M />}</td>
                   <td><span className={`badge ${STATUS_BADGE[d.status]}`}>{STATUS_LABEL[d.status]}</span></td>
                   <td>{holder ? holder.name : <M />}</td>
-                  <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-                    {d.phoneCase || d.phoneScreenguard ? (
-                      <span style={{ display: 'inline-flex', gap: 6 }}>
-                        <Accessory label="Case" value={d.phoneCase} />
-                        <Accessory label="Guard" value={d.phoneScreenguard} />
-                      </span>
-                    ) : <M />}
-                  </td>
+                  <td><Accessory label="Case" value={d.phoneCase} /></td>
+                  <td><Accessory label="Guard" value={d.phoneScreenguard} /></td>
                   <td style={{ whiteSpace: 'nowrap' }}>
-                    {/* Deliberately no Assign/Return here — allocation happens on the
-                        Drivers screen, so there is exactly one place to do it. */}
                     <button className="btn-ghost" style={btn} onClick={() => setHistory(d)}>History</button>
                     <button className="btn-ghost" style={btn} onClick={() => setEditing(d)}>Edit</button>
                   </td>
                 </tr>
               );
             })}
-            {devices.length === 0 && (
+            {filtered.length === 0 && (
               <tr>
-                <td colSpan={9} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
-                  No devices yet. Add one, or run <code>npm run backfill:custody</code> in the backend to
-                  import the phones already recorded against your drivers.
+                <td colSpan={13} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
+                  No devices found.
                 </td>
               </tr>
             )}
@@ -137,7 +153,6 @@ export function Mobiles() {
 const btn = { fontSize: 12, padding: '4px 10px', marginRight: 6 } as const;
 function M() { return <span style={{ color: 'var(--muted)' }}>—</span>; }
 
-/** "Case Yes" reads; a bare "Yes / No" pair in a column does not. */
 function Accessory({ label, value }: { label: string; value?: string | null }) {
   if (!value) return <span className="badge gray" style={{ fontSize: 10 }}>{label} —</span>;
   const yes = value.toLowerCase() === 'yes';
@@ -151,7 +166,6 @@ function Accessory({ label, value }: { label: string; value?: string | null }) {
 
 const YES_NO = ['Yes', 'No'];
 
-/** Map any casing of yes/no onto the canonical option so "YES" isn't treated as odd text. */
 const canonicalYesNo = (raw: string) =>
   YES_NO.find(v => v.toLowerCase() === raw.trim().toLowerCase()) ?? raw;
 
@@ -159,9 +173,9 @@ const FIELDS: {
   key: keyof MobileDevice;
   label: string;
   placeholder?: string;
-  /** 'yesno' renders a Yes/No dropdown instead of a free-text box. */
   type?: 'text' | 'yesno';
 }[] = [
+  { key: 'workMail', label: 'Work Mail', placeholder: 'driver@example.com' },
   { key: 'label', label: 'Label (e.g. Ops phone 07)' },
   { key: 'imei', label: 'IMEI number', placeholder: '15-digit IMEI' },
   { key: 'secondaryImei', label: 'Secondary IMEI', placeholder: '15-digit IMEI' },
@@ -177,6 +191,8 @@ const FIELDS: {
 function DeviceForm({ device, onClose, onSaved }: {
   device?: MobileDevice; onClose: () => void; onSaved: () => void;
 }) {
+  const [drivers, setDrivers] = useState<{ _id: string; name: string; email: string }[]>([]);
+  const [driverName, setDriverName] = useState(device?.driverName || '');
   const [form, setForm] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
     FIELDS.forEach(f => {
@@ -189,10 +205,22 @@ function DeviceForm({ device, onClose, onSaved }: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    api.get<{ users: { _id: string; name: string; email: string }[] }>('/api/users?role=user')
+      .then(r => setDrivers(r.users))
+      .catch(() => {});
+  }, []);
+
+  const handleDriverChange = (name: string) => {
+    setDriverName(name);
+    const match = drivers.find(d => d.name === name);
+    if (match) setForm(s => ({ ...s, workMail: match.email }));
+  };
+
   const save = async () => {
     setError(null); setBusy(true);
     try {
-      const body: Record<string, unknown> = { status };
+      const body: Record<string, unknown> = { status, driverName: driverName || null };
       FIELDS.forEach(f => { body[f.key as string] = form[f.key as string] || null; });
       if (device) await api.patch(`/api/mobiles/${device._id}`, body);
       else await api.post('/api/mobiles', body);
@@ -210,6 +238,16 @@ function DeviceForm({ device, onClose, onSaved }: {
     >
       {error && <div className="error-text">{error}</div>}
       <div className="form-grid">
+        <div className="field">
+          <label>Driver Name</label>
+          <select className="input" value={driverName} onChange={e => handleDriverChange(e.target.value)}>
+            <option value="">— Select driver —</option>
+            {drivers.map(d => <option key={d._id} value={d.name}>{d.name}</option>)}
+            {driverName && !drivers.some(d => d.name === driverName) && (
+              <option value={driverName}>{driverName} (not found)</option>
+            )}
+          </select>
+        </div>
         {FIELDS.map(f => {
           const name = f.key as string;
           const value = form[name];
@@ -224,8 +262,6 @@ function DeviceForm({ device, onClose, onSaved }: {
                 >
                   <option value="">— Not set —</option>
                   {YES_NO.map(v => <option key={v} value={v}>{v}</option>)}
-                  {/* Devices recorded before this was a dropdown may hold free text. Keeping
-                      it as an option means opening the form doesn't quietly erase it. */}
                   {value && !YES_NO.includes(value) && (
                     <option value={value}>{value} (existing value)</option>
                   )}
@@ -263,7 +299,6 @@ function DeviceForm({ device, onClose, onSaved }: {
   );
 }
 
-/** The device's life story — every driver who has held it. */
 function DeviceHistory({ device, onClose }: { device: MobileDevice; onClose: () => void }) {
   const [history, setHistory] = useState<Assignment[] | null>(null);
 

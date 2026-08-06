@@ -1,28 +1,30 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
-import type { User, Vehicle } from '../lib/types';
+import type { Project, User, Vehicle } from '../lib/types';
 
-/**
- * Vehicle inventory — add, edit and retire vehicles.
- * Driver assignment is done here via the custody ledger (same as Drivers screen).
- */
+const driverObj = (v: Vehicle['assignedDriverId']) => (v && typeof v === 'object' ? v : null);
 const assigned = (v: Vehicle['assignedDriverId']) => (v && typeof v === 'object' ? v.name : '—');
 const assignedId = (v: Vehicle['assignedDriverId']) => (v && typeof v === 'object' ? v._id : (v as string | null | undefined) ?? '');
 
 export function Vehicles() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<User[]>([]);
+  const [projectOptions, setProjectOptions] = useState<Project[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<Vehicle | null>(null);
+  const [projectFilter, setProjectFilter] = useState('');
+  const [countryFilter, setCountryFilter] = useState('');
 
   const load = () => {
     Promise.all([
       api.get<{ vehicles: Vehicle[] }>('/api/vehicles'),
       api.get<{ users: User[] }>('/api/users?role=user'),
-    ]).then(([vr, ur]) => {
+      api.get<{ projects: Project[] }>('/api/projects'),
+    ]).then(([vr, ur, pr]) => {
       setVehicles(vr.vehicles);
       setDrivers(ur.users ?? []);
+      setProjectOptions(pr.projects ?? []);
     });
   };
   useEffect(load, []);
@@ -33,13 +35,44 @@ export function Vehicles() {
     load();
   };
 
+  // Derive project from assigned driver
+  const vehicleProject = (v: Vehicle): string | null => {
+    const d = driverObj(v.assignedDriverId);
+    return d?.project || null;
+  };
+
+  const filteredByProject = projectFilter
+    ? vehicles.filter(v => vehicleProject(v) === projectFilter)
+    : vehicles;
+
+  const countries = Array.from(new Set(
+    filteredByProject.map(v => v.country).filter(Boolean)
+  )).sort() as string[];
+
+  const filtered = filteredByProject.filter(v => {
+    if (countryFilter && v.country !== countryFilter) return false;
+    return true;
+  });
+
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">Vehicles</h1>
-        <button className="btn" onClick={() => setShowAdd(true)}>
-          + Add vehicle
-        </button>
+        <div>
+          <h1 className="page-title">Vehicles</h1>
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <select className="input" style={{ width: 120, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
+            <option value="">Project</option>
+            {projectOptions.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
+          </select>
+          <select className="input" style={{ width: 100, fontSize: 12, padding: '4px 6px' }} value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
+            <option value="">Country</option>
+            {countries.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <button className="btn" onClick={() => setShowAdd(true)}>
+            + Add vehicle
+          </button>
+        </div>
       </div>
 
       <div className="card" style={{ padding: 0 }}>
@@ -56,7 +89,7 @@ export function Vehicles() {
             </tr>
           </thead>
           <tbody>
-            {vehicles.map((v) => (
+            {filtered.map((v) => (
               <tr key={v._id}>
                 <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{v.vid || '—'}</td>
                 <td>{v.plateNumber}</td>
@@ -74,10 +107,10 @@ export function Vehicles() {
                 </td>
               </tr>
             ))}
-            {vehicles.length === 0 && (
+            {filtered.length === 0 && (
               <tr>
                 <td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 28 }}>
-                  No vehicles yet.
+                  No vehicles found.
                 </td>
               </tr>
             )}
