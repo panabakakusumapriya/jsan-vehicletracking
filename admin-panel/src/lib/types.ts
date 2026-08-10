@@ -70,6 +70,7 @@ export interface Vehicle {
   managerId?: string | null;
   assignedDriverId?: { _id: string; name: string; email: string; country?: string; project?: string } | string | null;
   active: boolean;
+  comments?: string | null;
 }
 
 /* ── Driving weather ── */

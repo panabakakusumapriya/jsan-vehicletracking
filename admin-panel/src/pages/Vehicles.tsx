@@ -75,6 +75,12 @@ export function Vehicles() {
         </div>
       </div>
 
+      <div className="stat-row">
+        <div className="stat"><div className="v">{filtered.length}</div><div className="k">Total Vehicles</div></div>
+        <div className="stat"><div className="v" style={{ color: 'var(--green)' }}>{filtered.filter(v => v.active).length}</div><div className="k">Active</div></div>
+        <div className="stat"><div className="v" style={{ color: 'var(--muted)' }}>{filtered.filter(v => !v.active).length}</div><div className="k">Inactive</div></div>
+      </div>
+
       <div className="card" style={{ padding: 0 }}>
         <table>
           <thead>
@@ -84,6 +90,7 @@ export function Vehicles() {
               <th>Model</th>
               <th>Country</th>
               <th>Assigned Driver</th>
+              <th>Comments</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -96,6 +103,7 @@ export function Vehicles() {
                 <td>{v.model || '—'}</td>
                 <td>{v.country || '—'}</td>
                 <td>{assigned(v.assignedDriverId)}</td>
+                <td>{v.comments || '—'}</td>
                 <td>
                   <span className={`badge ${v.active ? 'green' : 'gray'}`}>{v.active ? 'active' : 'inactive'}</span>
                 </td>
@@ -109,7 +117,7 @@ export function Vehicles() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 28 }}>
+                <td colSpan={8} className="muted" style={{ textAlign: 'center', padding: 28 }}>
                   No vehicles found.
                 </td>
               </tr>
@@ -144,7 +152,7 @@ export function Vehicles() {
 }
 
 function AddVehicle({ drivers, onClose, onSaved }: { drivers: User[]; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ plateNumber: '', vid: '', model: '', country: '', assignedDriverId: '' });
+  const [form, setForm] = useState({ plateNumber: '', vid: '', model: '', country: '', assignedDriverId: '', comments: '' });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -159,6 +167,7 @@ function AddVehicle({ drivers, onClose, onSaved }: { drivers: User[]; onClose: (
         model: form.model || undefined,
         country: form.country || undefined,
         assignedDriverId: form.assignedDriverId || undefined,
+        comments: form.comments || undefined,
       });
       onSaved();
     } catch (e) {
@@ -185,6 +194,10 @@ function AddVehicle({ drivers, onClose, onSaved }: { drivers: User[]; onClose: (
       <div className="field">
         <label>Country (optional)</label>
         <input className="input" value={form.country} onChange={(e) => set('country', e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Comments (optional)</label>
+        <input className="input" value={form.comments} onChange={(e) => set('comments', e.target.value)} />
       </div>
       <div className="field">
         <label>Assign to driver (optional)</label>
@@ -219,6 +232,7 @@ function EditVehicle({ vehicle, drivers, onClose, onSaved }: {
     country: vehicle.country || '',
     active: vehicle.active,
     assignedDriverId: assignedId(vehicle.assignedDriverId),
+    comments: vehicle.comments || '',
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -235,6 +249,7 @@ function EditVehicle({ vehicle, drivers, onClose, onSaved }: {
         country: form.country || null,
         active: form.active,
         assignedDriverId: form.assignedDriverId || null,
+        comments: form.comments || null,
       });
       onSaved();
     } catch (e) {
@@ -270,6 +285,10 @@ function EditVehicle({ vehicle, drivers, onClose, onSaved }: {
             <option key={d._id} value={d._id}>{d.name}{d.country ? ` (${d.country})` : ''}</option>
           ))}
         </select>
+      </div>
+      <div className="field">
+        <label>Comments</label>
+        <input className="input" value={form.comments} onChange={(e) => set('comments', e.target.value)} />
       </div>
       <div className="field">
         <label>Status</label>

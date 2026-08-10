@@ -45,7 +45,7 @@ exports.list = asyncHandler(async (req, res) => {
 
 // POST /api/vehicles
 exports.create = asyncHandler(async (req, res) => {
-  const { plateNumber, vid, model, country, managerId, assignedDriverId } = req.body || {};
+  const { plateNumber, vid, model, country, managerId, assignedDriverId, comments } = req.body || {};
   if (!plateNumber) return res.status(400).json({ error: 'plateNumber is required' });
 
   const vehicle = await Vehicle.create({
@@ -53,6 +53,7 @@ exports.create = asyncHandler(async (req, res) => {
     vid: vid || null,
     model: model || null,
     country: country || null,
+    comments: comments || null,
     managerId: ['manager', 'team_lead'].includes(req.user.role) ? req.user._id : managerId || null,
     assignedDriverId: null, // set below, via the ledger
   });
@@ -73,12 +74,13 @@ exports.update = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  const { plateNumber, vid, model, country, active, assignedDriverId } = req.body || {};
+  const { plateNumber, vid, model, country, active, assignedDriverId, comments } = req.body || {};
   if (plateNumber !== undefined) vehicle.plateNumber = plateNumber;
   if (vid !== undefined) vehicle.vid = vid;
   if (model !== undefined) vehicle.model = model;
   if (country !== undefined) vehicle.country = country;
   if (active !== undefined) vehicle.active = active;
+  if (comments !== undefined) vehicle.comments = comments;
   if (assignedDriverId !== undefined) {
     const problem = await applyDriverChange(vehicle, assignedDriverId, req.user);
     if (problem) return res.status(problem.status).json({ error: problem.error });
