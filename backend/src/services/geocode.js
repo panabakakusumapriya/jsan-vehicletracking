@@ -44,7 +44,12 @@ async function lookup(key, lat, lon) {
     const place =
       a.city || a.town || a.village || a.municipality || a.suburb ||
       a.county || a.state_district || a.state || json.name || null;
-    const result = place ? { place, country: (a.country_code || '').toUpperCase() || null } : null;
+    // `country` is the full name ("India") — Couriers needs this, not the ISO code, because
+    // Serper's place-search silently mis-resolves "Hyderabad, IN" while "Hyderabad, India"
+    // works (confirmed empirically; the code form is not a documented rejection, just wrong).
+    const result = place
+      ? { place, country: (a.country_code || '').toUpperCase() || null, countryName: a.country || null }
+      : null;
     cache.set(key, result); // cache misses too — no point asking twice about open sea
     return result;
   } catch {

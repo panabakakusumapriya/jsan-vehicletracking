@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AssetHistory } from './pages/AssetHistory';
+import { Couriers } from './pages/Couriers';
 import { Drivers } from './pages/Drivers';
 import { Hotels } from './pages/Hotels';
 import { LiveMap } from './pages/LiveMap';
@@ -38,6 +39,7 @@ export default function App() {
         <Route path="/asset-history" element={<AssetHistory />} />
         <Route path="/weather" element={<Weather />} />
         <Route path="/hotels" element={<Hotels />} />
+        <Route path="/couriers" element={<Couriers />} />
         <Route path="/vehicles" element={<Vehicles />} />
         <Route
           path="/managers"

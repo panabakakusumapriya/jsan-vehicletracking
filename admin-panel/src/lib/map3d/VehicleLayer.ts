@@ -1,4 +1,14 @@
-import { IconLayer, ScatterplotLayer } from '@deck.gl/layers';
+import { registerLoaders } from '@loaders.gl/core';
+import { OBJLoader } from '@loaders.gl/obj';
+import { ScatterplotLayer } from '@deck.gl/layers';
+import { SimpleMeshLayer } from '@deck.gl/mesh-layers';
+import { CAR_MODEL_URL, CAR_MODEL_SCALE, headingToYaw } from './carMesh';
+
+// SimpleMeshLayer's `mesh: <url>` form needs a loader registered for the file's extension, or
+// it has no way to parse the .obj it fetches.
+registerLoaders([OBJLoader]);
+
+const CAR_TEXTURE_URL = CAR_MODEL_URL.replace(/\.obj$/, '.png');
 
 export type VehicleStatus = 'moving' | 'stale';
 
@@ -15,82 +25,28 @@ const STATUS_COLOR: Record<VehicleStatus, [number, number, number]> = {
   stale: [217, 119, 6],
 };
 
-const CAR_EMOJI = '🚗';
-const ICON_CANVAS_SIZE = 128;
-
-// deck.gl's getAngle rotates counter-clockwise starting from the icon's own
-// default orientation (empirically confirmed with a cardinal-direction test:
-// heading=90/east correctly pointed the icon right, but heading=0/north
-// pointed it down instead of up until this formula was corrected -- an
-// initial derivation from the vertex shader's rotation matrix got the
-// handedness backwards). The car emoji is drawn facing left/west by default
-// on every major platform (Apple, Noto, Twemoji, Segoe); with a
-// counter-clockwise-positive convention, reaching true compass heading H
-// from that default (west=270) needs angle = 270 - H.
-function headingToIconAngle(heading: number): number {
-  return ((270 - heading) % 360 + 360) % 360;
-}
-
-interface IconAtlas {
-  url: string;
-  mapping: Record<
-    string,
-    { x: number; y: number; width: number; height: number; anchorX: number; anchorY: number; mask: boolean }
-  >;
-}
-
-// deck.gl's TextLayer always rasterizes glyphs in solid black and discards
-// color (it builds a monochrome alpha mask, then tints uniformly) -- fine
-// for plain text, but it flattens a multi-color emoji into a black
-// silhouette. Drawing the emoji into a plain <canvas> ourselves (no forced
-// fill color, just the browser's normal color-emoji font rendering) and
-// using that as an IconLayer atlas keeps the real colors. Built once and
-// cached, not per-render.
-let cachedIconAtlas: IconAtlas | null = null;
-
-function getCarIconAtlas(): IconAtlas {
-  if (cachedIconAtlas) return cachedIconAtlas;
-  const canvas = document.createElement('canvas');
-  canvas.width = ICON_CANVAS_SIZE;
-  canvas.height = ICON_CANVAS_SIZE;
-  const ctx = canvas.getContext('2d')!;
-  ctx.font = `${Math.round(ICON_CANVAS_SIZE * 0.8)}px sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(CAR_EMOJI, ICON_CANVAS_SIZE / 2, ICON_CANVAS_SIZE / 2);
-  cachedIconAtlas = {
-    url: canvas.toDataURL(),
-    mapping: {
-      car: {
-        x: 0,
-        y: 0,
-        width: ICON_CANVAS_SIZE,
-        height: ICON_CANVAS_SIZE,
-        anchorX: ICON_CANVAS_SIZE / 2,
-        anchorY: ICON_CANVAS_SIZE / 2,
-        mask: false,
-      },
-    },
-  };
-  return cachedIconAtlas;
-}
-
 /**
- * Vehicle rendering for the single-vehicle trip pages: a colored ground
- * halo (moving/stale signal) plus the vehicle icon itself, rotated to face
- * the direction of travel.
+ * Vehicle rendering for the single-vehicle trip pages: a colored ground halo (moving/stale
+ * signal) plus a real 3D car model (a real downloaded asset, not a procedural placeholder —
+ * see carMesh.ts), oriented to face the direction of travel.
+ *
+ * Previously this was a 2D emoji billboard (🚗 drawn onto a canvas and used as an IconLayer
+ * atlas). That approach had a real, confirmed bug: the rotation formula assumed the emoji's
+ * default facing was west, based on how it renders on Apple/most platforms, but on this
+ * Windows deployment the system emoji font (Segoe UI Emoji) draws 🚗 facing EAST instead —
+ * a 180-degree handedness mismatch, which is exactly "the car drives backwards". A real 3D
+ * mesh sidesteps the whole problem — its "front" is real geometry with a known local axis,
+ * not a font glyph whose default orientation varies by OS/renderer.
  */
-// Ground-level markers get occluded by nearby 3D building extrusions from a
-// tilted/overhead camera -- the same reason startEndMarkerLayers (in
-// TripPathLayer.ts) disables depth testing. The vehicle is a flat 2D icon
-// billboard at z=0 with no real height, so it's just as susceptible: on a
-// narrow street between two buildings, the icon can end up almost entirely
-// hidden behind one of them. Always-on-top is correct here too -- a vehicle
-// marker's whole job is "be seen".
+// Ground-level markers get occluded by nearby 3D building extrusions from a tilted/overhead
+// camera -- the same reason startEndMarkerLayers (in TripPathLayer.ts) disables depth testing.
+// Confirmed this applies to the car model too, not just the flat halo decal: at the close,
+// low-angle pitch the replay camera uses, even a properly-sized car model routinely sits
+// behind nearby buildings from the camera's viewpoint, since it's much shorter than they are.
+// Both layers need this, or the "always be seen" guarantee only holds for the ground glow.
 const ALWAYS_ON_TOP = { depthCompare: 'always', depthWriteEnabled: false } as const;
 
 export function createVehicleLayers(idPrefix: string, data: VehicleInstance[]) {
-  const atlas = getCarIconAtlas();
   return [
     new ScatterplotLayer<VehicleInstance>({
       id: `${idPrefix}-halo`,
@@ -102,18 +58,25 @@ export function createVehicleLayers(idPrefix: string, data: VehicleInstance[]) {
       radiusMinPixels: 10,
       parameters: ALWAYS_ON_TOP,
     }),
-    new IconLayer<VehicleInstance>({
+    new SimpleMeshLayer<VehicleInstance>({
       id: `${idPrefix}-model`,
       data,
-      iconAtlas: atlas.url,
-      iconMapping: atlas.mapping,
-      getIcon: () => 'car',
+      mesh: CAR_MODEL_URL,
+      texture: CAR_TEXTURE_URL,
       getPosition: (d) => [d.lon, d.lat, 0],
-      getAngle: (d) => headingToIconAngle(d.heading),
-      getSize: 28,
-      sizeUnits: 'pixels',
-      billboard: true,
+      getOrientation: (d) => [0, headingToYaw(d.heading), 0],
+      // carMesh.ts's CAR_MODEL_SCALE converts the model's arbitrary CG units to real metres,
+      // then exaggerates past true scale for visibility -- at any zoom useful for "look at
+      // this vehicle", a true-to-scale few-metre object is only a handful of screen pixels.
+      // Every real navigation/fleet app does the same exaggeration; it's deliberate, not a
+      // mistake. Still grows/shrinks with zoom like a real object (unlike the old fixed-28px
+      // 2D icon), just anchored around a size that's actually visible.
+      sizeScale: CAR_MODEL_SCALE,
       pickable: true,
+      // Flat, unlit texture -- matches every other layer on this map (halos, path lines,
+      // start/end markers), and avoids the model going unreadably dark from some camera
+      // angles under a lighting setup this app has no other use for.
+      material: false,
       parameters: ALWAYS_ON_TOP,
     }),
   ];

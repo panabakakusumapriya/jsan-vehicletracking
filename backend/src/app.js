@@ -55,6 +55,7 @@ function createApp() {
   app.use('/api/reports', require('./routes/report.routes'));
   app.use('/api/weather', require('./routes/weather.routes'));
   app.use('/api/hotels', require('./routes/hotel.routes'));
+  app.use('/api/couriers', require('./routes/courier.routes'));
 
   // SPA fallback — serve index.html for non-API routes
   app.get('*', (req, res, next) => {

@@ -44,6 +44,27 @@ function startEndMarkerLayers(idPrefix: string, points: TripPoint[], endColor: [
   ];
 }
 
+/**
+ * The direction of travel AT point `p`, informed by the road either side of it rather than
+ * just the one segment it happens to anchor -- the Catmull-Rom tangent construction: the
+ * bearing from the point BEFORE `p` to the point AFTER `p`, which points roughly along the
+ * curve passing through `p` instead of along either straight chord on its own. Falls back
+ * outward (bearing to/from `p` itself) at the ends of the point list, or when neighbours are
+ * too close together to give a meaningful direction (e.g. stopped).
+ */
+function tangentHeadingAt(points: TripPoint[], i: number): number | null {
+  const prev = points[i - 1];
+  const cur = points[i];
+  const next = points[i + 1];
+  if (prev && next) {
+    const wide = bearingDeg(prev.lat, prev.lon, next.lat, next.lon);
+    if (wide != null) return wide;
+  }
+  if (next) return bearingDeg(cur.lat, cur.lon, next.lat, next.lon);
+  if (prev) return bearingDeg(prev.lat, prev.lon, cur.lat, cur.lon);
+  return null;
+}
+
 /** Vehicle's interpolated lat/lon/heading at `elapsedMs` since the trip's first point, tracing the real recorded points -- not a simplified path. */
 export function vehicleAtElapsed(points: TripPoint[], elapsedMs: number) {
   if (points.length === 0) return null;
@@ -65,16 +86,25 @@ export function vehicleAtElapsed(points: TripPoint[], elapsedMs: number) {
   const t = tb > ta ? Math.min(1, Math.max(0, (targetMs - ta) / (tb - ta))) : 0;
 
   const [lat, lon] = lerpLatLon(a.lat, a.lon, b.lat, b.lon, t);
-  // Face the direction actually being animated (the real bearing from A to
-  // B), not an interpolation between the two recorded heading *values* --
-  // during a sharp turn/U-turn those can be ~180 degrees apart, where
-  // "shortest angular path" is ambiguous and can spin the icon through the
-  // wrong side of the turn. A geometric bearing between the two points it's
-  // moving between can never point the "wrong way" relative to its own
-  // on-screen motion. Falls back to the recorded headings when A and B are
-  // too close together to give a meaningful bearing (e.g. a real stop).
+
+  // A single bearing(A, B) is constant across the whole segment, so on a curving road the
+  // heading snaps to a new value at every recorded point instead of turning smoothly through
+  // the bend -- visible as the vehicle "twitching" its heading each time it crosses a
+  // waypoint, worse the sparser the recorded points are. Using the wider tangent at each
+  // endpoint (the road either side of A, and either side of B) and interpolating BETWEEN those
+  // two directions across the segment turns the corner gradually instead, the same way a
+  // Catmull-Rom spline's tangents make an interpolated curve follow the points' shape rather
+  // than zig-zagging chord to chord. Still resolves to the plain A->B bearing when there's no
+  // extra point on either side (start/end of the trip) or neighbours are too close to give a
+  // direction (e.g. genuinely stopped), so a short or sparse trip degrades to exactly the old
+  // straight-line behaviour rather than doing something worse with insufficient data.
+  const straight = bearingDeg(a.lat, a.lon, b.lat, b.lon);
+  const tangentA = tangentHeadingAt(points, i) ?? straight;
+  const tangentB = tangentHeadingAt(points, i + 1) ?? straight;
   const heading =
-    bearingDeg(a.lat, a.lon, b.lat, b.lon) ?? lerpHeadingDeg(a.heading ?? b.heading ?? 0, b.heading ?? a.heading ?? 0, t);
+    tangentA != null && tangentB != null
+      ? lerpHeadingDeg(tangentA, tangentB, t)
+      : lerpHeadingDeg(a.heading ?? b.heading ?? 0, b.heading ?? a.heading ?? 0, t);
   return { lat, lon, heading };
 }
 

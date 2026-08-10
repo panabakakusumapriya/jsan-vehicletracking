@@ -7,8 +7,7 @@ async function connectDB() {
   mongoose.connection.on('error', (err) => console.error('MongoDB error:', err.message));
   mongoose.connection.on('disconnected', () => console.warn('⚠️  MongoDB disconnected'));
 
-  const uri = 'mongodb://mongo:CEeeazekNTlmTvkOSOPVIDCCMdQzxivQ@altaria.proxy.rlwy.net:31582/jsan_tracking?authSource=admin';
-  await mongoose.connect(uri, {
+  await mongoose.connect(env.MONGODB_URI, {
     autoIndex: true,
     serverSelectionTimeoutMS: 10000,
   });

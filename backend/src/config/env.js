@@ -84,6 +84,24 @@ module.exports = {
   HOTELS_ACTIVE_DAYS: parseInt(process.env.HOTELS_ACTIVE_DAYS || '7', 10),
   HOTELS_TIMEOUT_MS: parseInt(process.env.HOTELS_TIMEOUT_MS || '15000', 10),
 
+  // ---- Couriers (FedEx/DHL/UPS-type drop-off points via Serper.dev Places — METERED) ----
+  // Unlike RAPIDAPI_KEY above, this has NO source-committed fallback — set SERPER_API_KEY in
+  // .env only. Serper's free tier is a ONE-TIME 2,500-query bucket (not a monthly reset), so
+  // an accidentally-public key here would be a bigger, harder-to-notice leak than a metered
+  // subscription would be.
+  SERPER_API_KEY: process.env.SERPER_API_KEY || '',
+  // Courier drop-off points don't move; cache far longer than hotel room availability.
+  COURIER_CACHE_MINUTES: parseInt(process.env.COURIER_CACHE_MINUTES || '360', 10),
+  // Conservative default: the free tier never refills, so burning it on a stuck auto-refresh
+  // would be a permanent loss, not just "wait for tomorrow" like the hotel budget.
+  COURIER_DAILY_CALL_CAP: parseInt(process.env.COURIER_DAILY_CALL_CAP || '80', 10),
+  // Drivers within ~1 km share a cached search.
+  COURIER_GRID_DEGREES: parseFloat(process.env.COURIER_GRID_DEGREES || '0.01'),
+  COURIER_DEFAULT_RADIUS_KM: parseInt(process.env.COURIER_DEFAULT_RADIUS_KM || '15', 10),
+  // Same freshness window the hotel/weather tabs use for "is this position still trustworthy".
+  COURIER_ACTIVE_DAYS: parseInt(process.env.COURIER_ACTIVE_DAYS || '7', 10),
+  COURIER_TIMEOUT_MS: parseInt(process.env.COURIER_TIMEOUT_MS || '15000', 10),
+
   SEED_ADMIN_NAME: process.env.SEED_ADMIN_NAME || 'Super Admin',
   SEED_ADMIN_EMAIL: process.env.SEED_ADMIN_EMAIL || 'admin@jsan.local',
   SEED_ADMIN_PASSWORD: process.env.SEED_ADMIN_PASSWORD || 'Admin@12345',

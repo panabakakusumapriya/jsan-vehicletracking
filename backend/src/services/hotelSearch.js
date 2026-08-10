@@ -1,7 +1,7 @@
 const env = require('../config/env');
-const Trip = require('../models/Trip');
 const User = require('../models/User');
 const { isValidTimeZone, formatDateInZone } = require('../utils/timezone');
+const { recentDriverPositions } = require('../utils/driverPositions');
 const { searchByCoordinates, isConfigured, budgetStatus } = require('./bookingHotels');
 
 /**
@@ -16,26 +16,6 @@ const { searchByCoordinates, isConfigured, budgetStatus } = require('./bookingHo
  * up hotels for the ONE driver being viewed. Fanning out over a 13-driver fleet would spend a
  * month of a small plan in an afternoon.
  */
-
-/** Latest known position per driver, newest trip wins. Mirrors the weather tab's lookup. */
-async function recentDriverPositions(scope, activeDays) {
-  const cutoff = new Date(Date.now() - activeDays * 86400_000);
-  const rows = await Trip.aggregate([
-    { $match: { ...scope, lastLocation: { $ne: null }, startedAt: { $gte: cutoff } } },
-    { $sort: { startedAt: -1 } },
-    {
-      $group: {
-        _id: '$driverId',
-        lat: { $first: '$lastLocation.lat' },
-        lon: { $first: '$lastLocation.lon' },
-        at: { $first: '$lastLocation.recordedAt' },
-        // The device reports its own timezone, which beats guessing one from coordinates.
-        timezone: { $first: '$timezone' },
-      },
-    },
-  ]);
-  return rows.filter((r) => typeof r.lat === 'number' && typeof r.lon === 'number');
-}
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const utcToday = () => new Date().toISOString().slice(0, 10);
