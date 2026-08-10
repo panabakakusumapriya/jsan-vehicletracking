@@ -78,4 +78,10 @@ async function reverseGeocodeMany(points, budgetMs = 4500) {
   return out;
 }
 
-module.exports = { reverseGeocodeMany, _cache: cache };
+/** Single-location reverse geocode. Returns { place, country } or null. */
+async function reverseGeocodeOne(lat, lon) {
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  return lookup(key, lat, lon);
+}
+
+module.exports = { reverseGeocodeMany, reverseGeocodeOne, _cache: cache };

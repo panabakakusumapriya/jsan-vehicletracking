@@ -87,6 +87,12 @@ const WeatherIcon = () => (
   </svg>
 );
 
+const HealthIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+  </svg>
+);
+
 const HistoryIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 3v5h5"/>
@@ -115,7 +121,11 @@ const links = [
   { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon},
   { to: '/weather',  label: 'Predictive Weather',  Icon: WeatherIcon},
   { to: '/hotels',   label: 'Hotels',             Icon: BedIcon    },
+<<<<<<< Updated upstream
   { to: '/couriers', label: 'Couriers',           Icon: PackageIcon},
+=======
+  { to: '/app-health', label: 'App Health',         Icon: HealthIcon },
+>>>>>>> Stashed changes
   { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
   { to: '/reports',  label: 'Reports',             Icon: ReportIcon },
 ];

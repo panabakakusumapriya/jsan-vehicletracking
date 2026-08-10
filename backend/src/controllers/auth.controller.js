@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const User = require('../models/User');
 const Trip = require('../models/Trip');
+const AppActivity = require('../models/AppActivity');
 const { signToken } = require('../utils/jwt');
 const { isValidTimeZone } = require('../utils/timezone');
 const asyncHandler = require('../utils/asyncHandler');
@@ -38,6 +39,12 @@ exports.login = asyncHandler(async (req, res) => {
     user.sessionLastSeenAt = new Date();
     user.lastLoginAt = new Date();
     await user.save();
+    // Log sign-in activity
+    AppActivity.create({
+      driverId: user._id, action: 'sign_in', timestamp: new Date(),
+      driverName: user.name, driverEmail: user.email,
+      country: user.country, project: user.project,
+    }).catch(() => {});
     return res.json({ token: signToken(user, sessionId), user: user.toSafeJSON() });
   }
 
@@ -50,6 +57,14 @@ exports.login = asyncHandler(async (req, res) => {
 // POST /api/auth/logout — clears the active session so the driver can sign in again.
 exports.logout = asyncHandler(async (req, res) => {
   if (req.user) {
+    // Log sign-out activity
+    if (req.user.role === 'user') {
+      AppActivity.create({
+        driverId: req.user._id, action: 'sign_out', timestamp: new Date(),
+        driverName: req.user.name, driverEmail: req.user.email,
+        country: req.user.country, project: req.user.project,
+      }).catch(() => {});
+    }
     req.user.activeSessionId = null;
     req.user.sessionLastSeenAt = null;
     await req.user.save();

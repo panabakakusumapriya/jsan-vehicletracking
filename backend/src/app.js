@@ -52,6 +52,7 @@ function createApp() {
   app.use('/api/push', require('./routes/push.routes'));
   app.use('/api/mobiles', require('./routes/mobile.routes'));
   app.use('/api/assignments', require('./routes/assignment.routes'));
+  app.use('/api/app-activity', require('./routes/appActivity.routes'));
   app.use('/api/reports', require('./routes/report.routes'));
   app.use('/api/weather', require('./routes/weather.routes'));
   app.use('/api/hotels', require('./routes/hotel.routes'));

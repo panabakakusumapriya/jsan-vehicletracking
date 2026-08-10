@@ -91,19 +91,26 @@ export function Reports() {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
   }, []);
 
-  // Load the overview summary when no filters are selected
+  // Load overview summaries — pass filters to the API so results are always relevant
   useEffect(() => {
-    if (driverId && date) return;
+    if (driverId && date) return; // detail view handles its own fetch
     setSummaryLoading(true);
     setError(null);
-    api.get<{ summaries: MergedSummary[] }>('/api/trips/merged-summary?limit=200')
+    const params = new URLSearchParams({ limit: '500' });
+    if (driverId) params.set('driverId', driverId);
+    if (date) params.set('date', date);
+    if (country && !driverId) {
+      const ids = drivers.filter(d => d.country === country).map(d => d._id);
+      if (ids.length) params.set('driverIds', ids.join(','));
+    }
+    api.get<{ summaries: MergedSummary[] }>(`/api/trips/merged-summary?${params.toString()}`)
       .then(r => setSummaries(r.summaries ?? []))
       .catch(e => {
         setSummaries([]);
         setError(e instanceof Error ? e.message : 'Failed to load reports');
       })
       .finally(() => setSummaryLoading(false));
-  }, [driverId, date]);
+  }, [driverId, date, country, drivers]);
 
   // Fetch merged data when driver + date are both set
   useEffect(() => {

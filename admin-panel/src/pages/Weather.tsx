@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { divIcon } from 'leaflet';
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import { api } from '../lib/api';
+import { km } from '../lib/format';
 import { MapAutoResize } from '../lib/MapAutoResize';
 import type { DrivingRisk, DrivingWeather, ParkedDriver, WeatherGroup, WeatherSlot } from '../lib/types';
 
@@ -192,8 +193,208 @@ interface DriverInfo {
   place: string;
 }
 
+/* ── History types ── */
+interface HistorySlot {
+  dt: number;
+  at: string;
+  tempC: number | null;
+  windKmh: number | null;
+  gustKmh: number | null;
+  precipMm: number;
+  description: string;
+  icon: string | null;
+  risk: DrivingRisk;
+}
+
+interface TripSummaryRow {
+  _id: string;
+  driverName: string;
+  driverCountry: string | null;
+  driverProject: string | null;
+  vehiclePlate: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  distanceMeters: number;
+  maxSpeedKmh: number;
+  status: string;
+  startLocation: { lat: number; lon: number } | null;
+  locationName: string | null;
+}
+
+interface TripWeather {
+  slots: HistorySlot[];
+  verdict: DrivingRisk;
+}
+
+/* ── History tab ── */
+function WeatherHistory({ projectFilter, countryFilter }: { projectFilter: string; countryFilter: string }) {
+  const [trips, setTrips] = useState<TripSummaryRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [weatherCache, setWeatherCache] = useState<Record<string, TripWeather | null>>({});
+  const [weatherLoading, setWeatherLoading] = useState<string | null>(null);
+  const [dateFilter, setDateFilter] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ limit: '50' });
+    if (dateFilter) {
+      params.set('from', dateFilter);
+      params.set('to', dateFilter);
+    }
+    api.get<{ trips: TripSummaryRow[] }>(`/api/weather/trip-history?${params}`)
+      .then(r => setTrips(r.trips ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [dateFilter]);
+
+  const filtered = trips.filter(t => {
+    if (projectFilter && t.driverProject !== projectFilter) return false;
+    if (countryFilter && t.driverCountry !== countryFilter) return false;
+    return true;
+  });
+
+  const toggleExpand = async (tripId: string) => {
+    if (expanded === tripId) { setExpanded(null); return; }
+    setExpanded(tripId);
+    if (weatherCache[tripId] !== undefined) return;
+    setWeatherLoading(tripId);
+    try {
+      const r = await api.get<{ weather: TripWeather | null }>(`/api/weather/trip-weather/${tripId}`);
+      setWeatherCache(c => ({ ...c, [tripId]: r.weather }));
+    } catch {
+      setWeatherCache(c => ({ ...c, [tripId]: null }));
+    } finally {
+      setWeatherLoading(null);
+    }
+  };
+
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+        <input
+          type="date"
+          className="input"
+          style={{ width: 170, fontSize: 12, padding: '4px 6px' }}
+          value={dateFilter}
+          max={new Date().toISOString().slice(0, 10)}
+          onChange={e => setDateFilter(e.target.value)}
+        />
+        {dateFilter && (
+          <button className="btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }} onClick={() => setDateFilter('')}>
+            Clear date
+          </button>
+        )}
+      </div>
+      <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>Loading trips...</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No completed trips found.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Driver</th>
+                <th>Country</th>
+                <th>Vehicle</th>
+                <th>Date</th>
+                <th>Time</th>
+                <th>Location</th>
+                <th>Distance</th>
+                <th>Max Speed</th>
+                <th>Weather</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(trip => {
+                const weather = weatherCache[trip._id];
+                const isExpanded = expanded === trip._id;
+                const isLoading = weatherLoading === trip._id;
+                return (
+                  <React.Fragment key={trip._id}>
+                    <tr style={{ cursor: 'pointer' }} onClick={() => toggleExpand(trip._id)}>
+                      <td>{trip.driverName}</td>
+                      <td>{trip.driverCountry || '—'}</td>
+                      <td>{trip.vehiclePlate || '—'}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{new Date(trip.startedAt).toLocaleDateString()}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        {new Date(trip.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {trip.endedAt && <> — {new Date(trip.endedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>}
+                      </td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{trip.locationName || (trip.startLocation ? `${trip.startLocation.lat.toFixed(2)}, ${trip.startLocation.lon.toFixed(2)}` : '—')}</td>
+                      <td>{km(trip.distanceMeters)}</td>
+                      <td>{Math.round(trip.maxSpeedKmh)} km/h</td>
+                      <td>
+                        {weather ? (
+                          <span className={`badge ${RISK_BADGE[weather.verdict]}`}>{RISK_LABEL[weather.verdict]}</span>
+                        ) : isExpanded && isLoading ? (
+                          <span style={{ color: 'var(--muted)', fontSize: 11 }}>Loading...</span>
+                        ) : isExpanded && weather === null ? (
+                          <span style={{ color: 'var(--muted)' }}>—</span>
+                        ) : (
+                          <span style={{ color: 'var(--muted)', fontSize: 11 }}>Click to load</span>
+                        )}
+                      </td>
+                      <td>
+                        <button className="btn-ghost" style={{ fontSize: 11, padding: '2px 8px' }}>
+                          {isExpanded ? '▲' : '▼'}
+                        </button>
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={10} style={{ padding: '10px 16px', background: 'var(--panel-2)' }}>
+                          {isLoading ? (
+                            <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 12, padding: 10 }}>
+                              Fetching weather from Open-Meteo archive...
+                            </div>
+                          ) : weather && weather.slots.length > 0 ? (
+                            <div style={{ display: 'flex', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
+                              {weather.slots.map(s => (
+                                <div key={s.dt} title={`${s.at} · ${s.description}`} style={{
+                                  flex: '1 1 0', minWidth: 58, textAlign: 'center',
+                                  padding: '6px 3px 5px', borderRadius: 8,
+                                  background: s.risk === 'clear' ? 'var(--panel)' : s.risk === 'caution' ? 'var(--amber-bg)' : 'var(--red-bg)',
+                                  border: `1px solid ${s.risk === 'clear' ? 'var(--line)' : RISK_COLOR[s.risk]}33`,
+                                }}>
+                                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600 }}>{s.at}</div>
+                                  <div style={{ fontSize: 18, lineHeight: 1.3 }}>{glyphFor(s.icon)}</div>
+                                  <div style={{ fontSize: 12, fontWeight: 800 }}>{s.tempC != null ? `${s.tempC}°` : '—'}</div>
+                                  <div style={{ fontSize: 9, color: 'var(--muted)' }}>
+                                    {s.windKmh != null && <div>{s.gustKmh && s.gustKmh > s.windKmh ? `${s.gustKmh}g` : s.windKmh} km/h</div>}
+                                    {s.precipMm > 0 && <div>{s.precipMm}mm</div>}
+                                  </div>
+                                  <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 1 }}>{s.description}</div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 12, padding: 10 }}>
+                              No weather data available for this trip location.
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Main component ── */
+type WeatherTab = 'forecast' | 'history';
+
 export function Weather() {
+  const [tab, setTab] = useState<WeatherTab>('forecast');
   const [day, setDay] = useState(0);
   const [data, setData] = useState<DrivingWeather | null>(null);
   const [parked, setParked] = useState<ParkedDriver[]>([]);
@@ -354,7 +555,7 @@ export function Weather() {
         <div>
           <h1 className="page-title">Predictive Weather</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            {(() => {
+            {tab === 'history' ? 'Historical weather conditions during completed trips' : (() => {
               const d = new Date();
               d.setDate(d.getDate() + day);
               const label = day === 0 ? 'Today' : day === 1 ? 'Tomorrow' : null;
@@ -385,9 +586,11 @@ export function Weather() {
             <option value="">All drivers</option>
             {driverOptions.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
-          <select className="input" style={{ width: 170 }} value={day} onChange={e => setDay(Number(e.target.value))}>
-            {DAYS.map(offset => <option key={offset} value={offset}>{dayOption(offset)}</option>)}
-          </select>
+          {tab === 'forecast' && (
+            <select className="input" style={{ width: 170 }} value={day} onChange={e => setDay(Number(e.target.value))}>
+              {DAYS.map(offset => <option key={offset} value={offset}>{dayOption(offset)}</option>)}
+            </select>
+          )}
           <button className="btn-ghost" onClick={() => setReloadKey(k => k + 1)} disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}
           </button>
@@ -399,6 +602,13 @@ export function Weather() {
           )}
         </div>
       </div>
+
+      <div style={{ display: 'flex', gap: 6, margin: '0 0 10px' }}>
+        <button className={`btn${tab === 'forecast' ? '' : '-ghost'}`} style={{ fontSize: 12, padding: '5px 14px' }} onClick={() => setTab('forecast')}>Forecast</button>
+        <button className={`btn${tab === 'history' ? '' : '-ghost'}`} style={{ fontSize: 12, padding: '5px 14px' }} onClick={() => setTab('history')}>History</button>
+      </div>
+
+      {tab === 'history' ? <WeatherHistory projectFilter={projectFilter} countryFilter={countryFilter} /> : <>
 
       {error && <div className="error-text">{error}</div>}
 
@@ -525,6 +735,7 @@ export function Weather() {
           </div>
         )}
       </div>
+      </>}
     </div>
   );
 }

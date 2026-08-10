@@ -175,6 +175,8 @@ class TrackingService : Service() {
     private val tickRunnable = object : Runnable {
         override fun run() {
             try { onTick() } catch (_: Exception) {}
+            // App health heartbeat — sends every ~30s (self-throttled)
+            try { HeartbeatSender.sendIfDue(applicationContext) } catch (_: Exception) {}
             ticker.postDelayed(this, TICK_INTERVAL_MS)
         }
     }

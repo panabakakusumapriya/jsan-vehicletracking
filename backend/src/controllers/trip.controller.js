@@ -195,10 +195,32 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
 // Returns grouped driver+date trip summaries for the reports overview.
 exports.mergedSummary = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
-  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 500);
   const page = Math.max(parseInt(req.query.page || '1', 10), 1);
 
-  const matchStage = Object.keys(scope).length ? scope : {};
+  const matchStage = Object.keys(scope).length ? { ...scope } : {};
+
+  // Optional filters: driverId, driverIds (comma-separated), date (YYYY-MM-DD), from, to
+  if (req.query.driverId) {
+    const mongoose = require('mongoose');
+    matchStage.driverId = new mongoose.Types.ObjectId(req.query.driverId);
+  } else if (req.query.driverIds) {
+    const mongoose = require('mongoose');
+    const ids = req.query.driverIds.split(',').filter(Boolean).map(id => new mongoose.Types.ObjectId(id));
+    if (ids.length) matchStage.driverId = { $in: ids };
+  }
+  if (req.query.date) {
+    const d = new Date(req.query.date);
+    const next = new Date(d); next.setDate(next.getDate() + 1);
+    matchStage.startedAt = { ...(matchStage.startedAt || {}), $gte: d, $lt: next };
+  } else {
+    if (req.query.from) {
+      matchStage.startedAt = { ...(matchStage.startedAt || {}), $gte: new Date(req.query.from) };
+    }
+    if (req.query.to) {
+      matchStage.startedAt = { ...(matchStage.startedAt || {}), $lte: new Date(req.query.to) };
+    }
+  }
 
   const pipeline = [
     { $match: matchStage },
