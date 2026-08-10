@@ -1,9 +1,12 @@
 const archiver = require('archiver');
 const mongoose = require('mongoose');
 const Trip = require('../models/Trip');
+const User = require('../models/User');
 const LocationPoint = require('../models/LocationPoint');
 const asyncHandler = require('../utils/asyncHandler');
 const { accessibleDriverFilter } = require('../utils/scope');
+const { dayRange } = require('../utils/timezone');
+const { timezoneForCountry } = require('../utils/countryTimezone');
 const { buildKml, buildJson, buildMergedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate } = require('../utils/tripExport');
 
 // Shared by list(), exportBulk() and mergedSummary() — the exact same status/driverId(s)/date
@@ -117,13 +120,18 @@ exports.exportMerged = asyncHandler(async (req, res) => {
   if (!driverId || !date) return res.status(400).json({ error: 'driverId and date are required' });
 
   const scope = await accessibleDriverFilter(req.user);
-  const dayStart = new Date(date);
-  const dayEnd = new Date(date);
-  dayEnd.setHours(23, 59, 59, 999);
+  const driver = await User.findById(driverId).select('country');
+  const tz = timezoneForCountry(driver?.country);
+  let range;
+  try {
+    range = dayRange(date, tz);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   const trips = await Trip.find({
     driverId,
-    startedAt: { $gte: dayStart, $lte: dayEnd },
+    startedAt: { $gte: range.from, $lt: range.to },
     ...scope,
   })
     .sort({ startedAt: 1 })
@@ -161,13 +169,18 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
   if (!driverId || !date) return res.status(400).json({ error: 'driverId and date are required' });
 
   const scope = await accessibleDriverFilter(req.user);
-  const dayStart = new Date(date);
-  const dayEnd = new Date(date);
-  dayEnd.setHours(23, 59, 59, 999);
+  const driver = await User.findById(driverId).select('country');
+  const tz = timezoneForCountry(driver?.country);
+  let range;
+  try {
+    range = dayRange(date, tz);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
 
   const trips = await Trip.find({
     driverId,
-    startedAt: { $gte: dayStart, $lte: dayEnd },
+    startedAt: { $gte: range.from, $lt: range.to },
     ...scope,
   })
     .sort({ startedAt: 1 })
@@ -202,6 +215,7 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
     driverName: trips.length ? driverName(trips[0]) : '',
     vehiclePlate: trips.length ? vehiclePlate(trips[0]) : null,
     date,
+    timezone: tz,
     totalTrips: trips.length,
     totalDistance,
     maxSpeed,
@@ -225,12 +239,28 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
   const page = Math.max(parseInt(req.query.page || '1', 10), 1);
 
+  // Each trip's calendar day depends on the timezone it happened in, not the server's/UTC — a
+  // trip starting just after local midnight for a Singapore driver (UTC+8) must bucket into
+  // that local day, not silently merge into the previous UTC day. Resolved from each driver's
+  // stored `country` (see utils/countryTimezone.js) and looked up for every driver up front,
+  // since the zone has to be known BEFORE $group buckets by day below, not after.
+  const drivers = await User.find({}).select('name country');
+  const driverNameMap = new Map(drivers.map((d) => [d._id.toString(), d.name]));
+  const tzBranches = drivers.map((d) => ({
+    case: { $eq: ['$driverId', d._id] },
+    then: timezoneForCountry(d.country),
+  }));
+
   const pipeline = [
     { $match: filter },
     {
       $addFields: {
         dateStr: {
-          $dateToString: { format: '%Y-%m-%d', date: '$startedAt' },
+          $dateToString: {
+            format: '%Y-%m-%d',
+            date: '$startedAt',
+            timezone: tzBranches.length ? { $switch: { branches: tzBranches, default: 'UTC' } } : 'UTC',
+          },
         },
       },
     },
@@ -258,14 +288,9 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
   const results = facetResult?.rows || [];
   const total = facetResult?.totalCount?.[0]?.count || 0;
 
-  const User = require('../models/User');
-  const driverIds = [...new Set(results.map((r) => r._id.driverId.toString()))];
-  const users = await User.find({ _id: { $in: driverIds } }).select('name');
-  const userMap = Object.fromEntries(users.map((u) => [u._id.toString(), u.name]));
-
   const summaries = results.map((r) => ({
     driverId: r._id.driverId,
-    driverName: userMap[r._id.driverId.toString()] || 'Unknown',
+    driverName: driverNameMap.get(r._id.driverId.toString()) || 'Unknown',
     date: r._id.date,
     totalTrips: r.totalTrips,
     totalDistance: r.totalDistance || 0,

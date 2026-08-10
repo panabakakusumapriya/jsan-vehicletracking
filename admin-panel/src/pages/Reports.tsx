@@ -29,6 +29,7 @@ interface MergedData {
   driverName: string;
   vehiclePlate: string | null;
   date: string;
+  timezone: string;
   totalTrips: number;
   totalDistance: number;
   maxSpeed: number;
@@ -343,7 +344,7 @@ export function Reports() {
             <div className="stat">
               <div className="icon">📅</div>
               <div className="v">{date}</div>
-              <div className="k">Date</div>
+              <div className="k">Date · {merged.timezone}</div>
             </div>
             <div className="stat">
               <div className="icon">🗺️</div>

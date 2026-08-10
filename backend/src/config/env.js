@@ -15,7 +15,16 @@ module.exports = {
   PORT: parseInt(process.env.PORT || '4000', 10),
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_SECRET: process.env.JWT_SECRET,
+  // Admin/manager/team_lead tokens — these roles sign in from a browser fairly often, so a
+  // shorter lifetime is a small inconvenience, not a support ticket.
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '30d',
+  // Driver-portal (mobile app) tokens. Drivers already carry a single-session lock
+  // (activeSessionId, see auth.controller.js) — a lost/stolen phone is revoked by
+  // deactivating the account, not by waiting out the JWT — so a long-lived token here trades
+  // away little security for a lot fewer "why do I have to log in again" reports from the
+  // field. Defaults to 365d with no Railway env change required; set DRIVER_JWT_EXPIRES_IN to
+  // override.
+  DRIVER_JWT_EXPIRES_IN: process.env.DRIVER_JWT_EXPIRES_IN || '365d',
   // CORS is no longer configurable — it is always '*'. See the note in app.js.
   HEARTBEAT_INTERVAL_SECONDS: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '10', 10),
   STALE_AFTER_SECONDS: parseInt(process.env.STALE_AFTER_SECONDS || '60', 10),

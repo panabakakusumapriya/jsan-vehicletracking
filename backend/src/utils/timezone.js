@@ -76,6 +76,31 @@ function monthRange(month, tz = 'UTC') {
   };
 }
 
+/**
+ * Half-open [from, to) UTC range covering the single calendar day `YYYY-MM-DD` as lived in
+ * `tz`. Same half-open reasoning as monthRange: a trip starting exactly at local midnight
+ * belongs to one day only, never double-counted at the boundary.
+ *
+ * Passing `d + 1` straight into zonedStartOfDay relies on Date.UTC's own month/year rollover
+ * (day 32 of a 31-day month becomes day 1 of the next) — the same trick monthRange already
+ * leans on for `m + 1`, so no separate end-of-month special case is needed here either.
+ */
+function dayRange(date, tz = 'UTC') {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(date || ''));
+  if (!match) throw new Error('date must look like 2026-08-10');
+  const zone = isValidTimeZone(tz) ? tz : 'UTC';
+  const y = Number(match[1]);
+  const m = Number(match[2]);
+  const d = Number(match[3]);
+  if (m < 1 || m > 12) throw new Error('date must be a real calendar date');
+
+  return {
+    from: zonedStartOfDay(y, m, d, zone),
+    to: zonedStartOfDay(y, m, d + 1, zone),
+    tz: zone,
+  };
+}
+
 /** Format an instant as YYYY-MM-DD as seen in `tz` (for report rows and CSV). */
 function formatDateInZone(instant, tz = 'UTC') {
   const zone = isValidTimeZone(tz) ? tz : 'UTC';
@@ -88,4 +113,4 @@ function formatDateInZone(instant, tz = 'UTC') {
   return parts; // en-CA gives YYYY-MM-DD
 }
 
-module.exports = { monthRange, formatDateInZone, isValidTimeZone, zonedStartOfDay, offsetMsAt };
+module.exports = { monthRange, dayRange, formatDateInZone, isValidTimeZone, zonedStartOfDay, offsetMsAt };
