@@ -1,34 +1,53 @@
 const archiver = require('archiver');
+const mongoose = require('mongoose');
 const Trip = require('../models/Trip');
 const LocationPoint = require('../models/LocationPoint');
 const asyncHandler = require('../utils/asyncHandler');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { buildKml, buildJson, buildMergedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate } = require('../utils/tripExport');
 
-// GET /api/trips?status=&driverId=&from=&to=&limit=&page=
+// Shared by list(), exportBulk() and mergedSummary() — the exact same status/driverId(s)/date
+// filtering rules apply everywhere trips get filtered, so this is the one place that logic
+// lives rather than three copies drifting apart.
 //
 // from/to are plain YYYY-MM-DD strings, matched with no timezone conversion: `from` parses as
 // UTC midnight, `to` parses in the server's own local time. Deliberate — this endpoint does
 // not know or care what timezone the viewer or the driver is in. See the Trips page for how
 // the result is displayed (also deliberately viewer-local, with no conversion either).
-exports.list = asyncHandler(async (req, res) => {
-  const scope = await accessibleDriverFilter(req.user);
+// A query-string id is always a plain string. Mongoose auto-casts a string to ObjectId for
+// .find()-style queries, but NOT inside .aggregate() pipelines (mergedSummary uses this same
+// filter in a $match stage) — those hit MongoDB directly with whatever's in the pipeline, and
+// a string never equals an ObjectId under Mongo's own comparison, so an uncast id here would
+// silently match zero documents in an aggregation while working fine in .find(). Casting
+// explicitly makes this filter correct for both. Falls back to the raw string for something
+// that isn't a valid ObjectId, so .find() still produces its own CastError as before rather
+// than this function swallowing bad input silently.
+const toObjectId = (id) => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id);
+
+function buildTripFilter(req, scope) {
   const filter = { ...scope };
   if (req.query.status) filter.status = req.query.status;
   if (req.query.driverId) {
-    filter.driverId = req.query.driverId;
+    filter.driverId = toObjectId(req.query.driverId);
   } else if (req.query.driverIds !== undefined) {
     // Present-but-possibly-empty means "match exactly this set" — a project/country combo
     // that resolves to zero drivers must return zero trips, not silently fall through to
     // "no filter at all" and show the whole fleet. `{ $in: [] }` correctly matches nothing.
     const ids = String(req.query.driverIds).split(',').map((s) => s.trim()).filter(Boolean);
-    filter.driverId = { $in: ids };
+    filter.driverId = { $in: ids.map(toObjectId) };
   }
   if (req.query.from || req.query.to) {
     filter.startedAt = {};
     if (req.query.from) filter.startedAt.$gte = new Date(req.query.from);
     if (req.query.to) filter.startedAt.$lte = new Date(`${req.query.to}T23:59:59`);
   }
+  return filter;
+}
+
+// GET /api/trips?status=&driverId=&from=&to=&limit=&page=
+exports.list = asyncHandler(async (req, res) => {
+  const scope = await accessibleDriverFilter(req.user);
+  const filter = buildTripFilter(req, scope);
 
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
   const page = Math.max(parseInt(req.query.page || '1', 10), 1);
@@ -191,39 +210,23 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /api/trips/merged-summary?limit=&page=
-// Returns grouped driver+date trip summaries for the reports overview.
+// GET /api/trips/merged-summary?status=&driverId=&driverIds=&from=&to=&limit=&page=
+//
+// One row per driver+calendar-day (the Trips page's grouped view, and the Reports overview).
+// Same status/driverId(s)/date filters as list()/exportBulk() — a manager filtering Trips by
+// project must see that same scoping reflected in the grouped view, not just the flat one.
+//
+// Paginates over DAY-GROUPS, not raw trips: `total` is the number of distinct driver+day rows
+// matching the filter, computed in the same aggregation pass (via $facet) rather than a second
+// query, so the count can never drift from what was actually grouped.
 exports.mergedSummary = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
-  const limit = Math.min(parseInt(req.query.limit || '50', 10), 500);
+  const filter = buildTripFilter(req, scope);
+  const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
   const page = Math.max(parseInt(req.query.page || '1', 10), 1);
 
-  const matchStage = Object.keys(scope).length ? { ...scope } : {};
-
-  // Optional filters: driverId, driverIds (comma-separated), date (YYYY-MM-DD), from, to
-  if (req.query.driverId) {
-    const mongoose = require('mongoose');
-    matchStage.driverId = new mongoose.Types.ObjectId(req.query.driverId);
-  } else if (req.query.driverIds) {
-    const mongoose = require('mongoose');
-    const ids = req.query.driverIds.split(',').filter(Boolean).map(id => new mongoose.Types.ObjectId(id));
-    if (ids.length) matchStage.driverId = { $in: ids };
-  }
-  if (req.query.date) {
-    const d = new Date(req.query.date);
-    const next = new Date(d); next.setDate(next.getDate() + 1);
-    matchStage.startedAt = { ...(matchStage.startedAt || {}), $gte: d, $lt: next };
-  } else {
-    if (req.query.from) {
-      matchStage.startedAt = { ...(matchStage.startedAt || {}), $gte: new Date(req.query.from) };
-    }
-    if (req.query.to) {
-      matchStage.startedAt = { ...(matchStage.startedAt || {}), $lte: new Date(req.query.to) };
-    }
-  }
-
   const pipeline = [
-    { $match: matchStage },
+    { $match: filter },
     {
       $addFields: {
         dateStr: {
@@ -239,14 +242,21 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
         maxSpeed: { $max: '$maxSpeedKmh' },
         firstStart: { $min: '$startedAt' },
         lastEnd: { $max: '$endedAt' },
+        anyActive: { $max: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
       },
     },
     { $sort: { firstStart: -1 } },
-    { $skip: (page - 1) * limit },
-    { $limit: limit },
+    {
+      $facet: {
+        rows: [{ $skip: (page - 1) * limit }, { $limit: limit }],
+        totalCount: [{ $count: 'count' }],
+      },
+    },
   ];
 
-  const results = await Trip.aggregate(pipeline);
+  const [facetResult] = await Trip.aggregate(pipeline);
+  const results = facetResult?.rows || [];
+  const total = facetResult?.totalCount?.[0]?.count || 0;
 
   const User = require('../models/User');
   const driverIds = [...new Set(results.map((r) => r._id.driverId.toString()))];
@@ -262,33 +272,17 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     maxSpeed: r.maxSpeed || 0,
     firstStart: r.firstStart,
     lastEnd: r.lastEnd,
+    anyActive: Boolean(r.anyActive),
   }));
 
-  res.json({ summaries });
+  res.json({ summaries, total, page, limit });
 });
 
 // GET /api/trips/export?format=kml|json&status=&driverId=&driverIds=&from=&to=
 exports.exportBulk = asyncHandler(async (req, res) => {
   const format = req.query.format === 'json' ? 'json' : 'kml';
   const scope = await accessibleDriverFilter(req.user);
-  const filter = { ...scope };
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.driverId) {
-    filter.driverId = req.query.driverId;
-  } else if (req.query.driverIds !== undefined) {
-    // Present-but-possibly-empty means "match exactly this set" — see the identical comment
-    // on list() above. Exporting "my project" must never silently fall back to exporting
-    // everyone just because that project currently has zero drivers.
-    const ids = String(req.query.driverIds).split(',').map((s) => s.trim()).filter(Boolean);
-    filter.driverId = { $in: ids };
-  }
-  // Same no-conversion matching as list() above: from parses as UTC midnight, to parses in
-  // the server's own local time. No per-driver or per-trip timezone awareness here either.
-  if (req.query.from || req.query.to) {
-    filter.startedAt = {};
-    if (req.query.from) filter.startedAt.$gte = new Date(req.query.from);
-    if (req.query.to) filter.startedAt.$lte = new Date(`${req.query.to}T23:59:59`);
-  }
+  const filter = buildTripFilter(req, scope);
 
   const trips = await Trip.find(filter)
     .sort({ startedAt: -1 })

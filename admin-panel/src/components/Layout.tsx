@@ -121,11 +121,8 @@ const links = [
   { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon},
   { to: '/weather',  label: 'Predictive Weather',  Icon: WeatherIcon},
   { to: '/hotels',   label: 'Hotels',             Icon: BedIcon    },
-<<<<<<< Updated upstream
   { to: '/couriers', label: 'Couriers',           Icon: PackageIcon},
-=======
   { to: '/app-health', label: 'App Health',         Icon: HealthIcon },
->>>>>>> Stashed changes
   { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
   { to: '/reports',  label: 'Reports',             Icon: ReportIcon },
 ];

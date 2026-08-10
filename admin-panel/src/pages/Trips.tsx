@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { DateField } from '../components/DateField';
 import { ExportButtons } from '../components/ExportButtons';
@@ -6,16 +6,36 @@ import { api, downloadFile } from '../lib/api';
 import { km, sessionDt, statusBadge } from '../lib/format';
 import type { Project, Trip, User } from '../lib/types';
 
-const driverName = (d: Trip['driverId']) => (typeof d === 'object' && d ? d.name : '—');
-const plate      = (v: Trip['vehicleId']) => (typeof v === 'object' && v ? v.plateNumber : '—');
+const plate = (v: Trip['vehicleId']) => (typeof v === 'object' && v ? v.plateNumber : '—');
+
+/** One row per driver+calendar-day — /api/trips/merged-summary. */
+interface DaySummary {
+  driverId: string;
+  driverName: string;
+  date: string; // YYYY-MM-DD
+  totalTrips: number;
+  totalDistance: number;
+  maxSpeed: number;
+  firstStart: string;
+  lastEnd: string | null;
+  anyActive: boolean;
+}
+
+const dayKey = (s: DaySummary) => `${s.driverId}|${s.date}`;
 
 const FilterIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
   </svg>
 );
+const ChevronIcon = ({ open }: { open: boolean }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+    style={{ transition: 'transform 0.15s', transform: open ? 'rotate(90deg)' : 'none', flexShrink: 0 }}>
+    <polyline points="9 18 15 12 9 6"/>
+  </svg>
+);
 
-// Trips per page — the most recent 50 trips make up page 1.
+// Driver-day rows per page.
 const PAGE_SIZE = 50;
 
 // Builds the list of page buttons to render, with '...' gaps for ranges that are skipped —
@@ -34,7 +54,7 @@ function pageList(current: number, total: number): (number | '...')[] {
 }
 
 export function Trips() {
-  const [trips, setTrips] = useState<Trip[]>([]);
+  const [summaries, setSummaries] = useState<DaySummary[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [drivers, setDrivers] = useState<User[]>([]);
@@ -46,6 +66,12 @@ export function Trips() {
   const [country, setCountry] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+
+  // Inline expand state — a day-row's individual trips are fetched lazily on first expand and
+  // then cached by key, so collapsing and re-expanding the same row doesn't refetch.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [dayTrips, setDayTrips] = useState<Record<string, Trip[]>>({});
+  const [dayTripsLoading, setDayTripsLoading] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
@@ -85,9 +111,9 @@ export function Trips() {
   const load = useCallback((pageToLoad: number) => {
     setLoading(true);
     const params = buildParams(pageToLoad);
-    api.get<{ trips: Trip[]; total: number; page: number; limit: number }>(`/api/trips?${params}`)
+    api.get<{ summaries: DaySummary[]; total: number; page: number; limit: number }>(`/api/trips/merged-summary?${params}`)
       .then(r => {
-        setTrips(r.trips);
+        setSummaries(r.summaries);
         setTotal(r.total);
         setPage(r.page);
       })
@@ -100,6 +126,7 @@ export function Trips() {
   // filter change rather than every re-render.
   useEffect(() => {
     load(1);
+    setExpanded(new Set());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, driverId, project, country, from, to]);
 
@@ -108,6 +135,21 @@ export function Trips() {
   const goToPage = (p: number) => {
     if (p < 1 || p > totalPages || p === page) return;
     load(p);
+  };
+
+  const toggleExpand = (s: DaySummary) => {
+    const key = dayKey(s);
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+    if (dayTrips[key] || dayTripsLoading[key]) return; // already loaded or in flight
+    setDayTripsLoading(prev => ({ ...prev, [key]: true }));
+    const params = new URLSearchParams({ driverId: s.driverId, from: s.date, to: s.date, limit: '200' });
+    api.get<{ trips: Trip[] }>(`/api/trips?${params}`)
+      .then(r => setDayTrips(prev => ({ ...prev, [key]: r.trips })))
+      .finally(() => setDayTripsLoading(prev => ({ ...prev, [key]: false })));
   };
 
   const handleExport = (format: 'kml' | 'json') => {
@@ -126,12 +168,12 @@ export function Trips() {
     drivers.filter(d => !project || d.project === project).map(d => d.country).filter(Boolean)
   )).sort() as string[];
 
-  // These reflect only the current page — `total` (below) is the one number here that's
-  // always exact for the whole filtered set regardless of which page is showing.
-  const active    = trips.filter(t => t.status === 'active').length;
-  const completed = trips.filter(t => t.status === 'completed').length;
-  const totalKm   = trips.reduce((acc, t) => acc + (t.distanceMeters ?? 0), 0);
-  const topSpeed  = trips.reduce((acc, t) => Math.max(acc, t.maxSpeedKmh ?? 0), 0);
+  // These reflect only the current page of driver-days — `total` (below) is the one number
+  // here that's always exact for the whole filtered set regardless of which page is showing.
+  const tripsOnPage  = summaries.reduce((acc, s) => acc + s.totalTrips, 0);
+  const activeDays   = summaries.filter(s => s.anyActive).length;
+  const totalKm      = summaries.reduce((acc, s) => acc + (s.totalDistance ?? 0), 0);
+  const topSpeed     = summaries.reduce((acc, s) => Math.max(acc, s.maxSpeed ?? 0), 0);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 56px - var(--topbar-h))' }}>
@@ -144,12 +186,16 @@ export function Trips() {
         .trips-stats .stat .v { font-size: 14px; letter-spacing: -0.4px; }
         .trips-stats .stat .k { font-size: 9px; margin-top: 0; }
         .card table thead { position: sticky; top: 0; z-index: 3; }
+        .day-row { cursor: pointer; }
+        .day-row:hover td { background: var(--panel-2); }
+        .day-detail-row td { padding: 0; background: var(--bg); }
+        .day-detail-row table td { background: transparent; }
       `}</style>
       <div className="page-head">
         <div>
           <h1 className="page-title">Trips</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            Full history of driver trips and routes
+            One row per driver per day — click a row to see that day&apos;s individual trips
           </p>
         </div>
       </div>
@@ -238,19 +284,19 @@ export function Trips() {
       {/* Stats */}
       <div className="stat-row trips-stats">
         <div className="stat">
-          <div className="icon">🗺️</div>
+          <div className="icon">📅</div>
           <div className="v">{total}</div>
-          <div className="k">Total trips</div>
+          <div className="k">Driver-days</div>
+        </div>
+        <div className="stat">
+          <div className="icon">🗺️</div>
+          <div className="v">{tripsOnPage}</div>
+          <div className="k">Trips (loaded)</div>
         </div>
         <div className="stat">
           <div className="icon">🟢</div>
-          <div className="v">{active}</div>
-          <div className="k">Active now</div>
-        </div>
-        <div className="stat">
-          <div className="icon">✅</div>
-          <div className="v">{completed}</div>
-          <div className="k">Completed</div>
+          <div className="v">{activeDays}</div>
+          <div className="k">Days with active trip</div>
         </div>
         <div className="stat">
           <div className="icon">📏</div>
@@ -269,75 +315,120 @@ export function Trips() {
         <table>
           <thead>
             <tr>
-              <th>Driver</th>
-              <th>Vehicle</th>
-              <th>Status</th>
-              <th>Started</th>
-              <th>Ended</th>
-              <th>Distance</th>
-              <th>Max speed</th>
-              <th>Points</th>
               <th></th>
+              <th>Driver</th>
+              <th>Date</th>
+              <th>Trips</th>
+              <th>Total distance</th>
+              <th>Max speed</th>
+              <th>First start</th>
+              <th>Last end</th>
             </tr>
           </thead>
           <tbody>
-            {trips.map(t => (
-              <tr key={t._id}>
-                <td>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                    <div style={{
-                      width: 30, height: 30, borderRadius: 9,
-                      background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.18)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      color: 'var(--brand)', fontSize: 10, fontWeight: 800, flexShrink: 0,
-                    }}>
-                      {driverName(t.driverId).split(' ').slice(0, 2).map((n: string) => n[0]).join('').toUpperCase()}
-                    </div>
-                    {driverName(t.driverId)}
-                  </div>
-                </td>
-                <td>
-                  {plate(t.vehicleId) !== '—'
-                    ? <span style={{ background: 'var(--panel-2)', border: '1px solid var(--line-2)', borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>{plate(t.vehicleId)}</span>
-                    : <span style={{ color: 'var(--muted)' }}>—</span>
-                  }
-                </td>
-                <td><span className={`badge ${statusBadge(t.status)}`}>{t.status.replace('_', ' ')}</span></td>
-                <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(t.startedAt)}</td>
-                <td style={{ color: 'var(--muted)', fontSize: 13 }}>{t.endedAt ? sessionDt(t.endedAt) : '—'}</td>
-                <td style={{ fontWeight: 600 }}>{km(t.distanceMeters)}</td>
-                <td>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
-                <td style={{ color: 'var(--muted)' }}>{t.pointCount}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {t.status === 'active' && (
-                      <Link to={`/trips/${t._id}/map`} style={{
-                        display: 'inline-flex', alignItems: 'center', gap: 4,
-                        fontSize: 12.5, fontWeight: 600, color: '#059669',
-                        background: '#f0fdf4', border: '1px solid #a7f3d0',
-                        borderRadius: 7, padding: '4px 10px',
-                      }}>
-                        ● Live
-                      </Link>
-                    )}
-                    <Link
-                      to={t.status === 'active' ? `/trips/${t._id}/map` : `/trips/${t._id}`}
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', gap: 4,
-                        fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',
-                        background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.2)',
-                        borderRadius: 7, padding: '4px 10px',
-                      }}
-                    >
-                      {t.status === 'active' ? 'Map →' : 'Details →'}
-                    </Link>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {!loading && trips.length === 0 && (
+            {summaries.map(s => {
+              const key = dayKey(s);
+              const isOpen = expanded.has(key);
+              const rows = dayTrips[key];
+              const rowsLoading = dayTripsLoading[key];
+              return (
+                <Fragment key={key}>
+                  <tr className="day-row" onClick={() => toggleExpand(s)}>
+                    <td style={{ width: 28, paddingRight: 0 }}><ChevronIcon open={isOpen} /></td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                        <div style={{
+                          width: 30, height: 30, borderRadius: 9,
+                          background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.18)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          color: 'var(--brand)', fontSize: 10, fontWeight: 800, flexShrink: 0,
+                        }}>
+                          {s.driverName.split(' ').slice(0, 2).map((n: string) => n[0]).join('').toUpperCase()}
+                        </div>
+                        {s.driverName}
+                        {s.anyActive && <span className="badge green" style={{ fontSize: 10 }}>active</span>}
+                      </div>
+                    </td>
+                    <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.date}</td>
+                    <td style={{ fontWeight: 700 }}>{s.totalTrips}</td>
+                    <td style={{ fontWeight: 600 }}>{km(s.totalDistance)}</td>
+                    <td>{Math.round(s.maxSpeed)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
+                    <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(s.firstStart)}</td>
+                    <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.lastEnd ? sessionDt(s.lastEnd) : '—'}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr key={`${key}-detail`} className="day-detail-row">
+                      <td colSpan={8}>
+                        {rowsLoading && !rows ? (
+                          <div className="muted" style={{ padding: '14px 20px', fontSize: 12.5 }}>Loading trips…</div>
+                        ) : (
+                          <table style={{ width: '100%' }}>
+                            <thead>
+                              <tr>
+                                <th style={{ paddingLeft: 48 }}>Vehicle</th>
+                                <th>Status</th>
+                                <th>Started</th>
+                                <th>Ended</th>
+                                <th>Distance</th>
+                                <th>Max speed</th>
+                                <th>Points</th>
+                                <th></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(rows ?? []).map(t => (
+                                <tr key={t._id}>
+                                  <td style={{ paddingLeft: 48 }}>
+                                    {plate(t.vehicleId) !== '—'
+                                      ? <span style={{ background: 'var(--panel-2)', border: '1px solid var(--line-2)', borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>{plate(t.vehicleId)}</span>
+                                      : <span style={{ color: 'var(--muted)' }}>—</span>
+                                    }
+                                  </td>
+                                  <td><span className={`badge ${statusBadge(t.status)}`}>{t.status.replace('_', ' ')}</span></td>
+                                  <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(t.startedAt)}</td>
+                                  <td style={{ color: 'var(--muted)', fontSize: 13 }}>{t.endedAt ? sessionDt(t.endedAt) : '—'}</td>
+                                  <td style={{ fontWeight: 600 }}>{km(t.distanceMeters)}</td>
+                                  <td>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
+                                  <td style={{ color: 'var(--muted)' }}>{t.pointCount}</td>
+                                  <td onClick={e => e.stopPropagation()}>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                      {t.status === 'active' && (
+                                        <Link to={`/trips/${t._id}/map`} style={{
+                                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                                          fontSize: 12.5, fontWeight: 600, color: '#059669',
+                                          background: '#f0fdf4', border: '1px solid #a7f3d0',
+                                          borderRadius: 7, padding: '4px 10px',
+                                        }}>
+                                          ● Live
+                                        </Link>
+                                      )}
+                                      <Link
+                                        to={t.status === 'active' ? `/trips/${t._id}/map` : `/trips/${t._id}`}
+                                        style={{
+                                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                                          fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',
+                                          background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.2)',
+                                          borderRadius: 7, padding: '4px 10px',
+                                        }}
+                                      >
+                                        {t.status === 'active' ? 'Map →' : 'Details →'}
+                                      </Link>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!loading && summaries.length === 0 && (
               <tr>
-                <td colSpan={9} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
+                <td colSpan={8} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
                   No trips found for the selected filter.
                 </td>
               </tr>
@@ -346,13 +437,12 @@ export function Trips() {
         </table>
       </div>
 
-      {/* Numbered pagination — page 1 is always the most recent PAGE_SIZE trips. Each page
-          replaces the table rather than accumulating, so the page never has to hold more than
-          one page's worth of trips in memory at once. */}
-      {!loading && trips.length > 0 && (
+      {/* Numbered pagination over driver-day rows. Each page replaces the table rather than
+          accumulating, so the page never has to hold more than one page's worth in memory. */}
+      {!loading && summaries.length > 0 && (
         <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 3, padding: '10px 0 2px', fontSize: 11 }}>
           <span style={{ color: 'var(--muted)', marginRight: 6, fontSize: 11 }}>
-            {(page - 1) * PAGE_SIZE + 1}–{(page - 1) * PAGE_SIZE + trips.length} of {total}
+            {(page - 1) * PAGE_SIZE + 1}–{(page - 1) * PAGE_SIZE + summaries.length} of {total}
           </span>
           <button className="btn-ghost" style={{ padding: '2px 6px', fontSize: 11 }} onClick={() => goToPage(page - 1)} disabled={page <= 1}>
             ← Prev
