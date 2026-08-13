@@ -197,7 +197,8 @@ exports.mySession = asyncHandler(async (req, res) => {
     .sort({ recordedAt: 1 })
     .select('lat lon speedKmh heading recordedAt');
 
-  // Raw points — no cleaning. OSRM road-snapping will be added later.
+  // Raw points, unmodified. `trip` carries the Valhalla-matched layer (cleanedDistanceMeters +
+  // cleanedRouteShapes) once mapMatchStatus is 'matched' — see services/mapMatcher.js.
   const points = raw;
 
   res.json({ trip, points });

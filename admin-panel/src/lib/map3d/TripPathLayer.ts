@@ -12,6 +12,7 @@ export interface TripPoint {
 }
 
 const TINT: [number, number, number] = [124, 58, 237];
+const SNAPPED_TINT: [number, number, number] = [13, 148, 136]; // teal — visually distinct from the raw trail
 const START_COLOR: [number, number, number] = [5, 150, 105]; // matches the old 2D start markers
 const MARKER_LINE_COLOR: [number, number, number] = [255, 255, 255];
 
@@ -116,16 +117,39 @@ export function vehicleAtElapsed(points: TripPoint[], elapsedMs: number) {
  * which looks fine mid-animation but would make the idle "show the whole
  * completed route" view (currentTime pinned at the end) fade to near-invisible
  * at the start of the route, so it's switched off outside active playback.
+ *
+ * `snappedPath` (optional, [lon, lat][] decoded from Trip.cleanedRouteShapes) swaps the
+ * animated raw trail for a static road-snapped line when the raw/cleaned toggle is set to
+ * "cleaned" -- the vehicle marker and start/end markers stay driven by the real recorded
+ * points either way, since only the raw trace carries per-point timestamps to play back.
  */
-export function buildReplayLayers(points: TripPoint[], elapsedMs: number, fading: boolean) {
+export function buildReplayLayers(
+  points: TripPoint[],
+  elapsedMs: number,
+  fading: boolean,
+  snappedPath?: [number, number][] | null
+) {
   if (points.length === 0) return [];
 
   const t0 = new Date(points[0].recordedAt).getTime();
-  const path = points.map((p) => [p.lon, p.lat]);
   const timestamps = points.map((p) => (new Date(p.recordedAt).getTime() - t0) / 1000);
 
   const layers = [];
-  if (points.length > 1) {
+  if (snappedPath && snappedPath.length > 1) {
+    layers.push(
+      new PathLayer({
+        id: 'trip-replay-path-snapped',
+        data: [{ path: snappedPath }],
+        getPath: (d) => d.path,
+        getColor: SNAPPED_TINT,
+        getWidth: 5,
+        widthMinPixels: 4,
+        capRounded: true,
+        jointRounded: true,
+      })
+    );
+  } else if (points.length > 1) {
+    const path = points.map((p) => [p.lon, p.lat]);
     layers.push(
       new TripsLayer({
         id: 'trip-replay-path',

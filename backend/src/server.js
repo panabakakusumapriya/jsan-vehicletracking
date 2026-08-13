@@ -4,6 +4,7 @@ const { connectDB } = require('./config/db');
 const { createApp } = require('./app');
 const { initSocket } = require('./realtime/io');
 const { startWatchdog } = require('./services/driverWatchdog');
+const { startMapMatcher } = require('./services/mapMatcher');
 
 async function start() {
   await connectDB();
@@ -18,6 +19,7 @@ async function start() {
     console.log(`   Socket.IO live channel ready (events: "location", "alert")`);
     // Started after listen so the socket layer exists before the first sweep can emit.
     startWatchdog();
+    startMapMatcher();
     console.log('');
   });
 }

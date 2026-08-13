@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { DistanceModeToggle, type DistanceMode } from '../components/DistanceModeToggle';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, downloadFile } from '../lib/api';
 import { km } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 import { buildReplayLayers, vehicleAtElapsed } from '../lib/map3d/TripPathLayer';
 import { useTripPlayback } from '../lib/map3d/useTripPlayback';
-import type { User } from '../lib/types';
+import { decodeRouteShapes } from '../lib/polyline';
+import type { MapMatchStatus, User } from '../lib/types';
 
 interface PathPoint {
   lat: number;
@@ -21,6 +23,9 @@ interface TripSegment {
   startedAt: string;
   endedAt?: string | null;
   distanceMeters: number;
+  cleanedDistanceMeters?: number | null;
+  cleanedRouteShapes?: string[] | null;
+  mapMatchStatus?: MapMatchStatus;
   maxSpeedKmh: number;
   points: PathPoint[];
 }
@@ -32,6 +37,8 @@ interface MergedData {
   timezone: string;
   totalTrips: number;
   totalDistance: number;
+  totalDistanceCleaned: number;
+  matchedTrips: number;
   maxSpeed: number;
   totalPoints: number;
   trips: TripSegment[];
@@ -43,6 +50,8 @@ interface MergedSummary {
   date: string;
   totalTrips: number;
   totalDistance: number;
+  totalDistanceCleaned: number;
+  matchedTrips: number;
   maxSpeed: number;
   firstStart: string;
   lastEnd: string | null;
@@ -85,6 +94,7 @@ export function Reports() {
   const [error, setError] = useState<string | null>(null);
   const [summaries, setSummaries] = useState<MergedSummary[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [mode, setMode] = useState<DistanceMode>('raw');
   const mapRef = useRef<Map3DHandle>(null);
   const lastFlyRef = useRef(0);
 
@@ -149,9 +159,17 @@ export function Reports() {
   }, [allPoints]);
 
   const playback = useTripPlayback(allPoints);
+
+  // Concatenate each trip's matched shape in trip order — mirrors how allPoints concatenates
+  // raw points across the day's trips, just for the snapped layer instead.
+  const snappedPath = useMemo(() => {
+    if (mode !== 'cleaned' || !merged) return null;
+    return merged.trips.flatMap((t) => decodeRouteShapes(t.cleanedRouteShapes));
+  }, [mode, merged]);
+
   const layers = useMemo(
-    () => buildReplayLayers(allPoints, playback.currentTimeMs, playback.playing),
-    [allPoints, playback.currentTimeMs, playback.playing]
+    () => buildReplayLayers(allPoints, playback.currentTimeMs, playback.playing, snappedPath),
+    [allPoints, playback.currentTimeMs, playback.playing, snappedPath]
   );
 
   // Auto-zoom to where the car is during playback (throttled to ~1s)
@@ -206,6 +224,12 @@ export function Reports() {
     return list;
   }, [summaries, driverId, date, country, drivers]);
 
+  // Whichever view is showing (overview table vs. single-driver-day detail) decides whether
+  // "Snapped to road" has anything to actually show yet.
+  const cleanedAvailable = showDetail
+    ? (merged?.matchedTrips ?? 0) > 0
+    : filteredSummaries.some((s) => s.matchedTrips > 0);
+
   return (
     <div>
       <div className="page-head">
@@ -255,6 +279,7 @@ export function Reports() {
               Clear
             </button>
           )}
+          <DistanceModeToggle mode={mode} onChange={setMode} cleanedAvailable={cleanedAvailable} />
           <ExportButtons onExport={handleExport} />
         </div>
       </div>
@@ -302,7 +327,7 @@ export function Reports() {
                     <td style={{ fontWeight: 600 }}>{s.driverName}</td>
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.date}</td>
                     <td>{s.totalTrips}</td>
-                    <td style={{ fontWeight: 600 }}>{km(s.totalDistance)}</td>
+                    <td style={{ fontWeight: 600 }}>{km(mode === 'cleaned' ? s.totalDistanceCleaned : s.totalDistance)}</td>
                     <td>{Math.round(s.maxSpeed)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>
                       {s.firstStart ? new Date(s.firstStart).toLocaleTimeString() : '—'}
@@ -353,8 +378,8 @@ export function Reports() {
             </div>
             <div className="stat">
               <div className="icon">📏</div>
-              <div className="v">{km(merged.totalDistance)}</div>
-              <div className="k">Total distance</div>
+              <div className="v">{km(mode === 'cleaned' ? merged.totalDistanceCleaned : merged.totalDistance)}</div>
+              <div className="k">Total distance{mode === 'cleaned' ? ' (snapped)' : ''}</div>
             </div>
             <div className="stat">
               <div className="icon">⚡</div>
@@ -393,7 +418,7 @@ export function Reports() {
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>
                       {t.endedAt ? new Date(t.endedAt).toLocaleTimeString() : '—'}
                     </td>
-                    <td style={{ fontWeight: 600 }}>{km(t.distanceMeters)}</td>
+                    <td style={{ fontWeight: 600 }}>{km(mode === 'cleaned' && t.cleanedDistanceMeters != null ? t.cleanedDistanceMeters : t.distanceMeters)}</td>
                     <td>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
                     <td style={{ color: 'var(--muted)' }}>{t.points.length}</td>
                     <td>

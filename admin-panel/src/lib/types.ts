@@ -223,6 +223,8 @@ export interface Coord {
   recordedAt?: string;
 }
 
+export type MapMatchStatus = 'pending' | 'matching' | 'matched' | 'failed' | 'skipped';
+
 export interface Trip {
   _id: string;
   driverId: { _id: string; name: string; email: string } | string;
@@ -237,6 +239,15 @@ export interface Trip {
   distanceMeters: number;
   maxSpeedKmh: number;
   pointCount: number;
+  // Valhalla-matched ("cleaned") layer — additive, populated asynchronously after the trip
+  // completes. null/undefined until mapMatchStatus is 'matched'. See backend services/mapMatcher.js.
+  cleanedDistanceMeters?: number | null;
+  cleanedRouteShapes?: string[] | null;
+  mapMatchStatus?: MapMatchStatus;
+  // Fraction of the trace (0..1) genuinely snapped to roads. Below 1 means some stretch could not
+  // be matched and kept its raw GPS geometry instead, so the "snapped" route is partly raw — see
+  // matchSegment() in the backend's services/valhalla.js.
+  cleanedMatchedRatio?: number | null;
 }
 
 export interface LiveDriver {

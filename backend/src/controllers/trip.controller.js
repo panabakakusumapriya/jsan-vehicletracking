@@ -82,7 +82,9 @@ exports.getOne = asyncHandler(async (req, res) => {
       .sort({ recordedAt: 1 })
       .select('lat lon speedKmh heading recordedAt');
 
-    // Raw points — no cleaning. OSRM road-snapping will be added later.
+    // Raw points, unmodified. The trip doc itself (already in `trip` above) carries the
+    // Valhalla-matched layer: cleanedDistanceMeters + cleanedRouteShapes, once mapMatchStatus
+    // is 'matched' — see services/mapMatcher.js. The frontend toggle picks between them.
     points = raw;
   }
   res.json({ trip, points });
@@ -189,6 +191,8 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
 
   const tripsData = [];
   let totalDistance = 0;
+  let totalDistanceCleaned = 0;
+  let matchedTrips = 0;
   let maxSpeed = 0;
   let totalPoints = 0;
 
@@ -203,10 +207,15 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
       startedAt: trip.startedAt,
       endedAt: trip.endedAt,
       distanceMeters: trip.distanceMeters,
+      cleanedDistanceMeters: trip.cleanedDistanceMeters,
+      cleanedRouteShapes: trip.cleanedRouteShapes || [],
+      mapMatchStatus: trip.mapMatchStatus,
       maxSpeedKmh: trip.maxSpeedKmh,
       points,
     });
     totalDistance += trip.distanceMeters || 0;
+    totalDistanceCleaned += trip.cleanedDistanceMeters ?? trip.distanceMeters ?? 0;
+    if (trip.mapMatchStatus === 'matched') matchedTrips += 1;
     maxSpeed = Math.max(maxSpeed, trip.maxSpeedKmh || 0);
     totalPoints += points.length;
   }
@@ -218,6 +227,8 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
     timezone: tz,
     totalTrips: trips.length,
     totalDistance,
+    totalDistanceCleaned,
+    matchedTrips,
     maxSpeed,
     totalPoints,
     trips: tripsData,
@@ -269,6 +280,12 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
         _id: { driverId: '$driverId', date: '$dateStr' },
         totalTrips: { $sum: 1 },
         totalDistance: { $sum: '$distanceMeters' },
+        // Falls back to raw per-trip when a trip hasn't been matched yet (or never will be —
+        // too short, or the match failed), so this total is always displayable, just not
+        // uniformly "cleaned" until every trip in the group has matched. matchedTrips below
+        // tells the caller how much of the group that actually is.
+        totalDistanceCleaned: { $sum: { $ifNull: ['$cleanedDistanceMeters', '$distanceMeters'] } },
+        matchedTrips: { $sum: { $cond: [{ $eq: ['$mapMatchStatus', 'matched'] }, 1, 0] } },
         maxSpeed: { $max: '$maxSpeedKmh' },
         firstStart: { $min: '$startedAt' },
         lastEnd: { $max: '$endedAt' },
@@ -294,6 +311,8 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     date: r._id.date,
     totalTrips: r.totalTrips,
     totalDistance: r.totalDistance || 0,
+    totalDistanceCleaned: r.totalDistanceCleaned || 0,
+    matchedTrips: r.matchedTrips || 0,
     maxSpeed: r.maxSpeed || 0,
     firstStart: r.firstStart,
     lastEnd: r.lastEnd,

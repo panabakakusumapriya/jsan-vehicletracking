@@ -40,6 +40,28 @@ const tripSchema = new mongoose.Schema(
     distanceMeters: { type: Number, default: 0 },
     maxSpeedKmh: { type: Number, default: 0 },
     pointCount: { type: Number, default: 0 },
+    // ---- Map-matched ("cleaned") layer — see services/mapMatcher.js + services/valhalla.js ----
+    // Additive only: distanceMeters above stays the raw live-accumulated haversine total
+    // forever, even once a trip is matched. cleanedDistanceMeters is the Valhalla-snapped
+    // total, populated asynchronously after the trip completes; reports/UI fall back to the
+    // raw figure when this is still null (pending) or the match failed.
+    cleanedDistanceMeters: { type: Number, default: null },
+    // Encoded polyline6 per chunk (long traces are matched in pieces — see MAP_MATCH_CHUNK_SIZE).
+    // Kept as separate per-chunk strings rather than one merged polyline so the worker never has
+    // to decode+re-encode to stitch chunks together; the frontend decodes and concatenates them.
+    cleanedRouteShapes: { type: [String], default: undefined },
+    mapMatchStatus: {
+      type: String,
+      enum: ['pending', 'matching', 'matched', 'failed', 'skipped'],
+      default: 'pending',
+    },
+    mapMatchedAt: { type: Date, default: null },
+    mapMatchError: { type: String, default: null },
+    // Fraction of the trace Valhalla actually snapped to roads, 0..1. Below 1 means some stretch
+    // could not be matched at any chunk size and kept its raw GPS geometry instead — see
+    // matchSegment() in services/valhalla.js. Stored because a partly-raw route is otherwise
+    // indistinguishable from a fully-snapped one: both just look like a line on the map.
+    cleanedMatchedRatio: { type: Number, default: null },
     // Set when the watchdog raised a "driver offline" alert for this trip, cleared when the
     // device starts reporting again. Doubles as the de-dupe lock: the watchdog only alerts
     // on a conditional update from null, so a restart (or a second server instance) can
@@ -58,5 +80,8 @@ tripSchema.index(
 tripSchema.index({ driverId: 1, startedAt: -1 });
 // The watchdog sweeps active trips by last-heartbeat every WATCHDOG_INTERVAL_SECONDS.
 tripSchema.index({ status: 1, 'lastLocation.recordedAt': 1 });
+// The map-matcher worker sweeps completed/timed_out trips awaiting a Valhalla match every
+// MAP_MATCH_INTERVAL_SECONDS.
+tripSchema.index({ status: 1, mapMatchStatus: 1 });
 
 module.exports = mongoose.model('Trip', tripSchema);
