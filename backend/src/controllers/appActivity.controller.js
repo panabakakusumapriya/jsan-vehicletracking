@@ -8,7 +8,7 @@ const asyncHandler = require('../utils/asyncHandler');
 // calling POST /api/auth/logout.
 const STALE_MS = 5 * 60 * 1000; // 5 minutes
 
-// In-memory map of driverId -> last heartbeat Date. Avoids a DB write on every ping.
+// In-memory map of driverId -> { time: Date, gpsOn, networkOn, batteryRestricted, batteryLevel }
 const heartbeatCache = new Map();
 
 // ── Admin: list activities + driver summary ──────────────────────────────────
@@ -41,15 +41,34 @@ exports.list = asyncHandler(async (req, res) => {
     const lastSignOut = await AppActivity.findOne({ driverId: d._id, action: 'sign_out' })
       .sort({ timestamp: -1 }).lean();
 
-    const lastHb = heartbeatCache.get(String(d._id));
-    const isOnline = lastHb && (Date.now() - lastHb.getTime()) < STALE_MS;
+    const hb = heartbeatCache.get(String(d._id));
+    const lastHb = hb?.time || null;
+    const isRecent = lastHb && (Date.now() - lastHb.getTime()) < STALE_MS;
+
+    // Determine granular status
+    let status = 'offline';
+    if (!lastSignIn || (lastSignOut && lastSignOut.timestamp > lastSignIn.timestamp)) {
+      status = 'logged_out';
+    } else if (!isRecent) {
+      status = 'app_closed';
+    } else if (hb && !hb.gpsOn) {
+      status = 'gps_off';
+    } else if (hb && !hb.networkOn) {
+      status = 'network_off';
+    } else if (hb && hb.batteryRestricted) {
+      status = 'battery_restricted';
+    } else if (isRecent) {
+      status = 'online';
+    }
 
     summaryList.push({
       driver: d,
       lastSignIn: lastSignIn?.timestamp || null,
       lastSignOut: lastSignOut?.timestamp || null,
       lastHeartbeat: lastHb || null,
-      online: isOnline,
+      online: status === 'online',
+      status,
+      batteryLevel: hb?.batteryLevel ?? null,
     });
   }
 
@@ -76,7 +95,14 @@ exports.heartbeat = asyncHandler(async (req, res) => {
   const now = new Date();
   const id = String(user._id);
 
-  heartbeatCache.set(id, now);
+  const { gpsOn, networkOn, batteryRestricted, batteryLevel } = req.body || {};
+  heartbeatCache.set(id, {
+    time: now,
+    gpsOn: gpsOn !== false,
+    networkOn: networkOn !== false,
+    batteryRestricted: batteryRestricted === true,
+    batteryLevel: typeof batteryLevel === 'number' ? batteryLevel : null,
+  });
 
   // Write to DB at most once every 5 minutes
   const lastWrite = lastDbWrite.get(id) || 0;

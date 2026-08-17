@@ -13,13 +13,27 @@ interface ActivityRow {
   project?: string;
 }
 
+type DriverStatus = 'online' | 'logged_out' | 'app_closed' | 'gps_off' | 'network_off' | 'battery_restricted' | 'offline';
+
 interface DriverSummary {
   driver: { _id: string; name: string; email: string; country?: string; project?: string };
   lastSignIn: string | null;
   lastSignOut: string | null;
   lastHeartbeat: string | null;
   online: boolean;
+  status: DriverStatus;
+  batteryLevel: number | null;
 }
+
+const STATUS_CONFIG: Record<DriverStatus, { label: string; badge: string }> = {
+  online:             { label: 'Online',             badge: 'green' },
+  logged_out:         { label: 'Logged Out',         badge: 'gray' },
+  app_closed:         { label: 'App Closed',         badge: 'gray' },
+  gps_off:            { label: 'GPS Off',            badge: 'amber' },
+  network_off:        { label: 'Network Off',        badge: 'amber' },
+  battery_restricted: { label: 'Battery Restricted', badge: 'amber' },
+  offline:            { label: 'Offline',            badge: 'gray' },
+};
 
 type Tab = 'summary' | 'history';
 
@@ -77,8 +91,9 @@ export function AppHealth() {
   const countries = Array.from(new Set(afterProject.map(s => s.country).filter(Boolean))).sort() as string[];
 
   // Stats
-  const online = filteredSummary.filter(s => s.online).length;
-  const offline = filteredSummary.length - online;
+  const online = filteredSummary.filter(s => s.status === 'online').length;
+  const warnings = filteredSummary.filter(s => ['gps_off', 'network_off', 'battery_restricted'].includes(s.status)).length;
+  const offline = filteredSummary.length - online - warnings;
 
   const fmt = (iso: string | null) => {
     if (!iso) return '—';
@@ -117,6 +132,7 @@ export function AppHealth() {
       <div className="stat-row">
         <div className="stat"><div className="v">{filteredSummary.length}</div><div className="k">Drivers</div></div>
         <div className="stat"><div className="v" style={{ color: 'var(--green)' }}>{online}</div><div className="k">Online</div></div>
+        <div className="stat"><div className="v" style={{ color: 'var(--amber)' }}>{warnings}</div><div className="k">Warnings</div></div>
         <div className="stat"><div className="v" style={{ color: 'var(--muted)' }}>{offline}</div><div className="k">Offline</div></div>
       </div>
 
@@ -157,8 +173,8 @@ export function AppHealth() {
                     ) : '—'}
                   </td>
                   <td>
-                    <span className={`badge ${s.online ? 'green' : 'gray'}`}>
-                      {s.online ? 'Online' : 'Offline'}
+                    <span className={`badge ${STATUS_CONFIG[s.status]?.badge || (s.online ? 'green' : 'gray')}`}>
+                      {STATUS_CONFIG[s.status]?.label || (s.online ? 'Online' : 'Offline')}
                     </span>
                   </td>
                 </tr>

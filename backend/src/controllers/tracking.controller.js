@@ -8,6 +8,11 @@ const { accessibleDriverFilter } = require('../utils/scope');
 const { emitLocation } = require('../realtime/io');
 const env = require('../config/env');
 const { closeDeadTrips } = require('../services/tripLifecycle');
+const { computeTripUkm } = require('../services/ukmCompute');
+const UkmEdge = require('../models/UkmEdge');
+const mongoose = require('mongoose');
+
+let _ukmBackfillDone = false;
 
 /**
  * POST /api/tracking/ingest   (driver only)
@@ -136,6 +141,11 @@ exports.ingest = asyncHandler(async (req, res) => {
     if (Object.keys(update).length) await Trip.updateOne({ _id: trip._id }, update);
 
     if (last) liveUpdates.push({ trip, last, ended: !!endSignal });
+
+    // Fire-and-forget UKM computation when a trip just completed.
+    if (endSignal && trip.status === 'active') {
+      computeTripUkm(trip._id, driver._id).catch(() => {});
+    }
   }
 
   // Keep the driver's own zone current from their newest position, so a driver who crosses a
@@ -239,6 +249,308 @@ exports.live = asyncHandler(async (req, res) => {
     });
 
   res.json({ drivers, serverTime: new Date().toISOString() });
+});
+
+// Shared helper: build the trip filter + optional driver-level narrowing.
+async function buildUkmTripFilter(req) {
+  const { from, to, project, country, driverId } = req.query;
+  const scope = await accessibleDriverFilter(req.user);
+  const tripFilter = {
+    status: { $in: ['completed', 'timed_out'] },
+    startedAt: { $gte: new Date(from), $lte: new Date(to) },
+    ...scope,
+  };
+  let driverIdFilter = null;
+  if (driverId) {
+    driverIdFilter = [driverId];
+  } else if (project || country) {
+    const userQuery = { role: 'user' };
+    if (project) userQuery.project = project;
+    if (country) userQuery.country = country;
+    const matching = await User.find(userQuery).select('_id');
+    driverIdFilter = matching.map(u => u._id);
+  }
+  if (driverIdFilter) {
+    if (tripFilter.driverId && tripFilter.driverId.$in) {
+      const scopeSet = new Set(tripFilter.driverId.$in.map(String));
+      tripFilter.driverId = { $in: driverIdFilter.filter(id => scopeSet.has(String(id))) };
+    } else {
+      tripFilter.driverId = { $in: driverIdFilter };
+    }
+  }
+  return tripFilter;
+}
+
+/**
+ * GET /api/tracking/ukm   (admin / manager)
+ * Fast read: aggregates raw KM from trips + unique KM from the pre-computed UkmEdge
+ * collection.  No location-point scan — UKM edges are inserted at trip completion.
+ *
+ * Query:  ?from=ISO&to=ISO  (required)   &project=…  &country=…  &driverId=…
+ */
+exports.ukm = asyncHandler(async (req, res) => {
+  const { from, to } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from and to query params are required' });
+
+  const tripFilter = await buildUkmTripFilter(req);
+
+  // 1) Raw KM from trips.
+  const trips = await Trip.find(tripFilter)
+    .select('driverId distanceMeters')
+    .populate('driverId', 'name country project')
+    .lean();
+
+  const driverMap = {};
+  for (const trip of trips) {
+    const did = trip.driverId?._id?.toString() ?? trip.driverId?.toString();
+    if (!did) continue;
+    if (!driverMap[did]) {
+      driverMap[did] = {
+        driverId: did,
+        name: trip.driverId?.name ?? 'Unknown',
+        country: trip.driverId?.country ?? null,
+        project: trip.driverId?.project ?? null,
+        rawMeters: 0,
+        uniqueMeters: 0,
+        trips: 0,
+      };
+    }
+    driverMap[did].rawMeters += trip.distanceMeters || 0;
+    driverMap[did].trips += 1;
+  }
+
+  // One-time per server lifetime: ensure compound index exists and backfill
+  // any trips that are missing edges.
+  if (!_ukmBackfillDone) {
+    _ukmBackfillDone = true;
+
+    // Migrate from old schema (unique on edgeKey alone) if needed.
+    let needsDrop = false;
+    try {
+      const indexes = await UkmEdge.collection.indexes();
+      const hasOldUnique = indexes.some(idx =>
+        idx.unique && idx.key && idx.key.edgeKey === 1 && !idx.key.driverId
+      );
+      if (hasOldUnique) needsDrop = true;
+    } catch (_) { /* collection doesn't exist yet — fine */ }
+
+    if (needsDrop) {
+      try { await UkmEdge.collection.drop(); } catch (_) {}
+    }
+    await UkmEdge.syncIndexes();
+
+    // Find trips that have NOT been processed yet: completed/timed_out trips
+    // whose _id does not appear in any UkmEdge.tripId.
+    const processedTripIds = await UkmEdge.distinct('tripId');
+    const processedSet = new Set(processedTripIds.map(String));
+
+    const allTrips = await Trip.find({
+      status: { $in: ['completed', 'timed_out'] },
+    }).select('_id driverId').lean();
+
+    const unprocessed = allTrips.filter(t => !processedSet.has(t._id.toString()));
+    for (const t of unprocessed) {
+      await computeTripUkm(t._id, t.driverId);
+    }
+  }
+
+  // 2) Unique KM from pre-computed edges — aggregate per driver.
+  const driverIds = Object.keys(driverMap);
+  const driverObjectIds = driverIds.map(id => new mongoose.Types.ObjectId(id));
+  const edgeAgg = await UkmEdge.aggregate([
+    { $match: { driverId: { $in: driverObjectIds } } },
+    { $group: { _id: '$driverId', uniqueMeters: { $sum: '$distanceMeters' } } },
+  ]);
+  for (const row of edgeAgg) {
+    const did = row._id.toString();
+    if (driverMap[did]) driverMap[did].uniqueMeters = row.uniqueMeters;
+  }
+
+  // Fleet-wide UKM: deduplicate edges across drivers — group by edgeKey first to
+  // collapse the same road driven by different drivers, then sum.
+  const fleetMatch = driverObjectIds.length
+    ? { driverId: { $in: driverObjectIds } }
+    : {};
+  const fleetAgg = await UkmEdge.aggregate([
+    { $match: fleetMatch },
+    { $group: { _id: '$edgeKey', dist: { $first: '$distanceMeters' } } },
+    { $group: { _id: null, total: { $sum: '$dist' } } },
+  ]);
+  const fleetUniqueMeters = fleetAgg[0]?.total ?? 0;
+
+  const drivers = Object.values(driverMap)
+    .map(d => ({
+      ...d,
+      rawKm: +(d.rawMeters / 1000).toFixed(2),
+      uniqueKm: +(d.uniqueMeters / 1000).toFixed(2),
+    }))
+    .sort((a, b) => b.uniqueKm - a.uniqueKm);
+
+  const totalRawKm = +drivers.reduce((s, d) => s + d.rawKm, 0).toFixed(2);
+  const uniqueKm = +(fleetUniqueMeters / 1000).toFixed(2);
+  const overlapPct = totalRawKm > 0 ? +((1 - uniqueKm / totalRawKm) * 100).toFixed(1) : 0;
+
+  res.json({ totalRawKm, uniqueKm, overlapPct, drivers });
+});
+
+/**
+ * POST /api/tracking/ukm-backfill   (admin only)
+ * One-time backfill: compute UKM edges for all completed trips that don't have edges yet.
+ * Safe to run multiple times — insertMany skips existing edges.
+ */
+exports.ukmBackfill = asyncHandler(async (req, res) => {
+  const processedTripIds = await UkmEdge.distinct('tripId');
+  const processedSet = new Set(processedTripIds.map(String));
+
+  const allTrips = await Trip.find({
+    status: { $in: ['completed', 'timed_out'] },
+  }).select('_id driverId').lean();
+
+  const unprocessed = allTrips.filter(t => !processedSet.has(t._id.toString()));
+
+  let processed = 0;
+  let newEdges = 0;
+  for (const trip of unprocessed) {
+    const n = await computeTripUkm(trip._id, trip.driverId);
+    newEdges += n;
+    processed += 1;
+  }
+  res.json({ total: allTrips.length, alreadyProcessed: allTrips.length - unprocessed.length, processed, newEdges });
+});
+
+/**
+ * GET /api/tracking/ukm-driver/:driverId   (admin / manager)
+ * Returns a single driver's trip routes for UKM map view.
+ * Each trip includes its cleaned route shapes (if matched) or raw points as a fallback.
+ * Also returns the driver's unique edge count & total unique meters.
+ *
+ * Query:  ?from=ISO&to=ISO  (required)
+ */
+exports.ukmDriver = asyncHandler(async (req, res) => {
+  const { from, to } = req.query;
+  const { driverId } = req.params;
+  if (!from || !to) return res.status(400).json({ error: 'from and to query params are required' });
+
+  const trips = await Trip.find({
+    driverId,
+    status: { $in: ['completed', 'timed_out'] },
+    startedAt: { $gte: new Date(from), $lte: new Date(to) },
+  })
+    .select('startedAt endedAt distanceMeters cleanedDistanceMeters cleanedRouteShapes mapMatchStatus')
+    .sort({ startedAt: 1 })
+    .lean();
+
+  // For trips without cleaned routes, fetch raw points (limit to 200 per trip for performance).
+  const routes = [];
+  for (const trip of trips) {
+    if (trip.cleanedRouteShapes && trip.cleanedRouteShapes.length) {
+      routes.push({
+        tripId: trip._id,
+        startedAt: trip.startedAt,
+        endedAt: trip.endedAt,
+        distanceMeters: trip.cleanedDistanceMeters || trip.distanceMeters,
+        shapes: trip.cleanedRouteShapes,
+        type: 'matched',
+      });
+    } else {
+      const pts = await LocationPoint.find({ tripId: trip._id })
+        .sort({ recordedAt: 1 })
+        .select('lat lon')
+        .lean();
+      routes.push({
+        tripId: trip._id,
+        startedAt: trip.startedAt,
+        endedAt: trip.endedAt,
+        distanceMeters: trip.distanceMeters,
+        points: pts.map(p => [p.lat, p.lon]),
+        type: 'raw',
+      });
+    }
+  }
+
+  // Driver's per-driver unique meters.
+  const driverOid = new mongoose.Types.ObjectId(driverId);
+  const edgeAgg = await UkmEdge.aggregate([
+    { $match: { driverId: driverOid } },
+    { $group: { _id: null, uniqueMeters: { $sum: '$distanceMeters' }, edgeCount: { $sum: 1 } } },
+  ]);
+  const uniqueMeters = edgeAgg[0]?.uniqueMeters ?? 0;
+  const edgeCount = edgeAgg[0]?.edgeCount ?? 0;
+  const rawMeters = trips.reduce((s, t) => s + (t.distanceMeters || 0), 0);
+
+  res.json({
+    driverId,
+    trips: routes.length,
+    rawKm: +(rawMeters / 1000).toFixed(2),
+    uniqueKm: +(uniqueMeters / 1000).toFixed(2),
+    edgeCount,
+    routes,
+  });
+});
+
+/**
+ * GET /api/tracking/ukm-export   (admin / manager)
+ * CSV export of the UKM data.
+ * Query:  ?from=ISO&to=ISO  (required)   &project=…  &country=…
+ */
+exports.ukmExport = asyncHandler(async (req, res) => {
+  const { from, to } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from and to query params are required' });
+
+  const tripFilter = await buildUkmTripFilter(req);
+  const trips = await Trip.find(tripFilter)
+    .select('driverId distanceMeters')
+    .populate('driverId', 'name country project')
+    .lean();
+
+  const driverMap = {};
+  for (const trip of trips) {
+    const did = trip.driverId?._id?.toString() ?? trip.driverId?.toString();
+    if (!did) continue;
+    if (!driverMap[did]) {
+      driverMap[did] = {
+        name: trip.driverId?.name ?? 'Unknown',
+        country: trip.driverId?.country ?? '',
+        project: trip.driverId?.project ?? '',
+        rawMeters: 0,
+        uniqueMeters: 0,
+        trips: 0,
+      };
+    }
+    driverMap[did].rawMeters += trip.distanceMeters || 0;
+    driverMap[did].trips += 1;
+  }
+
+  const driverIds = Object.keys(driverMap);
+  const driverObjectIds = driverIds.map(id => new mongoose.Types.ObjectId(id));
+  const edgeAgg = await UkmEdge.aggregate([
+    { $match: { driverId: { $in: driverObjectIds } } },
+    { $group: { _id: '$driverId', uniqueMeters: { $sum: '$distanceMeters' } } },
+  ]);
+  for (const row of edgeAgg) {
+    const did = row._id.toString();
+    if (driverMap[did]) driverMap[did].uniqueMeters = row.uniqueMeters;
+  }
+
+  const rows = Object.values(driverMap)
+    .map(d => ({
+      ...d,
+      rawKm: +(d.rawMeters / 1000).toFixed(2),
+      uniqueKm: +(d.uniqueMeters / 1000).toFixed(2),
+      overlapPct: d.rawMeters > 0 ? +((1 - d.uniqueMeters / d.rawMeters) * 100).toFixed(1) : 0,
+    }))
+    .sort((a, b) => b.uniqueKm - a.uniqueKm);
+
+  const fromDate = from.split('T')[0];
+  const toDate = to.split('T')[0];
+  const header = 'Driver,Project,Country,Trips,Total KM,Unique KM,Overlap %';
+  const csv = [header, ...rows.map(r =>
+    `"${r.name}","${r.project}","${r.country}",${r.trips},${r.rawKm},${r.uniqueKm},${r.overlapPct}%`
+  )].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="ukm-report-${fromDate}-to-${toDate}.csv"`);
+  res.send(csv);
 });
 
 /**

@@ -17,6 +17,7 @@ import { Mobiles } from './pages/Mobiles';
 import { Reports } from './pages/Reports';
 import { Vehicles } from './pages/Vehicles';
 import { AppHealth } from './pages/AppHealth';
+import { Ukm } from './pages/Ukm';
 import { Weather } from './pages/Weather';
 
 export default function App() {
@@ -42,6 +43,7 @@ export default function App() {
         <Route path="/hotels" element={<Hotels />} />
         <Route path="/couriers" element={<Couriers />} />
         <Route path="/vehicles" element={<Vehicles />} />
+        <Route path="/ukm" element={<Ukm />} />
         <Route path="/app-health" element={<AppHealth />} />
         <Route
           path="/managers"
