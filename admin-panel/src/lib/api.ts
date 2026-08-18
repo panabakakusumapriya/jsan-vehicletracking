@@ -81,3 +81,18 @@ export async function downloadFile(path: string, fallbackFilename = 'download'):
   a.remove();
   URL.revokeObjectURL(url);
 }
+
+/**
+ * The viewer's IANA timezone, sent with date-filtered queries.
+ *
+ * Trip times are rendered in the viewer's local zone, so the filter has to use the same clock or
+ * the two disagree at day boundaries: a trip starting 21:36Z shows as the 18th to a +5:30 viewer
+ * while a UTC filter files it under the 17th, and it vanishes from a same-day search.
+ */
+export const viewerTimeZone = (): string => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+};

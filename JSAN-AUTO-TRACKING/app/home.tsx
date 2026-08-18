@@ -48,7 +48,7 @@ const STATE = {
   blocked:  { label: 'Action needed',           sub: '',                                                              color: C.red,   bg: C.redBg,   bd: C.redBd   },
   starting: { label: 'Starting…',              sub: 'Setting up background tracking.',                              color: C.amber, bg: C.amberBg, bd: C.amberBd },
   idle:     { label: 'Ready',                   sub: '',                                                             color: C.brand, bg: C.brandSoft, bd: '#d8b4fe' },
-  night:    { label: 'Night mode',             sub: 'Tracking paused — resumes at sunrise.',                        color: C.muted, bg: '#f1f5f9',   bd: C.border   },
+  night:    { label: 'Idle',                   sub: 'Waiting for movement — tracking runs at any hour.',            color: C.muted, bg: '#f1f5f9',   bd: C.border   },
 };
 
 export default function Home() {

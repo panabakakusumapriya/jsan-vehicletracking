@@ -47,10 +47,36 @@ export function Drivers() {
   const ownProjects = projectOptions.filter(p => ownProjectIds.includes(p._id));
   useEffect(load, [isAdmin, canAssignTeamLead]);
 
-  const deactivate = async (d: User) => {
-    if (!confirm(`Exit ${d.name}? They will no longer be able to log in.`)) return;
-    await api.del(`/api/users/${d._id}`);
-    load();
+  const [statusBusy, setStatusBusy] = useState<string | null>(null);
+
+  /**
+   * Change a driver's employment status from the list, without opening the edit form.
+   *
+   * Writes all three fields that describe it, because they are read independently and had drifted
+   * apart in the data: `driverStatus` (what reports show), `active` (what controls login), and
+   * `exitDate` (what actually releases the driver's vehicle and phone back to the pool, via the
+   * custody ledger in the PATCH handler).
+   *
+   * The old Exit button called DELETE, which set `active` alone. That is why 15 drivers were
+   * marked Exit with no exit date — and why their assets stayed locked to someone who had left,
+   * unassignable to anyone else. It was also one-way: there was no route back from Exit to Active
+   * short of editing the record by hand.
+   */
+  const setDriverStatus = async (d: User, next: 'Active' | 'Exit') => {
+    if (next === 'Exit' && !confirm(
+      `Exit ${d.name}?\n\nThey lose access, and any vehicle or phone they hold is released back to the pool.`
+    )) return;
+    setStatusBusy(d._id);
+    try {
+      await api.patch(`/api/users/${d._id}`, next === 'Exit'
+        ? { driverStatus: 'Exit', active: false, exitDate: new Date().toISOString() }
+        // Reinstating clears the exit date too, otherwise the record still reads as "left on
+        // <date>" while the driver is back on the road.
+        : { driverStatus: 'Active', active: true, exitDate: null });
+      load();
+    } finally {
+      setStatusBusy(null);
+    }
   };
 
   const projects = Array.from(new Set(drivers.map(d => d.project).filter(Boolean))).sort() as string[];
@@ -190,10 +216,32 @@ export function Drivers() {
                   <td>{d.currency || <M />}</td>
                   <td>{d.language || <M />}</td>
                   <td>{d.timezone || <M />}</td>
-                  <td className="sticky-col sr-2"><span className={`badge ${d.active ? 'green' : 'red'}`}>{d.active ? 'Active' : 'Exit'}</span></td>
+                  {/*
+                    Editable in place, and two-way. `active` is the source of truth here rather
+                    than the free-text driverStatus, because it is the field that actually decides
+                    whether the driver can log in — showing anything else would let the badge and
+                    the behaviour disagree.
+                  */}
+                  <td className="sticky-col sr-2">
+                    <select
+                      className="input"
+                      value={d.active ? 'Active' : 'Exit'}
+                      disabled={statusBusy === d._id}
+                      onChange={(e) => setDriverStatus(d, e.target.value as 'Active' | 'Exit')}
+                      title={d.exitDate ? `Exited ${new Date(d.exitDate).toLocaleDateString()}` : 'Change employment status'}
+                      style={{
+                        fontSize: 12, fontWeight: 700, padding: '3px 6px', minWidth: 86,
+                        color: d.active ? '#059669' : '#dc2626',
+                        opacity: statusBusy === d._id ? 0.5 : 1,
+                        cursor: statusBusy === d._id ? 'wait' : 'pointer',
+                      }}
+                    >
+                      <option value="Active">Active</option>
+                      <option value="Exit">Exit</option>
+                    </select>
+                  </td>
                   <td style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                     <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(d)}>Edit</button>
-                    {d.active && <button className="btn-danger" onClick={() => deactivate(d)}>Exit</button>}
                   </td>
                 </tr>
               );

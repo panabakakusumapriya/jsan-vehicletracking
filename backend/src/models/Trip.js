@@ -62,6 +62,22 @@ const tripSchema = new mongoose.Schema(
     // matchSegment() in services/valhalla.js. Stored because a partly-raw route is otherwise
     // indistinguishable from a fully-snapped one: both just look like a line on the map.
     cleanedMatchedRatio: { type: Number, default: null },
+    // ---- UKM (unique kilometers) for this trip — see services/roadSegments.js ----
+    // Road in this trip that no EARLIER trip by the same driver covered. Drive a route on Monday
+    // and it counts here; drive the same route Tuesday and Tuesday's trip earns nothing. Derived
+    // from the snapped route, because raw fixes cannot identify "the same road" reliably — GPS
+    // error here (~15 m) exceeds the ~11 m grid the fleet /ukm tab buckets raw points into.
+    // Independent of that tab's UkmEdge collection: this is per trip, that one is per driver.
+    ukmMeters: { type: Number, default: null },
+    // UKM counting only this trip against itself, ignoring history: a road driven three times in
+    // one trip counts once. Kept alongside the figure above so a trip that only repeated old
+    // ground still has something meaningful to show instead of a bare zero.
+    ukmWithinTripMeters: { type: Number, default: null },
+    // The UKM stretches as encoded polyline6, so the trip map can highlight road that was new to
+    // this trip and mute road the driver had already covered. Produced by the same pass that
+    // computes ukmMeters, so the colouring and the number can never disagree.
+    ukmNewShapes: { type: [String], default: undefined },
+    ukmComputedAt: { type: Date, default: null },
     // Set when the watchdog raised a "driver offline" alert for this trip, cleared when the
     // device starts reporting again. Doubles as the de-dupe lock: the watchdog only alerts
     // on a conditional update from null, so a restart (or a second server instance) can
@@ -83,5 +99,10 @@ tripSchema.index({ status: 1, 'lastLocation.recordedAt': 1 });
 // The map-matcher worker sweeps completed/timed_out trips awaiting a Valhalla match every
 // MAP_MATCH_INTERVAL_SECONDS.
 tripSchema.index({ status: 1, mapMatchStatus: 1 });
+// Every date-ranged report filters closed trips by startedAt: the Trips list, mergedSummary, the
+// bulk export, and buildUkmTripFilter in tracking.controller.js. Without this they scanned the
+// whole collection and sorted in memory; { driverId, startedAt } only helped when a driver filter
+// happened to be present, which on the fleet-wide views it is not.
+tripSchema.index({ status: 1, startedAt: -1 });
 
 module.exports = mongoose.model('Trip', tripSchema);

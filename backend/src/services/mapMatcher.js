@@ -2,6 +2,7 @@ const Trip = require('../models/Trip');
 const LocationPoint = require('../models/LocationPoint');
 const env = require('../config/env');
 const { matchTrace } = require('./valhalla');
+const { recomputeDriverUkm } = require('./roadSegments');
 
 /**
  * Background worker: snaps each completed trip's raw GPS trace onto the road network via
@@ -72,6 +73,18 @@ async function processTrip(tripId) {
         },
       }
     );
+    // UKM depends on the snapped geometry that was just written, so this is the earliest point it
+    // can be computed. The driver's whole timeline is recomputed rather than just this trip: UKM is
+    // relative to earlier trips, and a trip arriving out of order (an offline sync landing days
+    // later) changes which trip owns a road. See roadSegments.js.
+    // Deliberately not fatal — a failure here must not undo a good match.
+    try {
+      await recomputeDriverUkm(trip.driverId);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`map-matcher: UKM recompute failed for driver ${trip.driverId}:`, err.message);
+    }
+
     return 'matched';
   } catch (err) {
     await Trip.updateOne(
@@ -97,6 +110,30 @@ async function tick() {
     const outcome = await processTrip(_id);
     if (outcome) counts[outcome] += 1;
   }
+  // Catch-up sweep: recompute UKM for drivers holding a trip that HAS snapped geometry but no UKM
+  // figure. processTrip() computes UKM inline, but that only covers trips matched through this
+  // worker — a trip matched by the re-match script, or matched before the UKM feature existed,
+  // ends up with a route and no figure, and the trip page then hides the UKM card entirely. That
+  // is how 49 trips ended up looking like UKM was broken when it had simply never been asked.
+  // Making the worker notice and fix it removes the standing dependency on remembering to run
+  // backfill:ukm after anything touches geometry.
+  try {
+    const stale = await Trip.distinct('driverId', {
+      status: { $in: ['completed', 'timed_out'] },
+      mapMatchStatus: 'matched',
+      cleanedRouteShapes: { $exists: true, $ne: [] },
+      ukmMeters: null,
+    });
+    // Bounded per tick: this is pure local CPU, but a large backlog should not monopolise a tick.
+    for (const driverId of stale.slice(0, env.MAP_MATCH_MAX_PER_TICK)) {
+      await recomputeDriverUkm(driverId);
+      counts.ukmRecomputed = (counts.ukmRecomputed || 0) + 1;
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('map-matcher: UKM catch-up sweep failed:', err.message);
+  }
+
   return counts;
 }
 

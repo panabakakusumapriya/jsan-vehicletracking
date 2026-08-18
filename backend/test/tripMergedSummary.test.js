@@ -87,6 +87,52 @@ function assert(cond, msg) {
   const page2 = await asAdmin(request(app).get('/api/trips/merged-summary?limit=2&page=2'));
   assert(page2.body.summaries.length === 1, 'second page carries the remaining group');
 
+
+  console.log('\n── expanding a day-row returns the trips that row counted (the timezone bug) ──');
+  {
+    // The exact shape of the reported bug. An Australian driver's trip starting 21:36Z on the
+    // 17th is 07:36 on the 18th where they are, so merged-summary buckets it under 2026-08-18.
+    // Expanding that row asked /api/trips for from=to=2026-08-18; in UTC that begins at 00:00Z on
+    // the 18th and excludes a 21:36Z trip from the 17th, so the row expanded to nothing and never
+    // offered a Details link. The row now reports the zone it grouped in, and the expansion asks
+    // for that day in that same zone.
+    const joel = new User({ name: 'Joel', email: 'joel@x.com', role: 'user', country: 'Australia' });
+    await joel.setPassword('pw123456'); await joel.save();
+    await Trip.create({
+      driverId: joel._id, status: 'completed',
+      startedAt: new Date('2026-08-17T21:36:00Z'), endedAt: new Date('2026-08-18T07:27:00Z'),
+      distanceMeters: 350100, maxSpeedKmh: 151,
+    });
+
+    const rows = await asAdmin(request(app).get(`/api/trips/merged-summary?driverId=${joel._id}`));
+    const row = rows.body.summaries[0];
+    assert(row.date === '2026-08-18', `grouped under the driver's local day (got ${row.date})`);
+    assert(!!row.timezone, `the row reports the zone it grouped in (got ${row.timezone})`);
+
+    const utcOnly = await asAdmin(request(app).get(`/api/trips?driverId=${joel._id}&from=${row.date}&to=${row.date}`));
+    assert(utcOnly.body.trips.length === 0,
+      'in UTC that day query misses it entirely — this is what produced the empty row with no Details link');
+
+    const zoned = await asAdmin(request(app).get(`/api/trips?driverId=${joel._id}&from=${row.date}&to=${row.date}&tz=${encodeURIComponent(row.timezone)}`));
+    assert(zoned.body.trips.length === row.totalTrips,
+      `asking in the grouping zone returns the ${row.totalTrips} trip(s) the row counted (got ${zoned.body.trips.length})`);
+  }
+
+  console.log('\n── a single-day filter covers the whole day, both ends in one zone ──');
+  {
+    // from used to parse as UTC midnight while to parsed as 23:59:59 in the SERVER's zone, so on a
+    // UTC+5:30 host a one-day filter silently lost the last 5.5 hours of that day.
+    const late = new User({ name: 'Late', email: 'late@x.com', role: 'user' });
+    await late.setPassword('pw123456'); await late.save();
+    await Trip.create({
+      driverId: late._id, status: 'completed',
+      startedAt: new Date('2026-09-09T23:30:00Z'), endedAt: new Date('2026-09-09T23:50:00Z'),
+      distanceMeters: 1000, maxSpeedKmh: 40,
+    });
+    const res = await asAdmin(request(app).get(`/api/trips?driverId=${late._id}&from=2026-09-09&to=2026-09-09&tz=UTC`));
+    assert(res.body.trips.length === 1, `a 23:30Z trip is inside its own UTC day (got ${res.body.trips.length})`);
+  }
+
   console.log(`\n🎉 TRIP MERGED SUMMARY — ${passed} assertions passed`);
   await mongoose.disconnect();
   await mongod.stop();

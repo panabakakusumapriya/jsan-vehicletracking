@@ -28,6 +28,11 @@ module.exports = {
   // CORS is no longer configurable — it is always '*'. See the note in app.js.
   HEARTBEAT_INTERVAL_SECONDS: parseInt(process.env.HEARTBEAT_INTERVAL_SECONDS || '10', 10),
   STALE_AFTER_SECONDS: parseInt(process.env.STALE_AFTER_SECONDS || '60', 10),
+  // How long a finished trip keeps showing the vehicle on the live map as "parked". A parked
+  // vehicle used to disappear the moment its trip ended, so a yard full of vehicles looked
+  // identical to no vehicles at all — and "where is that van" had no answer between trips. Its
+  // last known position stays true for as long as nobody drives it, which can be days.
+  PARKED_VISIBLE_DAYS: parseInt(process.env.PARKED_VISIBLE_DAYS || '14', 10),
   // An active trip silent longer than this is treated as dead (app killed / long signal
   // loss / crashed test session) and auto-closed so it stops lingering on the live map.
   // Kept well above the device's 10s heartbeat and normal GPS blips. Default 15 min.

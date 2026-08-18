@@ -15,7 +15,7 @@
     "backfill:map-match": "node src/seed/backfillMapMatch.js",
     "demo:custody": "node src/seed/demoCustody.js",
     "vapid": "node -e \"const k=require('web-push').generateVAPIDKeys();console.log('VAPID_PUBLIC_KEY='+k.publicKey+'\\nVAPID_PRIVATE_KEY='+k.privateKey)\"",
-    "test": "node test/integration.test.js && node test/custody.test.js && node test/tripDriverIdsFilter.test.js && node test/tripMergedSummary.test.js && node test/tripTimezoneReport.test.js && node test/tokenExpiry.test.js && node test/weather.test.js && node test/weatherPipeline.test.js && node test/hotels.test.js && node test/couriers.test.js && node test/tzcoords.test.js && node test/mapMatch.test.js",
+    "test": "node test/integration.test.js && node test/custody.test.js && node test/tripDriverIdsFilter.test.js && node test/tripMergedSummary.test.js && node test/tripTimezoneReport.test.js && node test/tokenExpiry.test.js && node test/weather.test.js && node test/weatherPipeline.test.js && node test/hotels.test.js && node test/couriers.test.js && node test/tzcoords.test.js && node test/mapMatch.test.js && node test/tripUkm.test.js && node test/exportJob.test.js",
     "test:tz": "node test/tzcoords.test.js",
     "test:custody": "node test/custody.test.js",
     "test:trip-filter": "node test/tripDriverIdsFilter.test.js",
@@ -26,7 +26,12 @@
     "test:weather:pipeline": "node test/weatherPipeline.test.js",
     "test:hotels": "node test/hotels.test.js",
     "test:couriers": "node test/couriers.test.js",
-    "test:map-match": "node test/mapMatch.test.js"
+    "test:map-match": "node test/mapMatch.test.js",
+    "test:trip-ukm": "node test/tripUkm.test.js && node test/exportJob.test.js",
+    "test:export-job": "node test/exportJob.test.js",
+    "backfill:ukm": "node src/seed/backfillUkm.js",
+    "indexes:prune": "node src/seed/dropRedundantIndexes.js",
+    "audit:trips": "node src/seed/auditTripRows.js"
   },
   "engines": {
     "node": ">=18"

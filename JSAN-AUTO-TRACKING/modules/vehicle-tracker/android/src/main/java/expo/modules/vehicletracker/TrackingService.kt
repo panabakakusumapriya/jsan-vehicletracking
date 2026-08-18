@@ -290,22 +290,10 @@ class TrackingService : Service() {
         TrackingConfig.setLastLat(this, rawLat)
         TrackingConfig.setLastLon(this, rawLon)
 
-        // ── Daylight gate: skip tracking outside sunrise–sunset ─────────
-        if (TrackingConfig.isDaylightOnly(this)) {
-            val tzId = TrackingConfig.timezoneId(this)
-            if (tzId != null) {
-                val daylight = SunTimes.today(location.latitude, location.longitude, tzId, now)
-                if (daylight != null && !daylight.isDaylight(now)) {
-                    // Outside daylight hours — if a trip is somehow active, end it.
-                    val activeTripId = TrackingConfig.currentTripId(this)
-                    if (activeTripId != null) {
-                        endTrip(activeTripId, now)
-                    }
-                    updateNotification("Night mode — tracking paused until ${daylight.sunriseFormatted()}")
-                    return
-                }
-            }
-        }
+        // Daylight gating removed: tracking runs at any hour now. It used to end the active trip
+        // and pause until sunrise, so a night shift produced no data at all — and the resulting
+        // silence let the server watchdog close the trip, after which the device kept sending
+        // points into a closed trip and the driver disappeared from Live tracking entirely.
 
         val speedKmh = computeSpeedKmh(location)   // updates lastLocation
         addSpeed(speedKmh)                             // feed rolling 3-speed window
@@ -414,23 +402,10 @@ class TrackingService : Service() {
         if (!TrackingConfig.isEnabled(this)) return
         val now    = System.currentTimeMillis()
 
-        // ── Daylight check on tick — end trip if sun has set ─────────────
-        if (TrackingConfig.isDaylightOnly(this)) {
-            val tzId = TrackingConfig.timezoneId(this)
-            val lat = TrackingConfig.lastLat(this)
-            val lon = TrackingConfig.lastLon(this)
-            if (tzId != null && !lat.isNaN() && !lon.isNaN()) {
-                val daylight = SunTimes.today(lat, lon, tzId, now)
-                if (daylight != null && !daylight.isDaylight(now)) {
-                    val activeTripId = TrackingConfig.currentTripId(this)
-                    if (activeTripId != null) {
-                        endTrip(activeTripId, now)
-                    }
-                    updateNotification("Night mode — tracking paused until ${daylight.sunriseFormatted()}")
-                    return
-                }
-            }
-        }
+        // Daylight gating removed: tracking runs at any hour now. It used to end the active trip
+        // and pause until sunrise, so a night shift produced no data at all — and the resulting
+        // silence let the server watchdog close the trip, after which the device kept sending
+        // points into a closed trip and the driver disappeared from Live tracking entirely.
 
         val tripId = TrackingConfig.currentTripId(this)
 

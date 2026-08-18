@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { DistanceModeToggle, type DistanceMode } from '../components/DistanceModeToggle';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, downloadFile } from '../lib/api';
+import { runExportJob, describeJob } from '../lib/exportJobs';
 import { km } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 import { buildReplayLayers, vehicleAtElapsed } from '../lib/map3d/TripPathLayer';
@@ -187,18 +188,25 @@ export function Reports() {
   const countries = Array.from(new Set(drivers.map(d => d.country).filter(Boolean))).sort() as string[];
   const filteredDrivers = country ? drivers.filter(d => d.country === country) : drivers;
 
-  const handleExport = (format: 'kml' | 'json') => {
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+
+  const handleExport = async (format: 'kml' | 'json', layer: 'raw' | 'snapped') => {
+    // A single driver-day is small and merges into one file, so it stays a direct download.
     if (driverId && date) {
-      return downloadFile(`/api/trips/export-merged?driverId=${driverId}&date=${date}&format=${format}`);
+      return downloadFile(`/api/trips/export-merged?driverId=${driverId}&date=${date}&format=${format}&layer=${layer}`);
     }
-    // Bulk export: all trips matching current filters
-    const params = new URLSearchParams({ format });
-    if (driverId) params.set('driverId', driverId);
+    // Anything wider is unbounded, so it goes through the background job runner.
+    const params: Record<string, string> = { format, layer };
+    if (driverId) params.driverId = driverId;
     if (country) {
       const ids = drivers.filter(d => d.country === country).map(d => d._id);
-      if (ids.length) params.set('driverIds', ids.join(','));
+      if (ids.length) params.driverIds = ids.join(',');
     }
-    return downloadFile(`/api/trips/export?${params.toString()}`);
+    try {
+      await runExportJob(params as never, (job) => setExportStatus(describeJob(job)));
+    } finally {
+      setExportStatus(null);
+    }
   };
 
   const selectedDriver = drivers.find(d => d._id === driverId);
@@ -280,7 +288,7 @@ export function Reports() {
             </button>
           )}
           <DistanceModeToggle mode={mode} onChange={setMode} cleanedAvailable={cleanedAvailable} />
-          <ExportButtons onExport={handleExport} />
+          <ExportButtons onExport={handleExport} snappedAvailable status={exportStatus} />
         </div>
       </div>
 

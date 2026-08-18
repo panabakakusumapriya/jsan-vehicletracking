@@ -2,7 +2,7 @@ const Trip = require('../models/Trip');
 const env = require('../config/env');
 const { emitAlert } = require('../realtime/io');
 const { sendToUsers, watcherIdsForDriver, isConfigured } = require('./push');
-const { closeDeadTrips } = require('./tripLifecycle');
+const { closeDeadTrips, driversWithLiveApp } = require('./tripLifecycle');
 
 /**
  * Background watchdog: notices when a driver on an active trip stops reporting and tells

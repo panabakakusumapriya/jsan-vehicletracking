@@ -63,12 +63,23 @@ async function postValhalla(path, body, { attempts = 3 } = {}) {
 
     const text = await res.text().catch(() => '');
     const message = `Valhalla ${path} returned ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`;
-    if (isRetryable(res.status) && attempt < attempts) {
-      await new Promise((r) => setTimeout(r, 1000 * attempt));
-      continue;
+    if (isRetryable(res.status)) {
+      if (attempt < attempts) {
+        await new Promise((r) => setTimeout(r, 1000 * attempt));
+        continue;
+      }
+      // Retries exhausted on a transient failure. Emphatically NOT `unmatchable`: the server was
+      // overloaded, it never gave a verdict on this trace. Flagging it would let an outage bake
+      // raw geometry in as the cleaned layer across the whole fleet.
+      throw new Error(message);
     }
-    // Not retryable (e.g. 400 = trace couldn't be matched at all) — fail now.
-    throw new Error(message);
+    // Valhalla has looked at this trace and cannot match it (442 "no path could be found",
+    // 443 "exact route match failed", other 4xx). Flagged so callers can tell this apart from the
+    // server being unavailable: this one is a permanent fact about the trace, so keeping the raw
+    // geometry is the correct final answer. See matchSegment().
+    const err = new Error(message);
+    err.unmatchable = true;
+    throw err;
   }
   throw new Error(`Valhalla ${path}: exhausted retries`);
 }
@@ -295,12 +306,13 @@ async function matchSegment(points, depth = 0) {
     try {
       result = await traceRoute(points);
     } catch (err) {
-      // A hard failure on a splittable stretch is worth retrying in halves for the same reason a
-      // collapsed one is; only re-throw once there is nothing left to try.
-      if (points.length < env.MAP_MATCH_MIN_SPLIT_POINTS * 2 || depth >= env.MAP_MATCH_MAX_SPLIT_DEPTH) {
-        if (depth === 0) throw err;
-        result = null;
-      }
+      // Only a verdict from Valhalla ("I cannot match this trace") is allowed to end in raw
+      // geometry. A timeout, a 5xx, or an unreachable host says nothing about the trace, and
+      // treating it as unmatchable would quietly rewrite good trips as 0%-snapped for the duration
+      // of an outage — permanently, since nothing would mark them for another look. Those
+      // propagate instead, so the trip stays 'failed' and gets retried later.
+      if (!err.unmatchable) throw err;
+      result = null;
     }
 
     // Two independent gates, because they fail differently. Coverage catches a match that

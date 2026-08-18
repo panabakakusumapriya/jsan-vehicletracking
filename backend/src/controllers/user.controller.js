@@ -284,7 +284,33 @@ exports.remove = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!canManageDriver(req.user, user)) return res.status(403).json({ error: 'Forbidden' });
+  // Deactivating used to set `active` and nothing else, which left two things quietly wrong:
+  // `driverStatus` still read "Active" in every report, and — worse — no `exitDate` meant the
+  // asset release in update() never fired, so the driver kept holding their vehicle and phone and
+  // neither could be reassigned to anyone. 15 drivers were found in exactly that state.
+  const wasActive = user.active;
   user.active = false;
+  if (user.role === 'user') {
+    user.driverStatus = 'Exit';
+    if (!user.exitDate) user.exitDate = new Date();
+  }
   await user.save();
+
+  // Best-effort, mirroring update(): recording the exit must not fail because a custody stint
+  // could not be closed. Only on the transition, so a repeated call cannot re-date the history.
+  if (wasActive && user.role === 'user') {
+    try {
+      await releaseAllForDriver({
+        driverId: user._id,
+        endedAt: user.exitDate,
+        note: 'driver exit',
+        actor: req.user,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`exit: failed to release assets for ${user._id}:`, err.message);
+    }
+  }
+
   res.json({ ok: true });
 });

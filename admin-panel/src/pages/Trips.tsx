@@ -2,7 +2,8 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { DateField } from '../components/DateField';
 import { ExportButtons } from '../components/ExportButtons';
-import { api, downloadFile } from '../lib/api';
+import { api, viewerTimeZone } from '../lib/api';
+import { runExportJob, describeJob } from '../lib/exportJobs';
 import { km, sessionDt, statusBadge } from '../lib/format';
 import type { Project, Trip, User } from '../lib/types';
 
@@ -13,6 +14,11 @@ interface DaySummary {
   driverId: string;
   driverName: string;
   date: string; // YYYY-MM-DD
+  /**
+   * The timezone this row was grouped in (the driver's, from their country). Expanding the row
+   * must query the same zone, or the day boundaries disagree and the group comes back empty.
+   */
+  timezone?: string;
   totalTrips: number;
   totalDistance: number;
   maxSpeed: number;
@@ -100,6 +106,8 @@ export function Trips() {
     if (status) params.set('status', status);
     if (from) params.set('from', from);
     if (to) params.set('to', to);
+    // Filter on the same clock the rows are displayed in — see viewerTimeZone().
+    if (from || to) params.set('tz', viewerTimeZone());
     if (driverId) params.set('driverId', driverId);
     else if (scopedDriverIds) params.set('driverIds', scopedDriverIds.join(','));
     params.set('page', String(pageToLoad));
@@ -146,20 +154,33 @@ export function Trips() {
     });
     if (dayTrips[key] || dayTripsLoading[key]) return; // already loaded or in flight
     setDayTripsLoading(prev => ({ ...prev, [key]: true }));
+    // tz is what keeps this consistent with the row above it: merged-summary buckets by the
+    // driver's local day, so asking for that date in any other zone can miss the trips it counted.
     const params = new URLSearchParams({ driverId: s.driverId, from: s.date, to: s.date, limit: '200' });
+    if (s.timezone) params.set('tz', s.timezone);
     api.get<{ trips: Trip[] }>(`/api/trips?${params}`)
       .then(r => setDayTrips(prev => ({ ...prev, [key]: r.trips })))
       .finally(() => setDayTripsLoading(prev => ({ ...prev, [key]: false })));
   };
 
-  const handleExport = (format: 'kml' | 'json') => {
-    const params = new URLSearchParams({ format });
-    if (status) params.set('status', status);
-    if (from) params.set('from', from);
-    if (to) params.set('to', to);
-    if (driverId) params.set('driverId', driverId);
-    else if (scopedDriverIds) params.set('driverIds', scopedDriverIds.join(','));
-    return downloadFile(`/api/trips/export?${params.toString()}`);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+
+  // Bulk exports run as a background job — see lib/exportJobs.ts. Zipping a whole date range
+  // inside the request timed out on large ranges and produced truncated files that still
+  // downloaded as though they had succeeded.
+  const handleExport = async (format: 'kml' | 'json', layer: 'raw' | 'snapped') => {
+    const params: Record<string, string> = { format, layer };
+    if (status) params.status = status;
+    if (from) params.from = from;
+    if (to) params.to = to;
+    if (from || to) params.tz = viewerTimeZone();
+    if (driverId) params.driverId = driverId;
+    else if (scopedDriverIds) params.driverIds = scopedDriverIds.join(',');
+    try {
+      await runExportJob(params as never, (job) => setExportStatus(describeJob(job)));
+    } finally {
+      setExportStatus(null);
+    }
   };
 
   // Countries scoped to the selected project (still keyed by the driver's denormalized
@@ -278,7 +299,7 @@ export function Trips() {
             Clear
           </button>
         )}
-        <ExportButtons onExport={handleExport} disabled={total === 0} />
+        <ExportButtons onExport={handleExport} disabled={total === 0} snappedAvailable status={exportStatus} />
       </div>
 
       {/* Stats */}

@@ -1,15 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
 
 type ExportFormat = 'kml' | 'json';
+export type ExportLayer = 'raw' | 'snapped';
 
 interface ExportButtonsProps {
-  onExport: (format: ExportFormat) => Promise<void>;
+  onExport: (format: ExportFormat, layer: ExportLayer) => Promise<void>;
   disabled?: boolean;
+  /**
+   * Whether a snapped route exists for this trip. The snapped choices are shown but disabled when
+   * it doesn't, rather than hidden — a menu that changes shape between trips leaves people
+   * wondering whether they misremembered, and "not map-matched yet" is the more useful answer.
+   */
+  snappedAvailable?: boolean;
+  /**
+   * Live progress for a background export (e.g. "Preparing 120/540 trips…"). Bulk exports are
+   * queued server-side and can run for minutes, so a static "Exporting…" would leave the user
+   * unable to tell a working export from a stuck one.
+   */
+  status?: string | null;
 }
 
-const FORMATS: { value: ExportFormat; label: string }[] = [
-  { value: 'kml', label: 'KML' },
-  { value: 'json', label: 'JSON' },
+type Choice = { format: ExportFormat; layer: ExportLayer; label: string; hint: string; needsSnapped?: boolean };
+
+const CHOICES: Choice[] = [
+  { format: 'kml', layer: 'raw', label: 'Raw GPS · KML', hint: 'The recorded trace, exactly as logged' },
+  { format: 'kml', layer: 'snapped', label: 'Snapped to road · KML', hint: 'Matched route + UKM layer, styled', needsSnapped: true },
+  { format: 'json', layer: 'raw', label: 'Raw GPS · JSON', hint: 'Points with speed, heading, timestamps' },
 ];
 
 const DownloadIcon = () => (
@@ -36,9 +52,9 @@ const ChevronIcon = ({ open }: { open: boolean }) => (
   </svg>
 );
 
-export function ExportButtons({ onExport, disabled }: ExportButtonsProps) {
+export function ExportButtons({ onExport, disabled, snappedAvailable = false, status }: ExportButtonsProps) {
   const [open, setOpen] = useState(false);
-  const [pending, setPending] = useState<ExportFormat | null>(null);
+  const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -58,12 +74,12 @@ export function ExportButtons({ onExport, disabled }: ExportButtonsProps) {
     };
   }, [open]);
 
-  const handlePick = async (format: ExportFormat) => {
+  const handlePick = async (choice: Choice) => {
     setOpen(false);
-    setPending(format);
+    setPending(choice.label);
     setError(null);
     try {
-      await onExport(format);
+      await onExport(choice.format, choice.layer);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Export failed');
     } finally {
@@ -81,7 +97,7 @@ export function ExportButtons({ onExport, disabled }: ExportButtonsProps) {
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600 }}
       >
         <DownloadIcon />
-        {pending ? `Exporting ${pending.toUpperCase()}…` : 'Export'}
+        {pending ? (status || 'Exporting…') : 'Export'}
         <ChevronIcon open={open} />
       </button>
 
@@ -93,7 +109,7 @@ export function ExportButtons({ onExport, disabled }: ExportButtonsProps) {
             top: 'calc(100% + 6px)',
             right: 0,
             zIndex: 20,
-            minWidth: 130,
+            minWidth: 232,
             background: 'var(--panel)',
             border: '1px solid var(--line)',
             borderRadius: 'var(--radius)',
@@ -101,31 +117,40 @@ export function ExportButtons({ onExport, disabled }: ExportButtonsProps) {
             padding: 4,
           }}
         >
-          {FORMATS.map((f) => (
-            <button
-              key={f.value}
-              type="button"
-              role="menuitem"
-              onClick={() => handlePick(f.value)}
-              style={{
-                display: 'block',
-                width: '100%',
-                textAlign: 'left',
-                background: 'none',
-                border: 'none',
-                borderRadius: 8,
-                padding: '8px 10px',
-                fontSize: 13,
-                fontWeight: 600,
-                color: 'var(--text-2)',
-                cursor: 'pointer',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg)')}
-              onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
-            >
-              {f.label}
-            </button>
-          ))}
+          {CHOICES.map((choice) => {
+            const unavailable = !!choice.needsSnapped && !snappedAvailable;
+            return (
+              <button
+                key={choice.label}
+                type="button"
+                role="menuitem"
+                disabled={unavailable}
+                title={unavailable ? 'This trip has not been map-matched yet' : choice.hint}
+                onClick={() => handlePick(choice)}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  textAlign: 'left',
+                  background: 'none',
+                  border: 'none',
+                  borderRadius: 8,
+                  padding: '8px 10px',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: unavailable ? 'var(--muted)' : 'var(--text-2)',
+                  cursor: unavailable ? 'not-allowed' : 'pointer',
+                  opacity: unavailable ? 0.55 : 1,
+                }}
+                onMouseEnter={(e) => { if (!unavailable) e.currentTarget.style.background = 'var(--bg)'; }}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+              >
+                {choice.label}
+                <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--muted)', marginTop: 1 }}>
+                  {unavailable ? 'Not map-matched yet' : choice.hint}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
 

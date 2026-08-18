@@ -70,7 +70,13 @@ object TrackingConfig {
         prefs(ctx).edit().putLong("lastLon", lon.toBits()).apply()
 
     /** Whether daylight-only tracking is enabled (default: true). */
-    fun isDaylightOnly(ctx: Context): Boolean = prefs(ctx).getBoolean("daylightOnly", true)
+    /**
+     * Retained only so an existing install with the old preference stored does not break; nothing
+     * reads it to gate tracking any more. Defaults to false: tracking runs at any hour, because
+     * pausing overnight lost night-shift data outright and the silence made the server watchdog
+     * close the trip, which left the driver invisible on Live tracking.
+     */
+    fun isDaylightOnly(ctx: Context): Boolean = prefs(ctx).getBoolean("daylightOnly", false)
     fun setDaylightOnly(ctx: Context, enabled: Boolean) =
         prefs(ctx).edit().putBoolean("daylightOnly", enabled).apply()
 }

@@ -153,17 +153,21 @@ function point(lat, lon, recordedAt) {
     near(r.distanceMeters, 1000, 0.01, 'the eventually-successful response is what gets used');
   }
 
-  console.log('\n── matchTrace: does not retry a hard 400 (unmatchable trace) ──');
+  console.log('\n── matchTrace: does not retry a hard 400, and keeps the raw trace ──');
   {
     let calls = 0;
     stubFetch(async () => {
       calls += 1;
       return { ok: false, status: 400, text: async () => 'no route found' };
     });
+    // Two points is below the subdivision floor, so there is nothing to split — this is the
+    // smallest possible unmatchable stretch and goes straight to raw fallback.
     const pts = [point(1, 1, t0), point(1, 1.001, t0 + 1000)];
-    let caught = null;
-    try { await matchTrace(pts); } catch (e) { caught = e; }
-    assert(caught && calls === 1, 'a 400 fails immediately with no retry — the trace is genuinely unmatchable');
+    const r = await matchTrace(pts);
+    assert(calls === 1, 'a 400 is not retried — Valhalla has already given its verdict on this trace');
+    assert(r.shapes.length === 1 && r.shapes[0].length > 0, 'the trip still gets drawable geometry (the raw trace) rather than failing outright');
+    assert(r.matchedMeters === 0, 'reported as 0 m genuinely snapped, so the UI can say so');
+    near(r.distanceMeters, 111.2, 1, 'distance is the real trace length, not zero');
   }
 
   console.log('\n── matchTrace: a collapsed match is rejected, not stored (the missing-roads bug) ──');
@@ -204,6 +208,38 @@ function point(lat, lon, recordedAt) {
 
     env.MAP_MATCH_CHUNK_SIZE = realChunk;
     env.MAP_MATCH_MIN_SPLIT_POINTS = realFloor;
+  }
+
+  console.log('\n── matchTrace: an unmatchable trace keeps raw geometry; an OUTAGE does not ──');
+  {
+    // These two must not be conflated. "Valhalla cannot match this" is a permanent fact about the
+    // trace, so keeping the raw trace is the right answer and the trip is complete. A 5xx or a
+    // timeout says nothing about the trace — silently storing raw geometry then would rewrite good
+    // trips as 0%-snapped for the length of an outage, and nothing would ever revisit them.
+    const env = require('../src/config/env');
+    const realChunk = env.MAP_MATCH_CHUNK_SIZE;
+    env.MAP_MATCH_CHUNK_SIZE = 1000;
+    const pts = Array.from({ length: 60 }, (_, i) => point(1 + i * 0.0001, 1, t0 + i * 1000));
+
+    stubFetch(async () => ({ ok: false, status: 400, text: async () => '{"error_code":442,"error":"No path could be found for input"}' }));
+    const unmatchable = await matchTrace(pts);
+    assert(unmatchable.shapes.length >= 1, 'a 442 leaves the trip with drawable raw geometry rather than no route at all');
+    assert(unmatchable.matchedMeters === 0, 'and reports 0 m genuinely snapped');
+    near(unmatchable.distanceMeters, 656, 5, 'distance falls back to the real trace length');
+
+    let calls = 0;
+    stubFetch(async () => { calls += 1; return { ok: false, status: 503, text: async () => 'server overloaded' }; });
+    let caught = null;
+    try { await matchTrace(pts); } catch (e) { caught = e; }
+    assert(caught, 'a 503 outage throws instead of silently storing raw geometry as the cleaned layer');
+    assert(calls > 1, 'and it was retried before giving up');
+
+    stubFetch(async () => { throw new Error('ECONNREFUSED'); });
+    let netErr = null;
+    try { await matchTrace(pts); } catch (e) { netErr = e; }
+    assert(netErr && /unreachable/i.test(netErr.message), 'an unreachable server also throws, so the trip is retried rather than degraded');
+
+    env.MAP_MATCH_CHUNK_SIZE = realChunk;
   }
 
   console.log('\n── matchTrace: a match of the right LENGTH but in the wrong place is rejected ──');
@@ -329,16 +365,33 @@ function point(lat, lon, recordedAt) {
     assert(reloaded.mapMatchStatus === 'matched' && reloaded.mapMatchedAt, 'status + timestamp recorded');
   }
 
-  console.log('\n── failure: marked failed, raw distance still untouched ──');
+  console.log('\n── transient failure: marked failed for a retry, raw distance untouched ──');
   {
-    stubFetch(() => ({ ok: false, status: 400, text: async () => 'off road' }));
+    // A server that cannot be reached is the real failure case now. It must leave the trip marked
+    // 'failed' so it gets another chance later, and must NOT write a cleaned layer.
+    stubFetch(() => { throw new Error('ECONNREFUSED'); });
     const trip = await makeTrip({ distanceMeters: 2000, pointCount: 3 });
     const outcome = await processTrip(trip._id);
-    assert(outcome === 'failed', 'processTrip reports failed');
+    assert(outcome === 'failed', 'processTrip reports failed when Valhalla is unreachable');
     const reloaded = await Trip.findById(trip._id);
     assert(reloaded.distanceMeters === 2000, 'raw distance survives a failed match untouched');
-    assert(reloaded.cleanedDistanceMeters === null, 'no cleaned distance is written on failure');
+    assert(reloaded.cleanedDistanceMeters === null, 'no cleaned distance is written on a transient failure');
     assert(reloaded.mapMatchStatus === 'failed' && reloaded.mapMatchError, 'failure status + reason recorded');
+  }
+
+  console.log('\n── unmatchable trip: completes with raw geometry rather than being left blank ──');
+  {
+    // Valhalla saying "I cannot match this" is a final answer, not an error to retry. The trip
+    // should end up with a drawable route and an honest 0% — never with no cleaned layer at all,
+    // which would leave the raw/snapped toggle broken for that trip forever.
+    stubFetch(() => ({ ok: false, status: 400, text: async () => '{"error_code":442,"error":"No path could be found for input"}' }));
+    const trip = await makeTrip({ distanceMeters: 2000, pointCount: 3 });
+    const outcome = await processTrip(trip._id);
+    assert(outcome === 'matched', 'processTrip completes rather than failing');
+    const reloaded = await Trip.findById(trip._id);
+    assert(reloaded.distanceMeters === 2000, 'raw distance still untouched');
+    assert(reloaded.cleanedRouteShapes && reloaded.cleanedRouteShapes.length > 0, 'a drawable route is stored');
+    assert(reloaded.cleanedMatchedRatio === 0, 'and it is recorded as 0% genuinely snapped');
   }
 
   console.log('\n── an already-claimed/matched trip is not reprocessed ──');

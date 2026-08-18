@@ -7,7 +7,7 @@ const { timezoneFromCoords } = require('../utils/tzFromCoords');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { emitLocation } = require('../realtime/io');
 const env = require('../config/env');
-const { closeDeadTrips } = require('../services/tripLifecycle');
+const { closeDeadTrips, driversWithLiveApp } = require('../services/tripLifecycle');
 const { computeTripUkm } = require('../services/ukmCompute');
 const UkmEdge = require('../models/UkmEdge');
 const mongoose = require('mongoose');
@@ -74,6 +74,47 @@ exports.ingest = asyncHandler(async (req, res) => {
         // reinterpret last month's start and end times.
         timezone: timezoneFromCoords(first.lat, first.lon) || driver.timezone || null,
       });
+    }
+
+    // The trip exists but the watchdog closed it while the device was silent, and now points are
+    // arriving for it again — so the session never actually ended. Without reviving it here the
+    // points still get appended (the append path below does not care about status), but the trip
+    // stays closed, /api/tracking/live only returns active trips, and the driver is invisible on
+    // the map while their data flows in. Measured before this fix: 98 of the newest 400 closed
+    // trips were still collecting points, 245,330 points in total, some arriving 96 hours after
+    // the trip had been closed.
+    //
+    // Only 'timed_out' is revived. 'completed' means the device itself said the trip ended, and a
+    // late offline batch for such a trip must not reopen it.
+    //
+    // The freshness check keeps an offline sync of genuinely old data from resurrecting history:
+    // only points recent enough that the session could still be running count as "still driving".
+    if (trip.status === 'timed_out') {
+      const newestMs = new Date(pts[pts.length - 1].recordedAt).getTime();
+      const stillLive = Number.isFinite(newestMs)
+        && Date.now() - newestMs < env.SESSION_DEAD_AFTER_SECONDS * 1000;
+      if (stillLive) {
+        await Trip.updateOne(
+          { _id: trip._id, status: 'timed_out' },
+          {
+            $set: {
+              status: 'active',
+              endedAt: null,
+              // The trip is about to grow, so any snapped route already computed for it describes
+              // only part of the drive. Send it back through matching once it finally closes,
+              // rather than leaving a cleaned layer and a UKM figure frozen mid-trip.
+              mapMatchStatus: 'pending',
+              cleanedDistanceMeters: null,
+              cleanedMatchedRatio: null,
+              ukmMeters: null,
+              ukmWithinTripMeters: null,
+            },
+            $unset: { cleanedRouteShapes: 1, ukmNewShapes: 1, endLocation: 1 },
+          }
+        );
+        trip.status = 'active';
+        trip.endedAt = null;
+      }
     }
 
     let last = trip.lastLocation && trip.lastLocation.lat != null ? trip.lastLocation : null;
@@ -232,21 +273,36 @@ exports.live = asyncHandler(async (req, res) => {
     .populate('driverId', 'name email phone country project')
     .populate('vehicleId', 'plateNumber model');
 
-  const drivers = trips
-    .filter((t) => t.driverId && t.driverId._id) // skip trips whose driver was deleted
-    .map((t) => {
-      const recordedAt = t.lastLocation?.recordedAt ? new Date(t.lastLocation.recordedAt).getTime() : null;
-      return {
-        tripId: t._id,
-        driver: t.driverId,
-        vehicle: t.vehicleId,
-        location: t.lastLocation,
-        startedAt: t.startedAt,
-        distanceMeters: t.distanceMeters,
-        maxSpeedKmh: t.maxSpeedKmh,
-        stale: recordedAt ? (now - recordedAt) / 1000 > env.STALE_AFTER_SECONDS : true,
-      };
-    });
+  const withDriver = trips.filter((t) => t.driverId && t.driverId._id); // skip deleted drivers
+
+  // "Stale" means we have lost the driver, not "the vehicle is standing still". The device stops
+  // producing fixes the moment it stops moving — its 30s stationary keep-alive only emits a local
+  // JS event and never reaches the server — so judging staleness on GPS alone flagged every
+  // traffic light and every delivery stop. The app also heartbeats every ~30s to say it is alive;
+  // a driver with a fresh heartbeat is parked or waiting, not lost.
+  const liveApps = await driversWithLiveApp(
+    withDriver.map((t) => t.driverId._id),
+    new Date(now - env.STALE_AFTER_SECONDS * 1000)
+  );
+
+  const drivers = withDriver.map((t) => {
+    const recordedAt = t.lastLocation?.recordedAt ? new Date(t.lastLocation.recordedAt).getTime() : null;
+    const gpsFresh = recordedAt ? (now - recordedAt) / 1000 <= env.STALE_AFTER_SECONDS : false;
+    const appAlive = liveApps.has(String(t.driverId._id));
+    return {
+      tripId: t._id,
+      driver: t.driverId,
+      vehicle: t.vehicleId,
+      location: t.lastLocation,
+      startedAt: t.startedAt,
+      distanceMeters: t.distanceMeters,
+      maxSpeedKmh: t.maxSpeedKmh,
+      state: gpsFresh ? 'moving' : appAlive ? 'stopped' : 'stale',
+      // Kept for older clients: still true only when we genuinely cannot account for the driver.
+      stale: !gpsFresh && !appAlive,
+      appAlive,
+    };
+  });
 
   res.json({ drivers, serverTime: new Date().toISOString() });
 });
@@ -349,7 +405,20 @@ exports.ukm = asyncHandler(async (req, res) => {
     }).select('_id driverId').lean();
 
     const unprocessed = allTrips.filter(t => !processedSet.has(t._id.toString()));
+
+    // Skip trips whose location points no longer exist. computeTripUkm reads LocationPoints, so
+    // these can never yield an edge and can never leave the "unprocessed" list — meaning the loop
+    // below re-scanned all of them on the first request after EVERY restart, forever. Measured at
+    // ~71 ms each across 239 such trips: ~17 seconds added to whoever opened this page first.
+    // They are the trips whose points were bulk-deleted (everything before 2026-08-04); nothing
+    // here can recover them, so the only sane action is not to keep asking.
+    const withPoints = [];
     for (const t of unprocessed) {
+      const probe = await LocationPoint.find({ tripId: t._id }).select('_id').limit(2).lean();
+      if (probe.length >= 2) withPoints.push(t);
+    }
+
+    for (const t of withPoints) {
       await computeTripUkm(t._id, t.driverId);
     }
   }
@@ -440,33 +509,40 @@ exports.ukmDriver = asyncHandler(async (req, res) => {
     .sort({ startedAt: 1 })
     .lean();
 
-  // For trips without cleaned routes, fetch raw points (limit to 200 per trip for performance).
-  const routes = [];
-  for (const trip of trips) {
-    if (trip.cleanedRouteShapes && trip.cleanedRouteShapes.length) {
-      routes.push({
+  // Matched trips need no point lookup at all; the unmatched ones are fetched together in a single
+  // query rather than one per trip, which is what made this endpoint slow for a busy driver.
+  const needRaw = trips.filter((t) => !(t.cleanedRouteShapes && t.cleanedRouteShapes.length));
+  const rawByTrip = new Map(needRaw.map((t) => [String(t._id), []]));
+  if (needRaw.length) {
+    const pts = await LocationPoint.find({ tripId: { $in: needRaw.map((t) => t._id) } })
+      .sort({ tripId: 1, recordedAt: 1 }) // matches the compound index, so no in-memory sort
+      .select('tripId lat lon')
+      .lean();
+    for (const p of pts) {
+      const arr = rawByTrip.get(String(p.tripId));
+      if (arr) arr.push([p.lat, p.lon]);
+    }
+  }
+
+  const routes = trips.map((trip) =>
+    trip.cleanedRouteShapes && trip.cleanedRouteShapes.length
+      ? {
         tripId: trip._id,
         startedAt: trip.startedAt,
         endedAt: trip.endedAt,
         distanceMeters: trip.cleanedDistanceMeters || trip.distanceMeters,
         shapes: trip.cleanedRouteShapes,
         type: 'matched',
-      });
-    } else {
-      const pts = await LocationPoint.find({ tripId: trip._id })
-        .sort({ recordedAt: 1 })
-        .select('lat lon')
-        .lean();
-      routes.push({
+      }
+      : {
         tripId: trip._id,
         startedAt: trip.startedAt,
         endedAt: trip.endedAt,
         distanceMeters: trip.distanceMeters,
-        points: pts.map(p => [p.lat, p.lon]),
+        points: rawByTrip.get(String(trip._id)) || [],
         type: 'raw',
-      });
-    }
-  }
+      }
+  );
 
   // Driver's per-driver unique meters.
   const driverOid = new mongoose.Types.ObjectId(driverId);
@@ -561,7 +637,7 @@ exports.ukmExport = asyncHandler(async (req, res) => {
  */
 exports.parked = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
-  const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  const cutoff = new Date(Date.now() - env.PARKED_VISIBLE_DAYS * 24 * 60 * 60 * 1000);
 
   // Drivers who are currently active — exclude them from the parked view.
   const activeTrips = await Trip.find({ status: 'active', ...scope }).select('driverId');
@@ -590,6 +666,9 @@ exports.parked = asyncHandler(async (req, res) => {
       vehicle: t.vehicleId,
       location: t.lastLocation,
       endedAt: t.endedAt,
+      // How long it has been sitting there, so the map can say "parked 3 days" rather than
+      // leaving the reader to subtract timestamps.
+      parkedForSeconds: t.endedAt ? Math.max(0, Math.round((Date.now() - new Date(t.endedAt).getTime()) / 1000)) : null,
     });
   }
 

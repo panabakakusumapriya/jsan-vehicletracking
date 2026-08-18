@@ -13,6 +13,11 @@ export interface TripPoint {
 
 const TINT: [number, number, number] = [124, 58, 237];
 const SNAPPED_TINT: [number, number, number] = [13, 148, 136]; // teal — visually distinct from the raw trail
+// Road the driver had already covered on an earlier trip: kept visible but pushed back, so the
+// eye lands on the UKM stretches drawn over it. Slate rather than a lighter teal, because two
+// shades of one hue read as "signal strength" and this is a category difference, not a degree.
+const REPEATED_TINT: [number, number, number] = [148, 163, 184];
+const UKM_TINT: [number, number, number] = [16, 185, 129]; // emerald — the new road
 const START_COLOR: [number, number, number] = [5, 150, 105]; // matches the old 2D start markers
 const MARKER_LINE_COLOR: [number, number, number] = [255, 255, 255];
 
@@ -127,7 +132,8 @@ export function buildReplayLayers(
   points: TripPoint[],
   elapsedMs: number,
   fading: boolean,
-  snappedPath?: [number, number][] | null
+  snappedPath?: [number, number][] | null,
+  ukmPaths?: [number, number][][] | null
 ) {
   if (points.length === 0) return [];
 
@@ -136,18 +142,39 @@ export function buildReplayLayers(
 
   const layers = [];
   if (snappedPath && snappedPath.length > 1) {
+    // With UKM stretches available the route is drawn in two passes: the whole thing muted
+    // underneath, then the new road picked out on top. Overlaying rather than splitting the route
+    // into new/repeated pieces keeps it continuous — a gap between two coloured runs would read as
+    // missing data, which is the exact confusion the snapping work just finished removing.
+    const hasUkm = !!ukmPaths && ukmPaths.some((p) => p.length > 1);
     layers.push(
       new PathLayer({
         id: 'trip-replay-path-snapped',
         data: [{ path: snappedPath }],
         getPath: (d) => d.path,
-        getColor: SNAPPED_TINT,
+        getColor: hasUkm ? REPEATED_TINT : SNAPPED_TINT,
         getWidth: 5,
         widthMinPixels: 4,
         capRounded: true,
         jointRounded: true,
       })
     );
+    if (hasUkm) {
+      layers.push(
+        new PathLayer({
+          id: 'trip-replay-path-ukm',
+          data: ukmPaths!.filter((p) => p.length > 1).map((path) => ({ path })),
+          getPath: (d) => d.path,
+          getColor: UKM_TINT,
+          // Slightly wider so the highlight covers the muted line under it rather than letting a
+          // fringe of grey show through along the edges.
+          getWidth: 7,
+          widthMinPixels: 5,
+          capRounded: true,
+          jointRounded: true,
+        })
+      );
+    }
   } else if (points.length > 1) {
     const path = points.map((p) => [p.lon, p.lat]);
     layers.push(

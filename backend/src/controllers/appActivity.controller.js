@@ -35,11 +35,25 @@ exports.list = asyncHandler(async (req, res) => {
   const drivers = await User.find({ role: 'user', active: true }).select('name email country project').lean();
   const summaryList = [];
 
+  // Newest sign_in and sign_out for every driver in ONE aggregation. This was two findOne calls
+  // per driver — 320 sequential round trips for 160 drivers, all to build one summary table.
+  // The $sort is {driverId, timestamp:-1} specifically so the existing compound index provides
+  // the order; $first then picks the newest row within each (driver, action) group.
+  const latestByDriverAction = new Map();
+  if (drivers.length) {
+    const rows = await AppActivity.aggregate([
+      { $match: { driverId: { $in: drivers.map((d) => d._id) }, action: { $in: ['sign_in', 'sign_out'] } } },
+      { $sort: { driverId: 1, timestamp: -1 } },
+      { $group: { _id: { driverId: '$driverId', action: '$action' }, timestamp: { $first: '$timestamp' } } },
+    ]);
+    for (const r of rows) {
+      latestByDriverAction.set(`${r._id.driverId}|${r._id.action}`, { timestamp: r.timestamp });
+    }
+  }
+
   for (const d of drivers) {
-    const lastSignIn = await AppActivity.findOne({ driverId: d._id, action: 'sign_in' })
-      .sort({ timestamp: -1 }).lean();
-    const lastSignOut = await AppActivity.findOne({ driverId: d._id, action: 'sign_out' })
-      .sort({ timestamp: -1 }).lean();
+    const lastSignIn = latestByDriverAction.get(`${d._id}|sign_in`) || null;
+    const lastSignOut = latestByDriverAction.get(`${d._id}|sign_out`) || null;
 
     const hb = heartbeatCache.get(String(d._id));
     const lastHb = hb?.time || null;

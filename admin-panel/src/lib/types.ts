@@ -248,6 +248,16 @@ export interface Trip {
   // be matched and kept its raw GPS geometry instead, so the "snapped" route is partly raw — see
   // matchSegment() in the backend's services/valhalla.js.
   cleanedMatchedRatio?: number | null;
+  // Road in this trip not covered by any EARLIER trip by the same driver — the cross-day "unique
+  // KM" figure. Same route driven again tomorrow contributes 0. null until the trip is matched,
+  // since it is derived from the snapped route. See backend services/roadSegments.js.
+  ukmMeters?: number | null;
+  // Distinct road within this trip alone (a road driven 3× in one trip counts once).
+  ukmWithinTripMeters?: number | null;
+  // The UKM stretches only, as encoded polyline6 — road that was new to this trip. Drawn
+  // highlighted over the muted full route so previously-driven road is visually distinct.
+  ukmNewShapes?: string[] | null;
+  ukmComputedAt?: string | null;
 }
 
 export interface LiveDriver {
@@ -258,10 +268,20 @@ export interface LiveDriver {
   startedAt: string;
   distanceMeters: number;
   maxSpeedKmh: number;
+  /**
+   * moving  - a GPS fix within STALE_AFTER_SECONDS
+   * stopped - no recent fix, but the app is still heartbeating: parked or waiting, not lost
+   * stale   - neither; we genuinely cannot account for the driver
+   */
+  state?: 'moving' | 'stopped' | 'stale';
+  appAlive?: boolean;
+  /** True only when we cannot account for the driver at all. Kept for older callers. */
   stale: boolean;
 }
 
 export interface ParkedDriver {
+  /** Seconds since the trip ended — how long the vehicle has been sitting there. */
+  parkedForSeconds?: number | null;
   tripId: string;
   driver: { _id: string; name: string; email: string; phone?: string; country?: string | null; project?: string | null };
   vehicle?: { _id: string; plateNumber: string; model?: string } | null;

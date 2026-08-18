@@ -85,6 +85,41 @@ function SnapCoverage({ ratio }: { ratio: number }) {
   );
 }
 
+/**
+ * Context for the UKM figure. Without it a "0.0 km" reads like a bug rather than the correct answer
+ * for a driver who spent the day re-covering ground they had already driven — which is exactly the
+ * case this metric exists to reveal. So when nothing is new, say so in words, and show how much
+ * distinct road the trip covered regardless of history.
+ */
+function UkmNote({ trip }: { trip: Trip }) {
+  const newM = trip.ukmMeters ?? 0;
+  const selfM = trip.ukmWithinTripMeters ?? 0;
+  const allRepeated = newM < 50 && selfM > 0;
+  const share = selfM > 0 ? Math.round((newM / selfM) * 100) : null;
+
+  return (
+    <span
+      title={
+        'UKM — unique kilometers. Road this trip covered that the driver had not driven on any ' +
+        'earlier trip. A road driven again on a later day counts only once, on the first trip that ' +
+        'covered it. Roads repeated within this trip also count once.' +
+        (selfM > 0 ? `\n\nUnique road within this trip alone, ignoring history: ${(selfM / 1000).toFixed(1)} km.` : '')
+      }
+      style={{
+        fontSize: 11,
+        fontWeight: 700,
+        padding: '2px 7px',
+        borderRadius: 999,
+        whiteSpace: 'nowrap',
+        color: allRepeated ? 'var(--muted)' : 'var(--brand)',
+        background: allRepeated ? 'var(--bg)' : 'var(--brand-light)',
+      }}
+    >
+      {allRepeated ? 'all previously driven' : share != null ? `${share}% of ${(selfM / 1000).toFixed(1)} km unique` : 'new'}
+    </span>
+  );
+}
+
 export function TripDetail() {
   const { id } = useParams<{ id: string }>();
   const [trip, setTrip] = useState<Trip | null>(null);
@@ -119,6 +154,15 @@ export function TripDetail() {
     () => (mode === 'cleaned' ? decodeRouteShapes(trip?.cleanedRouteShapes) : null),
     [mode, trip]
   );
+  // Each UKM stretch stays a separate path: joining them would draw a straight line across the
+  // repeated road in between and highlight ground the driver had already covered.
+  const ukmPaths = useMemo(
+    () =>
+      mode === 'cleaned' && trip?.ukmNewShapes?.length
+        ? trip.ukmNewShapes.map((s) => decodeRouteShapes([s])).filter((p) => p.length > 1)
+        : null,
+    [mode, trip]
+  );
 
   // Camera follows the vehicle during playback — rotates to face the driving
   // direction so it feels like you're travelling along the route. Throttled to
@@ -135,8 +179,8 @@ export function TripDetail() {
   }, [playback.currentTimeMs, playback.playing, points]);
 
   const layers = useMemo(
-    () => buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPath),
-    [points, playback.currentTimeMs, playback.playing, snappedPath]
+    () => buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths),
+    [points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths]
   );
 
   if (loading) return <div className="muted">Loading trip…</div>;
@@ -153,7 +197,10 @@ export function TripDetail() {
         </h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <DistanceModeToggle mode={mode} onChange={setMode} cleanedAvailable={cleanedAvailable} />
-          <ExportButtons onExport={(format) => downloadFile(`/api/trips/${id}/export?format=${format}`)} />
+          <ExportButtons
+            snappedAvailable={cleanedAvailable}
+            onExport={(format, layer) => downloadFile(`/api/trips/${id}/export?format=${format}&layer=${layer}`)}
+          />
           <Link to="/trips" className="btn-ghost">
             ← Back to trips
           </Link>
@@ -170,6 +217,23 @@ export function TripDetail() {
             )}
           </div>
         </div>
+        {/*
+          UKM (unique kilometers) for this trip. Sits next to Distance because the comparison is the
+          whole point: 70 km driven of which 12 km unique says something Distance alone cannot.
+          Follows the Raw/Snapped filter rather than showing in both: the figure is computed from
+          the snapped route, so presenting it beside a raw distance would invite the reader to
+          subtract two numbers that were measured differently. Hidden until the trip is matched
+          too — a dash would imply "no unique road" when the truth is "not computed yet".
+        */}
+        {mode === 'cleaned' && trip.ukmMeters != null && (
+          <div className="stat">
+            <div className="v">{km(trip.ukmMeters)}</div>
+            <div className="k" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              <span title="Unique kilometers">UKM</span>
+              <UkmNote trip={trip} />
+            </div>
+          </div>
+        )}
         <div className="stat">
           <div className="v">{Math.round(trip.maxSpeedKmh)} km/h</div>
           <div className="k">Max speed</div>
@@ -188,8 +252,30 @@ export function TripDetail() {
         </div>
       </div>
 
-      <div className="map-wrap" style={{ height: 'calc(100vh - 340px - var(--topbar-h))', minHeight: 380 }}>
+      <div className="map-wrap" style={{ height: 'calc(100vh - 340px - var(--topbar-h))', minHeight: 380, position: 'relative' }}>
         <Map3D ref={mapRef} center={start} zoom={14} layers={layers} />
+        {/* Two colours on a map need saying out loud — without this the muted stretches read as
+            a rendering glitch rather than "the driver had been here before". */}
+        {ukmPaths && ukmPaths.length > 0 && (
+          <div
+            style={{
+              position: 'absolute', bottom: 12, left: 12, zIndex: 1,
+              background: 'var(--panel)', border: '1px solid var(--line-2)',
+              borderRadius: 'var(--radius)', padding: '8px 11px',
+              display: 'flex', flexDirection: 'column', gap: 6,
+              fontSize: 11.5, fontWeight: 600, boxShadow: '0 1px 4px rgba(0,0,0,0.10)',
+            }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <span style={{ width: 16, height: 4, borderRadius: 2, background: 'rgb(16,185,129)' }} />
+              UKM — new road this trip
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--muted)' }}>
+              <span style={{ width: 16, height: 4, borderRadius: 2, background: 'rgb(148,163,184)' }} />
+              Driven on an earlier trip
+            </span>
+          </div>
+        )}
       </div>
 
       {points.length > 1 && (

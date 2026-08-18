@@ -159,6 +159,97 @@ function assert(cond, msg) {
   assert(swept.closed === 1, 'watchdog closes trips silent past the dead-session window');
   assert((await Trip.findById(live2._id)).status === 'timed_out', 'dead trip marked timed_out');
 
+
+  console.log('\n── a watchdog-closed trip revives when points start arriving again ──');
+  {
+    // The core reason drivers vanished from Live: the device goes quiet (tunnel, parking, app
+    // killed), the watchdog closes the trip after SESSION_DEAD_AFTER_SECONDS, then the device
+    // resumes with the SAME clientTripId. Points appended fine but the trip stayed closed, and
+    // /api/tracking/live only returns active trips. 98 of the newest 400 closed trips were found
+    // still collecting points — 245,330 points in total, some 96 hours after the trip closed.
+    const send = (pts) => auth(request(app).post('/api/tracking/ingest')).send({ points: pts });
+
+    await send([{ clientTripId: 'rv', clientId: 'rv1', lat: 1, lon: 1, speedKmh: 30, recordedAt: new Date(Date.now() - 60000).toISOString() }]);
+    const started = await Trip.findOne({ clientTripId: 'rv' });
+    assert(started.status === 'active', 'trip starts active');
+
+    await Trip.updateOne({ _id: started._id }, { $set: {
+      status: 'timed_out', endedAt: new Date(),
+      mapMatchStatus: 'matched', cleanedDistanceMeters: 999, ukmMeters: 888,
+    } });
+
+    await send([{ clientTripId: 'rv', clientId: 'rv2', lat: 1.001, lon: 1, speedKmh: 40, recordedAt: new Date().toISOString() }]);
+
+    const revived = await Trip.findById(started._id);
+    assert(revived.status === 'active', `the trip is active again (got ${revived.status})`);
+    assert(revived.endedAt === null, 'and no longer carries an end time');
+    assert(revived.mapMatchStatus === 'pending', 'queued for re-matching, so its snapped route is not left frozen mid-trip');
+    assert(revived.cleanedDistanceMeters === null && revived.ukmMeters === null, 'stale cleaned/UKM figures for the partial trip are cleared');
+
+    const activeIds = (await Trip.find({ status: 'active' }).select('_id')).map((t) => String(t._id));
+    assert(activeIds.includes(String(started._id)), 'it is back in the set /api/tracking/live returns');
+  }
+
+  console.log('\n── a device-ended trip is NOT revived by a late offline batch ──');
+  {
+    const send = (pts) => auth(request(app).post('/api/tracking/ingest')).send({ points: pts });
+    await send([{ clientTripId: 'cp', clientId: 'cp1', lat: 2, lon: 2, speedKmh: 30, recordedAt: new Date(Date.now() - 60000).toISOString() }]);
+    const t = await Trip.findOne({ clientTripId: 'cp' });
+    await Trip.updateOne({ _id: t._id }, { $set: { status: 'completed', endedAt: new Date() } });
+
+    await send([{ clientTripId: 'cp', clientId: 'cp2', lat: 2.001, lon: 2, speedKmh: 40, recordedAt: new Date().toISOString() }]);
+    assert((await Trip.findById(t._id)).status === 'completed', 'completed means the device said so — a late batch must not reopen it');
+  }
+
+  console.log('\n── an old offline batch does not resurrect finished history ──');
+  {
+    const send = (pts) => auth(request(app).post('/api/tracking/ingest')).send({ points: pts });
+    await send([{ clientTripId: 'ob', clientId: 'ob1', lat: 3, lon: 3, speedKmh: 30, recordedAt: new Date(Date.now() - 72 * 3600000).toISOString() }]);
+    const t = await Trip.findOne({ clientTripId: 'ob' });
+    await Trip.updateOne({ _id: t._id }, { $set: { status: 'timed_out', endedAt: new Date(Date.now() - 71 * 3600000) } });
+
+    await send([{ clientTripId: 'ob', clientId: 'ob2', lat: 3.001, lon: 3, speedKmh: 40, recordedAt: new Date(Date.now() - 70 * 3600000).toISOString() }]);
+    assert((await Trip.findById(t._id)).status === 'timed_out', 'points from three days ago are not "still driving"');
+  }
+
+
+  console.log('\n── GPS silence alone does not close a trip when the app is still alive ──');
+  {
+    // ~30% of all trips were ending as timed_out because the watchdog only watched location
+    // points. The app also heartbeats every 30s; a driver in a tunnel or an underground car park
+    // is alive and reporting, just not producing fixes. Closing that trip is wrong, and it is
+    // what left points landing in a closed session afterwards.
+    const AppActivity = require('../src/models/AppActivity');
+    const { closeDeadTrips } = require('../src/services/tripLifecycle');
+    const stale = new Date(Date.now() - 60 * 60 * 1000); // an hour with no GPS
+
+    const alive = new User({ name: 'Tunnel', email: 'tunnel@x.com', role: 'user' });
+    await alive.setPassword('pw123456'); await alive.save();
+    const aliveTrip = await Trip.create({
+      driverId: alive._id, status: 'active', startedAt: stale,
+      lastLocation: { lat: 1, lon: 1, recordedAt: stale },
+    });
+    // App said hello 10 seconds ago.
+    await AppActivity.create({ driverId: alive._id, action: 'heartbeat', timestamp: new Date(Date.now() - 10_000) });
+
+    const gone = new User({ name: 'Killed', email: 'killed@x.com', role: 'user' });
+    await gone.setPassword('pw123456'); await gone.save();
+    const goneTrip = await Trip.create({
+      driverId: gone._id, status: 'active', startedAt: stale,
+      lastLocation: { lat: 2, lon: 2, recordedAt: stale },
+    });
+    // Its last heartbeat is as old as its last fix — the app really is gone.
+    await AppActivity.create({ driverId: gone._id, action: 'heartbeat', timestamp: stale });
+
+    const closed = await closeDeadTrips();
+
+    assert((await Trip.findById(aliveTrip._id)).status === 'active',
+      'a driver whose app is heartbeating keeps their trip despite an hour of GPS silence');
+    assert((await Trip.findById(goneTrip._id)).status === 'timed_out',
+      'a driver whose app stopped heartbeating is still closed as timed_out');
+    assert(closed === 1, `only the genuinely dead session was closed (got ${closed})`);
+  }
+
   console.log('\n🎉 ALL CORE FLOWS VERIFIED');
   await require('mongoose').disconnect();
   await mongod.stop();
