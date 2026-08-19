@@ -122,7 +122,16 @@ async function tick() {
       status: { $in: ['completed', 'timed_out'] },
       mapMatchStatus: 'matched',
       cleanedRouteShapes: { $exists: true, $ne: [] },
-      ukmMeters: null,
+      $or: [
+        // Never computed.
+        { ukmMeters: null },
+        { ukmComputedAt: null },
+        // Computed, but from geometry that has since been replaced. Re-matching a trip rewrites
+        // its route; the UKM figure derived from the OLD route then describes roads the trip no
+        // longer claims to have driven. A trip re-matched from 23 km to 130 km kept a UKM figure
+        // built from the 23 km version until this clause was added.
+        { $expr: { $lt: ['$ukmComputedAt', '$mapMatchedAt'] } },
+      ],
     });
     // Bounded per tick: this is pure local CPU, but a large backlog should not monopolise a tick.
     for (const driverId of stale.slice(0, env.MAP_MATCH_MAX_PER_TICK)) {

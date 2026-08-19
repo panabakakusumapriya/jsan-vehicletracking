@@ -27,7 +27,7 @@
     "test:hotels": "node test/hotels.test.js",
     "test:couriers": "node test/couriers.test.js",
     "test:map-match": "node test/mapMatch.test.js",
-    "test:trip-ukm": "node test/tripUkm.test.js && node test/exportJob.test.js",
+    "test:trip-ukm": "node test/tripUkm.test.js",
     "test:export-job": "node test/exportJob.test.js",
     "backfill:ukm": "node src/seed/backfillUkm.js",
     "indexes:prune": "node src/seed/dropRedundantIndexes.js",

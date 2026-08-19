@@ -216,6 +216,30 @@ const near = (a, b, tol, msg) => assert(Math.abs(a - b) <= tol, `${msg} (got ${a
     assert(after.ukmNewShapes && after.ukmNewShapes.length === 1, 'and produced the highlight geometry too');
   }
 
+
+  console.log('\n── the sweep also catches UKM computed from geometry that has since changed ──');
+  {
+    // Re-matching a trip rewrites its route. A UKM figure derived from the OLD route then
+    // describes roads the trip no longer claims to have driven — and because ukmMeters is not
+    // null, a "missing UKM" check walks straight past it. A real trip re-matched from 23 km to
+    // 130 km kept its 23 km-era UKM until this case was handled.
+    await Trip.deleteMany({});
+    const t = await mk(0, [road(0, 6)]);
+    // Pretend UKM was computed BEFORE the current geometry was matched.
+    await Trip.updateOne({ _id: t._id }, { $set: {
+      ukmMeters: 111, ukmWithinTripMeters: 111, ukmNewShapes: [],
+      ukmComputedAt: new Date(t0 - 3600_000),
+      mapMatchedAt: new Date(t0),
+    } });
+
+    const { tick } = require('../src/services/mapMatcher');
+    await tick();
+
+    const after = await Trip.findById(t._id);
+    near(after.ukmMeters, 6 * STEP_M, 1, 'UKM is recomputed from the current route, not left at its stale value');
+    assert(after.ukmComputedAt >= after.mapMatchedAt, 'and is now at least as new as the geometry it describes');
+  }
+
   await mongoose.disconnect();
   await mongod.stop();
   console.log(`\n🎉 TRIP UKM (unique kilometers) VERIFIED — ${passed} assertions passed\n`);
