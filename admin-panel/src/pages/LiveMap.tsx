@@ -15,9 +15,30 @@ function Recenter({ focus }: { focus: [number, number] | null }) {
   return null;
 }
 
-// Active car marker — green when moving, amber when stale.
-function carIcon(heading: number | null | undefined, stale: boolean) {
-  const fill = stale ? '#d97706' : '#059669';
+/**
+ * Three states, not two.
+ *
+ * "Stale" used to mean "no GPS fix for 60s", which fired on every traffic light and every delivery
+ * stop — the device stops producing fixes the moment the vehicle stops moving. The server now
+ * separates "not moving but the app is still heartbeating" from "we have genuinely lost this
+ * driver", which are very different things to a dispatcher looking at the map.
+ *
+ * `state` falls back to the old boolean so a cached client, or a driver whose app does not send
+ * heartbeats yet, still renders sensibly.
+ */
+type DriverState = 'moving' | 'stopped' | 'stale';
+const driverState = (d: { state?: string; stale: boolean }): DriverState =>
+  (d.state as DriverState) ?? (d.stale ? 'stale' : 'moving');
+
+const STATE_UI: Record<DriverState, { fill: string; label: string; badge: string; hint: string }> = {
+  moving:  { fill: '#059669', label: 'Moving',    badge: 'green', hint: 'Reporting a fresh GPS position' },
+  stopped: { fill: '#d97706', label: 'Stopped',   badge: 'amber', hint: 'Not moving, but the app is still reporting — parked or waiting' },
+  stale:   { fill: '#dc2626', label: 'No signal', badge: 'red',   hint: 'No GPS and no app heartbeat — we cannot account for this driver' },
+};
+
+// Active car marker, coloured by state.
+function carIcon(heading: number | null | undefined, state: DriverState) {
+  const fill = STATE_UI[state].fill;
   const rot = typeof heading === 'number' && isFinite(heading) ? heading : 0;
   const svg = `
     <svg viewBox="0 0 32 32" width="30" height="30" xmlns="http://www.w3.org/2000/svg">
@@ -131,7 +152,9 @@ export function LiveMap() {
           startedAt: existing?.startedAt ?? e.recordedAt,
           distanceMeters: existing?.distanceMeters ?? 0,
           maxSpeedKmh: Math.max(existing?.maxSpeedKmh ?? 0, e.speedKmh),
+          // A live fix just arrived, so this driver is moving whatever the last poll said.
           stale: false,
+          state: 'moving',
         },
       };
     });
@@ -193,7 +216,8 @@ export function LiveMap() {
     return true;
   });
   const filteredWithLoc = list.filter(d => d.location);
-  const filteredStale = list.filter(d => d.stale);
+  // Only drivers we cannot account for — a stopped vehicle is not a problem to flag.
+  const filteredStale = list.filter(d => driverState(d) === 'stale');
 
   // Apply filters to parked drivers.
   const filteredParked = parked.filter(p => {
@@ -300,10 +324,10 @@ export function LiveMap() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div style={{
                     width: 34, height: 34, borderRadius: 10, flexShrink: 0,
-                    background: d.stale ? 'var(--amber-bg)' : 'var(--brand-light)',
-                    border: `1px solid ${d.stale ? 'rgba(217,119,6,0.25)' : 'rgba(124,58,237,0.2)'}`,
+                    background: driverState(d) === 'moving' ? 'var(--brand-light)' : 'var(--amber-bg)',
+                    border: `1px solid ${driverState(d) === 'moving' ? 'rgba(124,58,237,0.2)' : 'rgba(217,119,6,0.25)'}`,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: d.stale ? 'var(--amber)' : 'var(--brand)',
+                    color: driverState(d) === 'moving' ? 'var(--brand)' : 'var(--amber)',
                     fontSize: 11, fontWeight: 800,
                   }}>
                     {d.driver.name.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase()}
@@ -317,8 +341,8 @@ export function LiveMap() {
                     )}
                   </div>
                 </div>
-                <span className={`badge ${d.stale ? 'amber' : 'green'}`}>
-                  {d.stale ? 'Stale' : 'Moving'}
+                <span className={`badge ${STATE_UI[driverState(d)].badge}`} title={STATE_UI[driverState(d)].hint}>
+                  {STATE_UI[driverState(d)].label}
                 </span>
               </div>
               <div className="driver-meta" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -423,15 +447,15 @@ export function LiveMap() {
               <Marker
                 key={d.driver._id}
                 position={[d.location!.lat, d.location!.lon]}
-                icon={carIcon(d.location!.heading, d.stale)}
+                icon={carIcon(d.location!.heading, driverState(d))}
               >
                 <Popup>
                   <b>{d.driver.name}</b><br />
                   {d.vehicle?.plateNumber && <><span>{d.vehicle.plateNumber}</span><br /></>}
                   {project && <><span style={{ color: '#6366f1' }}>{project}</span><br /></>}
                   {country && <><span>{country}</span><br /></>}
-                  <span className={d.stale ? 'badge amber' : 'badge green'} style={{ fontSize: 11 }}>
-                    {d.stale ? 'Stale' : 'Moving'}
+                  <span className={`badge ${STATE_UI[driverState(d)].badge}`} style={{ fontSize: 11 }} title={STATE_UI[driverState(d)].hint}>
+                    {STATE_UI[driverState(d)].label}
                   </span><br />
                   {Math.round(d.location!.speed ?? 0)} km/h · {km(d.distanceMeters)}<br />
                   {d.location!.recordedAt ? new Date(d.location!.recordedAt).toLocaleTimeString() : ''}<br />

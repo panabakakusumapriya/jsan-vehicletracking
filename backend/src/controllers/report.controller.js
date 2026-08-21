@@ -28,6 +28,15 @@ function stint(row, from, to, tz) {
     country: row.country,
     project: row.project,
     note: row.note,
+    // Who moved this asset, and when. The ledger has recorded it since day one and
+    // /api/assignments already returns it, but this report dropped it on the way through — so the
+    // one screen people open to ask "who reassigned that van, and when?" could not answer.
+    // Raw timestamps, not formatted dates: from/to above are clipped to the reporting month,
+    // while these are the real moments the change was made.
+    assignedBy: row.assignedBy?.name || null,
+    assignedAt: row.startedAt,
+    releasedBy: row.releasedBy?.name || null,
+    releasedAt: row.endedAt.getTime() === Assignment.OPEN.getTime() ? null : row.endedAt,
   };
 }
 
@@ -52,7 +61,9 @@ exports.custody = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
   const rows = await Assignment.find({ ...scope, ...Assignment.overlapFilter(from, to) })
     .sort({ startedAt: 1 })
-    .populate('driverId', 'name email country active exitDate');
+    .populate('driverId', 'name email country active exitDate')
+    .populate('assignedBy', 'name')
+    .populate('releasedBy', 'name');
 
   // Every driver in scope, so gaps show up rather than silently vanishing.
   const driverFilter = { role: 'user' };
@@ -132,11 +143,14 @@ exports.custodyCsv = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
   const rows = await Assignment.find({ ...scope, ...Assignment.overlapFilter(from, to) })
     .sort({ driverName: 1, assetKind: 1, startedAt: 1 })
-    .populate('driverId', 'name email country');
+    .populate('driverId', 'name email country')
+    .populate('assignedBy', 'name')
+    .populate('releasedBy', 'name');
 
   const header = [
     'Month', 'Timezone', 'Driver', 'Email', 'Country', 'Project',
     'AssetKind', 'Asset', 'From', 'To', 'Days', 'StillHeld', 'Backfilled', 'Note',
+    'AssignedBy', 'AssignedAt', 'ReleasedBy', 'ReleasedAt',
   ];
   const lines = [header.join(',')];
 
@@ -158,6 +172,10 @@ exports.custodyCsv = asyncHandler(async (req, res) => {
         s.stillOpen ? 'yes' : 'no',
         s.backfilled ? 'yes' : 'no',
         row.note || '',
+        row.assignedBy?.name || '',
+        row.startedAt ? row.startedAt.toISOString() : '',
+        row.releasedBy?.name || '',
+        row.endedAt.getTime() === Assignment.OPEN.getTime() ? '' : row.endedAt.toISOString(),
       ]
         .map(csvCell)
         .join(',')

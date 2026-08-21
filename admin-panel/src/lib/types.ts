@@ -188,6 +188,15 @@ export interface CustodyStint {
   country?: string | null;
   project?: string | null;
   note?: string | null;
+  /**
+   * Who made the change and when — the audit trail the ledger has always recorded.
+   * `assignedAt`/`releasedAt` are the real moments of the change, unlike `from`/`to` above which
+   * are clipped to the reporting month. `releasedBy`/`releasedAt` are null while still held.
+   */
+  assignedBy?: string | null;
+  assignedAt?: string | null;
+  releasedBy?: string | null;
+  releasedAt?: string | null;
 }
 
 export interface CustodyRow {

@@ -1,5 +1,7 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,6 +15,13 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '@/src/lib/auth';
+
+// The real brand mark, 172x56 with transparency. Dark ink, so it belongs on the light background
+// rather than on a coloured tile — on the brand purple it was close to unreadable. It is a
+// wordmark, so it also replaces the separate "JSANFleet" text that used to sit under it.
+const LOGO = require('../assets/images/jsan-logo.png');
+const LOGO_W = 196;
+const LOGO_H = Math.round((LOGO_W * 56) / 172); // keep the source 3.07:1 ratio exactly
 
 // Brand palette
 const C = {
@@ -33,13 +42,20 @@ const C = {
 
 export default function Login() {
   const { signIn } = useAuth();
-  const [email, setEmail] = useState('driver@jsan.local');
+  // Starts empty. It used to be pre-filled with a development address, which a real driver saw as
+  // someone else's login already sitting in the field.
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
+  const passwordRef = useRef<TextInput>(null);
+
+  const canSubmit = email.trim().length > 0 && password.length > 0 && !busy;
 
   const onSubmit = async () => {
+    if (!canSubmit) return;
     setError(null); setBusy(true);
     try {
       const user = await signIn(email.trim(), password);
@@ -83,12 +99,12 @@ export default function Login() {
         <View style={s.hero}>
           {/* Decorative circle behind logo */}
           <View style={s.heroBg} />
-          <View style={s.logoRing}>
-            <View style={s.logoBox}>
-              <Text style={s.logoEmoji}>🚛</Text>
-            </View>
-          </View>
-          <Text style={s.appName}>JSANFleet</Text>
+          <Image
+            source={LOGO}
+            style={s.logo}
+            contentFit="contain"
+            accessibilityLabel="JSAN"
+          />
           <View style={s.tagRow}>
             <View style={s.tagDot} />
             <Text style={s.tagText}>DRIVER PORTAL</Text>
@@ -112,7 +128,16 @@ export default function Login() {
                 placeholder="driver@company.com"
                 placeholderTextColor={C.muted}
                 autoCapitalize="none"
+                autoCorrect={false}
                 keyboardType="email-address"
+                // Lets the OS and password managers offer the saved account.
+                autoComplete="email"
+                textContentType="emailAddress"
+                // Move to the password rather than dismissing the keyboard, so signing in is one
+                // continuous action instead of tap-type-dismiss-tap-type.
+                returnKeyType="next"
+                submitBehavior="submit"
+                onSubmitEditing={() => passwordRef.current?.focus()}
                 value={email}
                 onChangeText={setEmail}
                 onFocus={() => setFocused('email')}
@@ -127,15 +152,39 @@ export default function Login() {
             <View style={[s.inputWrap, focused === 'password' && s.inputWrapFocused]}>
               <Text style={[s.inputIcon, focused === 'password' && s.inputIconFocused]}>🔒</Text>
               <TextInput
+                ref={passwordRef}
                 style={s.input}
                 placeholder="••••••••"
                 placeholderTextColor={C.muted}
-                secureTextEntry
+                // The whole point of the reveal toggle: drivers type this on a phone, often in a
+                // moving vehicle or gloves, and a mistyped password they cannot see is the most
+                // common reason a shift fails to start.
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="current-password"
+                textContentType="password"
+                returnKeyType="go"
+                onSubmitEditing={onSubmit}
                 value={password}
                 onChangeText={setPassword}
                 onFocus={() => setFocused('password')}
                 onBlur={() => setFocused(null)}
               />
+              <TouchableOpacity
+                onPress={() => setShowPassword((v) => !v)}
+                style={s.eyeBtn}
+                // Generous tap area — the icon itself is well under the 44pt minimum.
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                accessibilityRole="button"
+                accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+              >
+                <Ionicons
+                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  size={20}
+                  color={focused === 'password' ? C.brand : C.muted}
+                />
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -146,10 +195,14 @@ export default function Login() {
           ) : null}
 
           <TouchableOpacity
-            style={[s.btn, busy && s.btnDisabled]}
+            style={[s.btn, !canSubmit && s.btnDisabled]}
             onPress={onSubmit}
-            disabled={busy}
+            // Disabled until both fields have something, so a blank tap cannot produce a
+            // round trip that comes back as a credentials error.
+            disabled={!canSubmit}
             activeOpacity={0.88}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !canSubmit, busy }}
           >
             {busy
               ? <ActivityIndicator color="#fff" />
@@ -175,22 +228,9 @@ const s = StyleSheet.create({
     width: 220, height: 220, borderRadius: 110,
     backgroundColor: 'rgba(124,58,237,0.07)',
   },
-  logoRing: {
-    width: 88, height: 88, borderRadius: 28,
-    backgroundColor: C.brandSoft,
-    alignItems: 'center', justifyContent: 'center',
-    marginBottom: 2,
-  },
-  logoBox: {
-    width: 72, height: 72, borderRadius: 22,
-    backgroundColor: C.brand,
-    alignItems: 'center', justifyContent: 'center',
-    shadowColor: C.brand,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35, shadowRadius: 16, elevation: 10,
-  },
-  logoEmoji: { fontSize: 30 },
-  appName:   { color: C.text, fontSize: 30, fontWeight: '900', letterSpacing: -0.8 },
+  // Sized from the source ratio so the wordmark is never stretched. No coloured tile behind it:
+  // the mark is dark ink on transparency and needs the light background to stay legible.
+  logo:      { width: LOGO_W, height: LOGO_H, marginBottom: 6 },
   tagRow:    { flexDirection: 'row', alignItems: 'center', gap: 7 },
   tagDot:    { width: 6, height: 6, borderRadius: 3, backgroundColor: C.brandMid },
   tagText:   { color: C.brandMid, fontSize: 11, fontWeight: '800', letterSpacing: 1.5 },
@@ -222,6 +262,7 @@ const s = StyleSheet.create({
     flex: 1, paddingHorizontal: 12, paddingVertical: 14,
     fontSize: 15, color: C.text,
   },
+  eyeBtn: { paddingHorizontal: 14, paddingVertical: 12 },
 
   /* Error */
   errorBox: {
@@ -242,5 +283,4 @@ const s = StyleSheet.create({
   btnDisabled: { opacity: 0.5 },
   btnText:     { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 0.3 },
 
-  foot: { color: C.muted, fontSize: 12, textAlign: 'center', lineHeight: 18, paddingBottom: 8 },
 });

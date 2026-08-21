@@ -87,10 +87,50 @@ function StintCell({ stints, monthDays, driverCountry }: {
                 since at least
               </span>
             )}
+            <AuditTrail stint={s} />
           </div>
         );
       })}
     </div>
+  );
+}
+
+/**
+ * Who moved this asset, and when.
+ *
+ * The ledger has recorded `assignedBy`/`releasedBy` since the custody feature shipped, but the
+ * report dropped them on the way to the page — so the one screen you open to ask "who reassigned
+ * that van?" could not answer it, and the only way to find out was to read the database.
+ *
+ * Shown compactly with the full detail on hover: the common question is "was this me or someone
+ * else", which a name answers, while the exact timestamps matter only when something is disputed.
+ * Older records can predate the audit fields, so nothing is rendered when we genuinely do not
+ * know — an empty byline is honest, a guessed one is not.
+ */
+function AuditTrail({ stint }: { stint: CustodyStint }) {
+  if (!stint.assignedBy && !stint.releasedBy) return null;
+
+  const at = (iso?: string | null) =>
+    iso ? new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : null;
+
+  const detail = [
+    stint.assignedBy ? `Assigned by ${stint.assignedBy}${at(stint.assignedAt) ? ` on ${at(stint.assignedAt)}` : ''}` : null,
+    stint.releasedBy ? `Released by ${stint.releasedBy}${at(stint.releasedAt) ? ` on ${at(stint.releasedAt)}` : ''}` : null,
+  ].filter(Boolean).join('\n');
+
+  return (
+    <span
+      title={detail}
+      style={{
+        fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap',
+        borderLeft: '1px solid var(--line-2)', paddingLeft: 8, marginLeft: 2,
+      }}
+    >
+      by <b style={{ color: 'var(--text-2)' }}>{stint.releasedBy || stint.assignedBy}</b>
+      {at(stint.releasedAt || stint.assignedAt) && (
+        <> · {new Date((stint.releasedAt || stint.assignedAt)!).toLocaleDateString()}</>
+      )}
+    </span>
   );
 }
 
