@@ -244,6 +244,9 @@ async function release({ assignmentId, assetKind, assetId, endedAt, note, actor 
   if (end < row.startedAt) {
     throw new CustodyError('endedAt cannot be before the assignment started', 400);
   }
+  if (end.getTime() > Date.now() + 60_000) {
+    throw new CustodyError('endedAt cannot be in the future', 400);
+  }
 
   return runAtomically(async (session) => {
     if (note) row.note = row.note ? `${row.note}; ${note}` : note;
