@@ -140,6 +140,7 @@ a:hover { color: var(--brand-hover); }
   padding: 20px 18px 16px;
   border-bottom: 1px solid var(--sb-border);
   position: relative; z-index: 1;
+  flex-shrink: 0;
 }
 
 .brand {
@@ -165,10 +166,36 @@ a:hover { color: var(--brand-hover); }
 .brand-name span { color: var(--logo-blue-light); text-transform: none; }
 
 /* Nav */
+/* The nav is the only part of the sidebar that scrolls; the brand and the account footer stay
+   pinned. `min-height: 0` is what actually makes this work: a flex item defaults to
+   `min-height: auto`, which refuses to shrink below its content, so with fifteen-odd links the nav
+   pushed the footer past the bottom edge and `.sidebar`'s `overflow: hidden` clipped it — the
+   lower tabs and the sign-out button became unreachable on a short window with no way to scroll
+   to them. */
 .sidebar nav {
   display: flex; flex-direction: column;
-  gap: 2px; padding: 14px 10px; flex: 1;
+  gap: 2px; padding: 14px 10px;
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  /* Reaching the end of the list shouldn't start scrolling the page behind it. */
+  overscroll-behavior: contain;
   position: relative; z-index: 1;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.16) transparent;
+}
+/* A default scrollbar renders as a pale track on this near-black rail. Kept faint until the
+   pointer is over the nav, so it reads as a hint that there is more below rather than furniture. */
+.sidebar nav::-webkit-scrollbar { width: 10px; }
+.sidebar nav::-webkit-scrollbar-track { background: transparent; }
+.sidebar nav::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.14);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.sidebar nav:hover::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.28);
+  background-clip: content-box;
 }
 
 .nav-section-label {
@@ -208,6 +235,8 @@ a:hover { color: var(--brand-hover); }
   display: flex; align-items: center; gap: 10px;
   position: relative; z-index: 1;
   background: rgba(0,0,0,0.2);
+  /* Pinned. Sign-out lives here, so it is the one thing that must never be pushed off-screen. */
+  flex-shrink: 0;
 }
 .avatar {
   width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
