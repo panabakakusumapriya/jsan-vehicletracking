@@ -804,16 +804,43 @@ exports.myAreas = asyncHandler(async (req, res) => {
   const assignments = await AreaAssignment.find({
     driverId: driver._id,
     releasedAt: null,
-    networkVersionId: { $in: activeVersions.map((v) => v._id) },
-  }).select('areaId assignedAt note');
+  }).select('areaId areaCode assignedAt note networkVersionId');
   if (!assignments.length) return res.json({ areas: [], updatedAt: null });
 
-  // One query for the geometry, not one per assignment.
+  /**
+   * Resolve assignments by AREA CODE against the active version, not by networkVersionId.
+   *
+   * An AreaAssignment stores the version it was made against. Re-importing the network mints a new
+   * version with new WorkArea _ids, so every existing assignment instantly pointed at a superseded
+   * version and silently vanished from the driver's app — with nothing in the UI to explain why.
+   * That happened repeatedly here: five versions, and both live assignments stranded.
+   *
+   * `areaCode` is the CUSTOMER's identifier (an ABS SA2 code) and is stable across deliveries, so
+   * matching on it means "Wallan is assigned to this driver" survives any number of re-imports.
+   * The stored networkVersionId is kept as history — it records which delivery the decision was
+   * made against — but it is no longer what entitlement depends on.
+   */
+  const activeIds = activeVersions.map((v) => v._id);
+  const codes = [...new Set(assignments.map((a) => a.areaCode).filter(Boolean))];
+  const legacyIds = assignments.filter((a) => !a.areaCode).map((a) => a.areaId);
+
   const areas = await WorkArea.find({
-    _id: { $in: assignments.map((a) => a.areaId) },
+    networkVersionId: { $in: activeIds },
+    // Rows predating the areaCode snapshot fall back to the raw id.
+    $or: [{ areaCode: { $in: codes } }, { _id: { $in: legacyIds } }],
   }).select('areaCode name parentName priority targetMeters targetLinks outline bbox');
 
-  const assignedAtByArea = new Map(assignments.map((a) => [String(a.areaId), a.assignedAt]));
+  // Keyed by code so the stamp follows the area across versions, with an id fallback for legacy.
+  const assignedAtByCode = new Map(
+    assignments.filter((a) => a.areaCode).map((a) => [a.areaCode, a.assignedAt])
+  );
+  const assignedAtById = new Map(assignments.map((a) => [String(a.areaId), a.assignedAt]));
+  const assignedAtByArea = new Map(
+    areas.map((a) => [
+      String(a._id),
+      assignedAtByCode.get(a.areaCode) || assignedAtById.get(String(a._id)) || null,
+    ])
+  );
 
   // Newest assignment stamp doubles as a cheap cache key: the app can skip redrawing (and skip
   // re-fetching geometry) while this has not moved.

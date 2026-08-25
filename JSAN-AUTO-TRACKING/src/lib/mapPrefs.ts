@@ -14,21 +14,23 @@ import { Directory, File, Paths } from 'expo-file-system';
  * and it has a ~2 KB value ceiling. These are preferences, not credentials.
  */
 
-export type Basemap = 'liberty' | 'bright' | 'positron';
+export type Basemap = 'liberty';
 
 /**
- * All three are OpenFreeMap styles — the same provider the app already uses, so this adds no API
- * key, no account and no billing relationship. That constraint is deliberate: see Map3D.tsx in the
- * admin panel, which chose OpenFreeMap over Mapbox/MapTiler for exactly this reason.
+ * One basemap: OpenFreeMap's street style — the same provider the admin panel uses, so no API key,
+ * no account, no billing relationship.
  *
- * Satellite imagery is NOT offered here. Every no-key source for it (Esri World Imagery, Google
- * tiles) is licensed in a way that does not clearly permit this use, and quietly shipping tiles we
- * have no right to is not a decision to make by default.
+ * The Bright and Muted variants were dropped: a driver deciding where to drive is reading street
+ * names and the red/blue road overlay, and neither variant helped with either. A picker whose
+ * options do not change the answer is just something else to tap.
+ *
+ * The list, the `basemap` preference and MapGL's `styleUrl` prop all remain, so adding a style back
+ * is a one-line change here rather than a re-wiring. Satellite is still deliberately absent: every
+ * no-key source (Esri World Imagery, Google tiles) is licensed in a way that does not clearly
+ * permit this use.
  */
 export const BASEMAPS: { id: Basemap; label: string; url: string }[] = [
   { id: 'liberty', label: 'Streets', url: 'https://tiles.openfreemap.org/styles/liberty' },
-  { id: 'bright', label: 'Bright', url: 'https://tiles.openfreemap.org/styles/bright' },
-  { id: 'positron', label: 'Muted', url: 'https://tiles.openfreemap.org/styles/positron' },
 ];
 
 export const basemapUrl = (id: Basemap): string =>

@@ -741,15 +741,53 @@ async function listAssignments(req, res) {
   if (!version) return res.status(404).json({ error: 'Network version not found' });
   assertProjectAccess(req.user, version.projectId);
 
+  /**
+   * Resolved by areaCode, matching what the DRIVER endpoints do.
+   *
+   * Filtering on networkVersionId alone showed only assignments made against THIS version, while
+   * `my-areas` resolves by the customer's stable areaCode. The two disagreed: a driver saw
+   * Whittlesea on their phone while the panel showed it unassigned — so a manager would think the
+   * area was free and hand it to someone else. Whatever the driver sees, the panel must show.
+   */
+  const areas = await WorkArea.find({ networkVersionId: version._id })
+    .select('_id areaCode')
+    .lean();
+  const areaIdByCode = new Map(areas.map((a) => [a.areaCode, a._id]));
+
   const rows = await AreaAssignment.find({
-    networkVersionId: version._id,
+    projectId: version.projectId,
     releasedAt: null,
+    $or: [
+      { areaCode: { $in: [...areaIdByCode.keys()] } },
+      { areaId: { $in: areas.map((a) => a._id) } },
+    ],
   })
     .populate('driverId', 'name email driverStatus')
     .populate('assignedBy', 'name')
-    .sort({ assignedAt: -1 });
+    .sort({ assignedAt: -1 })
+    .lean();
 
-  return res.json({ assignments: rows });
+  /**
+   * Re-point each row at THIS version's WorkArea _id and drop duplicates.
+   *
+   * The client keys everything by areaId, and a row recorded against an older version carries that
+   * version's id — which matches nothing on screen. Re-importing repeatedly also leaves the same
+   * (area, driver) pair recorded once per version; the unique index cannot catch that, because the
+   * areaIds genuinely differ. Newest wins, since the sort is descending.
+   */
+  const seen = new Set();
+  const assignments = [];
+  for (const row of rows) {
+    const areaId = areaIdByCode.get(row.areaCode) || row.areaId;
+    if (!areaId) continue;
+    const driverId = row.driverId?._id || row.driverId;
+    const key = `${areaId}:${driverId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    assignments.push({ ...row, areaId });
+  }
+
+  return res.json({ assignments });
 }
 
 /**

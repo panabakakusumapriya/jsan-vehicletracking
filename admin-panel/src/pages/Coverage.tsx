@@ -262,7 +262,7 @@ function ProgressTab({
    * reshuffle every time the assignment list reloads. Keyed off the sorted driver id list rather
    * than array order, which is why re-fetching does not repaint everyone a different colour.
    */
-  const driverColorByArea = useMemo(() => {
+  const driverViz = useMemo(() => {
     const PALETTE: [number, number, number][] = [
       [124, 58, 237], [37, 99, 235], [5, 150, 105], [217, 119, 6],
       [219, 39, 119], [8, 145, 178], [132, 204, 22], [239, 68, 68],
@@ -272,13 +272,31 @@ function ProgressTab({
       typeof a.driverId === 'object' && a.driverId ? a.driverId._id : String(a.driverId)
     ))].sort();
     const colorFor = new Map(ids.map((id, i) => [id, PALETTE[i % PALETTE.length]]));
-    const out: Record<string, [number, number, number]> = {};
+
+    const byArea: Record<string, [number, number, number]> = {};
+    const namesByArea: Record<string, string[]> = {};
+    const nameFor = new Map<string, string>();
+
     for (const a of assignments) {
       const id = typeof a.driverId === 'object' && a.driverId ? a.driverId._id : String(a.driverId);
-      // First holder wins the colour when an area is shared — the fill can only show one.
-      if (!out[String(a.areaId)]) out[String(a.areaId)] = colorFor.get(id)!;
+      const name =
+        (typeof a.driverId === 'object' && a.driverId ? a.driverId.name : null) ||
+        a.driverName ||
+        'Unknown';
+      nameFor.set(id, name);
+
+      const areaKey = String(a.areaId);
+      // First holder wins the FILL — a polygon has one colour. Every holder is listed in
+      // `namesByArea`, which is what the tooltip shows, so a shared area is still legible.
+      if (!byArea[areaKey]) byArea[areaKey] = colorFor.get(id)!;
+      (namesByArea[areaKey] ||= []).push(name);
     }
-    return out;
+
+    const legend = ids
+      .map((id) => ({ name: nameFor.get(id) || 'Unknown', color: colorFor.get(id)! }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return { byArea, namesByArea, legend };
   }, [assignments]);
 
   const selectedAreas = useMemo(
@@ -346,7 +364,9 @@ function ProgressTab({
           focusAreaId={focusAreaId}
           selectedIds={selectedIds}
           onToggleSelect={toggleSelect}
-          driverColorByArea={driverColorByArea}
+          driverColorByArea={driverViz.byArea}
+          driverNamesByArea={driverViz.namesByArea}
+          driverLegend={driverViz.legend}
         />
 
         {selectedIds.length > 0 && (

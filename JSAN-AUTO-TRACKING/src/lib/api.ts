@@ -1,5 +1,28 @@
 import { API_BASE_URL } from './config';
 
+/**
+ * Set by AuthProvider so a 401 anywhere can end the session exactly once.
+ *
+ * A module-level hook rather than an import of the auth module: auth imports this file, and
+ * importing it back would be a require cycle that resolves to undefined at load time.
+ */
+type UnauthorizedHandler = (reason: string) => void;
+let onUnauthorized: UnauthorizedHandler | null = null;
+let lastNotifiedAt = 0;
+
+export function setUnauthorizedHandler(fn: UnauthorizedHandler | null) {
+  onUnauthorized = fn;
+}
+
+function notifyUnauthorized(reason: string) {
+  // The map screen polls every 15s and fires several requests at once; without this every one of
+  // them would trigger a separate sign-out.
+  const now = Date.now();
+  if (now - lastNotifiedAt < 5000) return;
+  lastNotifiedAt = now;
+  onUnauthorized?.(reason);
+}
+
 export type AuthUser = {
   _id: string;
   name: string;
@@ -28,6 +51,21 @@ async function request(path: string, options: RequestInit = {}, token?: string |
     };
     err.code = data?.error;
     err.status = res.status;
+
+    /**
+     * A rejected token must be visible as "sign in again", not as empty data.
+     *
+     * Tokens are signed per backend. Point the app at a different one — a local server, a
+     * re-keyed deploy — and the stored token is refused with a 401. Every screen then caught the
+     * error and rendered its empty state, so a 401 was indistinguishable from "you have no work
+     * areas allocated": the driver sees nothing wrong, and the real cause is only visible in the
+     * server log.
+     *
+     * Notifying here lets AuthProvider clear the session once, from anywhere, rather than each
+     * screen having to recognise it.
+     */
+    if (res.status === 401) notifyUnauthorized(err.message);
+
     throw err;
   }
   return data;

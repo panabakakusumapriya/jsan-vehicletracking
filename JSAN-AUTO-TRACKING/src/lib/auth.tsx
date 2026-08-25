@@ -3,7 +3,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import { AppState } from 'react-native';
 
 import * as VehicleTracker from '@/modules/vehicle-tracker';
-import { apiLogin, apiLogout, apiMe, apiUpdateTimezone, type AuthUser } from './api';
+import { apiLogin, apiLogout, apiMe, apiUpdateTimezone, setUnauthorizedHandler, type AuthUser } from './api';
 import { deviceTimezone } from './timezone';
 
 type AuthState = {
@@ -139,6 +139,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await SecureStore.deleteItemAsync(USER_KEY);
     setState({ loading: false, token: null, user: null });
   };
+
+  /**
+   * Any 401 ends the session.
+   *
+   * Tokens are signed per backend, so pointing the app at a different server — or a re-keyed
+   * deploy — makes the stored token invalid. Without this the driver stayed "logged in" while
+   * every request failed, and each screen rendered its empty state: the map showed "no work areas
+   * allocated" when the real answer was "your login is no longer valid". One is a shrug, the other
+   * is one tap to fix.
+   *
+   * The local token is cleared directly rather than via signOut(): signOut calls the logout
+   * endpoint to release the single-session lock, and that call needs a token the server will
+   * accept. With a rejected token it would only 401 again.
+   */
+  useEffect(() => {
+    setUnauthorizedHandler(async () => {
+      try { await VehicleTracker.stop(); } catch { /* module may be absent */ }
+      await SecureStore.deleteItemAsync(TOKEN_KEY);
+      await SecureStore.deleteItemAsync(USER_KEY);
+      setState({ loading: false, token: null, user: null });
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({ ...state, signIn, signOut, refreshUser, syncTimezone }),

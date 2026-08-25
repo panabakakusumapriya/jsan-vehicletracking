@@ -98,6 +98,8 @@ export function CoverageMap({
   selectedIds,
   onToggleSelect,
   driverColorByArea,
+  driverNamesByArea,
+  driverLegend,
 }: {
   /** A committed version — shows coverage and lets road links load. */
   versionId?: string;
@@ -112,6 +114,11 @@ export function CoverageMap({
   onToggleSelect?: (areaId: string, additive: boolean) => void;
   /** areaId -> colour of the driver holding it, for the 'driver' mode. */
   driverColorByArea?: Record<string, [number, number, number]>;
+  /** areaId -> names of every driver holding it. Shown in the tooltip; the fill can only carry one
+   *  colour, so this is where a shared area actually becomes legible. */
+  driverNamesByArea?: Record<string, string[]>;
+  /** Legend entries for the 'driver' mode: which colour is which person. */
+  driverLegend?: { name: string; color: [number, number, number] }[];
   /** Frame this one area when it changes. The six clusters sit far apart, so arriving from the
    *  areas table has to land on the area you clicked rather than on the whole state. */
   focusAreaId?: string | null;
@@ -194,6 +201,11 @@ export function CoverageMap({
     },
     [versionId]
   );
+
+  // getTooltip is created once; reading the prop directly would pin the first render's value and
+  // the tooltip would name whoever held the area when the map first drew.
+  const driverNamesRef = useRef(driverNamesByArea);
+  driverNamesRef.current = driverNamesByArea;
 
   const selected = useMemo(() => new Set(selectedIds || []), [selectedIds]);
   // A primitive deck.gl can compare — a Set never differs by identity in a useMemo dep.
@@ -291,6 +303,12 @@ export function CoverageMap({
       const rows: string[] = [];
       if (p.parentName) rows.push(`<div style="opacity:.7">${p.parentName}</div>`);
       rows.push(`<div style="opacity:.7">P${p.priority} · ${p.areaCode}</div>`);
+      const holders = driverNamesRef.current?.[p.areaId || ''] || [];
+      rows.push(
+        holders.length
+          ? `<div style="margin-top:4px"><b>${holders.join(', ')}</b></div>`
+          : '<div style="margin-top:4px;opacity:.6">Unassigned</div>'
+      );
       if (typeof p.targetMeters === 'number') {
         rows.push(
           `<div style="margin-top:4px">${km(p.coveredMeters || 0)} / ${km(p.targetMeters)} km · <b>${(p.pct || 0).toFixed(1)}%</b></div>`
@@ -334,10 +352,20 @@ export function CoverageMap({
 
       <div className="cov-map-legend">
         {mode === 'driver' ? (
-          <div className="cov-legend-row">
-            <span>Colour = assigned driver</span>
-            <span className="cov-swatch" style={{ background: 'rgb(203,213,225)' }} />
-            <span>unassigned</span>
+          <div className="cov-legend-drivers">
+            {(driverLegend || []).slice(0, 8).map((d) => (
+              <span key={d.name} className="cov-legend-row" style={{ gap: 5 }}>
+                <span className="cov-swatch" style={{ background: `rgb(${d.color.join(',')})` }} />
+                <span>{d.name}</span>
+              </span>
+            ))}
+            {(driverLegend || []).length > 8 && (
+              <span className="cov-legend-note">+{(driverLegend || []).length - 8} more</span>
+            )}
+            <span className="cov-legend-row" style={{ gap: 5 }}>
+              <span className="cov-swatch" style={{ background: 'rgb(203,213,225)' }} />
+              <span>unassigned</span>
+            </span>
           </div>
         ) : mode === 'coverage' ? (
           <>

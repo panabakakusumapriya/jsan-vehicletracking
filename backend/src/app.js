@@ -63,6 +63,10 @@ function createApp() {
         // Kept separate from optionalRoadLayer: that flag shipped earlier and cannot tell the two
         // builds apart, which is exactly how a stale backend went unnoticed.
         roadsOnlyImport: true,
+        // Driver entitlement resolves by the customer's stable areaCode instead of the
+        // networkVersionId the assignment happened to be recorded against — so re-importing the
+        // network no longer silently strands every assignment on a superseded version.
+        versionIndependentAssignments: true,
       },
     })
   );

@@ -1,6 +1,7 @@
 const RoadLink = require('../models/RoadLink');
 const LinkCoverage = require('../models/LinkCoverage');
 const AreaAssignment = require('../models/AreaAssignment');
+const WorkArea = require('../models/WorkArea');
 const NetworkVersion = require('../models/NetworkVersion');
 const { simplifyPath } = require('../utils/geo');
 
@@ -105,22 +106,37 @@ async function authoriseArea(driverId, projectIds, areaId) {
   // not entitled.
   if (!/^[a-f\d]{24}$/i.test(String(areaId || ''))) return null;
 
-  const assignment = await AreaAssignment.findOne({
-    driverId,
-    areaId,
-    releasedAt: null,
-  })
-    .select('networkVersionId')
+  /**
+   * Entitlement follows the AREA, not the version the assignment was recorded against.
+   *
+   * Matching on networkVersionId meant a re-import silently revoked every driver's roads: the
+   * assignment still existed and still looked right in the panel, but pointed at a superseded
+   * version, so this returned null and the driver's map went empty. `areaCode` is the customer's
+   * own stable identifier and survives re-imports, so it is what authorisation uses. This must
+   * agree with myAreas, or the app would list an area and then be refused its roads.
+   */
+  const area = await WorkArea.findOne({ _id: areaId })
+    .select('areaCode networkVersionId')
     .lean();
-  if (!assignment) return null;
+  if (!area) return null;
 
   const version = await NetworkVersion.findOne({
-    _id: assignment.networkVersionId,
+    _id: area.networkVersionId,
     status: 'active',
   })
     .select('_id projectId')
     .lean();
   if (!version) return null;
+
+  const assignment = await AreaAssignment.findOne({
+    driverId,
+    releasedAt: null,
+    // Either the stable code, or the exact id for rows predating the code snapshot.
+    $or: [{ areaCode: area.areaCode }, { areaId }],
+  })
+    .select('_id')
+    .lean();
+  if (!assignment) return null;
 
   // Compared as strings: projectIds arrives off a Mongoose document as ObjectIds, and `includes`
   // on ObjectIds compares by reference, which is silently always false.

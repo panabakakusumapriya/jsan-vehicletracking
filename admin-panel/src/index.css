@@ -1151,3 +1151,9 @@ select.input { cursor: pointer; }
   z-index: 4;
   max-width: calc(100% - 32px);
 }
+
+/* Driver legend on the coverage map — one swatch per person, so a colour means a name. */
+.cov-legend-drivers {
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+  max-height: 74px; overflow-y: auto;
+}

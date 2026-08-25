@@ -16,7 +16,7 @@ import {
   saveMapPrefs,
   type MapPrefs,
 } from '@/src/lib/mapPrefs';
-import { API_BASE_URL } from '@/src/lib/config';
+import { API_BASE_URL, IS_CUSTOM_API } from '@/src/lib/config';
 import { TabBar } from '@/src/components/TabBar';
 import { MapGL, type MapGLHandle, type MapGLTrace, type RoadTuple } from '@/src/components/MapGL';
 import { apiMyAreas, type MyArea } from '@/src/lib/api';
@@ -480,15 +480,21 @@ export default function MapScreen() {
             <Text style={[s.panelState, prefs.showRoads && s.panelStateOn]}>{prefs.showRoads ? 'ON' : 'OFF'}</Text>
           </TouchableOpacity>
 
-          <Text style={[s.panelTitle, { marginTop: 10 }]}>Background map</Text>
-          {BASEMAPS.map((b) => (
-            <TouchableOpacity key={b.id} style={s.panelRow} onPress={() => updatePrefs({ basemap: b.id })}>
-              <Text style={s.panelLabel}>{b.label}</Text>
-              <Text style={[s.panelState, prefs.basemap === b.id && s.panelStateOn]}>
-                {prefs.basemap === b.id ? '●' : '○'}
-              </Text>
-            </TouchableOpacity>
-          ))}
+          {/* The background-map picker is hidden while there is only one style to pick. It renders
+              again automatically if another is added to BASEMAPS — see src/lib/mapPrefs.ts. */}
+          {BASEMAPS.length > 1 && (
+            <>
+              <Text style={[s.panelTitle, { marginTop: 10 }]}>Background map</Text>
+              {BASEMAPS.map((b) => (
+                <TouchableOpacity key={b.id} style={s.panelRow} onPress={() => updatePrefs({ basemap: b.id })}>
+                  <Text style={s.panelLabel}>{b.label}</Text>
+                  <Text style={[s.panelState, prefs.basemap === b.id && s.panelStateOn]}>
+                    {prefs.basemap === b.id ? '●' : '○'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </>
+          )}
         </View>
       )}
     </View>
@@ -510,6 +516,10 @@ export default function MapScreen() {
   }, [fetchSession, fetchAreas, loadRoads]);
 
   const notices = [
+    // Which backend this build talks to, whenever it is NOT the production default. Twice now,
+    // "the fix isn't working" turned out to be a client pointed at a different server than the one
+    // being fixed — on the panel and again here. Cheap to show, expensive to guess.
+    IS_CUSTOM_API && `Backend: ${API_BASE_URL}`,
     sessionError && `! Live session - ${sessionError}`,
     areasError   && `! Allocated areas - ${areasError}`,
     roadsError   && `! ${roadsError}`,
