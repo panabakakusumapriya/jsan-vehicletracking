@@ -118,6 +118,14 @@ const PackageIcon = () => (
   </svg>
 );
 
+const CoverageIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 5.5 9 3l6 2.5L21 3v13l-6 2.5L9 16l-6 2.5z"/>
+    <path d="M9 3v13M15 5.5v13"/>
+    <path d="m7 12 2.5 2.5L15 9"/>
+  </svg>
+);
+
 const links = [
   { to: '/',         label: 'Live Map', end: true, Icon: MapIcon    },
   { to: '/trips',    label: 'Trips',              Icon: TripIcon   },
@@ -128,6 +136,7 @@ const links = [
   { to: '/hotels',   label: 'Hotels',             Icon: BedIcon    },
   { to: '/couriers', label: 'Couriers',           Icon: PackageIcon},
   { to: '/ukm',        label: 'UKM',                 Icon: UkmIcon    },
+  { to: '/coverage',   label: 'Coverage',            Icon: CoverageIcon },
   { to: '/app-health', label: 'App Health',         Icon: HealthIcon },
   { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
   { to: '/reports',  label: 'Reports',             Icon: ReportIcon },

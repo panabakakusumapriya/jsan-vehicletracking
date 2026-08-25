@@ -86,11 +86,22 @@ async function syncAssets(user, assetKind, assetIds, actor) {
   return errors.length ? errors : null;
 }
 
-// GET /api/users?role=user|manager
+// GET /api/users?role=user|manager&projectId=<id>
 // admin  -> all users; manager -> only their own drivers.
 exports.list = asyncHandler(async (req, res) => {
   const filter = {};
   if (req.query.role) filter.role = req.query.role;
+  /**
+   * Scope to one project. `projectIds` is an array, and Mongo matches a scalar against an array
+   * by containment, so this reads as "is on this project".
+   *
+   * Added because callers were already passing ?projectId= and silently getting the WHOLE fleet:
+   * the work-area assignment picker offered every driver in the company, including other
+   * customers' crews, for a project they had nothing to do with.
+   */
+  if (/^[a-f\d]{24}$/i.test(String(req.query.projectId || ''))) {
+    filter.projectIds = req.query.projectId;
+  }
   if (req.user.role === 'manager') {
     // Manager sees all drivers assigned to them (including those delegated to team leads)
     filter.managerId = req.user._id;

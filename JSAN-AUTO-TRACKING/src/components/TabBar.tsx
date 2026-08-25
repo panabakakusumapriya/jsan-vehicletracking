@@ -8,8 +8,14 @@ const C = {
   muted:  '#9ca3af',
 };
 
+/**
+ * app/map.tsx has existed and been registered in _layout.tsx all along, but nothing in the UI
+ * navigated to it — no tab, no button, no link — so the screen was unreachable and the app looked
+ * like it only had a dashboard. It shows the driver's route and the work areas allocated to them.
+ */
 const TABS = [
   { path: '/home', label: 'Dashboard', icon: '⚡' },
+  { path: '/map',  label: 'My Map',    icon: '🗺️' },
 ];
 
 export function TabBar() {

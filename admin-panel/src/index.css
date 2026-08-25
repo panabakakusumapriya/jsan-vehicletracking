@@ -875,3 +875,279 @@ select.input { cursor: pointer; }
   .pwa-banner-actions { width: 100%; justify-content: flex-end; }
   .alerts-pop { right: -8px; }
 }
+
+/* ---------------------------------------------------------------- Coverage
+ * Progress against the customer's target road network. See pages/Coverage.tsx.
+ */
+.cov-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+.cov-tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 9px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.cov-tabs button:hover { color: var(--text-2); }
+.cov-tabs button.active { color: var(--brand); border-bottom-color: var(--brand); }
+
+.cov-h3 { font-size: 15px; font-weight: 700; margin: 0 0 2px; }
+.cov-h4 { font-size: 13px; font-weight: 700; margin: 18px 0 6px; }
+.cov-sub { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; line-height: 1.5; }
+
+/* Progress bars. A fixed track rather than a bare fill so 0% still reads as
+   "nothing yet" instead of as a missing element. */
+.cov-bar {
+  flex: 1;
+  height: 7px;
+  min-width: 60px;
+  background: var(--line);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.cov-bar-fill { height: 100%; border-radius: 99px; transition: width .35s ease; }
+.cov-bar-fill.brand { background: var(--brand); }
+.cov-bar-fill.green { background: var(--green); }
+.cov-cell { display: flex; align-items: center; gap: 9px; }
+.cov-pct {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+}
+
+.cov-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.cov-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  flex-wrap: wrap;
+}
+
+.cov-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  border-left: 3px solid var(--amber);
+  font-size: 13.5px;
+  flex-wrap: wrap;
+}
+
+.cov-job-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.cov-job-row:hover { border-color: var(--brand-2); }
+
+.cov-detail { margin-bottom: 14px; }
+
+.cov-file {
+  border: 1px dashed var(--line-2);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.cov-file-label { font-size: 12px; font-weight: 700; color: var(--text-2); margin-bottom: 8px; }
+.cov-file-have { font-size: 13px; margin-bottom: 8px; }
+
+.cov-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+
+/* Import issues. Blocking and advisory look different on purpose — an operator
+   scanning this needs to know in one glance whether commit is even possible. */
+.cov-issue {
+  border-radius: 8px;
+  padding: 10px 13px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  border: 1px solid;
+}
+.cov-issue.error { background: var(--red-bg);   color: var(--red);   border-color: rgba(220,38,38,0.25); }
+.cov-issue.warn  { background: var(--amber-bg); color: var(--amber); border-color: rgba(217,119,6,0.25); }
+.cov-issue.ok    { background: var(--green-bg); color: var(--green); border-color: rgba(5,150,105,0.25); }
+
+.cov-progress-live {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--brand-light);
+  border: 1px solid var(--brand-2);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 13.5px;
+  margin-bottom: 14px;
+}
+.cov-spinner {
+  width: 15px; height: 15px;
+  border: 2px solid var(--brand-2);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: cov-spin .8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes cov-spin { to { transform: rotate(360deg); } }
+
+.cov-mini { width: 100%; font-size: 12.5px; }
+.cov-mini td, .cov-mini th { padding: 6px 8px; }
+
+.cov-mapping {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.cov-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 18px;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+.cov-toggle input { margin-top: 3px; flex-shrink: 0; }
+
+@media (max-width: 700px) {
+  .cov-split { grid-template-columns: 1fr; }
+}
+
+/* ---- Coverage map (deck.gl + MapLibre) ---- */
+.cov-map {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel-2);
+}
+.cov-map-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  background: rgba(255,255,255,0.94);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(88%, 460px);
+  pointer-events: none;
+  z-index: 2;
+}
+.cov-legend-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cov-swatch { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+.cov-line   { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+.cov-legend-note { color: var(--muted); font-size: 11.5px; }
+
+.cov-map-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.72);
+  font-size: 13px;
+  color: var(--muted);
+  z-index: 3;
+}
+
+/* Disclosure used by the preflight, so advisories and the column list are one line until wanted. */
+.cov-disclosure {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.cov-details {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 16px;
+  background: var(--panel-2);
+}
+.cov-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13.5px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cov-details-hint {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+/* Areas table rows jump to the map — the clusters are far apart enough that hunting for one
+   by panning is not a reasonable ask. */
+.cov-row-clickable { cursor: pointer; }
+.cov-row-clickable:hover { background: var(--brand-light); }
+
+/* Assignment picker */
+.cov-assign-cell {
+  background: none; border: none; padding: 2px 0; font: inherit;
+  cursor: pointer; text-align: left; display: flex; flex-wrap: wrap; gap: 3px;
+}
+.cov-assign-cell:hover { opacity: .75; }
+.cov-driver-list {
+  max-height: 320px; overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.cov-driver-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-bottom: 1px solid var(--line);
+  cursor: pointer; font-size: 13.5px;
+}
+.cov-driver-row:last-child { border-bottom: none; }
+.cov-driver-row:hover { background: var(--panel-2); }
+
+/* Floating bar over the map while areas are selected for assignment. */
+.cov-selection-bar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--brand-2);
+  box-shadow: 0 8px 28px -12px rgba(17,24,39,0.35);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  z-index: 4;
+  max-width: calc(100% - 32px);
+}

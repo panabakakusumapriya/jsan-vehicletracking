@@ -97,9 +97,51 @@ class TrackingService : Service() {
         /** GPS-independent ticker interval — drives end-of-trip detection + heartbeat. */
         const val TICK_INTERVAL_MS          = 20_000L
 
-        /** GPS fix request interval. */
+        /**
+         * GPS fix interval while the vehicle is actually moving.
+         *
+         * Kept at 3 s: the route drawn on the map is only as good as its densest sampling, and at
+         * 60 km/h a 3 s gap is already 50 m of straight-lined corner.
+         */
         const val LOCATION_INTERVAL_MS      = 3_000L
         const val FASTEST_MS                = 1_000L
+
+        /**
+         * GPS fix interval while stopped. A parked vehicle produces no route detail, so sampling
+         * it five times a minute instead of twenty is free accuracy-wise and is most of the
+         * battery saving — GPS is the single hungriest thing this service does.
+         *
+         * The cost is latency noticing that movement resumed: up to 10 s, which at 60 km/h is
+         * ~170 m of route missed at the start of a pull-away. Accepted because trip START is
+         * guarded separately by TRIP_START_DISTANCE_M, and ActivityTransitionReceiver fires an
+         * IN_VEHICLE transition that snaps us back to the moving cadence before this interval
+         * would.
+         */
+        const val LOCATION_INTERVAL_STATIONARY_MS = 10_000L
+
+        /**
+         * How long without movement before dropping to the stationary cadence. Longer than a
+         * typical traffic light so a normal junction wait does not thrash GPS between rates.
+         */
+        const val STATIONARY_AFTER_MS       = 60_000L
+
+        /**
+         * Upload cadence — batching window, NOT the GPS rate.
+         *
+         * These exist because uploading was previously triggered on every recorded point: one HTTP
+         * request per fix, ~313 bytes of GPS inside an ~850 byte envelope, every 3 seconds. Two
+         * costs, and the second is the one drivers actually felt:
+         *   - 73% of mobile data was HTTP/TLS envelope rather than position data.
+         *   - The cellular radio stays in a high-power state ~10-20 s after each transmission, so
+         *     a request every 3 s pinned it at full power for an entire shift. That is the
+         *     overheating, far more than GPS.
+         *
+         * Batching to 10 s while moving lets the radio idle between bursts and cuts the envelope
+         * cost roughly threefold. 10 s also matches what the backend expects for a live session
+         * (server stale window is 60 s), so the live map does not suffer.
+         */
+        const val UPLOAD_INTERVAL_MOVING_MS     = 10_000L
+        const val UPLOAD_INTERVAL_STATIONARY_MS = 30_000L
 
         /**
          * While the vehicle is stopped (within the 10 min grace) we re-send the last
@@ -223,10 +265,20 @@ class TrackingService : Service() {
             }
         }
 
-        startLocationUpdates()
         registerActivityTransitions()
         ticker.removeCallbacks(tickRunnable)
         ticker.postDelayed(tickRunnable, TICK_INTERVAL_MS)
+
+        // applyCadence registers the LocationRequest itself, at whichever rate the current state
+        // calls for — so there is no separate startLocationUpdates() call here. `cadence = null`
+        // guarantees it cannot take its no-change early return and leave GPS unregistered.
+        cadence = null
+        applyCadence(now)
+        uploadTicker.removeCallbacks(uploadRunnable)
+        uploadTicker.postDelayed(uploadRunnable, uploadIntervalMs())
+
+        // One immediate drain on start: anything buffered while the service was dead should not
+        // wait out a full window.
         triggerUpload()
         return START_STICKY
     }
@@ -236,6 +288,7 @@ class TrackingService : Service() {
     override fun onDestroy() {
         try { fused.removeLocationUpdates(locationCallback) } catch (_: Exception) {}
         ticker.removeCallbacks(tickRunnable)
+        uploadTicker.removeCallbacks(uploadRunnable)
         releaseWakeLock()
         try { unregisterReceiver(connectivityReceiver) } catch (_: Exception) {}
         super.onDestroy()
@@ -332,6 +385,7 @@ class TrackingService : Service() {
                     TrackerEvents.emit("onLocation",  locMap(rawLat, rawLon, speedKmh, newId, "active", location.time))
                     emitState("tracking")
                     updateNotification("Trip started • ${speedKmh.roundToInt()} km/h")
+                    applyCadence(now)
                     triggerUpload()
                 } else {
                     startWatchPos  = location
@@ -368,7 +422,11 @@ class TrackingService : Service() {
                 savePoint(rawLat, rawLon, location, speedKmh, tripId, "active", now)
                 TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, tripId, "active", location.time))
                 updateNotification("Trip • ${speedKmh.roundToInt()} km/h")
-                triggerUpload()
+                // Deliberately NO upload here. The point is in SQLite; uploadRunnable batches it
+                // with its neighbours on the next window. Uploading per fix is what produced one
+                // HTTP request every 3 s, kept the cellular radio permanently awake, and made the
+                // handsets run hot.
+                applyCadence(now)
             }
         }
     }
@@ -401,6 +459,12 @@ class TrackingService : Service() {
     private fun onTick() {
         if (!TrackingConfig.isEnabled(this)) return
         val now    = System.currentTimeMillis()
+
+        // The MOVING -> STATIONARY direction is only ever noticed here: it is defined by the
+        // ABSENCE of movement, so no GPS callback will announce it. (The reverse direction is
+        // applied straight from processFix, so pulling away is immediate rather than waiting out
+        // a tick.)
+        applyCadence(now)
 
         // Daylight gating removed: tracking runs at any hour now. It used to end the active trip
         // and pause until sunrise, so a night shift produced no data at all — and the resulting
@@ -534,14 +598,57 @@ class TrackingService : Service() {
 
     // ── Location + activity registration ─────────────────────────────────────
 
-    private fun startLocationUpdates() {
-        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, LOCATION_INTERVAL_MS)
-            .setMinUpdateIntervalMillis(FASTEST_MS)
+    private fun startLocationUpdates(intervalMs: Long = LOCATION_INTERVAL_MS) {
+        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
+            // Never faster than FASTEST_MS even if another app is requesting rapid fixes; at the
+            // stationary rate, do not accept a fix more than twice as often as asked for.
+            .setMinUpdateIntervalMillis(maxOf(FASTEST_MS, intervalMs / 2))
             .setMinUpdateDistanceMeters(0f)
             .build()
         try {
             fused.requestLocationUpdates(req, locationCallback, Looper.getMainLooper())
         } catch (_: SecurityException) { stopSelf() }
+    }
+
+    // ── Adaptive cadence ──────────────────────────────────────────────────────
+
+    /**
+     * Two rates, chosen by whether the vehicle has moved recently: GPS sampling and upload
+     * batching. Both are re-evaluated on every fix and on every tick, but only re-applied when the
+     * mode actually changes — re-registering a LocationRequest is not free, and doing it per fix
+     * would cost more than it saves.
+     */
+    private enum class Cadence { MOVING, STATIONARY }
+
+    private var cadence: Cadence? = null
+
+    private val uploadTicker = Handler(Looper.getMainLooper())
+    private val uploadRunnable = object : Runnable {
+        override fun run() {
+            triggerUpload()
+            uploadTicker.postDelayed(this, uploadIntervalMs())
+        }
+    }
+
+    private fun uploadIntervalMs(): Long =
+        if (cadence == Cadence.MOVING) UPLOAD_INTERVAL_MOVING_MS else UPLOAD_INTERVAL_STATIONARY_MS
+
+    /** Moving = a trip is open AND something moved within STATIONARY_AFTER_MS. */
+    private fun applyCadence(now: Long) {
+        val tripOpen = TrackingConfig.currentTripId(this) != null
+        val movedRecently = lastMovedMs > 0L && now - lastMovedMs < STATIONARY_AFTER_MS
+        val wanted = if (tripOpen && movedRecently) Cadence.MOVING else Cadence.STATIONARY
+        if (wanted == cadence) return
+
+        cadence = wanted
+        val gpsMs = if (wanted == Cadence.MOVING) LOCATION_INTERVAL_MS else LOCATION_INTERVAL_STATIONARY_MS
+        try { fused.removeLocationUpdates(locationCallback) } catch (_: Exception) {}
+        startLocationUpdates(gpsMs)
+
+        // Restart the upload ticker on the new interval rather than waiting out the old one, so
+        // pulling away from a stop does not sit on a 30 s upload gap.
+        uploadTicker.removeCallbacks(uploadRunnable)
+        uploadTicker.postDelayed(uploadRunnable, uploadIntervalMs())
     }
 
     private fun registerActivityTransitions() {

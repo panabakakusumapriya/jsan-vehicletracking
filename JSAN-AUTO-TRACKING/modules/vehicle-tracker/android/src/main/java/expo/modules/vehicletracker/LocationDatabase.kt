@@ -45,9 +45,41 @@ class LocationDatabase(context: Context) :
         )
     }
 
+    /**
+     * NEVER drop this table.
+     *
+     * It holds the only copy of every fix the server has not yet acknowledged. A driver working a
+     * shift out of coverage can be carrying hours of it. The previous implementation did
+     * `DROP TABLE IF EXISTS points` here, which meant that the next time anyone bumped
+     * DB_VERSION — to add a single column — every driver in the field would silently lose their
+     * unsent queue on app update. Nobody would see an error; the data would simply be gone.
+     *
+     * Migrations must therefore be additive. Use `addColumnIfMissing` below. If a change genuinely
+     * cannot be expressed additively, copy the rows into the new table before dropping the old
+     * one — never the other way round.
+     */
     override fun onUpgrade(db: SQLiteDatabase, oldV: Int, newV: Int) {
-        db.execSQL("DROP TABLE IF EXISTS points")
-        onCreate(db)
+        // v1 is the only schema so far. Future versions add their columns here, e.g.
+        //   if (oldV < 2) addColumnIfMissing(db, "attempts", "INTEGER NOT NULL DEFAULT 0")
+    }
+
+    /**
+     * A downgrade (an installed build newer than the APK being installed) would otherwise throw
+     * SQLiteDowngradeFailedException and take the service down with it. Tolerate it: a newer
+     * schema is a superset, so the older code can still read the columns it knows about.
+     */
+    override fun onDowngrade(db: SQLiteDatabase, oldV: Int, newV: Int) {
+        // Intentionally empty — keep the data.
+    }
+
+    /** Idempotent ALTER TABLE, safe to call on every upgrade path. */
+    private fun addColumnIfMissing(db: SQLiteDatabase, name: String, declaration: String) {
+        val exists = db.rawQuery("PRAGMA table_info(points)", null).use { c ->
+            var found = false
+            while (c.moveToNext()) if (c.getString(1) == name) { found = true; break }
+            found
+        }
+        if (!exists) db.execSQL("ALTER TABLE points ADD COLUMN $name $declaration")
     }
 
     @Synchronized

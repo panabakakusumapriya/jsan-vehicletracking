@@ -13,6 +13,13 @@ const tripSchema = new mongoose.Schema(
     driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     vehicleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', default: null },
+    // Which project this trip's driving counts toward. Stamped when the trip starts rather than
+    // derived later from the driver, because User.projectIds is an ARRAY — a driver can be on
+    // several projects at once, so "the driver's project" is not a question with one answer at
+    // read time. Without this, a trip's coverage cannot be attributed to a customer's network at
+    // all; see models/LinkCoverage.js. Null on trips recorded before this field existed, and on
+    // drivers who genuinely have no project.
+    projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', default: null },
     status: {
       type: String,
       enum: ['active', 'completed', 'timed_out'],
@@ -104,5 +111,12 @@ tripSchema.index({ status: 1, mapMatchStatus: 1 });
 // whole collection and sorted in memory; { driverId, startedAt } only helped when a driver filter
 // happened to be present, which on the fleet-wide views it is not.
 tripSchema.index({ status: 1, startedAt: -1 });
+// Coverage attribution sweeps matched trips for one project in start order. Partial because the
+// overwhelming majority of historical trips have no projectId and would otherwise bloat an index
+// that only the coverage pipeline reads.
+tripSchema.index(
+  { projectId: 1, startedAt: 1 },
+  { partialFilterExpression: { projectId: { $type: 'objectId' } } }
+);
 
 module.exports = mongoose.model('Trip', tripSchema);

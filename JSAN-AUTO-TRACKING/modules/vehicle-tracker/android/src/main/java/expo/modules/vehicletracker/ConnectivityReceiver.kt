@@ -12,6 +12,9 @@ import android.content.Intent
 class ConnectivityReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (NetworkUtil.isOnline(context)) {
+            // Drop any backoff first — it was earned while the network was down or the server was
+            // unreachable, and neither is necessarily still true now that we have signal.
+            Uploader.resetBackoff()
             Thread { Uploader.flush(context) }.start()
         }
     }

@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import { requireNativeModule, type EventSubscription } from 'expo-modules-core';
+import { requireOptionalNativeModule, type EventSubscription } from 'expo-modules-core';
 
 /**
  * JS facade for the native (Android/Kotlin) VehicleTracker module.
@@ -43,10 +43,45 @@ export type DaylightInfo = {
 
 const isAndroid = Platform.OS === 'android';
 
-// Only require the native module on Android; keeps iOS/web from throwing.
-const native = isAndroid ? (requireNativeModule('VehicleTracker') as any) : null;
+/**
+ * OPTIONAL on purpose.
+ *
+ * `requireNativeModule` THROWS when the module is not compiled into the running binary — which is
+ * the case in Expo Go, and in any dev client built before this module existed. Because this file is
+ * imported by src/lib/auth.tsx, which is imported by app/_layout.tsx, that throw happened during
+ * module evaluation and took the entire app down before a single screen rendered:
+ *
+ *     requireNativeModule -> modules/vehicle-tracker/index.ts -> src/lib/auth.tsx -> app/_layout.tsx
+ *     ...followed by "Couldn't find any screens for the navigator", which is only the fallout.
+ *
+ * `requireOptionalNativeModule` returns null instead. Every function below already guards on
+ * `native`, and `isSupported` already tells the UI, so a missing module now degrades to "tracking
+ * unavailable" rather than a white screen — which means the JS can be developed in Expo Go.
+ */
+const native = isAndroid ? (requireOptionalNativeModule('VehicleTracker') as any) : null;
+
+if (isAndroid && !native && __DEV__) {
+  // Loud, because silently running without a tracking engine is not something to discover later.
+  console.warn(
+    '[VehicleTracker] Native module not found — GPS tracking is DISABLED. ' +
+    'This build is Expo Go or a dev client without the module. ' +
+    'Run `npx expo run:android` or build the `development` EAS profile to enable it.'
+  );
+}
 
 export const isSupported = isAndroid && native != null;
+
+/**
+ * Why tracking is unavailable, or null when it is fine. Two very different situations that used to
+ * share one message: the wrong platform, versus the right platform running a binary that does not
+ * contain the module. Telling a driver on Android that "tracking runs on Android only" sends them
+ * looking in exactly the wrong place.
+ */
+export const unavailableReason: string | null = isSupported
+  ? null
+  : !isAndroid
+    ? 'Background tracking runs on Android only.'
+    : 'This build does not include the tracking module, so GPS tracking is off. Install a development build to enable it.';
 
 export async function configure(apiBaseUrl: string, token: string, driverId: string): Promise<void> {
   if (native) await native.configure(apiBaseUrl, token, driverId);

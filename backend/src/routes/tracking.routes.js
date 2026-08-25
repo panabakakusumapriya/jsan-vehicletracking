@@ -8,6 +8,9 @@ router.post('/ingest', authenticate, requireRole('user'), ctrl.ingest);
 // Driver reads their own active session + GPS trail for the map screen.
 router.get('/my-session', authenticate, requireRole('user'), ctrl.mySession);
 
+// Driver reads the work areas they have been allocated.
+router.get('/my-areas', authenticate, requireRole('user'), ctrl.myAreas);
+
 // Admins / managers read the live snapshot.
 router.get('/live', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.live);
 

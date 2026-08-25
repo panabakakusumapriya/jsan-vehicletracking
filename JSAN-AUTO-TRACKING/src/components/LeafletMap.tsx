@@ -1,5 +1,13 @@
 import { WebView } from 'react-native-webview';
 
+/** A work area outline to shade on the driver's map — see apiMyAreas. */
+export interface MapArea {
+  id: string;
+  name: string;
+  outline: { type: string; coordinates: any } | null;
+  bbox?: [number, number, number, number] | null;
+}
+
 export interface MapPoint {
   lat: number;
   lon: number;
@@ -7,7 +15,7 @@ export interface MapPoint {
   recordedAt: string;
 }
 
-function buildHtml(points: MapPoint[]): string {
+function buildHtml(points: MapPoint[], areas: MapArea[] = []): string {
   // Filter out null gap markers for the WebView map
   const valid = points.filter((p): p is MapPoint => p != null);
   const latlngs = JSON.stringify(valid.map(p => [p.lat, p.lon]));
@@ -26,6 +34,27 @@ function buildHtml(points: MapPoint[]): string {
   }
   const gaps = JSON.stringify(Array.from(gapIndices));
 
+  // GeoJSON is [lon, lat]; Leaflet wants [lat, lon]. Flip here rather than in the WebView so the
+  // payload crossing the bridge is already in the form Leaflet consumes.
+  const areaShapes = JSON.stringify(
+    areas
+      .map((a) => {
+        const g = a.outline;
+        let rings: number[][][] = [];
+        if (g && g.type === 'Polygon') rings = g.coordinates as number[][][];
+        else if (g && g.type === 'MultiPolygon') rings = (g.coordinates as number[][][][]).flat();
+        else if (a.bbox) {
+          const [w, s2, e, n] = a.bbox;
+          rings = [[[w, s2], [e, s2], [e, n], [w, n], [w, s2]]];
+        }
+        return {
+          name: a.name,
+          rings: rings.map((r) => r.map(([lon, lat]) => [lat, lon])),
+        };
+      })
+      .filter((a) => a.rings.length > 0)
+  );
+
   const center  = valid.length
     ? [valid[Math.floor(valid.length / 2)].lat, valid[Math.floor(valid.length / 2)].lon]
     : [17.42, 78.45];
@@ -42,7 +71,24 @@ function buildHtml(points: MapPoint[]): string {
   var map=L.map('map',{zoomControl:true,renderer:r}).setView(${JSON.stringify(center)},14);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
   var ll=${latlngs}, sp=${speeds}, gaps=new Set(${gaps});
-  if(!ll.length) return;
+
+  // Allocated work areas, drawn under the trace so the route stays the most visible thing.
+  var areas=${areaShapes}, areaLayers=[];
+  areas.forEach(function(a){
+    var poly=L.polygon(a.rings,{color:'#7c3aed',weight:2,opacity:0.9,fillColor:'#7c3aed',fillOpacity:0.12,renderer:r});
+    poly.addTo(map).bindPopup('<b>'+a.name+'</b><br>Your allocated area');
+    areaLayers.push(poly);
+  });
+
+  // With no trip yet, frame the allocation — that is the only thing worth looking at, and it
+  // answers "where am I supposed to be today" before any driving has happened.
+  if(!ll.length){
+    if(areaLayers.length){
+      var g=L.featureGroup(areaLayers);
+      map.fitBounds(g.getBounds(),{padding:[28,28],maxZoom:13});
+    }
+    return;
+  }
   for(var i=0;i<ll.length-1;i++){
     if(gaps.has(i)) continue;
     var c=sp[i]<40?'#059669':sp[i]<80?'#d97706':'#dc2626';
@@ -58,10 +104,10 @@ function buildHtml(points: MapPoint[]): string {
 </script></body></html>`;
 }
 
-export function LeafletMap({ points }: { points: MapPoint[] }) {
+export function LeafletMap({ points, areas = [] }: { points: MapPoint[]; areas?: MapArea[] }) {
   return (
     <WebView
-      source={{ html: buildHtml(points) }}
+      source={{ html: buildHtml(points, areas) }}
       style={{ flex: 1 }}
       javaScriptEnabled
       originWhitelist={['*']}

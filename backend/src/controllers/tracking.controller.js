@@ -1,6 +1,10 @@
 const Trip = require('../models/Trip');
 const User = require('../models/User');
 const LocationPoint = require('../models/LocationPoint');
+const RejectedPoint = require('../models/RejectedPoint');
+const NetworkVersion = require('../models/NetworkVersion');
+const AreaAssignment = require('../models/AreaAssignment');
+const WorkArea = require('../models/WorkArea');
 const asyncHandler = require('../utils/asyncHandler');
 const { haversineMeters } = require('../utils/geo');
 const { timezoneFromCoords } = require('../utils/tzFromCoords');
@@ -30,7 +34,8 @@ let _ukmBackfillDone = false;
  *   batteryLevel, isMoving, recordedAt (ISO), tripStatus?('active'|'ended'|'timed_out')
  * }] }
  *
- * Returns { accepted, acceptedClientIds } — the device deletes those local rows.
+ * Returns { accepted, acceptedClientIds, rejected, rejectedClientIds } — the device deletes
+ * every acked row. Rejected ids are acked TOO (so the queue drains) but were not stored.
  */
 exports.ingest = asyncHandler(async (req, res) => {
   const driver = req.user;
@@ -47,6 +52,11 @@ exports.ingest = asyncHandler(async (req, res) => {
   }
 
   const acceptedClientIds = [];
+  // Points that could not become LocationPoints. They are PRESERVED in RejectedPoint (raw, exactly
+  // as sent) and only then acked — so the device's queue drains without the observation being
+  // thrown away. See models/RejectedPoint.js.
+  const rejectedClientIds = [];
+  const toPreserve = [];
   const liveUpdates = [];
 
   for (const [clientTripId, pts] of groups) {
@@ -66,6 +76,14 @@ exports.ingest = asyncHandler(async (req, res) => {
         driverId: driver._id,
         managerId: driver.managerId || null,
         vehicleId: driver.vehicleId || null,
+        // Stamped at start, like timezone below and for the same reason: a trip is fixed history.
+        // Moving a driver onto another project next month must not retroactively re-attribute
+        // last month's coverage to a customer who never received it.
+        //
+        // projectIds is an array — a driver can hold several at once. Taking the first is only
+        // unambiguous when they hold exactly one, so anything else is left null rather than
+        // guessed, and surfaces as unattributed on the coverage page where a human can see it.
+        projectId: driver.projectIds && driver.projectIds.length === 1 ? driver.projectIds[0] : null,
         status: 'active',
         startedAt: new Date(first.recordedAt),
         startLocation: { lat: first.lat, lon: first.lon },
@@ -140,6 +158,31 @@ exports.ingest = asyncHandler(async (req, res) => {
         recordedAt,
       };
 
+      // Reject unusable points BEFORE hitting Mongo, and ack them anyway — see the catch below
+      // for why refusing to ack is the expensive option.
+      const badPoint =
+        !Number.isFinite(p.lat) || !Number.isFinite(p.lon) ||
+        p.lat < -90 || p.lat > 90 || p.lon < -180 || p.lon > 180
+          ? 'coordinates out of range'
+          : Number.isNaN(recordedAt.getTime())
+            ? 'unparseable recordedAt'
+            : null;
+
+      if (badPoint) {
+        toPreserve.push({
+          driverId: driver._id,
+          clientId: p.clientId || null,
+          clientTripId: p.clientTripId || null,
+          reason: badPoint,
+          raw: p,
+        });
+        if (p.clientId) {
+          acceptedClientIds.push(p.clientId);
+          rejectedClientIds.push({ clientId: p.clientId, reason: badPoint });
+        }
+        continue;
+      }
+
       try {
         await LocationPoint.create(doc);
       } catch (e) {
@@ -148,7 +191,32 @@ exports.ingest = asyncHandler(async (req, res) => {
           if (p.clientId) acceptedClientIds.push(p.clientId);
           continue;
         }
-        throw e;
+
+        /**
+         * One bad point must never fail the whole batch.
+         *
+         * This used to `throw`, which 500s the entire request — so NOTHING is acked, the device
+         * deletes nothing, and on its next trigger it re-sends the identical oldest 200 points.
+         * Because the device uploads on every GPS fix (~3 s) and retries 3x per attempt, a single
+         * permanently-unstorable row becomes an infinite re-upload loop: ~50 KB re-sent every few
+         * seconds, forever. That is how a driver's phone reached 25 GB in a month, and why the
+         * radio never idled long enough to cool down.
+         *
+         * So: ack it, so the device drops it and the queue drains past it. Report it separately
+         * so a point we could not store is visible rather than silently discarded.
+         */
+        toPreserve.push({
+          driverId: driver._id,
+          clientId: p.clientId || null,
+          clientTripId: p.clientTripId || null,
+          reason: e.message,
+          raw: p,
+        });
+        if (p.clientId) {
+          acceptedClientIds.push(p.clientId);
+          rejectedClientIds.push({ clientId: p.clientId, reason: e.message });
+        }
+        continue;
       }
 
       if (p.clientId) acceptedClientIds.push(p.clientId);
@@ -218,7 +286,37 @@ exports.ingest = asyncHandler(async (req, res) => {
     });
   }
 
-  res.json({ accepted: acceptedClientIds.length, acceptedClientIds });
+  if (toPreserve.length) {
+    // Keep the originals before telling the device it may forget them. ordered:false so one
+    // duplicate (a re-send that beat the ack) cannot stop the rest being saved. Failure here is
+    // logged, never thrown: the ack still has to go out or the queue jams again.
+    try {
+      await RejectedPoint.insertMany(toPreserve, { ordered: false });
+    } catch (err) {
+      const dupOnly = err && err.code === 11000;
+      if (!dupOnly) {
+        // eslint-disable-next-line no-console
+        console.error('ingest: failed to preserve rejected points:', err.message);
+      }
+    }
+  }
+
+  if (rejectedClientIds.length) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `ingest: acked ${rejectedClientIds.length} unstorable point(s) from driver ${driver._id} so the device can drain its queue —`,
+      rejectedClientIds.slice(0, 5)
+    );
+  }
+
+  res.json({
+    accepted: acceptedClientIds.length,
+    acceptedClientIds,
+    // Acked but not stored. Surfaced so a device dropping points is visible in the response
+    // rather than only in a server log nobody is reading.
+    rejected: rejectedClientIds.length,
+    rejectedClientIds,
+  });
 });
 
 /**
@@ -673,4 +771,68 @@ exports.parked = asyncHandler(async (req, res) => {
   }
 
   res.json({ parked });
+});
+
+/**
+ * GET /api/tracking/my-areas   (driver only)
+ *
+ * The work areas this driver is currently responsible for, so the app can show them what they are
+ * meant to be covering today rather than the driver having to be told over the phone.
+ *
+ * Two things govern the shape of this response, both learned the hard way:
+ *
+ *  1. It serves `outline` — the 25 m-simplified copy — and NEVER the full geometry. Full geometry
+ *     for the first delivery is 7.4 MB; a single large rural area can be hundreds of KB of it. This
+ *     is a mobile connection on a metered plan, on a fleet that just produced a 25 GB month.
+ *  2. It only ever returns areas from the ACTIVE network version of the driver's project(s). A
+ *     superseded version's assignments are history, not today's work.
+ */
+exports.myAreas = asyncHandler(async (req, res) => {
+  const driver = req.user;
+  const projectIds = (driver.projectIds || []).map(String);
+  if (!projectIds.length) return res.json({ areas: [], updatedAt: null });
+
+  const activeVersions = await NetworkVersion.find({
+    projectId: { $in: projectIds },
+    status: 'active',
+  }).select('_id label projectId');
+  if (!activeVersions.length) return res.json({ areas: [], updatedAt: null });
+
+  const assignments = await AreaAssignment.find({
+    driverId: driver._id,
+    releasedAt: null,
+    networkVersionId: { $in: activeVersions.map((v) => v._id) },
+  }).select('areaId assignedAt note');
+  if (!assignments.length) return res.json({ areas: [], updatedAt: null });
+
+  // One query for the geometry, not one per assignment.
+  const areas = await WorkArea.find({
+    _id: { $in: assignments.map((a) => a.areaId) },
+  }).select('areaCode name parentName priority targetMeters targetLinks outline bbox');
+
+  const assignedAtByArea = new Map(assignments.map((a) => [String(a.areaId), a.assignedAt]));
+
+  // Newest assignment stamp doubles as a cheap cache key: the app can skip redrawing (and skip
+  // re-fetching geometry) while this has not moved.
+  const updatedAt = assignments.reduce(
+    (latest, a) => (!latest || a.assignedAt > latest ? a.assignedAt : latest),
+    null
+  );
+
+  res.json({
+    updatedAt,
+    areas: areas.map((a) => ({
+      id: String(a._id),
+      areaCode: a.areaCode,
+      name: a.name,
+      parentName: a.parentName,
+      priority: a.priority,
+      targetMeters: a.targetMeters,
+      targetLinks: a.targetLinks,
+      bbox: a.bbox,
+      // May be absent on areas imported before outlines were stored; the app falls back to bbox.
+      outline: a.outline && a.outline.coordinates ? a.outline : null,
+      assignedAt: assignedAtByArea.get(String(a._id)) || null,
+    })),
+  });
 });

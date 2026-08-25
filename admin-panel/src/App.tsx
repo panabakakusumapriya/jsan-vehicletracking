@@ -3,6 +3,7 @@ import { Layout } from './components/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AssetHistory } from './pages/AssetHistory';
 import { Couriers } from './pages/Couriers';
+import { Coverage } from './pages/Coverage';
 import { Drivers } from './pages/Drivers';
 import { Hotels } from './pages/Hotels';
 import { LiveMap } from './pages/LiveMap';
@@ -44,6 +45,7 @@ export default function App() {
         <Route path="/couriers" element={<Couriers />} />
         <Route path="/vehicles" element={<Vehicles />} />
         <Route path="/ukm" element={<Ukm />} />
+        <Route path="/coverage" element={<Coverage />} />
         <Route path="/app-health" element={<AppHealth />} />
         <Route
           path="/managers"

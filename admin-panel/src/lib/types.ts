@@ -331,3 +331,189 @@ export interface LocationEvent {
   recordedAt: string;
   ended: boolean;
 }
+
+/* ---------------------------------------------------------------- Coverage
+ * The customer-supplied target network: work areas, road links, and progress
+ * against them. See backend/src/models/NetworkVersion.js.
+ */
+
+export interface CrsInfo {
+  wkt: string | null;
+  name: string | null;
+  datum: string | null;
+  projected: boolean;
+  compatible: boolean;
+  note: string | null;
+}
+
+export interface DbfField {
+  name: string;
+  type: string;
+  length: number;
+  decimals: number;
+}
+
+export interface ImportIssue {
+  code: string;
+  message: string;
+}
+
+export interface ColumnMapping {
+  areaCode: string | null;
+  areaName: string | null;
+  areaParent: string | null;
+  priority: string | null;
+  areaSqm: string | null;
+  linkId: string | null;
+  linkName: string | null;
+  funcClass: string | null;
+  dirTravel: string | null;
+  autoAccess: string | null;
+}
+
+/** The preflight — everything we know before a single document is written. */
+export interface ImportReport {
+  generatedAt: string;
+  mapping: ColumnMapping;
+  boundary: {
+    file: string;
+    otherLayersInZip: string[];
+    shapeTypeName: string;
+    recordCount: number;
+    bbox: number[];
+    crs: CrsInfo;
+    fields: DbfField[];
+    sample: Record<string, unknown>[];
+    byPriority: { priority: number; areas: number; areaSqKm: number; links: number; meters: number }[];
+  };
+  network: {
+    file: string;
+    otherLayersInZip: string[];
+    shapeTypeName: string;
+    recordCount: number;
+    bbox: number[];
+    crs: CrsInfo;
+    fields: DbfField[];
+    sample: Record<string, unknown>[];
+    totalMeters: number;
+    avgMeters: number;
+    unnamedLinks: number;
+    zeroLengthLinks: number;
+    multiPartLinks: number;
+    byFuncClass: { funcClass: number | null; links: number; meters: number }[];
+    byDirTravel: { dir: string; links: number; meters: number }[];
+    lengthBuckets: { bucket: string; links: number }[];
+  };
+  join: {
+    orphanLinks: number;
+    orphanMeters: number;
+    areasWithoutLinks: number;
+    matchedAreas: number;
+  };
+  totals: { areas: number; links: number; targetMeters: number; orphanMeters: number };
+  errors: ImportIssue[];
+  warnings: ImportIssue[];
+}
+
+export type ImportStatus =
+  | 'draft'
+  | 'queued'
+  | 'parsing'
+  | 'awaiting_approval'
+  | 'committing'
+  | 'ready'
+  | 'failed'
+  | 'cancelled';
+
+export interface ImportFileInfo {
+  name: string | null;
+  bytes: number;
+  sha256: string | null;
+  uploadedAt: string | null;
+}
+
+export interface ImportJob {
+  _id: string;
+  projectId: { _id: string; name: string; code?: string | null } | string;
+  requestedBy?: { _id: string; name: string; email?: string } | string;
+  label: string;
+  status: ImportStatus;
+  files: { boundary: ImportFileInfo; network: ImportFileInfo };
+  mapping: ColumnMapping;
+  includeOrphanLinks: boolean;
+  report: ImportReport | null;
+  progress: { phase: string | null; done: number; total: number };
+  networkVersionId: string | null;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export type NetworkVersionStatus = 'building' | 'ready' | 'active' | 'superseded' | 'failed';
+
+export interface NetworkVersion {
+  _id: string;
+  projectId: { _id: string; name: string; code?: string | null } | string;
+  label: string;
+  status: NetworkVersionStatus;
+  sourceCRS: { boundary: string | null; network: string | null };
+  counts: { areas: number; links: number; orphanLinks: number };
+  targetMeters: number;
+  orphanMeters: number;
+  byPriority: { priority: number; areas: number; links: number; meters: number }[];
+  byFuncClass: { funcClass: number | null; links: number; meters: number }[];
+  createdBy?: { _id: string; name: string } | null;
+  activatedBy?: { _id: string; name: string } | null;
+  activatedAt: string | null;
+  createdAt: string;
+}
+
+export interface CoverageBand {
+  priority?: number;
+  funcClass?: number | null;
+  areas?: number;
+  links: number;
+  meters: number;
+  coveredMeters: number;
+  coveredLinks: number;
+}
+
+export interface CoverageSummary {
+  coveredMeters: number;
+  coveredLinks: number;
+  targetMeters: number;
+  targetLinks: number;
+  byPriority: CoverageBand[];
+  byFuncClass: CoverageBand[];
+}
+
+export interface CoverageArea {
+  _id: string;
+  areaCode: string;
+  name: string;
+  parentName: string | null;
+  priority: number;
+  areaSqKm: number | null;
+  targetMeters: number;
+  targetLinks: number;
+  coveredMeters: number;
+  coveredLinks: number;
+  bbox?: number[];
+}
+
+/** Which driver is responsible for a work area. See backend/src/models/AreaAssignment.js. */
+export interface AreaAssignment {
+  _id: string;
+  projectId: string;
+  networkVersionId: string;
+  areaId: string;
+  driverId: { _id: string; name: string; email?: string; driverStatus?: string } | string;
+  areaName: string | null;
+  areaCode: string | null;
+  driverName: string | null;
+  assignedBy?: { _id: string; name: string } | string | null;
+  assignedAt: string;
+  releasedBy?: { _id: string; name: string } | string | null;
+  releasedAt: string | null;
+  note: string | null;
+}

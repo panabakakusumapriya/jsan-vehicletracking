@@ -21,6 +21,8 @@ export interface Map3DHandle {
   fitToRoute(coords: [number, number][]): void;
   /** Smooth camera follow that rotates the map to face the driving direction. */
   driveTo(center: [number, number], bearing: number): void;
+  /** Frame a [west, south, east, north] extent -- used to jump to a work area. */
+  fitBounds(bbox: [number, number, number, number], maxZoom?: number): void;
 }
 
 interface Map3DProps {
@@ -30,12 +32,25 @@ interface Map3DProps {
   layers: Layer[];
   onClick?: (info: PickingInfo) => void;
   getTooltip?: (info: PickingInfo) => { html: string } | null;
+  /** Camera tilt. Trip playback wants the default 55; a coverage choropleth is
+   *  read as a plan and wants 0, where tilt only distorts relative area. */
+  pitch?: number;
+  /** Fires after the camera settles, with the visible [w, s, e, n] and zoom.
+   *  The coverage map loads road links per viewport off this -- 654k links can
+   *  never all be on screen, so what is drawn is decided by where you are. */
+  onMoveEnd?: (bbox: [number, number, number, number], zoom: number) => void;
 }
 
 export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
-  { center, zoom = 14, layers, onClick, getTooltip },
+  { center, zoom = 14, layers, onClick, getTooltip, pitch = DEFAULT_PITCH, onMoveEnd },
   ref
 ) {
+  // Read through refs inside the map effect and the imperative handle: both run once, so a
+  // captured prop would freeze at its first value.
+  const pitchRef = useRef(pitch);
+  pitchRef.current = pitch;
+  const moveEndRef = useRef(onMoveEnd);
+  moveEndRef.current = onMoveEnd;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MaplibreMap | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
@@ -54,7 +69,7 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
         style: MAP_STYLE,
         center,
         zoom,
-        pitch: DEFAULT_PITCH,
+        pitch: pitchRef.current,
       });
     } catch (err) {
       console.error('Map3D: maplibre-gl failed to initialize', err);
@@ -68,6 +83,17 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
     };
     map.on('error', handleError);
     map.addControl(new NavigationControl({ visualizePitch: true }), 'top-right');
+
+    // 'moveend' rather than 'move': a viewport-driven fetch on every animation frame of a pan
+    // would fire dozens of requests for camera positions nobody stopped at.
+    const handleMoveEnd = () => {
+      const cb = moveEndRef.current;
+      if (!cb) return;
+      const b = map.getBounds();
+      cb([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()], map.getZoom());
+    };
+    map.on('moveend', handleMoveEnd);
+    map.once('load', handleMoveEnd);
 
     const overlay = new MapboxOverlay({ interleaved: true, layers, onClick, getTooltip });
     map.addControl(overlay);
@@ -90,6 +116,7 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
       resizeObserver.disconnect();
       cancelAnimationFrame(frame);
       map.off('error', handleError);
+      map.off('moveend', handleMoveEnd);
       map.remove();
       mapRef.current = null;
       overlayRef.current = null;
@@ -115,7 +142,7 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
       flyTo(target, targetZoom) {
         const map = mapRef.current;
         if (!map) return;
-        map.flyTo({ center: target, zoom: targetZoom ?? map.getZoom(), pitch: DEFAULT_PITCH, essential: true });
+        map.flyTo({ center: target, zoom: targetZoom ?? map.getZoom(), pitch: pitchRef.current, essential: true });
       },
       driveTo(target, bearing) {
         const map = mapRef.current;
@@ -126,7 +153,7 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
         const map = mapRef.current;
         if (!map || coords.length === 0) return;
         if (coords.length === 1) {
-          map.flyTo({ center: coords[0], zoom: 15, pitch: DEFAULT_PITCH, essential: true });
+          map.flyTo({ center: coords[0], zoom: 15, pitch: pitchRef.current, essential: true });
           return;
         }
         let minLon = coords[0][0];
@@ -144,7 +171,20 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
             [minLon, minLat],
             [maxLon, maxLat],
           ],
-          { padding: 60, maxZoom: 17, pitch: DEFAULT_PITCH, duration: 800 }
+          { padding: 60, maxZoom: 17, pitch: pitchRef.current, duration: 800 }
+        );
+      },
+      fitBounds(bbox, maxZoom = 15) {
+        const map = mapRef.current;
+        if (!map) return;
+        const [w, s, e, n] = bbox;
+        if (![w, s, e, n].every(Number.isFinite)) return;
+        map.fitBounds(
+          [
+            [w, s],
+            [e, n],
+          ],
+          { padding: 48, maxZoom, pitch: pitchRef.current, duration: 700 }
         );
       },
     }),

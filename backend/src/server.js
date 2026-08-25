@@ -6,6 +6,7 @@ const { initSocket } = require('./realtime/io');
 const { startWatchdog } = require('./services/driverWatchdog');
 const { startMapMatcher } = require('./services/mapMatcher');
 const { startExportRunner } = require('./services/exportRunner');
+const { startImportRunner } = require('./services/importRunner');
 
 async function start() {
   await connectDB();
@@ -22,6 +23,7 @@ async function start() {
     startWatchdog();
     startMapMatcher();
     startExportRunner();
+    startImportRunner();
     console.log('');
   });
 }

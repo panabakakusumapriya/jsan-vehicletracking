@@ -12,6 +12,7 @@ import { useAuth } from '@/src/lib/auth';
 import { API_BASE_URL } from '@/src/lib/config';
 import { TabBar } from '@/src/components/TabBar';
 import { LeafletMap } from '@/src/components/LeafletMap';
+import { apiMyAreas, type MyArea } from '@/src/lib/api';
 
 const C = {
   brand:    '#7c3aed',
@@ -48,7 +49,29 @@ export default function MapScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt]   = useState<Date | null>(null);
+  const [areas,   setAreas]   = useState<MyArea[]>([]);
+  // Distinguishes "you have no areas" from "we could not ask". Swallowing this made a failing
+  // request look exactly like an empty allocation, which is a long way to chase a ghost.
+  const [areasError, setAreasError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  /**
+   * The driver's allocated areas. Fetched once on mount and on pull-to-refresh — deliberately NOT
+   * on the 15 s session timer. An allocation changes when a manager changes it, so polling it
+   * every 15 seconds would be pure mobile data for a value that is the same all day.
+   */
+  const fetchAreas = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await apiMyAreas(token);
+      setAreas(res.areas ?? []);
+      setAreasError(null);
+    } catch (e) {
+      // Non-fatal — the route still renders — but it must be visible, not silent.
+      setAreas([]);
+      setAreasError(e instanceof Error ? e.message : 'Could not load your allocated areas');
+    }
+  }, [token]);
 
   const fetchSession = useCallback(async (silent = false) => {
     if (!token) return;
@@ -67,11 +90,12 @@ export default function MapScreen() {
 
   useEffect(() => {
     fetchSession();
+    fetchAreas();
     timerRef.current = setInterval(() => fetchSession(true), 15_000);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [fetchSession]);
+  }, [fetchSession, fetchAreas]);
 
-  const onRefresh = () => { setRefreshing(true); fetchSession(true); };
+  const onRefresh = () => { setRefreshing(true); fetchSession(true); fetchAreas(); };
 
   if (loading) {
     return (
@@ -86,6 +110,31 @@ export default function MapScreen() {
   }
 
   if (!trip) {
+    /**
+     * No trip yet — but this is exactly when the allocation matters most. Start of shift, nothing
+     * driven, and the driver's question is "where am I supposed to be today". So when areas have
+     * been allocated, show them rather than an empty-state card.
+     */
+    if (areas.length > 0) {
+      return (
+        <View style={{ flex: 1 }}>
+          <View style={s.liveBadge}>
+            <View style={[s.liveDot, s.lastDot]} />
+            <Text style={[s.liveText, s.lastText]}>
+              {areas.length} area{areas.length === 1 ? '' : 's'} allocated to you · no trip yet
+            </Text>
+            <TouchableOpacity onPress={onRefresh} style={{ padding: 4 }}>
+              <Text style={{ color: C.muted, fontSize: 16 }}>↻</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={s.mapWrap}>
+            <LeafletMap points={[]} areas={areas} />
+          </View>
+          <TabBar />
+        </View>
+      );
+    }
+
     return (
       <View style={{ flex: 1 }}>
         <ScrollView
@@ -97,6 +146,13 @@ export default function MapScreen() {
             <Text style={s.emptyTitle}>No trips found</Text>
             <Text style={s.emptyBody}>
               No trips in the last 7 days. Start driving — your route will appear here automatically once a trip begins.
+            </Text>
+            {/* Allocation is a separate thing from trips: report it separately rather than letting
+                one empty state stand for both. */}
+            <Text style={[s.emptyBody, { marginTop: 10 }]}>
+              {areasError
+                ? `⚠ Allocated areas unavailable — ${areasError}`
+                : 'No work areas have been allocated to you yet.'}
             </Text>
             <TouchableOpacity style={s.retryBtn} onPress={() => fetchSession()}>
               <Text style={s.retryText}>Check again</Text>
@@ -143,7 +199,7 @@ export default function MapScreen() {
 
       {/* Leaflet map — web: react-leaflet (GPU canvas), native: WebView+Leaflet */}
       <View style={s.mapWrap}>
-        {points.length === 0 ? (
+        {points.length === 0 && areas.length === 0 ? (
           <View style={s.noGps}>
             <Text style={s.noGpsText}>
               {trip.status === 'active'
@@ -152,7 +208,10 @@ export default function MapScreen() {
             </Text>
           </View>
         ) : (
-          <LeafletMap points={points.filter(p => p != null).map(p => ({ ...p, speedKmh: p.speedKmh ?? 0 }))} />
+          <LeafletMap
+            points={points.filter(p => p != null).map(p => ({ ...p, speedKmh: p.speedKmh ?? 0 }))}
+            areas={areas}
+          />
         )}
       </View>
 

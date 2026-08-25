@@ -58,3 +58,28 @@ export type ReverseGeoResult = {
   countryCode: string;
   displayName: string;
 };
+
+/** One work area the driver has been allocated. Geometry is the simplified outline. */
+export type MyArea = {
+  id: string;
+  areaCode: string;
+  name: string;
+  parentName: string | null;
+  priority: number;
+  targetMeters: number;
+  targetLinks: number;
+  bbox?: [number, number, number, number] | null;
+  outline: { type: 'Polygon' | 'MultiPolygon'; coordinates: number[][][] | number[][][][] } | null;
+  assignedAt: string | null;
+};
+
+/**
+ * The areas this driver is meant to cover, as allocated in the admin portal.
+ *
+ * Called sparingly (screen focus / pull-to-refresh), never polled: an allocation changes when a
+ * manager changes it, which is a few times a week at most, and this fleet has just come off a
+ * 25 GB month. `updatedAt` lets the caller skip re-rendering when nothing moved.
+ */
+export function apiMyAreas(token: string): Promise<{ areas: MyArea[]; updatedAt: string | null }> {
+  return request('/api/tracking/my-areas', {}, token);
+}

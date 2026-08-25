@@ -96,7 +96,8 @@ export default function Home() {
     (async () => {
       if (!VehicleTracker.isSupported) {
         setUiState('idle');
-        setPermMsg('Background tracking runs on Android only.');
+        // Distinguishes "wrong platform" from "right platform, module missing from this build".
+        setPermMsg(VehicleTracker.unavailableReason ?? 'Background tracking is unavailable.');
         return;
       }
       const perm = await ensurePermissions();

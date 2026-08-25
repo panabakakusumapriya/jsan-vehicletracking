@@ -39,6 +39,10 @@ export const api = {
     request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
   patch: <T>(path: string, body: unknown) =>
     request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
+  // PUT rather than PATCH where the body REPLACES a collection rather than amending a resource —
+  // e.g. "these are the drivers on this area now", which has to be able to express "nobody".
+  put: <T>(path: string, body: unknown) =>
+    request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
   del: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 };
 
@@ -96,3 +100,55 @@ export const viewerTimeZone = (): string => {
     return 'UTC';
   }
 };
+
+/**
+ * PUT a file to the API as a RAW request body, reporting upload progress.
+ *
+ * Not multipart, and not `fetch`. The customer's road-network archive is ~80 MB and the boundary
+ * another few, so two things matter: the server must be able to stream it to disk instead of
+ * buffering a multipart body in the heap (see network.controller.js#uploadLayer), and the operator
+ * must be able to see it moving. `fetch` still has no upload-progress event, so this is XHR.
+ */
+export function uploadRaw<T>(
+  path: string,
+  file: File,
+  onProgress?: (percent: number, loaded: number, total: number) => void
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}${path}`);
+
+    const token = tokenStore.get();
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.setRequestHeader('Content-Type', 'application/zip');
+    // The filename travels in a header because the body is the file itself, with nothing
+    // left to carry it.
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name).replace(/%20/g, ' '));
+
+    xhr.upload.onprogress = (e) => {
+      if (!onProgress || !e.lengthComputable) return;
+      onProgress(Math.round((e.loaded / e.total) * 100), e.loaded, e.total);
+    };
+
+    xhr.onload = () => {
+      let data: unknown = {};
+      try {
+        data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+      } catch {
+        /* non-JSON error page — fall through to the status-code message */
+      }
+      if (xhr.status === 401) {
+        tokenStore.clear();
+        window.location.href = '/login';
+        reject(new Error('Not authenticated'));
+        return;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
+      else reject(new Error((data as { error?: string })?.error || `Upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error('Upload failed — network error'));
+    xhr.onabort = () => reject(new Error('Upload cancelled'));
+
+    xhr.send(file);
+  });
+}
