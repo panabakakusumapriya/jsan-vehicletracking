@@ -9,6 +9,7 @@ const WorkArea = require('../models/WorkArea');
 const RoadLink = require('../models/RoadLink');
 
 const { extract } = require('../utils/unzip');
+const fileStore = require('../utils/fileStore');
 const shapefile = require('../utils/shapefile');
 const {
   lineLength,
@@ -159,16 +160,33 @@ function polygonToGeoJson(parts) {
  */
 async function extractLayer(job, kind, { reuse = false } = {}) {
   const file = job.files?.[kind];
-  if (!file?.path) throw new Error(`No ${kind} file uploaded`);
-  if (!fs.existsSync(file.path)) {
-    throw new Error(`The uploaded ${kind} archive is no longer on disk — re-upload it`);
+  if (!file?.name) throw new Error(`No ${kind} file uploaded`);
+
+  const zipPath = file.path || path.join(IMPORT_DIR, `${job._id}-${kind}.zip`);
+
+  /**
+   * Re-materialise the archive if the cached copy has gone.
+   *
+   * It very often has: this runs on a container whose filesystem does not survive a redeploy, and
+   * the upload may even have been handled by a different replica. Previously this threw
+   * "no longer on disk — re-upload it", which asked the operator to re-send 80 MB to fix a problem
+   * that was ours, not theirs. The durable copy is in GridFS; fetch it and carry on.
+   */
+  if (!fs.existsSync(zipPath)) {
+    if (!file.fileId) {
+      throw new Error(
+        `The uploaded ${kind} archive is no longer available — it predates durable storage, so please re-upload it`
+      );
+    }
+    ensureDir(IMPORT_DIR);
+    await fileStore.downloadTo(file.fileId, zipPath);
   }
 
   const target = path.join(jobDir(job._id), kind);
   const already = reuse && fs.existsSync(target) && shapefile.findShapefiles(target).length > 0;
   if (!already) {
     fs.rmSync(target, { recursive: true, force: true });
-    await extract(file.path, target);
+    await extract(zipPath, target);
   }
 
   const bundles = shapefile.findShapefiles(target);

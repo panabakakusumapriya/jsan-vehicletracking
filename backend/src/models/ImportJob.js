@@ -41,7 +41,11 @@ const importJobSchema = new mongoose.Schema(
       boundary: {
         name: { type: String, default: null },
         bytes: { type: Number, default: 0 },
+        // On-disk CACHE path only. Railway's filesystem is ephemeral, so this may vanish at any
+        // moment; `fileId` below is the copy that actually survives. See utils/fileStore.js.
         path: { type: String, default: null },
+        // GridFS id — the durable original.
+        fileId: { type: mongoose.Schema.Types.ObjectId, default: null },
         sha256: { type: String, default: null },
         uploadedAt: { type: Date, default: null },
       },
@@ -49,6 +53,7 @@ const importJobSchema = new mongoose.Schema(
         name: { type: String, default: null },
         bytes: { type: Number, default: 0 },
         path: { type: String, default: null },
+        fileId: { type: mongoose.Schema.Types.ObjectId, default: null },
         sha256: { type: String, default: null },
         uploadedAt: { type: Date, default: null },
       },

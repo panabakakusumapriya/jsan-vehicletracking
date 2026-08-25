@@ -14,6 +14,7 @@ const User = require('../models/User');
 const networkImport = require('../services/networkImport');
 const shapefile = require('../utils/shapefile');
 const { simplifyGeometry, bboxUnion } = require('../utils/geo');
+const fileStore = require('../utils/fileStore');
 
 /**
  * The customer's target network: uploading a delivery, approving it, and reading coverage against
@@ -120,26 +121,54 @@ async function uploadLayer(req, res) {
     return res.status(413).json({ error: `Archive is larger than ${MAX_UPLOAD_BYTES / 1e6} MB` });
   }
 
-  networkImport.ensureDir(networkImport.IMPORT_DIR);
-  const dest = path.join(networkImport.IMPORT_DIR, `${job._id}-${layer}.zip`);
+  const name = String(req.headers['x-file-name'] || req.query.name || `${layer}.zip`);
 
+  /**
+   * Straight into GridFS, not onto local disk.
+   *
+   * The container's filesystem does not survive a redeploy or a restart, and a second replica does
+   * not see the first one's /tmp. Writing only to disk meant an upload could complete and then be
+   * gone before the import runner reached it — after the operator had already spent minutes
+   * pushing the file up. The database copy is the one that lasts.
+   */
+  let stored;
   try {
-    await pipeline(req, fs.createWriteStream(dest));
+    stored = await fileStore.putStream(req, {
+      filename: name,
+      metadata: { jobId: String(job._id), layer, projectId: String(job.projectId) },
+    });
   } catch (err) {
-    fs.rmSync(dest, { force: true });
     return res.status(400).json({ error: `Upload failed: ${err.message}` });
   }
 
-  const bytes = fs.statSync(dest).size;
-  if (!bytes) {
-    fs.rmSync(dest, { force: true });
+  if (!stored.bytes) {
+    await fileStore.remove(stored.id);
     return res.status(400).json({ error: 'Uploaded archive was empty' });
   }
 
-  const name = String(req.headers['x-file-name'] || req.query.name || `${layer}.zip`);
-  const sha256 = await networkImport.sha256File(dest);
+  // Seed the on-disk cache too, so the very next step does not have to stream it back down.
+  networkImport.ensureDir(networkImport.IMPORT_DIR);
+  const dest = path.join(networkImport.IMPORT_DIR, `${job._id}-${layer}.zip`);
+  try {
+    await fileStore.downloadTo(stored.id, dest);
+  } catch {
+    // Cache miss is survivable — extractLayer re-materialises from GridFS on demand.
+  }
 
-  job.files[layer] = { name, bytes, path: dest, sha256, uploadedAt: new Date() };
+  // Replacing a layer: drop the previous stored copy so re-uploads do not accumulate.
+  const previousId = job.files?.[layer]?.fileId;
+  if (previousId && String(previousId) !== String(stored.id)) {
+    await fileStore.remove(previousId);
+  }
+
+  job.files[layer] = {
+    name,
+    bytes: stored.bytes,
+    path: dest,
+    fileId: stored.id,
+    sha256: stored.sha256,
+    uploadedAt: new Date(),
+  };
   // A new file invalidates whatever the previous report said.
   job.report = null;
   job.error = null;
@@ -147,7 +176,7 @@ async function uploadLayer(req, res) {
   // The work areas alone are enough to start: they are what gets allocated to drivers. The road
   // layer is optional and only adds the coverage denominator, so waiting for it would block the
   // whole flow on a file the customer may not have sent.
-  const ready = Boolean(job.files.boundary?.path);
+  const ready = Boolean(job.files.boundary?.name);
   job.status = ready ? 'queued' : 'draft';
   if (ready) job.progress = { phase: 'queued', done: 0, total: 0 };
   await job.save();
@@ -182,7 +211,9 @@ async function validateJob(req, res) {
   const job = await ImportJob.findById(req.params.id);
   if (!job) return res.status(404).json({ error: 'Import job not found' });
   assertProjectAccess(req.user, job.projectId);
-  if (!job.files?.boundary?.path) {
+  // `path` is only a cache hint and may be null after a redeploy — presence is defined by the
+  // durable copy, not by whether this container happens to still have it on disk.
+  if (!job.files?.boundary?.name) {
     return res.status(400).json({ error: 'Upload the work-area archive first' });
   }
   if (['parsing', 'committing'].includes(job.status)) {
@@ -226,9 +257,12 @@ async function deleteJob(req, res) {
     return res.status(409).json({ error: 'Cannot delete a job while it is running' });
   }
 
+  // Explicit user-initiated delete — the only place stored originals are removed. The artifact
+  // sweep never touches them.
   for (const layer of ['boundary', 'network']) {
     const p = job.files?.[layer]?.path;
     if (p) fs.rmSync(p, { force: true });
+    await fileStore.remove(job.files?.[layer]?.fileId);
   }
   fs.rmSync(networkImport.jobDir(job._id), { recursive: true, force: true });
   await job.deleteOne();

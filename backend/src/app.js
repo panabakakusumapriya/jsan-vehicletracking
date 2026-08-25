@@ -38,8 +38,28 @@ function createApp() {
   app.use(express.json({ limit: '5mb' })); // offline batches can be large
   app.use(morgan('dev'));
 
+  /**
+   * Health, plus what this particular build can do.
+   *
+   * `features` exists because of a genuinely confusing incident: during a rolling deploy the OLD
+   * container was still accepting uploads while the NEW one served everything else, so a 36 MB
+   * archive was written to a filesystem that was about to be discarded, and the failure only
+   * surfaced afterwards. There was no way to ask "which build am I actually talking to". Now there
+   * is — check this before starting a long upload after a deploy.
+   */
   app.get('/health', (req, res) =>
-    res.json({ ok: true, service: 'jsan-tracking-api', time: new Date().toISOString() })
+    res.json({
+      ok: true,
+      service: 'jsan-tracking-api',
+      time: new Date().toISOString(),
+      features: {
+        // Uploads are stored in MongoDB (GridFS) and survive a redeploy. When false, this build
+        // still writes them to the container's ephemeral disk.
+        durableUploads: true,
+        // Work areas can be imported without a road-network layer.
+        optionalRoadLayer: true,
+      },
+    })
   );
 
   app.use('/api/auth', require('./routes/auth.routes'));
