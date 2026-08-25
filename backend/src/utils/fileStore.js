@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const { PassThrough, pipeline } = require('stream');
 const { promisify } = require('util');
 const mongoose = require('mongoose');
@@ -62,8 +63,15 @@ async function putStream(source, { filename, metadata = {} } = {}) {
   return { id: upload.id, filename, bytes, sha256: hash.digest('hex') };
 }
 
-/** Write a stored file back out to `destPath`. Used to repopulate the on-disk cache. */
+/**
+ * Write a stored file back out to `destPath`. Used to repopulate the on-disk cache.
+ *
+ * Creates the parent directory first. The caller cannot be relied on to have done it: the whole
+ * reason this function is being called is that the local filesystem is not in the state anyone
+ * expected — a fresh container, a different machine, a wiped /tmp.
+ */
 async function downloadTo(id, destPath) {
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
   await pipe(bucket().openDownloadStream(toObjectId(id)), fs.createWriteStream(destPath));
   return fs.statSync(destPath).size;
 }

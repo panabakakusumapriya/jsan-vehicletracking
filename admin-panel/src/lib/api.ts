@@ -3,8 +3,23 @@
 //  - prod (Vercel etc.): no proxy exists, so call the deployed backend directly.
 //    Override with VITE_API_URL at build time if the backend URL changes.
 const DEFAULT_PROD_API = 'https://backend-jsan-vehicletracking-production.up.railway.app';
-export const API_URL =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? DEFAULT_PROD_API : '');
+
+/**
+ * In DEV this is always '' — same-origin, so /api goes through the Vite proxy to whatever backend
+ * vite.config.ts chose (localhost:4000 by default, overridable with BACKEND_URL).
+ *
+ * VITE_API_URL is deliberately ignored in dev, despite being read here before. `.env.local` is
+ * written by the Vercel CLI and pins VITE_API_URL to the production Railway URL — so `npm run dev`
+ * silently sent every local request to PRODUCTION. Local backend changes appeared to do nothing,
+ * and local testing was mutating live data. `.env.example` already documented this variable as
+ * "production build only"; the code just did not honour it.
+ *
+ * To point dev at a different backend, set BACKEND_URL for the Vite proxy — the target is printed
+ * at startup, so which backend you are on is never a guess.
+ */
+export const API_URL = import.meta.env.PROD
+  ? (import.meta.env.VITE_API_URL ?? DEFAULT_PROD_API)
+  : '';
 
 const TOKEN_KEY = 'jsan_admin_token';
 

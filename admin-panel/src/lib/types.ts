@@ -403,7 +403,9 @@ export interface ImportReport {
     byFuncClass: { funcClass: number | null; links: number; meters: number }[];
     byDirTravel: { dir: string; links: number; meters: number }[];
     lengthBuckets: { bucket: string; links: number }[];
-  };
+    // Null when no road-network archive was supplied — work areas alone are a valid import, and
+    // "no layer given" is a different fact from "a layer with zero roads".
+  } | null;
   join: {
     orphanLinks: number;
     orphanMeters: number;

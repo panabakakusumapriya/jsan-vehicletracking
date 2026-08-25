@@ -12,6 +12,7 @@ const AreaAssignment = require('../models/AreaAssignment');
 const User = require('../models/User');
 
 const networkImport = require('../services/networkImport');
+const { kickImportRunner } = require('../services/importRunner');
 const shapefile = require('../utils/shapefile');
 const { simplifyGeometry, bboxUnion } = require('../utils/geo');
 const fileStore = require('../utils/fileStore');
@@ -164,7 +165,11 @@ async function uploadLayer(req, res) {
   job.files[layer] = {
     name,
     bytes: stored.bytes,
-    path: dest,
+    // `path` is deliberately NOT persisted. It is only ever valid on the machine that wrote it,
+    // and storing it caused a Linux container's `/tmp/...` to be reopened on Windows as
+    // `C:	mp\...`. The cache location is recomputed locally wherever the import actually runs —
+    // see networkImport.extractLayer.
+    path: null,
     fileId: stored.id,
     sha256: stored.sha256,
     uploadedAt: new Date(),
@@ -173,13 +178,26 @@ async function uploadLayer(req, res) {
   job.report = null;
   job.error = null;
 
-  // The work areas alone are enough to start: they are what gets allocated to drivers. The road
-  // layer is optional and only adds the coverage denominator, so waiting for it would block the
-  // whole flow on a file the customer may not have sent.
-  const ready = Boolean(job.files.boundary?.name);
+  /**
+   * EITHER archive is enough to start.
+   *
+   *  - work areas only  -> a new version with the polygons; roads can follow later
+   *  - roads only       -> added in place to the project's ACTIVE version, whose areas already
+   *                        exist (see resolveRoadsOnlyTarget). This is the normal second step:
+   *                        the customer sends boundaries first and the network afterwards.
+   *  - both             -> a complete new version
+   *
+   * Requiring the boundary unconditionally meant a roads-only upload sat in `draft` forever telling
+   * the operator to re-upload polygons that were already in the database.
+   */
+  const ready = Boolean(job.files.boundary?.name || job.files.network?.name);
   job.status = ready ? 'queued' : 'draft';
   if (ready) job.progress = { phase: 'queued', done: 0, total: 0 };
   await job.save();
+
+  // Start immediately rather than waiting out a poll interval. The operator has just watched a
+  // 33 MB upload finish; a job that then sits visibly idle reads as broken.
+  if (ready) kickImportRunner();
 
   return res.json({ job });
 }
@@ -213,8 +231,8 @@ async function validateJob(req, res) {
   assertProjectAccess(req.user, job.projectId);
   // `path` is only a cache hint and may be null after a redeploy — presence is defined by the
   // durable copy, not by whether this container happens to still have it on disk.
-  if (!job.files?.boundary?.name) {
-    return res.status(400).json({ error: 'Upload the work-area archive first' });
+  if (!job.files?.boundary?.name && !job.files?.network?.name) {
+    return res.status(400).json({ error: 'Upload at least one archive first' });
   }
   if (['parsing', 'committing'].includes(job.status)) {
     return res.status(409).json({ error: 'That job is already running' });
@@ -260,8 +278,9 @@ async function deleteJob(req, res) {
   // Explicit user-initiated delete — the only place stored originals are removed. The artifact
   // sweep never touches them.
   for (const layer of ['boundary', 'network']) {
-    const p = job.files?.[layer]?.path;
-    if (p) fs.rmSync(p, { force: true });
+    // Derived locally for the same reason extractLayer derives it — a stored path may belong to
+    // another machine entirely.
+    fs.rmSync(path.join(networkImport.IMPORT_DIR, `${job._id}-${layer}.zip`), { force: true });
     await fileStore.remove(job.files?.[layer]?.fileId);
   }
   fs.rmSync(networkImport.jobDir(job._id), { recursive: true, force: true });
@@ -662,7 +681,8 @@ async function importPreviewGeoJson(req, res) {
   const job = await ImportJob.findById(req.params.id);
   if (!job) return res.status(404).json({ error: 'Import job not found' });
   assertProjectAccess(req.user, job.projectId);
-  if (!job.files?.boundary?.path) {
+  // `name`, not `path`: path is the ephemeral local cache and is never persisted.
+  if (!job.files?.boundary?.name) {
     return res.status(400).json({ error: 'Upload the work-area archive first' });
   }
 

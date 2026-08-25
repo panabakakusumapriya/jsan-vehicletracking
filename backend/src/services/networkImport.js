@@ -162,7 +162,17 @@ async function extractLayer(job, kind, { reuse = false } = {}) {
   const file = job.files?.[kind];
   if (!file?.name) throw new Error(`No ${kind} file uploaded`);
 
-  const zipPath = file.path || path.join(IMPORT_DIR, `${job._id}-${kind}.zip`);
+  /**
+   * Derived locally, ALWAYS — never read back from the job document.
+   *
+   * `files.<kind>.path` records where the container that handled the upload happened to put it.
+   * That is machine-specific and actively harmful anywhere else: an upload handled on Railway
+   * stores a Linux path like `/tmp/jsan-imports/<id>-boundary.zip`, and reading that on Windows
+   * resolves to `C:	mp\jsan-imports\...` — a directory that has never existed. The job is
+   * portable across containers and machines precisely because GridFS holds the bytes; the local
+   * path must be recomputed to match wherever the code is actually running.
+   */
+  const zipPath = path.join(IMPORT_DIR, `${job._id}-${kind}.zip`);
 
   /**
    * Re-materialise the archive if the cached copy has gone.
@@ -214,9 +224,92 @@ async function extractLayer(job, kind, { reuse = false } = {}) {
  */
 async function extractJob(job) {
   ensureDir(jobDir(job._id));
-  const layers = { boundary: await extractLayer(job, 'boundary'), network: null };
-  if (job.files?.network?.path) layers.network = await extractLayer(job, 'network');
+
+  /**
+   * Presence is `name`, NOT `path`.
+   *
+   * `path` is the on-disk cache location and is deliberately never persisted any more — an
+   * uploading container's local path is meaningless on the machine that later runs the import.
+   * This function still tested it, so `job.files.network.path` was always null and the ROAD LAYER
+   * WAS SILENTLY SKIPPED: imports where both archives were uploaded committed 402 areas and zero
+   * links, reported success, and gave no indication that 654,447 roads had been dropped.
+   *
+   * Both layers are optional individually — boundary-only creates a new version, roads-only adds
+   * to the active one — but at least one has to be there.
+   */
+  const layers = { boundary: null, network: null };
+  if (job.files?.boundary?.name) layers.boundary = await extractLayer(job, 'boundary');
+  if (job.files?.network?.name) layers.network = await extractLayer(job, 'network');
+
+  if (!layers.boundary && !layers.network) {
+    throw new Error('No archive uploaded — add the work-area or road-network .zip');
+  }
   return layers;
+}
+
+/**
+ * Where a roads-only import should land.
+ *
+ * Uploading just the road layer is a real and reasonable thing to do: the work areas are already
+ * loaded, and the customer has now sent the network that goes inside them. Before this, that upload
+ * sat in `draft` forever saying "add the work-area archive", which meant re-uploading polygons that
+ * were already in the database purely to satisfy the importer — and, because every import minted a
+ * NEW version, silently orphaning every existing area assignment in the process.
+ *
+ * So a roads-only import is an IN-PLACE addition to the project's active version rather than a new
+ * one. The areas keep their _ids, so assignments survive.
+ *
+ * Refuses when the target already has roads: replacing a live network is a destructive operation
+ * wearing an upload's clothing, and this application is live.
+ */
+async function resolveRoadsOnlyTarget(job) {
+  const version = await NetworkVersion.findOne({
+    projectId: job.projectId,
+    status: 'active',
+  }).lean();
+
+  if (!version) {
+    throw new Error(
+      'No active network for this project. Upload the work-area archive too, so the roads have areas to belong to.'
+    );
+  }
+  const areaCount = await WorkArea.countDocuments({ networkVersionId: version._id });
+  if (!areaCount) {
+    throw new Error('The active network has no work areas, so road links would have nothing to attach to.');
+  }
+  const linkCount = await RoadLink.countDocuments({ networkVersionId: version._id });
+  if (linkCount > 0) {
+    throw new Error(
+      `The active network already has ${linkCount.toLocaleString()} road links. Upload both archives to create a new version instead of replacing them.`
+    );
+  }
+  return version;
+}
+
+/**
+ * The existing work areas of a version, shaped exactly like the ones `buildReport` parses out of a
+ * boundary shapefile, so the spatial join and the rollups downstream cannot tell the difference.
+ */
+async function areasFromVersion(versionId) {
+  const docs = await WorkArea.find({ networkVersionId: versionId })
+    .select('areaCode name parentName priority areaSqm geometry bbox props')
+    .lean();
+
+  return docs.map((d) => ({
+    existingId: d._id,
+    code: d.areaCode,
+    name: d.name,
+    parentName: d.parentName,
+    priority: d.priority,
+    areaSqm: d.areaSqm,
+    geometry: d.geometry,
+    bbox: d.bbox && d.bbox.length === 4 ? d.bbox : bboxOf(
+      d.geometry.type === 'Polygon' ? d.geometry.coordinates[0] : d.geometry.coordinates[0][0]
+    ),
+    props: d.props || {},
+    targetMeters: 0,
+    targetLinks: 0,
+  }));
 }
 
 /* ------------------------------------------------------------------ preflight */
@@ -248,21 +341,24 @@ async function buildReport(job, layers, onProgress = () => {}) {
   const errors = [];
   const warnings = [];
 
-  /* ---- boundary ---- */
-  const boundaryInfo = shapefile.inspect(layers.boundary.chosen);
+  /* ---- boundary: either a fresh shapefile, or the areas already in the active version ---- */
+  const roadsOnly = !layers.boundary;
+  const target = roadsOnly ? await resolveRoadsOnlyTarget(job) : null;
+
+  const boundaryInfo = roadsOnly ? null : shapefile.inspect(layers.boundary.chosen);
   const mapping = {
-    ...sniffBoundaryMapping(boundaryInfo.fields),
+    ...(boundaryInfo ? sniffBoundaryMapping(boundaryInfo.fields) : {}),
     ...(layers.network ? sniffNetworkMapping(shapefile.inspect(layers.network.chosen).fields) : {}),
     ...Object.fromEntries(Object.entries(job.mapping || {}).filter(([, v]) => v)),
   };
 
-  if (boundaryInfo.shapeType !== 5 && boundaryInfo.shapeType !== 15 && boundaryInfo.shapeType !== 25) {
+  if (boundaryInfo && ![5, 15, 25].includes(boundaryInfo.shapeType)) {
     errors.push({
       code: 'BOUNDARY_NOT_POLYGON',
       message: `Boundary layer is ${boundaryInfo.shapeTypeName}; work areas must be polygons.`,
     });
   }
-  if (!mapping.areaCode) {
+  if (boundaryInfo && !mapping.areaCode) {
     errors.push({ code: 'NO_AREA_CODE', message: 'No area code column identified — choose one below.' });
   }
 
@@ -272,7 +368,10 @@ async function buildReport(job, layers, onProgress = () => {}) {
   const duplicateCodes = [];
   let emptyAreaGeometry = 0;
 
-  shapefile.forEachFeature(
+  // Reusing the active version's areas: pull them from the database instead of parsing.
+  if (roadsOnly) areas.push(...(await areasFromVersion(target._id)));
+
+  if (!roadsOnly) shapefile.forEachFeature(
     layers.boundary.chosen,
     (attrs, parts) => {
       const geometry = polygonToGeoJson(parts);
@@ -459,13 +558,15 @@ async function buildReport(job, layers, onProgress = () => {}) {
   }
 
   /* ---- datum ---- */
-  const boundaryCrs = { ...boundaryInfo.prj, ...shapefile.datumOffsetNote(boundaryInfo.prj.datum) };
+  const boundaryCrs = boundaryInfo
+    ? { ...boundaryInfo.prj, ...shapefile.datumOffsetNote(boundaryInfo.prj.datum) }
+    : null;
   const networkCrs = networkInfo
     ? { ...networkInfo.prj, ...shapefile.datumOffsetNote(networkInfo.prj.datum) }
     : null;
-  const crsPairs = networkCrs
-    ? [['boundary', boundaryCrs], ['network', networkCrs]]
-    : [['boundary', boundaryCrs]];
+  const crsPairs = [];
+  if (boundaryCrs) crsPairs.push(['boundary', boundaryCrs]);
+  if (networkCrs) crsPairs.push(['network', networkCrs]);
   for (const [kind, crs] of crsPairs) {
     if (crs.projected) {
       errors.push({
@@ -478,20 +579,23 @@ async function buildReport(job, layers, onProgress = () => {}) {
       warnings.push({ code: 'DATUM_NOTE', message: `${kind}: ${crs.note}` });
     }
   }
-  if (networkCrs && boundaryCrs.datum && networkCrs.datum && boundaryCrs.datum !== networkCrs.datum) {
+  if (boundaryCrs && networkCrs && boundaryCrs.datum && networkCrs.datum && boundaryCrs.datum !== networkCrs.datum) {
     warnings.push({
       code: 'DATUM_MISMATCH',
       message: `The two layers use different datums (${boundaryCrs.datum} vs ${networkCrs.datum}). Both are WGS84-compatible so coordinates are used as-is, but the mismatch is recorded on the version.`,
     });
   }
 
-  const byPriority = [...priorityTally.entries()]
-    .map(([priority, row]) => {
+  // Derived from `areas` rather than the parse-time tally, because a roads-only import never runs
+  // the parse loop — its areas come from the database.
+  const byPriority = [...new Set(areas.map((a) => a.priority))]
+    .sort((a, b) => a - b)
+    .map((priority) => {
       const inBand = areas.filter((a) => a.priority === priority);
       return {
         priority,
-        areas: row.areas,
-        areaSqKm: row.areaSqm / 1e6,
+        areas: inBand.length,
+        areaSqKm: inBand.reduce((sum, a) => sum + (a.areaSqm || 0), 0) / 1e6,
         links: inBand.reduce((s, a) => s + a.targetLinks, 0),
         meters: inBand.reduce((s, a) => s + a.targetMeters, 0),
       };
@@ -502,14 +606,26 @@ async function buildReport(job, layers, onProgress = () => {}) {
     generatedAt: new Date(),
     mapping,
     boundary: {
-      file: layers.boundary.chosen.name,
-      otherLayersInZip: layers.boundary.all.filter((n) => n !== layers.boundary.chosen.name),
-      shapeTypeName: boundaryInfo.shapeTypeName,
+      // Reused from the active version rather than uploaded, for a roads-only import.
+      file: roadsOnly ? '(existing work areas)' : layers.boundary.chosen.name,
+      otherLayersInZip: roadsOnly
+        ? []
+        : layers.boundary.all.filter((n) => n !== layers.boundary.chosen.name),
+      shapeTypeName: boundaryInfo ? boundaryInfo.shapeTypeName : 'Polygon',
       recordCount: areas.length,
-      bbox: boundaryInfo.bbox,
-      crs: boundaryCrs,
-      fields: boundaryInfo.fields,
-      sample: boundaryInfo.sample,
+      bbox: boundaryInfo ? boundaryInfo.bbox : null,
+      // Never null: the client's ImportReport type declares this non-nullable, and a null here is
+      // exactly the shape that crashed ReportView when `network` became nullable.
+      crs: boundaryCrs || {
+        wkt: null,
+        name: 'Reused from the active network',
+        datum: null,
+        projected: false,
+        compatible: true,
+        note: 'Work areas were reused from the active network version; no boundary file was uploaded.',
+      },
+      fields: boundaryInfo ? boundaryInfo.fields : [],
+      sample: boundaryInfo ? boundaryInfo.sample : [],
       byPriority,
     },
     // Null rather than a shape full of zeroes: "no road layer was supplied" and "a road layer
@@ -568,25 +684,56 @@ async function buildReport(job, layers, onProgress = () => {}) {
  * and insert — no aggregation afterwards, and no dashboard query ever runs the spatial join.
  */
 async function commit(job, layers, areas, mapping, onProgress = () => {}) {
-  const boundaryInfo = shapefile.inspect(layers.boundary.chosen);
+  const roadsOnly = !layers.boundary;
+  const boundaryInfo = roadsOnly ? null : shapefile.inspect(layers.boundary.chosen);
   const networkInfo = layers.network ? shapefile.inspect(layers.network.chosen) : null;
 
-  const version = await NetworkVersion.create({
-    projectId: job.projectId,
-    label: job.label,
-    status: 'building',
-    sourceCRS: { boundary: boundaryInfo.prj.wkt, network: networkInfo ? networkInfo.prj.wkt : null },
-    sourceHash: {
-      boundary: job.files?.boundary?.sha256 || null,
+  /**
+   * A roads-only import ADDS to the active version rather than minting a new one.
+   *
+   * That is the whole point: the work areas already exist and already have assignments pointing at
+   * them. Creating a new version would duplicate all 402 areas under new _ids and silently orphan
+   * every AreaAssignment — which is exactly how a real assignment got stranded on a superseded
+   * version earlier.
+   */
+  const existing = roadsOnly ? await resolveRoadsOnlyTarget(job) : null;
+
+  const version = existing
+    ? await NetworkVersion.findById(existing._id)
+    : await NetworkVersion.create({
+        projectId: job.projectId,
+        label: job.label,
+        status: 'building',
+        sourceCRS: {
+          boundary: boundaryInfo ? boundaryInfo.prj.wkt : null,
+          network: networkInfo ? networkInfo.prj.wkt : null,
+        },
+        sourceHash: {
+          boundary: job.files?.boundary?.sha256 || null,
+          network: job.files?.network?.sha256 || null,
+        },
+        importJobId: job._id,
+        createdBy: job.requestedBy,
+      });
+
+  if (existing) {
+    // Record where the roads came from without disturbing the boundary provenance.
+    version.sourceCRS = {
+      ...(version.sourceCRS || {}),
+      network: networkInfo ? networkInfo.prj.wkt : null,
+    };
+    version.sourceHash = {
+      ...(version.sourceHash || {}),
       network: job.files?.network?.sha256 || null,
-    },
-    importJobId: job._id,
-    createdBy: job.requestedBy,
-  });
+    };
+  }
 
   try {
     /* ---- areas ---- */
-    const areaDocs = await WorkArea.insertMany(
+    // Reused in place when roads-only: the documents already exist and must keep their _ids.
+    const areaDocs = existing
+      ? areas.map((a) => ({ _id: a.existingId, areaCode: a.code, priority: a.priority }))
+      : await WorkArea.insertMany(
       areas.map((a) => ({
         projectId: job.projectId,
         networkVersionId: version._id,
@@ -706,7 +853,27 @@ async function commit(job, layers, areas, mapping, onProgress = () => {}) {
         };
       });
 
-    version.status = 'ready';
+    /**
+     * Roads-only: the existing WorkArea documents were written with targetMeters/targetLinks of 0,
+     * because at the time there were no roads to count. Now there are. Without this the areas table
+     * and every "% complete" would divide by zero forever.
+     */
+    if (existing) {
+      const ops = areas
+        .filter((a) => a.existingId)
+        .map((a) => ({
+          updateOne: {
+            filter: { _id: a.existingId },
+            update: { $set: { targetMeters: a.targetMeters, targetLinks: a.targetLinks } },
+          },
+        }));
+      if (ops.length) await WorkArea.bulkWrite(ops, { ordered: false });
+      onProgress('areas', ops.length, ops.length);
+    }
+
+    // Keep whatever state the version was in: an in-place road addition must not knock an ACTIVE
+    // network back to 'ready' and leave the project with nothing active.
+    if (!existing) version.status = 'ready';
     version.counts = { areas: areaDocs.length, links: written, orphanLinks };
     version.targetMeters = job.includeOrphanLinks ? totalMeters : totalMeters - orphanMeters;
     version.orphanMeters = orphanMeters;
@@ -720,11 +887,22 @@ async function commit(job, layers, areas, mapping, onProgress = () => {}) {
   } catch (err) {
     // A half-written version is worse than none: it would show up in the picker with a plausible
     // but wrong denominator. Roll the whole thing back and let the operator retry.
-    await Promise.all([
-      RoadLink.deleteMany({ networkVersionId: version._id }),
-      WorkArea.deleteMany({ networkVersionId: version._id }),
-    ]).catch(() => {});
-    await NetworkVersion.deleteOne({ _id: version._id }).catch(() => {});
+    if (existing) {
+      /**
+       * Roads-only rollback removes ONLY the links this run wrote. The version and its work areas
+       * pre-date this import and are still referenced by live area assignments — deleting them
+       * because a road import failed would destroy data this import never owned.
+       */
+      await RoadLink.deleteMany({ networkVersionId: version._id }).catch(() => {});
+    } else {
+      // A half-written NEW version is worse than none: it would show up in the picker with a
+      // plausible but wrong denominator.
+      await Promise.all([
+        RoadLink.deleteMany({ networkVersionId: version._id }),
+        WorkArea.deleteMany({ networkVersionId: version._id }),
+      ]).catch(() => {});
+      await NetworkVersion.deleteOne({ _id: version._id }).catch(() => {});
+    }
     throw err;
   }
 }

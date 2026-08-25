@@ -13,8 +13,11 @@ const { emitLocation } = require('../realtime/io');
 const env = require('../config/env');
 const { closeDeadTrips, driversWithLiveApp } = require('../services/tripLifecycle');
 const { computeTripUkm } = require('../services/ukmCompute');
+const { getDriverRoads } = require('../services/driverRoads');
 const UkmEdge = require('../models/UkmEdge');
 const mongoose = require('mongoose');
+const zlib = require('zlib');
+const { promisify } = require('util');
 
 let _ukmBackfillDone = false;
 
@@ -835,4 +838,90 @@ exports.myAreas = asyncHandler(async (req, res) => {
       assignedAt: assignedAtByArea.get(String(a._id)) || null,
     })),
   });
+});
+
+/**
+ * Send a JSON body gzipped, when the client says it can take it.
+ *
+ * This app has NO compression middleware — nothing in app.js compresses anything, and
+ * `compression` is not even a dependency. That is survivable for the rest of the API, whose
+ * responses are kilobytes. It is not survivable for my-roads: one full area measures ~2.5 MB of
+ * JSON, and every byte of it crosses a driver's metered mobile plan. gzip takes that to ~0.5 MB.
+ * Shipping the uncompressed version would undo the whole reason the payload is positional tuples
+ * instead of GeoJSON in the first place.
+ *
+ * Done here rather than by adding middleware in app.js because this is the only route in the file
+ * that is megabytes large, and a blanket middleware would also start compressing the 10-second
+ * ingest acks, where the CPU is pure loss.
+ *
+ * zlib.gzip and not gzipSync: 2.5 MB takes ~80 ms to compress, and gzipSync spends all of it on
+ * the event loop, stalling every other request on this single-process API. The async form runs on
+ * the threadpool.
+ *
+ * Cache-Control makes the response storable-but-revalidated, which lets Express's own ETag turn
+ * the common case — driver reopens the map, coverage has not moved — into an empty 304 instead of
+ * a second half-megabyte. `private` because the body is one driver's assigned network and must
+ * never sit in a shared proxy cache.
+ */
+const gzip = promisify(zlib.gzip);
+
+async function sendCompressed(req, res, body) {
+  const json = JSON.stringify(body);
+  res.set('Cache-Control', 'private, no-cache');
+  // Without Vary, a cache that stored the gzipped body could hand it to a client that never asked
+  // for gzip and cannot decode it.
+  res.set('Vary', 'Accept-Encoding');
+  res.type('application/json');
+
+  if (!req.acceptsEncodings('gzip')) return res.send(json);
+
+  try {
+    const packed = await gzip(json, { level: zlib.constants.Z_DEFAULT_COMPRESSION });
+    res.set('Content-Encoding', 'gzip');
+    return res.send(packed);
+  } catch (err) {
+    // Compression failing is not a reason to fail the request — the driver still needs the map.
+    // Logged rather than swallowed so a systematically failing zlib is visible instead of just
+    // showing up as an unexplained bandwidth bill.
+    console.error('[my-roads] gzip failed, sending uncompressed:', err.message);
+    res.removeHeader('Content-Encoding');
+    return res.send(json);
+  }
+}
+
+/**
+ * GET /api/tracking/my-roads?areaId=…   (driver only)
+ *
+ * The individual roads inside one of the driver's areas, each flagged driven or not, so the app can
+ * paint outstanding streets red and finished ones blue instead of showing a bare polygon and
+ * leaving the driver to guess which streets inside it still need doing.
+ *
+ * The interesting decisions all live in services/driverRoads.js — why the driver's roads are
+ * derived from the polygon rather than stored per link, why the payload is positional tuples, and
+ * how `version` lets the app cache the response instead of re-pulling it.
+ *
+ * Handler stays thin on purpose: this endpoint has one non-obvious rule (entitlement) and one
+ * expensive body, and neither belongs in a file that is already 800 lines of ingest logic. The one
+ * thing it does own is getting the body onto the wire compressed — see sendCompressed.
+ */
+exports.myRoads = asyncHandler(async (req, res) => {
+  const areaId = String(req.query.areaId || '');
+  // Shape-checked before it reaches Mongo. A malformed id would otherwise throw a CastError out of
+  // the assignment query and surface as a 500 for what is really a bad request.
+  if (!/^[a-f\d]{24}$/i.test(areaId)) {
+    return res.status(400).json({ error: 'areaId query param is required' });
+  }
+
+  const roads = await getDriverRoads({
+    driverId: req.user._id,
+    // Entitlement is assignment AND current project membership; see authoriseArea.
+    projectIds: req.user.projectIds,
+    areaId,
+  });
+  // One message for every failed entitlement — not assigned, released last month, assigned on a
+  // superseded version, or moved off the project. Which one it is tells a prober something about
+  // the customer's network.
+  if (!roads) return res.status(403).json({ error: 'You are not assigned to this area' });
+
+  await sendCompressed(req, res, roads);
 });

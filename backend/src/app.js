@@ -58,6 +58,11 @@ function createApp() {
         durableUploads: true,
         // Work areas can be imported without a road-network layer.
         optionalRoadLayer: true,
+        // A roads-ONLY upload attaches to the project's active version instead of being rejected,
+        // and extractJob decides layer presence by `name` rather than the never-persisted `path`.
+        // Kept separate from optionalRoadLayer: that flag shipped earlier and cannot tell the two
+        // builds apart, which is exactly how a stale backend went unnoticed.
+        roadsOnlyImport: true,
       },
     })
   );

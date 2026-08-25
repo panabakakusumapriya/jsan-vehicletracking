@@ -172,6 +172,38 @@ async function tick() {
   return String(job._id);
 }
 
+/**
+ * Run the queue NOW rather than waiting for the next poll.
+ *
+ * Called the moment an upload completes. Without it the operator watches a job sit in 'queued' for
+ * up to a full poll interval after a 33 MB upload they just waited on — which reads as "nothing
+ * happened", and is the reason imports felt like they were stuck in draft.
+ *
+ * Safe to call at any time: `tick` claims at most one job and the `running` flag makes a
+ * concurrent kick a no-op rather than a second parallel import.
+ */
+function kickImportRunner() {
+  if (running) return;
+  running = true;
+  Promise.resolve()
+    .then(tick)
+    .then((id) => {
+      if (id) {
+        // eslint-disable-next-line no-console
+        console.log(`import-runner: finished job ${id} (kicked)`);
+        return networkImport.cleanupArtifacts();
+      }
+      return null;
+    })
+    .catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('import-runner kick failed:', err.message);
+    })
+    .finally(() => {
+      running = false;
+    });
+}
+
 function startImportRunner({ everyMs = 4000 } = {}) {
   if (timer) return null;
   networkImport.ensureDir(networkImport.IMPORT_DIR);
@@ -202,4 +234,4 @@ function stopImportRunner() {
   timer = null;
 }
 
-module.exports = { startImportRunner, stopImportRunner, tick };
+module.exports = { startImportRunner, stopImportRunner, kickImportRunner, tick };

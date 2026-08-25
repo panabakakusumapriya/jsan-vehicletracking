@@ -711,7 +711,8 @@ function ImportDetail({
   if (!job) return <div className="card">Loading…</div>;
 
   // Work areas alone are a valid import; the road layer is optional (see networkImport.js).
-  const canLoad = Boolean(job.files.boundary.name);
+  // Either archive is enough — roads alone attach to the active version's existing areas.
+  const canLoad = Boolean(job.files.boundary.name || job.files.network.name);
   const report = job.report;
 
   return (
@@ -763,7 +764,7 @@ function ImportDetail({
               <div className="cov-file-label">
                 {layer === 'boundary'
                   ? 'Work areas (polygons)'
-                  : 'Road network (lines) — optional'}
+                  : 'Road network (lines)'}
               </div>
               {info.name ? (
                 <div className="cov-file-have">
@@ -808,9 +809,9 @@ function ImportDetail({
           cases where it could NOT just proceed: something blocked it, or it failed. */}
       {canEdit && !live && (
         <div className="cov-actions">
-          {job.status === 'draft' && !job.files.boundary.name && (
+          {job.status === 'draft' && !job.files.boundary.name && !job.files.network.name && (
             <span className="cov-sub" style={{ margin: 0, alignSelf: 'center' }}>
-              Add the work-area archive and loading starts automatically.
+              Add an archive and loading starts automatically.
             </span>
           )}
           {job.status === 'awaiting_approval' && (
@@ -878,8 +879,12 @@ function ReportView({
   const [showColumns, setShowColumns] = useState(false);
   const [showChecks, setShowChecks] = useState(false);
 
+  const hasNetwork = report.network !== null;
+
   const fieldsFor = useMemo(
-    () => ({ boundary: report.boundary.fields, network: report.network.fields }),
+    // report.network is null for an areas-only import. Reading .fields off it threw during render
+    // and took the whole page down with it.
+    () => ({ boundary: report.boundary.fields, network: report.network?.fields ?? [] }),
     [report]
   );
 
@@ -954,9 +959,10 @@ function ReportView({
         <p className="cov-sub" style={{ marginTop: 10 }}>
           Detected from the .dbf headers. Override before committing — the next delivery will not
           necessarily use the same column names.
+          {!hasNetwork && ' Road-network columns are hidden because no road archive was uploaded.'}
         </p>
         <div className="cov-mapping">
-          {MAPPING_FIELDS.map(({ key, label, layer, required }) => (
+          {MAPPING_FIELDS.filter((f) => f.layer === 'boundary' || hasNetwork).map(({ key, label, layer, required }) => (
             <label key={key} className="field">
               <span>
                 {label}

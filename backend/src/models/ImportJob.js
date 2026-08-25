@@ -41,8 +41,10 @@ const importJobSchema = new mongoose.Schema(
       boundary: {
         name: { type: String, default: null },
         bytes: { type: Number, default: 0 },
-        // On-disk CACHE path only. Railway's filesystem is ephemeral, so this may vanish at any
-        // moment; `fileId` below is the copy that actually survives. See utils/fileStore.js.
+        // DEPRECATED — always null on new uploads, and never read. It used to hold the uploading
+        // container's local path, which is meaningless on any other machine: a Railway-written
+        // `/tmp/...` reopened on Windows becomes `C:	mp\...`. Kept only so old documents still
+        // load. `fileId` below is the copy that actually survives.
         path: { type: String, default: null },
         // GridFS id — the durable original.
         fileId: { type: mongoose.Schema.Types.ObjectId, default: null },
