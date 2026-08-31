@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const Project = require('../models/Project');
 const asyncHandler = require('../utils/asyncHandler');
-const { canManageDriver } = require('../utils/scope');
+const { canManageDriver, linkedOrOnProjects } = require('../utils/scope');
 const custody = require('../services/assetCustody');
 const { releaseAllForDriver } = custody;
 
@@ -102,14 +102,18 @@ exports.list = asyncHandler(async (req, res) => {
   if (/^[a-f\d]{24}$/i.test(String(req.query.projectId || ''))) {
     filter.projectIds = req.query.projectId;
   }
-  if (req.user.role === 'manager') {
-    // Manager sees all drivers assigned to them (including those delegated to team leads)
-    filter.managerId = req.user._id;
-    if (!req.query.role) filter.role = 'user';
-  } else if (req.user.role === 'team_lead') {
-    // Team lead sees only drivers specifically assigned to them
-    filter.teamLeadId = req.user._id;
-    filter.role = 'user';
+  if (req.user.role === 'manager' || req.user.role === 'team_lead') {
+    const linkField = req.user.role === 'manager' ? 'managerId' : 'teamLeadId';
+    if ((req.query.role || 'user') === 'user') {
+      // Drivers: explicitly linked OR on any of the requester's projects — same rule as
+      // accessibleDriverFilter. Project assignment alone must be enough to see a fleet;
+      // an account created "runs project X" has no per-driver links pointing back at it.
+      filter.role = 'user';
+      filter.$or = linkedOrOnProjects(req.user, linkField).$or;
+    } else {
+      // Listing other managers/team_leads stays scoped to explicit links.
+      filter[linkField] = req.user._id;
+    }
   }
   const users = await User.find(filter)
     .sort({ createdAt: -1 })
