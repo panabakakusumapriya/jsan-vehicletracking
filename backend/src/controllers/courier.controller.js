@@ -1,7 +1,6 @@
 const asyncHandler = require('../utils/asyncHandler');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { couriersForDrivers } = require('../services/courierSearch');
-const { isConfigured, budgetStatus } = require('../services/serperCouriers');
 
 /**
  * GET /api/couriers/near-driver
@@ -9,7 +8,11 @@ const { isConfigured, budgetStatus } = require('../services/serperCouriers');
  * Courier/shipping locations (FedEx, DHL, UPS, etc.) around a driver's own last reported
  * position. With no `driverId` it picks the first driver we can place.
  *
- * Query: driverId, radiusKm (5–100).
+ * Answered from the imported CourierLocation dataset — see services/courierLocations.js. There is
+ * no external provider behind this any more, so there is no key to be missing, no quota to be
+ * spent and no upstream to be down.
+ *
+ * Query: driverId, radiusKm (1–200).
  */
 exports.nearDriver = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
@@ -23,12 +26,11 @@ exports.nearDriver = asyncHandler(async (req, res) => {
     });
     res.json(result);
   } catch (err) {
-    // A provider outage, a spent quota or a missing key are operational facts about the
-    // courier feed — none of them should read like the panel is broken.
-    res.status(err.status || 502).json({
-      error: err.message || 'Could not reach the courier-location service',
-      configured: isConfigured(),
-      budget: budgetStatus(),
+    // Only our own database can fail now, and that is a real fault rather than an operational
+    // fact about someone else's service — so it reads as a 500, not a 502 "upstream is unhappy".
+    res.status(err.status || 500).json({
+      error: err.message || 'Could not load courier locations',
+      configured: false,
     });
   }
 });
