@@ -3,21 +3,30 @@ const User = require('../models/User');
 const { recentDriverPositions } = require('../utils/driverPositions');
 const { reverseGeocodeMany } = require('./geocode');
 const { gridKey } = require('./drivingWeather');
-const { searchNearby, isConfigured, budgetStatus } = require('./serperCouriers');
+const { nearbyCouriers, datasetStatus } = require('./courierLocations');
 
 /**
  * "Where's the nearest FedEx/DHL/UPS-type drop-off to this driver?"
  *
  * Same anchor as Hotels: the driver's own last reported position, never a typed-in town.
- * Also one search per request for the same reason — Serper is metered, and its free tier is
- * a one-time allowance rather than a monthly reset, so fanning this out across a whole fleet
- * on page load would be worse here than it would be for Hotels.
  *
- * Serper's Places search has no working coordinate parameter (see serperCouriers.js), so this
- * has an extra hop Hotels doesn't need: reverse-geocode the driver's lat/lon into a place name
- * first, via the same free Nominatim lookup the Weather tab already uses.
+ * Now answered from our own CourierLocation collection (68k drop-off points across 167 countries,
+ * imported from carriers_world.geojson) rather than Serper's metered Places API. Three things
+ * that were true of the old path and are simply not true any more:
+ *
+ *   - It cost money. Serper's free tier is a ONE-TIME 2,500-query bucket, not a monthly reset, so
+ *     every search spent a slice of a permanent allowance. Hence the daily cap and the budget
+ *     readout on the page. A $geoNear costs nothing, so both are gone.
+ *   - It needed a place NAME. Serper's coordinate parameter does not work (see the header of
+ *     serperCouriers.js), so the driver's lat/lon had to be reverse-geocoded through Nominatim
+ *     first, and if that failed the manager got no results at all. The database takes coordinates
+ *     directly; the place name is now decoration and its failure costs nothing.
+ *   - It could be down. This cannot.
+ *
+ * serperCouriers.js is left in the tree, unused. It documents provider behaviour that was
+ * expensive to work out and would be needed again if the live search ever comes back as a
+ * fallback for the thin parts of the dataset — see the coverage note in the no-results branch.
  */
-const DEFAULT_QUERY = 'courier OR parcel OR shipping OR FedEx OR DHL OR UPS';
 
 const clamp = (n, lo, hi) => Math.min(Math.max(n, lo), hi);
 
@@ -49,12 +58,27 @@ async function couriersForDrivers(opts) {
   const chosen =
     (driverId && locatable.find((d) => String(d._id) === String(driverId))) || locatable[0] || null;
 
+  const dataset = await datasetStatus();
+
   const base = {
-    configured: isConfigured(),
+    // Nothing to configure any more — there is no key and no quota. Kept in the response so the
+    // page's existing "not set up" branch stays wired rather than becoming dead code that rots.
+    configured: dataset.total > 0,
+    dataset,
     drivers: roster,
     unplaced: roster.filter((d) => !d.located).map(({ _id, name, country, project }) => ({ _id, name, country, project })),
-    budget: budgetStatus(),
   };
+
+  if (!dataset.total) {
+    return {
+      ...base,
+      selected: null,
+      search: null,
+      places: [],
+      totalFound: 0,
+      message: 'No courier locations have been imported yet. Run `npm run import:couriers` to load them.',
+    };
+  }
 
   if (!chosen) {
     return {
@@ -69,63 +93,46 @@ async function couriersForDrivers(opts) {
     };
   }
 
-  const search = {
-    radiusKm: clamp(parseInt(radiusKm, 10) || env.COURIER_DEFAULT_RADIUS_KM, 5, 100),
-    query: DEFAULT_QUERY,
+  const radius = clamp(parseInt(radiusKm, 10) || env.COURIER_DEFAULT_RADIUS_KM, 1, 200);
+  const selected = {
+    _id: chosen._id, name: chosen.name, lat: chosen.lat, lon: chosen.lon,
+    lastSeenAt: chosen.lastSeenAt, country: chosen.country, project: chosen.project,
   };
 
-  // Reverse-geocode first — Serper needs a place name, not coordinates (see serperCouriers.js
-  // header). This lookup is itself cached forever by geocode.js, so repeat searches near the
-  // same spot cost nothing extra here.
-  const gKey = gridKey(chosen.lat, chosen.lon, env.COURIER_GRID_DEGREES);
-  const names = await reverseGeocodeMany([{ key: gKey, lat: chosen.lat, lon: chosen.lon }]);
-  const place = names.get(gKey);
-
-  if (!place) {
-    return {
-      ...base,
-      selected: {
-        _id: chosen._id, name: chosen.name, lat: chosen.lat, lon: chosen.lon,
-        lastSeenAt: chosen.lastSeenAt, country: chosen.country, project: chosen.project,
-      },
-      search: null,
-      places: [],
-      totalFound: 0,
-      message: 'Could not determine a place name for this location yet — try again shortly.',
-    };
-  }
-
-  // Full country name required — "Hyderabad, IN" silently mis-resolves in Serper while
-  // "Hyderabad, India" works (see serperCouriers.js header).
-  const locationName = place.countryName ? `${place.place}, ${place.countryName}` : place.place;
-
-  const result = await searchNearby({
+  const result = await nearbyCouriers({
     lat: chosen.lat,
     lon: chosen.lon,
-    locationName,
-    query: search.query,
+    radiusKm: radius,
+    limit: env.COURIER_MAX_RESULTS,
   });
 
-  let places = result.places;
-  // Same as Hotels: the provider's own notion of "near" is generous, so computed distance is
-  // what actually enforces the radius the manager asked for.
-  places = places.filter((p) => p.distanceKm == null || p.distanceKm <= search.radiusKm);
-  places.sort((a, b) => (a.distanceKm ?? 1e9) - (b.distanceKm ?? 1e9));
+  // A human label for "near where?", nothing more. It used to determine the search itself and a
+  // failure meant no results; now it is cosmetic, so it is best-effort and never fatal.
+  let locationName = null;
+  try {
+    const gKey = gridKey(chosen.lat, chosen.lon, env.COURIER_GRID_DEGREES);
+    const place = (await reverseGeocodeMany([{ key: gKey, lat: chosen.lat, lon: chosen.lon }])).get(gKey);
+    if (place) locationName = place.countryName ? `${place.place}, ${place.countryName}` : place.place;
+  } catch {
+    // Nominatim being slow or unreachable must not cost the manager their results.
+  }
 
   return {
     ...base,
-    budget: budgetStatus(),
-    selected: {
-      _id: chosen._id, name: chosen.name, lat: chosen.lat, lon: chosen.lon,
-      lastSeenAt: chosen.lastSeenAt, country: chosen.country, project: chosen.project,
-    },
-    search: { ...search, locationName },
-    places,
+    selected,
+    search: { radiusKm: radius, locationName },
+    places: result.places,
     totalFound: result.totalFound,
-    shown: places.length,
-    fromCache: result.fromCache,
-    cachedAgeSeconds: result.cachedAgeSeconds,
+    shown: result.places.length,
+    // Coverage is not uniform: 43k of the 68k points are in North America and 22k in Europe,
+    // against 114 in the whole of Africa. An empty result in a thin region means "we do not hold
+    // this area", which is a completely different thing from "there is nothing there" — and the
+    // manager has to be able to tell them apart before concluding a driver has nowhere to post.
+    message: result.places.length
+      ? null
+      : `No drop-off points within ${radius} km in our dataset. Coverage is strongest in North America and Europe; `
+        + 'a blank result elsewhere may mean the area is not covered rather than genuinely empty.',
   };
 }
 
-module.exports = { couriersForDrivers, DEFAULT_QUERY };
+module.exports = { couriersForDrivers };

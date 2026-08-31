@@ -98,7 +98,13 @@ module.exports = {
   HOTELS_ACTIVE_DAYS: parseInt(process.env.HOTELS_ACTIVE_DAYS || '7', 10),
   HOTELS_TIMEOUT_MS: parseInt(process.env.HOTELS_TIMEOUT_MS || '15000', 10),
 
-  // ---- Couriers (FedEx/DHL/UPS-type drop-off points via Serper.dev Places — METERED) ----
+  // ---- Couriers ----
+  // The courier page now answers from the imported CourierLocation collection (see
+  // services/courierLocations.js), so nothing below marked METERED is used by it any more. The
+  // settings are kept because serperCouriers.js still reads them and would need them again if the
+  // live search returns as a fallback for the regions the dataset covers thinly.
+  //
+  // ---- LEGACY: Serper.dev Places — METERED, no longer called by the courier page ----
   // Unlike RAPIDAPI_KEY above, this has NO source-committed fallback — set SERPER_API_KEY in
   // .env only. Serper's free tier is a ONE-TIME 2,500-query bucket (not a monthly reset), so
   // an accidentally-public key here would be a bigger, harder-to-notice leak than a metered
@@ -112,6 +118,9 @@ module.exports = {
   // Drivers within ~1 km share a cached search.
   COURIER_GRID_DEGREES: parseFloat(process.env.COURIER_GRID_DEGREES || '0.01'),
   COURIER_DEFAULT_RADIUS_KM: parseInt(process.env.COURIER_DEFAULT_RADIUS_KM || '15', 10),
+  // Most drop-off points returned for one search. A $geoNear is cheap, but a table of 200 rows is
+  // not a useful answer to "where can this driver post a parcel" — the nearest handful is.
+  COURIER_MAX_RESULTS: parseInt(process.env.COURIER_MAX_RESULTS || '40', 10),
   // Same freshness window the hotel/weather tabs use for "is this position still trustworthy".
   COURIER_ACTIVE_DAYS: parseInt(process.env.COURIER_ACTIVE_DAYS || '7', 10),
   COURIER_TIMEOUT_MS: parseInt(process.env.COURIER_TIMEOUT_MS || '15000', 10),

@@ -7,9 +7,13 @@ import { dt } from '../lib/format';
 
 /**
  * Courier drop-off points near a driver — modeled directly on the Hotels tab: a map first,
- * a synced list second, one driver searched at a time because the provider (Serper.dev
- * Places) is metered per call. Serper's free tier is a ONE-TIME allowance rather than a
- * monthly reset, so this is even more conservative about firing searches than Hotels is.
+ * a synced list second, one driver searched at a time.
+ *
+ * Answered from our own imported dataset (68k drop-off points, 167 countries) rather than a
+ * metered Places API — see the backend's services/courierLocations.js. Searching is now free and
+ * offline, so the page no longer has to ration it: the budget readout, the "from cache" note and
+ * the missing-API-key branch have all gone, because none of them describe anything real any more.
+ * The one-driver-at-a-time shape is kept, since a fleet-wide fan-out still says nothing useful.
  */
 
 interface CourierPlace {
@@ -19,11 +23,19 @@ interface CourierPlace {
   category: string | null;
   phone: string | null;
   website: string | null;
+  // Always null / 0 from the dataset — it carries no review data. Deliberately NOT filled from
+  // the dataset's `confidence`, which measures "are we sure this place exists", not "is it good".
   rating: number | null;
   ratingCount: number;
   lat: number | null;
   lon: number | null;
   distanceKm: number | null;
+  // --- richer than the old provider gave us ---
+  brand: string | null;
+  // The dataset's own 0..1 certainty about the record. Shown only when it is low, so a doubtful
+  // hit does not sit on screen looking exactly as solid as a certain one.
+  confidence: number | null;
+  isoCountry: string | null;
 }
 
 interface RosterDriver {
@@ -38,17 +50,16 @@ interface RosterDriver {
 }
 
 interface CourierResponse {
+  // Now means "the dataset has been imported", not "an API key is set".
   configured: boolean;
+  dataset: { total: number; source: string; metered: boolean };
   drivers: RosterDriver[];
   unplaced: { _id: string; name: string }[];
-  budget: { used: number; cap: number; remaining: number };
   selected: RosterDriver | null;
-  search: { radiusKm: number; query: string; locationName?: string } | null;
+  search: { radiusKm: number; locationName?: string | null } | null;
   places: CourierPlace[];
   totalFound: number;
   shown?: number;
-  fromCache?: boolean;
-  cachedAgeSeconds?: number;
   message?: string;
 }
 
@@ -66,8 +77,22 @@ const FilterIcon = () => (
 
 const RADII = [5, 10, 15, 25, 50, 100];
 
-/** Known carriers get a recognizable short tag; anything else falls back to its category. */
+/**
+ * Known carriers get a recognizable short tag; anything else falls back to its category.
+ *
+ * The dataset carries a real `brand` on the chains (The UPS Store, FedEx Ship Center, DHL
+ * Express...), so that is used first — it beats guessing from the name, which is how a
+ * "DHL Express Service Point" filed under a business-services category used to end up tagged
+ * with the category instead of the carrier everyone recognises.
+ */
 function shortLabel(p: CourierPlace): string {
+  if (p.brand) {
+    const b = p.brand.toLowerCase();
+    if (b.includes('fedex')) return 'FedEx';
+    if (b.includes('dhl')) return 'DHL';
+    if (b.includes('ups')) return 'UPS';
+    return p.brand;
+  }
   const t = `${p.name} ${p.category ?? ''}`.toLowerCase();
   if (t.includes('fedex')) return 'FedEx';
   if (t.includes('dhl')) return 'DHL';
@@ -215,10 +240,13 @@ export function Couriers() {
             {data.search.locationName ? ` of ${data.search.locationName}` : ''}
           </span>
         )}
-        {data?.budget && (
-          <span className="muted" style={{ marginLeft: 'auto', fontSize: 12 }}>
-            {data.budget.remaining} of {data.budget.cap} searches left today
-            {data.fromCache ? ' · from cache' : ''}
+        {data?.dataset && (
+          <span
+            className="muted"
+            style={{ marginLeft: 'auto', fontSize: 12 }}
+            title="Answered from the imported courier dataset. No external service is called, so searching is unmetered and works offline."
+          >
+            {data.dataset.total.toLocaleString()} drop-off points on file · local lookup
           </span>
         )}
       </div>
@@ -292,6 +320,16 @@ export function Couriers() {
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
                           {p.rating != null && <span className={`badge ${scoreTone(p.rating)}`}>★ {p.rating.toFixed(1)} ({p.ratingCount})</span>}
                           {p.category && <span className="badge gray">{p.category}</span>}
+                          {/* Only when the dataset itself is unsure. A confidence badge on every
+                              row would be noise; on the doubtful ones it is a warning. */}
+                          {p.confidence != null && p.confidence < 0.7 && (
+                            <span
+                              className="badge amber"
+                              title={`The source dataset is only ${Math.round(p.confidence * 100)}% confident this location is what it claims to be. Worth ringing ahead.`}
+                            >
+                              unverified
+                            </span>
+                          )}
                         </div>
                         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
                           {p.phone && <span style={{ fontSize: 12 }}>📞 {p.phone}</span>}
