@@ -1,6 +1,7 @@
 const Project = require('../models/Project');
 const User = require('../models/User');
 const asyncHandler = require('../utils/asyncHandler');
+const { clearScopeCache } = require('../services/coverageScope');
 
 // GET /api/projects?all=true  — every authenticated role can list; dropdowns need it
 // everywhere (Managers, Drivers). ?all=true (admin's own Projects tab) also returns
@@ -13,7 +14,7 @@ exports.list = asyncHandler(async (req, res) => {
 
 // POST /api/projects  (admin only)
 exports.create = asyncHandler(async (req, res) => {
-  const { name, code, country } = req.body || {};
+  const { name, code, country, coverageScopeId, coverageCycleId } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Project name is required' });
 
   try {
@@ -21,6 +22,12 @@ exports.create = asyncHandler(async (req, res) => {
       name: name.trim(),
       code: code || null,
       country: country || null,
+      // Which dedup universe this project's roads belong to. Left null on purpose when not given:
+      // null resolves to the fleet-wide default scope, so a new project deduplicates against
+      // everything else, which is the required behaviour. Setting a distinct scope is what CREATES
+      // billable duplicate coverage, so it has to be asked for. See services/coverageScope.js.
+      coverageScopeId: coverageScopeId?.trim() || null,
+      coverageCycleId: coverageCycleId?.trim() || null,
     });
     res.status(201).json({ project });
   } catch (err) {
@@ -34,11 +41,21 @@ exports.update = asyncHandler(async (req, res) => {
   const project = await Project.findById(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
-  const { name, code, country, active } = req.body || {};
+  const { name, code, country, active, coverageScopeId, coverageCycleId } = req.body || {};
   if (name !== undefined) project.name = name;
   if (code !== undefined) project.code = code || null;
   if (country !== undefined) project.country = country || null;
   if (active !== undefined) project.active = active;
+
+  // Changing the scope changes which history FUTURE trips are deduplicated against. It does not
+  // rewrite the past: every trip carries the scope it was stamped with at start, so roads already
+  // attributed keep their owner and numbers already reported stay reproducible. Moving existing
+  // trips into a new scope is a deliberate migration, run through `npm run backfill:global-ukm`.
+  const scopeChanged =
+    (coverageScopeId !== undefined && (coverageScopeId?.trim() || null) !== project.coverageScopeId) ||
+    (coverageCycleId !== undefined && (coverageCycleId?.trim() || null) !== project.coverageCycleId);
+  if (coverageScopeId !== undefined) project.coverageScopeId = coverageScopeId?.trim() || null;
+  if (coverageCycleId !== undefined) project.coverageCycleId = coverageCycleId?.trim() || null;
 
   try {
     await project.save();
@@ -46,6 +63,9 @@ exports.update = asyncHandler(async (req, res) => {
     if (err.code === 11000) return res.status(409).json({ error: 'A project with that name already exists' });
     throw err;
   }
+  // The resolver memoises project scopes for a minute; a scope edit must take effect on the very
+  // next trip, not up to a minute later.
+  if (scopeChanged) clearScopeCache();
   res.json({ project });
 });
 

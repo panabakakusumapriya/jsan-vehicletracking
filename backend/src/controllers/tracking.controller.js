@@ -12,14 +12,16 @@ const { accessibleDriverFilter } = require('../utils/scope');
 const { emitLocation } = require('../realtime/io');
 const env = require('../config/env');
 const { closeDeadTrips, driversWithLiveApp } = require('../services/tripLifecycle');
+// Legacy per-driver UKM edges. Still written on trip completion (see below) so the old figures
+// stay available for side-by-side comparison against the global engine during cutover, but
+// nothing reads them for a business number any more — see services/globalUkm.js.
 const { computeTripUkm } = require('../services/ukmCompute');
 const { getDriverRoads } = require('../services/driverRoads');
-const UkmEdge = require('../models/UkmEdge');
+const { scopeForProject } = require('../services/coverageScope');
+const { rebuildScope } = require('../services/globalUkm');
 const mongoose = require('mongoose');
 const zlib = require('zlib');
 const { promisify } = require('util');
-
-let _ukmBackfillDone = false;
 
 /**
  * POST /api/tracking/ingest   (driver only)
@@ -87,6 +89,14 @@ exports.ingest = asyncHandler(async (req, res) => {
         // unambiguous when they hold exactly one, so anything else is left null rather than
         // guessed, and surfaces as unattributed on the coverage page where a human can see it.
         projectId: driver.projectIds && driver.projectIds.length === 1 ? driver.projectIds[0] : null,
+        // Stamped here for exactly the same reason projectId above is: the coverage scope decides
+        // which history this trip's roads are deduplicated against, and moving a project into a
+        // different scope next year must not silently re-price roads already invoiced. Resolved
+        // from the project, falling back to the fleet-wide default scope — see
+        // services/coverageScope.js for why one shared default is the correct starting position.
+        ...(await scopeForProject(
+          driver.projectIds && driver.projectIds.length === 1 ? driver.projectIds[0] : null
+        )),
         status: 'active',
         startedAt: new Date(first.recordedAt),
         startLocation: { lat: first.lat, lon: first.lon },
@@ -129,8 +139,24 @@ exports.ingest = asyncHandler(async (req, res) => {
               cleanedMatchedRatio: null,
               ukmMeters: null,
               ukmWithinTripMeters: null,
+              // Same reasoning for the global figures: the trip is about to grow, so anything
+              // derived from its current geometry describes only part of the drive. Back to
+              // 'pending' — not 0, which would claim the trip covered no new road.
+              ukmStatus: 'pending',
+              distinctRoadMeters: null,
+              sameTripRepeatMeters: null,
+              historicalDuplicateMeters: null,
+              globalUniqueMeters: null,
+              unmatchedReviewMeters: null,
+              globalUkmComputedAt: null,
             },
-            $unset: { cleanedRouteShapes: 1, ukmNewShapes: 1, endLocation: 1 },
+            $unset: {
+              cleanedRouteShapes: 1,
+              ukmNewShapes: 1,
+              endLocation: 1,
+              ukmUniqueShapes: 1,
+              ukmDuplicateShapes: 1,
+            },
           }
         );
         trip.status = 'active';
@@ -440,8 +466,26 @@ async function buildUkmTripFilter(req) {
 
 /**
  * GET /api/tracking/ukm   (admin / manager)
- * Fast read: aggregates raw KM from trips + unique KM from the pre-computed UkmEdge
- * collection.  No location-point scan — UKM edges are inserted at trip completion.
+ *
+ * Per-driver and fleet UKM for a date range, read straight off the figures the global engine
+ * already persisted on each trip (services/globalUkm.js).
+ *
+ * What changed here, and why it matters more than it looks
+ * -------------------------------------------------------
+ * This endpoint used to take raw KM from the trips inside the date range and unique KM from that
+ * driver's UkmEdge rows — which are not date-filtered at all. So a report for one week showed that
+ * week's distance next to the driver's LIFETIME unique total, and the two were routinely
+ * compared, divided and shown as an "overlap %". A one-day report could show 40 km driven and
+ * 900 km unique.
+ *
+ * Now both halves come from the same trips. The date filter chooses which trips are REPORTED; the
+ * history each of those trips was judged against still stretches back to the beginning of the
+ * coverage scope, because that decision was made once, when the trip was attributed, and is not
+ * re-litigated at read time. That is the whole point of persisting it.
+ *
+ * The fleet total is now a plain sum of the per-driver figures. It can be, because the ledger
+ * already guarantees no two drivers hold the same piece of road — the old endpoint needed a
+ * separate cross-driver dedup pass precisely because its per-driver numbers double-counted.
  *
  * Query:  ?from=ISO&to=ISO  (required)   &project=…  &country=…  &driverId=…
  */
@@ -451,9 +495,11 @@ exports.ukm = asyncHandler(async (req, res) => {
 
   const tripFilter = await buildUkmTripFilter(req);
 
-  // 1) Raw KM from trips.
   const trips = await Trip.find(tripFilter)
-    .select('driverId distanceMeters')
+    .select(
+      'driverId distanceMeters cleanedDistanceMeters distinctRoadMeters sameTripRepeatMeters ' +
+        'historicalDuplicateMeters globalUniqueMeters unmatchedReviewMeters ukmStatus coverageScopeId'
+    )
     .populate('driverId', 'name country project')
     .lean();
 
@@ -467,132 +513,113 @@ exports.ukm = asyncHandler(async (req, res) => {
         name: trip.driverId?.name ?? 'Unknown',
         country: trip.driverId?.country ?? null,
         project: trip.driverId?.project ?? null,
+        coverageScopeId: trip.coverageScopeId ?? null,
         rawMeters: 0,
+        cleanedMeters: 0,
+        distinctMeters: 0,
+        repeatMeters: 0,
+        duplicateMeters: 0,
         uniqueMeters: 0,
+        unmatchedMeters: 0,
         trips: 0,
+        // Trips whose UKM has not been established. Counted rather than folded into the totals as
+        // zeros: "we drove nothing new" and "we have not worked out what we drove" are different
+        // claims, and a report that cannot tell them apart is not auditable.
+        pendingTrips: 0,
+        reviewTrips: 0,
       };
     }
-    driverMap[did].rawMeters += trip.distanceMeters || 0;
-    driverMap[did].trips += 1;
+    const d = driverMap[did];
+    d.rawMeters += trip.distanceMeters || 0;
+    d.cleanedMeters += trip.cleanedDistanceMeters || trip.distanceMeters || 0;
+    d.trips += 1;
+    if (trip.globalUniqueMeters == null) {
+      d.pendingTrips += 1;
+      continue;
+    }
+    if (trip.ukmStatus === 'review') d.reviewTrips += 1;
+    d.distinctMeters += trip.distinctRoadMeters || 0;
+    d.repeatMeters += trip.sameTripRepeatMeters || 0;
+    d.duplicateMeters += trip.historicalDuplicateMeters || 0;
+    d.uniqueMeters += trip.globalUniqueMeters || 0;
+    d.unmatchedMeters += trip.unmatchedReviewMeters || 0;
   }
 
-  // One-time per server lifetime: ensure compound index exists and backfill
-  // any trips that are missing edges.
-  if (!_ukmBackfillDone) {
-    _ukmBackfillDone = true;
-
-    // Migrate from old schema (unique on edgeKey alone) if needed.
-    let needsDrop = false;
-    try {
-      const indexes = await UkmEdge.collection.indexes();
-      const hasOldUnique = indexes.some(idx =>
-        idx.unique && idx.key && idx.key.edgeKey === 1 && !idx.key.driverId
-      );
-      if (hasOldUnique) needsDrop = true;
-    } catch (_) { /* collection doesn't exist yet — fine */ }
-
-    if (needsDrop) {
-      try { await UkmEdge.collection.drop(); } catch (_) {}
-    }
-    await UkmEdge.syncIndexes();
-
-    // Find trips that have NOT been processed yet: completed/timed_out trips
-    // whose _id does not appear in any UkmEdge.tripId.
-    const processedTripIds = await UkmEdge.distinct('tripId');
-    const processedSet = new Set(processedTripIds.map(String));
-
-    const allTrips = await Trip.find({
-      status: { $in: ['completed', 'timed_out'] },
-    }).select('_id driverId').lean();
-
-    const unprocessed = allTrips.filter(t => !processedSet.has(t._id.toString()));
-
-    // Skip trips whose location points no longer exist. computeTripUkm reads LocationPoints, so
-    // these can never yield an edge and can never leave the "unprocessed" list — meaning the loop
-    // below re-scanned all of them on the first request after EVERY restart, forever. Measured at
-    // ~71 ms each across 239 such trips: ~17 seconds added to whoever opened this page first.
-    // They are the trips whose points were bulk-deleted (everything before 2026-08-04); nothing
-    // here can recover them, so the only sane action is not to keep asking.
-    const withPoints = [];
-    for (const t of unprocessed) {
-      const probe = await LocationPoint.find({ tripId: t._id }).select('_id').limit(2).lean();
-      if (probe.length >= 2) withPoints.push(t);
-    }
-
-    for (const t of withPoints) {
-      await computeTripUkm(t._id, t.driverId);
-    }
-  }
-
-  // 2) Unique KM from pre-computed edges — aggregate per driver.
-  const driverIds = Object.keys(driverMap);
-  const driverObjectIds = driverIds.map(id => new mongoose.Types.ObjectId(id));
-  const edgeAgg = await UkmEdge.aggregate([
-    { $match: { driverId: { $in: driverObjectIds } } },
-    { $group: { _id: '$driverId', uniqueMeters: { $sum: '$distanceMeters' } } },
-  ]);
-  for (const row of edgeAgg) {
-    const did = row._id.toString();
-    if (driverMap[did]) driverMap[did].uniqueMeters = row.uniqueMeters;
-  }
-
-  // Fleet-wide UKM: deduplicate edges across drivers — group by edgeKey first to
-  // collapse the same road driven by different drivers, then sum.
-  const fleetMatch = driverObjectIds.length
-    ? { driverId: { $in: driverObjectIds } }
-    : {};
-  const fleetAgg = await UkmEdge.aggregate([
-    { $match: fleetMatch },
-    { $group: { _id: '$edgeKey', dist: { $first: '$distanceMeters' } } },
-    { $group: { _id: null, total: { $sum: '$dist' } } },
-  ]);
-  const fleetUniqueMeters = fleetAgg[0]?.total ?? 0;
-
+  const km = (m) => +(m / 1000).toFixed(2);
   const drivers = Object.values(driverMap)
-    .map(d => ({
+    .map((d) => ({
       ...d,
-      rawKm: +(d.rawMeters / 1000).toFixed(2),
-      uniqueKm: +(d.uniqueMeters / 1000).toFixed(2),
+      rawKm: km(d.rawMeters),
+      cleanedKm: km(d.cleanedMeters),
+      distinctKm: km(d.distinctMeters),
+      sameTripRepeatKm: km(d.repeatMeters),
+      historicalDuplicateKm: km(d.duplicateMeters),
+      uniqueKm: km(d.uniqueMeters),
+      unmatchedKm: km(d.unmatchedMeters),
     }))
     .sort((a, b) => b.uniqueKm - a.uniqueKm);
 
-  const totalRawKm = +drivers.reduce((s, d) => s + d.rawKm, 0).toFixed(2);
-  const uniqueKm = +(fleetUniqueMeters / 1000).toFixed(2);
-  const overlapPct = totalRawKm > 0 ? +((1 - uniqueKm / totalRawKm) * 100).toFixed(1) : 0;
+  const sum = (f) => drivers.reduce((s, d) => s + d[f], 0);
+  const totalRawKm = +sum('rawKm').toFixed(2);
+  const uniqueKm = +sum('uniqueKm').toFixed(2);
+  const distinctKm = +sum('distinctKm').toFixed(2);
+  const duplicateKm = +sum('historicalDuplicateKm').toFixed(2);
+  // Measured against DISTINCT road rather than raw distance. Raw includes GPS noise, idling and
+  // self-repeat, so dividing by it produced an "overlap" that moved when the weather did. Against
+  // distinct road the number means one thing only: of the road this driver actually covered, how
+  // much had already been covered by the programme.
+  const overlapPct = distinctKm > 0 ? +((duplicateKm / distinctKm) * 100).toFixed(1) : 0;
 
-  res.json({ totalRawKm, uniqueKm, overlapPct, drivers });
+  res.json({
+    totalRawKm,
+    uniqueKm,
+    distinctKm,
+    duplicateKm,
+    overlapPct,
+    pendingTrips: drivers.reduce((s, d) => s + d.pendingTrips, 0),
+    reviewTrips: drivers.reduce((s, d) => s + d.reviewTrips, 0),
+    drivers,
+  });
 });
 
 /**
- * POST /api/tracking/ukm-backfill   (admin only)
- * One-time backfill: compute UKM edges for all completed trips that don't have edges yet.
- * Safe to run multiple times — insertMany skips existing edges.
+ * POST /api/tracking/ukm-rebuild   (admin only)
+ *
+ * Rebuild one coverage scope's ledger and every trip figure derived from it. The explicit,
+ * logged, on-purpose version of what used to happen invisibly: the old GET /ukm carried a
+ * one-shot block that dropped an index, recreated the UkmEdge collection and backfilled the whole
+ * fleet on whichever request happened to arrive first after a restart. A dashboard read is not
+ * allowed to migrate the database, so that block is gone and this is where it lives now.
+ *
+ * Rewrites only CoverageSegment rows for the scope and the UKM fields on its trips. Raw GPS,
+ * route geometry, raw/cleaned distances and the legacy UkmEdge collection are not touched.
+ *
+ * Body/query: { scopeId?, cycleId? }  — defaults to the fleet-wide scope.
+ *
+ * For a large history prefer the CLI (`npm run backfill:global-ukm`), which streams progress
+ * instead of holding an HTTP connection open for the duration.
  */
-exports.ukmBackfill = asyncHandler(async (req, res) => {
-  const processedTripIds = await UkmEdge.distinct('tripId');
-  const processedSet = new Set(processedTripIds.map(String));
-
-  const allTrips = await Trip.find({
-    status: { $in: ['completed', 'timed_out'] },
-  }).select('_id driverId').lean();
-
-  const unprocessed = allTrips.filter(t => !processedSet.has(t._id.toString()));
-
-  let processed = 0;
-  let newEdges = 0;
-  for (const trip of unprocessed) {
-    const n = await computeTripUkm(trip._id, trip.driverId);
-    newEdges += n;
-    processed += 1;
+exports.ukmRebuild = asyncHandler(async (req, res) => {
+  if (!env.GLOBAL_UKM_ENABLED) {
+    return res.status(409).json({ error: 'GLOBAL_UKM_ENABLED is false — nothing to rebuild' });
   }
-  res.json({ total: allTrips.length, alreadyProcessed: allTrips.length - unprocessed.length, processed, newEdges });
+  const scopeId = req.body?.scopeId || req.query?.scopeId || env.UKM_DEFAULT_COVERAGE_SCOPE;
+  const cycleId = req.body?.cycleId || req.query?.cycleId || '';
+  const summary = await rebuildScope(scopeId, cycleId);
+  res.json(summary);
 });
 
 /**
  * GET /api/tracking/ukm-driver/:driverId   (admin / manager)
- * Returns a single driver's trip routes for UKM map view.
- * Each trip includes its cleaned route shapes (if matched) or raw points as a fallback.
- * Also returns the driver's unique edge count & total unique meters.
+ *
+ * One driver's trips for the UKM map, WITH the server's own verdict on which stretches were new
+ * road and which were already covered.
+ *
+ * The shapes matter as much as the numbers. The admin page used to redraw its green "unique"
+ * overlay itself, in the browser, using an ~11 m grid algorithm over only the routes it happened
+ * to have loaded — a different method to the backend's, over a fraction of the backend's evidence.
+ * It could and did paint a street green that the fleet had already driven, because the browser had
+ * never seen the other driver's trip. So the decision is made once, here, and the client draws it.
  *
  * Query:  ?from=ISO&to=ISO  (required)
  */
@@ -606,7 +633,11 @@ exports.ukmDriver = asyncHandler(async (req, res) => {
     status: { $in: ['completed', 'timed_out'] },
     startedAt: { $gte: new Date(from), $lte: new Date(to) },
   })
-    .select('startedAt endedAt distanceMeters cleanedDistanceMeters cleanedRouteShapes mapMatchStatus')
+    .select(
+      'startedAt endedAt distanceMeters cleanedDistanceMeters cleanedRouteShapes mapMatchStatus ' +
+        'ukmStatus distinctRoadMeters sameTripRepeatMeters historicalDuplicateMeters ' +
+        'globalUniqueMeters unmatchedReviewMeters ukmUniqueShapes ukmDuplicateShapes coverageScopeId'
+    )
     .sort({ startedAt: 1 })
     .lean();
 
@@ -625,60 +656,133 @@ exports.ukmDriver = asyncHandler(async (req, res) => {
     }
   }
 
-  const routes = trips.map((trip) =>
-    trip.cleanedRouteShapes && trip.cleanedRouteShapes.length
+  const routes = trips.map((trip) => {
+    const base = {
+      tripId: trip._id,
+      startedAt: trip.startedAt,
+      endedAt: trip.endedAt,
+      ukmStatus: trip.ukmStatus ?? 'pending',
+      // Nulls are passed through as nulls on purpose. The client must be able to render "not yet
+      // established" differently from "zero new road" — see models/Trip.js#ukmStatus.
+      uniqueMeters: trip.globalUniqueMeters ?? null,
+      duplicateMeters: trip.historicalDuplicateMeters ?? null,
+      distinctMeters: trip.distinctRoadMeters ?? null,
+    };
+    return trip.cleanedRouteShapes && trip.cleanedRouteShapes.length
       ? {
-        tripId: trip._id,
-        startedAt: trip.startedAt,
-        endedAt: trip.endedAt,
+        ...base,
         distanceMeters: trip.cleanedDistanceMeters || trip.distanceMeters,
         shapes: trip.cleanedRouteShapes,
+        // Server-decided colouring. Null (not empty) when the trip has no verdict yet.
+        uniqueShapes: trip.ukmUniqueShapes ?? null,
+        duplicateShapes: trip.ukmDuplicateShapes ?? null,
         type: 'matched',
       }
       : {
-        tripId: trip._id,
-        startedAt: trip.startedAt,
-        endedAt: trip.endedAt,
+        ...base,
         distanceMeters: trip.distanceMeters,
         points: rawByTrip.get(String(trip._id)) || [],
         type: 'raw',
-      }
-  );
+      };
+  });
 
-  // Driver's per-driver unique meters.
-  const driverOid = new mongoose.Types.ObjectId(driverId);
-  const edgeAgg = await UkmEdge.aggregate([
-    { $match: { driverId: driverOid } },
-    { $group: { _id: null, uniqueMeters: { $sum: '$distanceMeters' }, edgeCount: { $sum: 1 } } },
-  ]);
-  const uniqueMeters = edgeAgg[0]?.uniqueMeters ?? 0;
-  const edgeCount = edgeAgg[0]?.edgeCount ?? 0;
-  const rawMeters = trips.reduce((s, t) => s + (t.distanceMeters || 0), 0);
+  // Totals over exactly the trips listed above — no lifetime figure smuggled in beside a
+  // date-filtered one, which is what made the old version of this endpoint disagree with itself.
+  const acc = { raw: 0, cleaned: 0, distinct: 0, repeat: 0, duplicate: 0, unique: 0, unmatched: 0 };
+  let pendingTrips = 0;
+  let reviewTrips = 0;
+  for (const t of trips) {
+    acc.raw += t.distanceMeters || 0;
+    acc.cleaned += t.cleanedDistanceMeters || t.distanceMeters || 0;
+    if (t.globalUniqueMeters == null) { pendingTrips += 1; continue; }
+    if (t.ukmStatus === 'review') reviewTrips += 1;
+    acc.distinct += t.distinctRoadMeters || 0;
+    acc.repeat += t.sameTripRepeatMeters || 0;
+    acc.duplicate += t.historicalDuplicateMeters || 0;
+    acc.unique += t.globalUniqueMeters || 0;
+    acc.unmatched += t.unmatchedReviewMeters || 0;
+  }
+  const km = (m) => +(m / 1000).toFixed(2);
 
   res.json({
     driverId,
     trips: routes.length,
-    rawKm: +(rawMeters / 1000).toFixed(2),
-    uniqueKm: +(uniqueMeters / 1000).toFixed(2),
-    edgeCount,
+    coverageScopeId: trips[0]?.coverageScopeId ?? null,
+    rawKm: km(acc.raw),
+    cleanedKm: km(acc.cleaned),
+    distinctKm: km(acc.distinct),
+    sameTripRepeatKm: km(acc.repeat),
+    historicalDuplicateKm: km(acc.duplicate),
+    uniqueKm: km(acc.unique),
+    unmatchedKm: km(acc.unmatched),
+    pendingTrips,
+    reviewTrips,
     routes,
   });
 });
 
 /**
  * GET /api/tracking/ukm-export   (admin / manager)
- * CSV export of the UKM data.
- * Query:  ?from=ISO&to=ISO  (required)   &project=…  &country=…
+ *
+ * CSV of the same persisted figures the dashboard reads — one query, one source, so an exported
+ * number and an on-screen number cannot drift apart.
+ *
+ * Query:  ?from=ISO&to=ISO  (required)   &project=...  &country=...   &rows=driver|trip
  */
 exports.ukmExport = asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
+  const { from, to, rows } = req.query;
   if (!from || !to) return res.status(400).json({ error: 'from and to query params are required' });
 
   const tripFilter = await buildUkmTripFilter(req);
   const trips = await Trip.find(tripFilter)
-    .select('driverId distanceMeters')
+    .select(
+      'driverId projectId startedAt distanceMeters cleanedDistanceMeters cleanedMatchedRatio ' +
+        'distinctRoadMeters sameTripRepeatMeters historicalDuplicateMeters globalUniqueMeters ' +
+        'unmatchedReviewMeters ukmStatus ukmAlgorithmVersion coverageScopeId ukmMeters'
+    )
     .populate('driverId', 'name country project')
+    .sort({ startedAt: 1 })
     .lean();
+
+  const km = (m) => (m == null ? '' : +(m / 1000).toFixed(3));
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const fromDate = from.split('T')[0];
+  const toDate = to.split('T')[0];
+
+  // Per-trip rows are the auditable form: every figure traceable to one drive, with the algorithm
+  // version that produced it. The per-driver rollup stays the default because that is what the
+  // dashboard shows and what most people are exporting.
+  if (rows === 'trip') {
+    const header = [
+      'Date', 'Trip ID', 'Driver', 'Project', 'Country', 'Coverage Scope',
+      'Raw KM', 'Cleaned KM', 'Distinct KM', 'Same-trip Repeat KM',
+      'Historical Duplicate KM', 'Unique KM', 'Unmatched/Review KM',
+      'UKM Status', 'Map Match Ratio', 'UKM Algorithm Version',
+      // The superseded per-driver figure, carried alongside the global one so the two can be
+      // compared in a spreadsheet during cutover. The gap between this column and 'Unique KM' is
+      // road the driver had not personally driven but the fleet already had — what the old logic
+      // credited twice. Drop this column once the new numbers are signed off.
+      'Legacy Per-Driver UKM',
+    ].join(',');
+    const body = trips.map((t) => [
+      esc(new Date(t.startedAt).toISOString().slice(0, 10)),
+      esc(t._id),
+      esc(t.driverId?.name ?? 'Unknown'),
+      esc(t.driverId?.project ?? ''),
+      esc(t.driverId?.country ?? ''),
+      esc(t.coverageScopeId ?? ''),
+      km(t.distanceMeters), km(t.cleanedDistanceMeters), km(t.distinctRoadMeters),
+      km(t.sameTripRepeatMeters), km(t.historicalDuplicateMeters), km(t.globalUniqueMeters),
+      km(t.unmatchedReviewMeters),
+      esc(t.ukmStatus ?? 'pending'),
+      t.cleanedMatchedRatio == null ? '' : +t.cleanedMatchedRatio.toFixed(3),
+      esc(t.ukmAlgorithmVersion ?? ''),
+      km(t.ukmMeters),
+    ].join(','));
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="ukm-trips-${fromDate}-to-${toDate}.csv"`);
+    return res.send([header, ...body].join('\n'));
+  }
 
   const driverMap = {};
   for (const trip of trips) {
@@ -689,45 +793,43 @@ exports.ukmExport = asyncHandler(async (req, res) => {
         name: trip.driverId?.name ?? 'Unknown',
         country: trip.driverId?.country ?? '',
         project: trip.driverId?.project ?? '',
-        rawMeters: 0,
-        uniqueMeters: 0,
-        trips: 0,
+        scope: trip.coverageScopeId ?? '',
+        raw: 0, cleaned: 0, distinct: 0, repeat: 0, duplicate: 0, unique: 0, unmatched: 0,
+        trips: 0, pending: 0, review: 0,
       };
     }
-    driverMap[did].rawMeters += trip.distanceMeters || 0;
-    driverMap[did].trips += 1;
+    const d = driverMap[did];
+    d.raw += trip.distanceMeters || 0;
+    d.cleaned += trip.cleanedDistanceMeters || trip.distanceMeters || 0;
+    d.trips += 1;
+    if (trip.globalUniqueMeters == null) { d.pending += 1; continue; }
+    if (trip.ukmStatus === 'review') d.review += 1;
+    d.distinct += trip.distinctRoadMeters || 0;
+    d.repeat += trip.sameTripRepeatMeters || 0;
+    d.duplicate += trip.historicalDuplicateMeters || 0;
+    d.unique += trip.globalUniqueMeters || 0;
+    d.unmatched += trip.unmatchedReviewMeters || 0;
   }
 
-  const driverIds = Object.keys(driverMap);
-  const driverObjectIds = driverIds.map(id => new mongoose.Types.ObjectId(id));
-  const edgeAgg = await UkmEdge.aggregate([
-    { $match: { driverId: { $in: driverObjectIds } } },
-    { $group: { _id: '$driverId', uniqueMeters: { $sum: '$distanceMeters' } } },
-  ]);
-  for (const row of edgeAgg) {
-    const did = row._id.toString();
-    if (driverMap[did]) driverMap[did].uniqueMeters = row.uniqueMeters;
-  }
-
-  const rows = Object.values(driverMap)
-    .map(d => ({
-      ...d,
-      rawKm: +(d.rawMeters / 1000).toFixed(2),
-      uniqueKm: +(d.uniqueMeters / 1000).toFixed(2),
-      overlapPct: d.rawMeters > 0 ? +((1 - d.uniqueMeters / d.rawMeters) * 100).toFixed(1) : 0,
-    }))
-    .sort((a, b) => b.uniqueKm - a.uniqueKm);
-
-  const fromDate = from.split('T')[0];
-  const toDate = to.split('T')[0];
-  const header = 'Driver,Project,Country,Trips,Total KM,Unique KM,Overlap %';
-  const csv = [header, ...rows.map(r =>
-    `"${r.name}","${r.project}","${r.country}",${r.trips},${r.rawKm},${r.uniqueKm},${r.overlapPct}%`
-  )].join('\n');
+  const list = Object.values(driverMap).sort((a, b) => b.unique - a.unique);
+  const header = [
+    'Driver', 'Project', 'Country', 'Coverage Scope', 'Trips',
+    'Raw KM', 'Cleaned KM', 'Distinct KM', 'Same-trip Repeat KM',
+    'Historical Duplicate KM', 'Unique KM', 'Unmatched/Review KM',
+    'Overlap %', 'Trips Pending', 'Trips In Review',
+  ].join(',');
+  const body = list.map((d) => [
+    esc(d.name), esc(d.project), esc(d.country), esc(d.scope), d.trips,
+    km(d.raw), km(d.cleaned), km(d.distinct), km(d.repeat),
+    km(d.duplicate), km(d.unique), km(d.unmatched),
+    // Against distinct road, matching the dashboard — see the note in exports.ukm.
+    d.distinct > 0 ? +((d.duplicate / d.distinct) * 100).toFixed(1) : 0,
+    d.pending, d.review,
+  ].join(','));
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="ukm-report-${fromDate}-to-${toDate}.csv"`);
-  res.send(csv);
+  res.send([header, ...body].join('\n'));
 });
 
 /**

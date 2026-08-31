@@ -18,5 +18,8 @@ router.get('/export-jobs/:id', ctrl.getExportJob);
 router.get('/export-jobs/:id/download', ctrl.downloadExportJob);
 router.get('/:id', ctrl.getOne);
 router.get('/:id/export', ctrl.exportOne);
+// Who already held the road this trip covered — the breakdown behind its "Already covered"
+// figure. Read-only; scoped like every other trip read.
+router.get('/:id/ukm-overlap', ctrl.ukmOverlap);
 
 module.exports = router;

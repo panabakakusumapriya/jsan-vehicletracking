@@ -53,7 +53,8 @@ router.get('/ukm-driver/:driverId', authenticate, requireRole('admin', 'manager'
 // CSV export of UKM data.
 router.get('/ukm-export', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.ukmExport);
 
-// One-time backfill of UKM edges for historical trips.
-router.post('/ukm-backfill', authenticate, requireRole('admin'), ctrl.ukmBackfill);
+// Explicit, admin-only ledger rebuild. The old '/ukm-backfill' name pointed at the legacy
+// per-driver UkmEdge migration, which a dashboard GET used to trigger by itself; both are gone.
+router.post('/ukm-rebuild', authenticate, requireRole('admin'), ctrl.ukmRebuild);
 
 module.exports = router;
