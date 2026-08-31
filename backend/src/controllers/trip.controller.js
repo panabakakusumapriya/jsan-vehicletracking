@@ -11,6 +11,8 @@ const { dayRange, isValidTimeZone } = require('../utils/timezone');
 const { timezoneForCountry } = require('../utils/countryTimezone');
 const { buildKml, buildSnappedKml, buildJson, buildMergedKml, buildMergedSnappedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate } = require('../utils/tripExport');
 const { decodePolyline6 } = require('../services/roadSegments');
+const { overlapBreakdown } = require('../services/globalUkm');
+const Project = require('../models/Project');
 
 /**
  * Points for many trips in ONE query, grouped by trip id.
@@ -39,6 +41,74 @@ async function pointsByTrip(tripIds) {
 }
 
 /**
+ * GET /api/trips/:id/ukm-overlap   (any authenticated role, scoped)
+ *
+ * Breaks the trip's "Already covered" figure down by who got there first: which driver, on which
+ * project, and how much of this trip's road they already held.
+ *
+ * The rows sum exactly to `historicalDuplicateMeters`. They can, because each piece of road has
+ * exactly one first owner in the ledger, so attributing it to that owner partitions the duplicate
+ * distance rather than measuring the route against each driver separately — the latter is the
+ * calculation that must never be summed, since previous drivers overlap each other. `totalMeters`
+ * is returned as the reconciliation check.
+ *
+ * Read-only.
+ */
+exports.ukmOverlap = asyncHandler(async (req, res) => {
+  const scope = await accessibleDriverFilter(req.user);
+  const trip = await Trip.findOne({ _id: req.params.id, ...scope }).select('_id').lean();
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+
+  const result = await overlapBreakdown(trip._id);
+  if (!result) return res.status(404).json({ error: 'Trip not found' });
+  if (!result.computed) {
+    // No geometry, or a match this trip never got. Distinguished from "computed, and nobody had
+    // been here" so the UI can say which it is instead of showing an ambiguous empty list.
+    return res.json({ computed: false, rows: [], totalKm: 0, unattributedKm: 0 });
+  }
+
+  // Names, resolved once. The ledger stores ids because a driver rename must not rewrite history;
+  // the reader still wants to see people, not ObjectIds.
+  const driverIds = [...new Set(result.rows.map((r) => String(r.driverId)))];
+  const projectIds = [...new Set(result.rows.map((r) => r.projectId).filter(Boolean).map(String))];
+  const [drivers, projects] = await Promise.all([
+    User.find({ _id: { $in: driverIds } }).select('name project country').lean(),
+    projectIds.length ? Project.find({ _id: { $in: projectIds } }).select('name code').lean() : [],
+  ]);
+  const driverById = new Map(drivers.map((d) => [String(d._id), d]));
+  const projectById = new Map(projects.map((p) => [String(p._id), p]));
+
+  const km = (m) => +(m / 1000).toFixed(2);
+  res.json({
+    computed: true,
+    totalKm: km(result.totalMeters),
+    // Non-zero means the trip's geometry changed after it was attributed, so the figures are
+    // stale. Surfaced rather than quietly absorbed into somebody's row.
+    unattributedKm: km(result.unattributedMeters),
+    rows: result.rows.map((r) => {
+      const d = driverById.get(String(r.driverId));
+      const p = r.projectId ? projectById.get(String(r.projectId)) : null;
+      return {
+        driverId: r.driverId,
+        driverName: d?.name ?? 'Unknown driver',
+        // Project stamped on the covering trip. Falls back to the driver's current project label
+        // only as a hint — and is marked as such, because a driver's project today is not
+        // evidence of what they were working on then.
+        projectName: p?.name ?? null,
+        projectHint: p ? null : d?.project ?? null,
+        km: km(r.meters),
+        segments: r.segments,
+        tripCount: r.tripCount,
+        sampleTripId: r.sampleTripId,
+        firstAt: r.firstAt,
+        lastAt: r.lastAt,
+        selfOverlap: r.selfOverlap,
+      };
+    }),
+  });
+});
+
+/**
  * A trip's stored snapped geometry as drawable paths. Returns null when the trip was never
  * matched, so callers can fall back to the raw trace rather than emitting an empty file.
  */
@@ -46,7 +116,11 @@ function snappedPathsFor(trip) {
   if (!trip.cleanedRouteShapes || !trip.cleanedRouteShapes.length) return null;
   return {
     route: trip.cleanedRouteShapes.flatMap((sh) => decodePolyline6(sh)).map((pt) => [pt.lon, pt.lat]),
-    ukm: (trip.ukmNewShapes || []).map((sh) => decodePolyline6(sh).map((pt) => [pt.lon, pt.lat])),
+    // Prefer the GLOBAL verdict (ukmUniqueShapes) over the per-driver one (ukmNewShapes): an export
+    // and the dashboard must not disagree about which stretch of a street was new road. Falls back to
+    // the per-driver shapes only for trips the global engine has not reached yet.
+    ukm: (trip.ukmUniqueShapes?.length ? trip.ukmUniqueShapes : trip.ukmNewShapes || [])
+      .map((sh) => decodePolyline6(sh).map((pt) => [pt.lon, pt.lat])),
   };
 }
 
@@ -162,7 +236,9 @@ exports.exportOne = asyncHandler(async (req, res) => {
 
   if (wantSnapped && format !== 'json') {
     const snappedPath = trip.cleanedRouteShapes.flatMap((s) => decodePolyline6(s)).map((p) => [p.lon, p.lat]);
-    const ukmPaths = (trip.ukmNewShapes || []).map((s) => decodePolyline6(s).map((p) => [p.lon, p.lat]));
+    // Global verdict first, per-driver as the fallback — same rule as snappedPathsFor above.
+    const ukmShapes = trip.ukmUniqueShapes?.length ? trip.ukmUniqueShapes : trip.ukmNewShapes || [];
+    const ukmPaths = ukmShapes.map((s) => decodePolyline6(s).map((p) => [p.lon, p.lat]));
     res.setHeader('Content-Type', 'application/vnd.google-earth.kml+xml');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}.kml"`);
     return res.send(buildSnappedKml(trip, snappedPath, ukmPaths));

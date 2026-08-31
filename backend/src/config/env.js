@@ -230,4 +230,48 @@ module.exports = {
   // those fragments then fall back to raw geometry — more requests AND a worse result. 45s clears
   // routine traffic stops while still cutting genuine dropouts.
   MAP_MATCH_SPLIT_GAP_SECONDS: parseInt(process.env.MAP_MATCH_SPLIT_GAP_SECONDS || '45', 10),
+
+  // ---- Global UKM: the coverage-programme rules, deliberately not magic constants ----
+  // These five values ARE the business contract (see the "Freeze the business rules" phase of
+  // README_GLOBAL_UKM_END_GOAL_AND_IMPLEMENTATION.md). Changing any of them changes what a
+  // customer is invoiced for, so they live here where a change is visible in a diff rather than
+  // buried in an if-statement somewhere in the engine.
+
+  // Master switch. Off means the global engine never runs and nothing writes to CoverageSegment;
+  // the legacy per-driver figures stay exactly as they are.
+  GLOBAL_UKM_ENABLED: (process.env.GLOBAL_UKM_ENABLED || 'true').toLowerCase() !== 'false',
+
+  // The dedup universe a project falls into when Project.coverageScopeId is not set — which is
+  // every project today. One shared default is the CORRECT starting position for this fleet, not
+  // a shortcut: the requirement is explicitly that a road covered under Project A is not new
+  // again under Project B. Give a project its own scope only when its coverage genuinely must NOT
+  // deduplicate against the rest (a different customer, a deliberately repeated capture cycle).
+  UKM_DEFAULT_COVERAGE_SCOPE: process.env.UKM_DEFAULT_COVERAGE_SCOPE || 'DEFAULT',
+
+  // Bumped whenever the engine's arithmetic changes, and stamped on every trip it writes. Lets a
+  // figure be traced back to the code that produced it, and lets a re-run be targeted at trips
+  // computed by an older version instead of the whole fleet.
+  UKM_ALGORITHM_VERSION: process.env.UKM_ALGORITHM_VERSION || 'global-segment-1',
+
+  // Is driving a road the other way the same coverage? Default yes — a road is a road. Flip to
+  // false only if the imagery contract genuinely requires both sides of the street captured
+  // separately, and understand that it roughly doubles every target. NOTE: with the snapped-vertex
+  // identity used today this is not yet honoured (segment keys are direction-free by construction);
+  // it is read by the engine so the decision is recorded and refuses to run misconfigured rather
+  // than silently producing the wrong number.
+  UKM_DIRECTION_IS_SAME_ROAD: (process.env.UKM_DIRECTION_IS_SAME_ROAD || 'true').toLowerCase() !== 'false',
+
+  // A trip whose Valhalla match snapped less of the trace than this is flagged `review`: part of
+  // its geometry is raw GPS kept as a fallback, and raw geometry cannot be trusted to identify a
+  // road (see the note at the top of services/roadSegments.js). 0.9 matches
+  // MAP_MATCH_MIN_POINTS_ON_ROUTE — a trip that only just cleared the matcher's own bar has not
+  // earned a contractual number.
+  UKM_REVIEW_MATCHED_RATIO: parseFloat(process.env.UKM_REVIEW_MATCHED_RATIO || '0.9'),
+
+  // Does a `review` trip still CLAIM the road it covered? Default true, and the reason is
+  // counter-intuitive: excluding it would leave that road unclaimed, so the next driver over it
+  // would be paid for new coverage the fleet had already driven. Claiming it and flagging the trip
+  // keeps the ledger honest while letting a report exclude the questionable kilometres. Set false
+  // only if the business would rather under-claim than over-claim.
+  UKM_REVIEW_CLAIMS_COVERAGE: (process.env.UKM_REVIEW_CLAIMS_COVERAGE || 'true').toLowerCase() !== 'false',
 };

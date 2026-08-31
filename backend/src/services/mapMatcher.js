@@ -3,6 +3,7 @@ const LocationPoint = require('../models/LocationPoint');
 const env = require('../config/env');
 const { matchTrace } = require('./valhalla');
 const { recomputeDriverUkm } = require('./roadSegments');
+const { attributeTrip, computeTripMetrics } = require('./globalUkm');
 
 /**
  * Background worker: snaps each completed trip's raw GPS trace onto the road network via
@@ -85,6 +86,23 @@ async function processTrip(tripId) {
       console.error(`map-matcher: UKM recompute failed for driver ${trip.driverId}:`, err.message);
     }
 
+    // Global UKM. Deliberately a SECOND call rather than a replacement for the one above: the
+    // per-driver figure answers "am I repeating myself" and every existing report reads it, while
+    // this one answers "did the fleet already drive this" and is the number the customer is
+    // billed on. They are different questions with different right answers.
+    //
+    // Note what this fixes about the line above it. recomputeDriverUkm walks ONE driver's history,
+    // so a trip syncing days late could only ever change its own driver's numbers — a road it
+    // really drove first while another driver was credited for it stayed miscredited forever.
+    // attributeTrip settles that across the whole coverage scope and recomputes whoever lost the
+    // road, regardless of which driver or project they belong to.
+    try {
+      await attributeTrip(trip._id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`map-matcher: global UKM attribution failed for trip ${trip._id}:`, err.message);
+    }
+
     return 'matched';
   } catch (err) {
     await Trip.updateOne(
@@ -141,6 +159,40 @@ async function tick() {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('map-matcher: UKM catch-up sweep failed:', err.message);
+  }
+
+  // The same catch-up, for the global figures. A trip matched by the re-match script, or matched
+  // before this feature existed, has snapped geometry and no coverage claim — and an unclaimed
+  // road is worse than a missing number, because the NEXT driver over that street is then paid for
+  // coverage the fleet already has. Bounded per tick like the sweep above.
+  if (env.GLOBAL_UKM_ENABLED) {
+    try {
+      const unattributed = await Trip.find({
+        status: { $in: ['completed', 'timed_out'] },
+        mapMatchStatus: 'matched',
+        cleanedRouteShapes: { $exists: true, $ne: [] },
+        $or: [
+          { globalUkmComputedAt: null },
+          // Computed from geometry that has since been replaced by a re-match.
+          { $expr: { $lt: ['$globalUkmComputedAt', '$mapMatchedAt'] } },
+          // Computed by an older build of the engine.
+          { ukmAlgorithmVersion: { $ne: env.UKM_ALGORITHM_VERSION } },
+        ],
+      })
+        .select('_id')
+        // Oldest first, so coverage is claimed in roughly the order it was driven and the
+        // takeover path stays the exception rather than the rule.
+        .sort({ startedAt: 1 })
+        .limit(env.MAP_MATCH_MAX_PER_TICK);
+
+      for (const { _id } of unattributed) {
+        await attributeTrip(_id);
+        counts.globalUkmAttributed = (counts.globalUkmAttributed || 0) + 1;
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('map-matcher: global UKM catch-up sweep failed:', err.message);
+    }
   }
 
   return counts;

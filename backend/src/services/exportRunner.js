@@ -50,7 +50,11 @@ function snappedPathsFor(trip) {
   if (!trip.cleanedRouteShapes || !trip.cleanedRouteShapes.length) return null;
   return {
     route: trip.cleanedRouteShapes.flatMap((sh) => decodePolyline6(sh)).map((pt) => [pt.lon, pt.lat]),
-    ukm: (trip.ukmNewShapes || []).map((sh) => decodePolyline6(sh).map((pt) => [pt.lon, pt.lat])),
+    // Prefer the GLOBAL verdict (ukmUniqueShapes) over the per-driver one (ukmNewShapes): an export
+    // and the dashboard must not disagree about which stretch of a street was new road. Falls back to
+    // the per-driver shapes only for trips the global engine has not reached yet.
+    ukm: (trip.ukmUniqueShapes?.length ? trip.ukmUniqueShapes : trip.ukmNewShapes || [])
+      .map((sh) => decodePolyline6(sh).map((pt) => [pt.lon, pt.lat])),
   };
 }
 
