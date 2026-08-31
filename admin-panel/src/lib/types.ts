@@ -7,6 +7,13 @@ export interface Project {
   code?: string | null;
   country?: string | null;
   active: boolean;
+  // Which UKM dedup universe this project's coverage belongs to. Projects sharing a scope share
+  // one history: a road first driven under one is not new road again under another. null means
+  // the fleet-wide default scope, which is where every project starts — see the backend's
+  // services/coverageScope.js for why sharing is the default and separating is the exception.
+  coverageScopeId?: string | null;
+  // Optional uniqueness reset inside a scope, for a deliberately repeated capture campaign.
+  coverageCycleId?: string | null;
   createdAt?: string;
 }
 
@@ -267,6 +274,32 @@ export interface Trip {
   // highlighted over the muted full route so previously-driven road is visually distinct.
   ukmNewShapes?: string[] | null;
   ukmComputedAt?: string | null;
+
+  // ---- Global UKM: road new to the whole coverage programme, not just to this driver ----
+  // The four fields above dedupe against this driver's own history only. These dedupe against
+  // every driver and every project sharing the trip's coverage scope, which is the figure the
+  // customer is billed on. Both are kept — see backend services/globalUkm.js.
+  coverageScopeId?: string | null;
+  coverageCycleId?: string | null;
+  // 'pending' means not established yet, which is NOT 'computed' with a value of 0. A trip that
+  // covered no new road and a trip nobody has measured must never render the same way.
+  ukmStatus?: 'pending' | 'computed' | 'review' | 'failed';
+  // Road covered by this trip once same-trip repeats are removed.
+  distinctRoadMeters?: number | null;
+  // Real distance re-driven inside this trip: cleaned distance minus the distinct figure.
+  sameTripRepeatMeters?: number | null;
+  // The part of that distinct road somebody in the scope had already covered.
+  historicalDuplicateMeters?: number | null;
+  // Road nobody in the scope had ever covered before this trip reached it. The number.
+  globalUniqueMeters?: number | null;
+  // Distance whose road identity could not be established (raw-GPS fallback in a partial match).
+  // Held apart rather than counted as new road.
+  unmatchedReviewMeters?: number | null;
+  // Server-decided map geometry, encoded polyline6. The client draws these; it never derives them.
+  ukmUniqueShapes?: string[] | null;
+  ukmDuplicateShapes?: string[] | null;
+  globalUkmComputedAt?: string | null;
+  ukmAlgorithmVersion?: string | null;
 }
 
 export interface LiveDriver {
