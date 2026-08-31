@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import { DistanceModeToggle, type DistanceMode } from '../components/DistanceModeToggle';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, downloadFile } from '../lib/api';
@@ -122,6 +122,9 @@ function UkmNote({ trip }: { trip: Trip }) {
 
 export function TripDetail() {
   const { id } = useParams<{ id: string }>();
+  // The trips list passes its filters/page/expanded-rows query string along so "← Back to
+  // trips" returns to the exact view this trip was opened from, not a reset page 1.
+  const tripsSearch = (useLocation().state as { tripsSearch?: string } | null)?.tripsSearch ?? '';
   const [trip, setTrip] = useState<Trip | null>(null);
   const [points, setPoints] = useState<PathPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -201,7 +204,7 @@ export function TripDetail() {
             snappedAvailable={cleanedAvailable}
             onExport={(format, layer) => downloadFile(`/api/trips/${id}/export?format=${format}&layer=${layer}`)}
           />
-          <Link to="/trips" className="btn-ghost">
+          <Link to={`/trips${tripsSearch ? `?${tripsSearch}` : ''}`} className="btn-ghost">
             ← Back to trips
           </Link>
         </div>

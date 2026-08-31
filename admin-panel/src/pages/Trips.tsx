@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { DateField } from '../components/DateField';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, viewerTimeZone } from '../lib/api';
@@ -62,20 +62,43 @@ function pageList(current: number, total: number): (number | '...')[] {
 export function Trips() {
   const [summaries, setSummaries] = useState<DaySummary[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
   const [drivers, setDrivers] = useState<User[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState('');
-  const [driverId, setDriverId] = useState('');
-  const [project, setProject] = useState('');
-  const [country, setCountry] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
 
-  // Inline expand state — a day-row's individual trips are fetched lazily on first expand and
-  // then cached by key, so collapsing and re-expanding the same row doesn't refetch.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Filters, page, and which day-rows are expanded all live in the URL rather than useState,
+  // so opening a trip and coming back (browser back or "← Back to trips") restores this exact
+  // view — same filters, same page, same rows open — instead of a fresh page 1.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const status = searchParams.get('status') ?? '';
+  const driverId = searchParams.get('driver') ?? '';
+  const project = searchParams.get('project') ?? '';
+  const country = searchParams.get('country') ?? '';
+  const from = searchParams.get('from') ?? '';
+  const to = searchParams.get('to') ?? '';
+  const page = Math.max(1, Number(searchParams.get('page')) || 1);
+  const expanded = useMemo(
+    () => new Set((searchParams.get('exp') ?? '').split(',').filter(Boolean)),
+    [searchParams]
+  );
+
+  // Every update replaces the current history entry rather than pushing — the /trips entry
+  // always carries the latest view state, and one "back" from a trip returns straight to it
+  // instead of stepping through every filter tweak.
+  const updateParams = (changes: Record<string, string>) => {
+    const next = new URLSearchParams(searchParams);
+    for (const [k, v] of Object.entries(changes)) {
+      if (v) next.set(k, v); else next.delete(k);
+    }
+    setSearchParams(next, { replace: true });
+  };
+  // Any filter change starts over at page 1 with everything collapsed — never leaves the view
+  // showing a page number or open rows that no longer match what's selected.
+  const setFilters = (changes: Record<string, string>) =>
+    updateParams({ ...changes, page: '', exp: '' });
+
+  // A day-row's individual trips are fetched lazily on first expand and then cached by key,
+  // so collapsing and re-expanding the same row doesn't refetch.
   const [dayTrips, setDayTrips] = useState<Record<string, Trip[]>>({});
   const [dayTripsLoading, setDayTripsLoading] = useState<Record<string, boolean>>({});
 
@@ -123,35 +146,30 @@ export function Trips() {
       .then(r => {
         setSummaries(r.summaries);
         setTotal(r.total);
-        setPage(r.page);
       })
       .finally(() => setLoading(false));
   }, [buildParams]);
 
-  // Any filter change starts over at page 1 — never leaves the view showing a page number that
-  // no longer matches what's selected. Deliberately keyed on the primitive filter values, not
-  // on `load`/`scopedDriverIds` (a new array every render), so this only re-fires on an actual
-  // filter change rather than every re-render.
+  // Loads whatever page the URL says (a filter change already reset it to 1 via setFilters).
+  // Deliberately keyed on primitive values, not on `load`/`scopedDriverIds` (a new array every
+  // render), so this only re-fires on an actual change. The joined-ids string is a real dep:
+  // arriving with a project/country filter in the URL before the drivers list has loaded
+  // queries zero drivers, and this refires with the actual ids once they arrive.
+  const scopedJoin = scopedDriverIds?.join(',') ?? '';
   useEffect(() => {
-    load(1);
-    setExpanded(new Set());
+    load(page);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, driverId, project, country, from, to]);
+  }, [status, driverId, project, country, from, to, page, scopedJoin]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const goToPage = (p: number) => {
     if (p < 1 || p > totalPages || p === page) return;
-    load(p);
+    updateParams({ page: p === 1 ? '' : String(p) });
   };
 
-  const toggleExpand = (s: DaySummary) => {
+  const fetchDayTrips = useCallback((s: DaySummary) => {
     const key = dayKey(s);
-    setExpanded(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
     if (dayTrips[key] || dayTripsLoading[key]) return; // already loaded or in flight
     setDayTripsLoading(prev => ({ ...prev, [key]: true }));
     // tz is what keeps this consistent with the row above it: merged-summary buckets by the
@@ -161,6 +179,40 @@ export function Trips() {
     api.get<{ trips: Trip[] }>(`/api/trips?${params}`)
       .then(r => setDayTrips(prev => ({ ...prev, [key]: r.trips })))
       .finally(() => setDayTripsLoading(prev => ({ ...prev, [key]: false })));
+  }, [dayTrips, dayTripsLoading]);
+
+  const toggleExpand = (s: DaySummary) => {
+    const key = dayKey(s);
+    const next = new Set(expanded);
+    if (next.has(key)) next.delete(key);
+    else {
+      next.add(key);
+      fetchDayTrips(s);
+    }
+    updateParams({ exp: Array.from(next).join(',') });
+  };
+
+  // Rows expanded via the URL (arriving back from a trip) never went through toggleExpand,
+  // so their day-trips still need fetching once the summaries are in.
+  useEffect(() => {
+    summaries.forEach(s => { if (expanded.has(dayKey(s))) fetchDayTrips(s); });
+  }, [summaries, expanded, fetchDayTrips]);
+
+  // After coming back from a trip, land on the row that was opened — scroll it into view and
+  // flash it once its day-row has re-expanded and loaded.
+  useEffect(() => {
+    let id: string | null = null;
+    try { id = sessionStorage.getItem('trips:lastViewed'); } catch { /* private mode */ }
+    if (!id) return;
+    const el = document.querySelector(`[data-trip-id="${CSS.escape(id)}"]`);
+    if (!el) return; // day-trips still loading — retried on the next dayTrips update
+    try { sessionStorage.removeItem('trips:lastViewed'); } catch { /* ignore */ }
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('row-flash');
+  }, [dayTrips]);
+
+  const rememberTrip = (id: string) => {
+    try { sessionStorage.setItem('trips:lastViewed', id); } catch { /* private mode */ }
   };
 
   const [exportStatus, setExportStatus] = useState<string | null>(null);
@@ -211,6 +263,8 @@ export function Trips() {
         .day-row:hover td { background: var(--panel-2); }
         .day-detail-row td { padding: 0; background: var(--bg); }
         .day-detail-row table td { background: transparent; }
+        .row-flash td { animation: tripsRowFlash 1.8s ease-out; }
+        @keyframes tripsRowFlash { 0%, 40% { background: var(--brand-light); } 100% { background: transparent; } }
       `}</style>
       <div className="page-head">
         <div>
@@ -228,7 +282,7 @@ export function Trips() {
           className="input"
           style={{ width: 140, margin: 0 }}
           value={project}
-          onChange={e => { setProject(e.target.value); setCountry(''); setDriverId(''); }}
+          onChange={e => setFilters({ project: e.target.value, country: '', driver: '' })}
         >
           <option value="">All projects</option>
           {projects.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
@@ -237,7 +291,7 @@ export function Trips() {
           className="input"
           style={{ width: 140, margin: 0 }}
           value={country}
-          onChange={e => { setCountry(e.target.value); setDriverId(''); }}
+          onChange={e => setFilters({ country: e.target.value, driver: '' })}
         >
           <option value="">All countries</option>
           {countries.map(c => <option key={c} value={c}>{c}</option>)}
@@ -246,7 +300,7 @@ export function Trips() {
           className="input"
           style={{ width: 150, margin: 0 }}
           value={status}
-          onChange={e => setStatus(e.target.value)}
+          onChange={e => setFilters({ status: e.target.value })}
         >
           <option value="">All statuses</option>
           <option value="active">Active</option>
@@ -259,17 +313,13 @@ export function Trips() {
           value={driverId}
           onChange={e => {
             const id = e.target.value;
-            setDriverId(id);
             // Picking a driver directly (without going Project → Country first) should fill
             // those dropdowns back in to match, not leave them showing "All" while a specific
             // driver is selected underneath.
-            if (id) {
-              const d = drivers.find(dr => dr._id === id);
-              if (d) {
-                setProject(d.project || '');
-                setCountry(d.country || '');
-              }
-            }
+            const d = id ? drivers.find(dr => dr._id === id) : undefined;
+            setFilters(d
+              ? { driver: id, project: d.project || '', country: d.country || '' }
+              : { driver: id });
           }}
         >
           <option value="">All drivers</option>
@@ -281,20 +331,20 @@ export function Trips() {
           style={{ width: 150 }}
           value={from}
           max={to || undefined}
-          onChange={setFrom}
+          onChange={v => setFilters({ from: v })}
         />
         <span style={{ color: 'var(--muted)', fontSize: 13 }}>to</span>
         <DateField
           style={{ width: 150 }}
           value={to}
           min={from || undefined}
-          onChange={setTo}
+          onChange={v => setFilters({ to: v })}
         />
         {(status || driverId || project || country || from || to) && (
           <button
             className="btn-ghost"
             style={{ padding: '6px 10px', fontSize: 12.5 }}
-            onClick={() => { setStatus(''); setDriverId(''); setProject(''); setCountry(''); setFrom(''); setTo(''); }}
+            onClick={() => setSearchParams({}, { replace: true })}
           >
             Clear
           </button>
@@ -398,7 +448,7 @@ export function Trips() {
                             </thead>
                             <tbody>
                               {(rows ?? []).map(t => (
-                                <tr key={t._id}>
+                                <tr key={t._id} data-trip-id={t._id}>
                                   <td style={{ paddingLeft: 48 }}>
                                     {plate(t.vehicleId) !== '—'
                                       ? <span style={{ background: 'var(--panel-2)', border: '1px solid var(--line-2)', borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>{plate(t.vehicleId)}</span>
@@ -414,7 +464,7 @@ export function Trips() {
                                   <td onClick={e => e.stopPropagation()}>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                       {t.status === 'active' && (
-                                        <Link to={`/trips/${t._id}/map`} style={{
+                                        <Link to={`/trips/${t._id}/map`} state={{ tripsSearch: searchParams.toString() }} onClick={() => rememberTrip(t._id)} style={{
                                           display: 'inline-flex', alignItems: 'center', gap: 4,
                                           fontSize: 12.5, fontWeight: 600, color: '#059669',
                                           background: '#f0fdf4', border: '1px solid #a7f3d0',
@@ -425,6 +475,8 @@ export function Trips() {
                                       )}
                                       <Link
                                         to={t.status === 'active' ? `/trips/${t._id}/map` : `/trips/${t._id}`}
+                                        state={{ tripsSearch: searchParams.toString() }}
+                                        onClick={() => rememberTrip(t._id)}
                                         style={{
                                           display: 'inline-flex', alignItems: 'center', gap: 4,
                                           fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',

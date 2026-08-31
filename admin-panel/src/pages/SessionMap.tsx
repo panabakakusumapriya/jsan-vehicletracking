@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useLocation } from 'react-router-dom';
 import { api } from '../lib/api';
 import { km, sessionDt } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
@@ -17,6 +17,9 @@ interface Point {
 
 export function SessionMap() {
   const { id } = useParams<{ id: string }>();          // tripId
+  // The trips list passes its filters/page/expanded-rows query string along so "← Trips"
+  // returns to the exact view this trip was opened from, not a reset page 1.
+  const tripsSearch = (useLocation().state as { tripsSearch?: string } | null)?.tripsSearch ?? '';
   const [trip, setTrip]     = useState<Trip | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [loading, setLoading] = useState(true);
@@ -109,7 +112,7 @@ export function SessionMap() {
           {trip.status === 'active' && (
             <button className="btn" onClick={() => fetchData(true)}>↻ Refresh</button>
           )}
-          <Link to="/trips" className="btn-ghost">← Trips</Link>
+          <Link to={`/trips${tripsSearch ? `?${tripsSearch}` : ''}`} className="btn-ghost">← Trips</Link>
         </div>
       </div>
 
