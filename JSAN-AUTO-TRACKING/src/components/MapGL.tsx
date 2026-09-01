@@ -37,6 +37,12 @@ const COLOR_TRACE = '#059669';
 const COLOR_AREA = '#7c3aed';
 /** Live position dot — violet too, so the dot is never read as a fragment of trace. */
 const COLOR_VEHICLE = '#7c3aed';
+/** Earlier trips in the driver's history. Grey and thin: context for "where have I been", never
+ *  the subject, and drawn UNDER the roads so it can never hide a street that still needs doing. */
+const COLOR_HISTORY = '#6b7280';
+/** Stretches of the current drive outside the assigned polygon. Orange: real kilometres, not the
+ *  job — distinct from both the green route and the red to-do roads. */
+const COLOR_OUTSIDE = '#f59e0b';
 
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 
@@ -104,6 +110,22 @@ export interface MapGLTrace {
    * passing that straight through get the behaviour for free.
    */
   tripId?: string;
+  /**
+   * The parts of this drive outside the driver's assigned polygons (Trip.outAreaShapes, decoded),
+   * drawn orange over the green trace. Only ever present on a snapped trace — the split is decided
+   * server-side after map matching, so a live raw trace has none yet.
+   */
+  outsideLines?: [number, number][][];
+}
+
+/**
+ * Every earlier closed trip in the driver's history window, as one flat list of lines. Pushed over
+ * its own bridge call rather than with the trace: it is megabytes for a busy month and must not
+ * ride along on the 15 s poll. `version` is the change key — same version, no re-injection.
+ */
+export interface MapGLHistory {
+  version: string;
+  lines: [number, number][][];
 }
 
 export interface MapGLProps {
@@ -123,6 +145,9 @@ export interface MapGLProps {
   trace?: MapGLTrace | null;
   /** Live position, [lon, lat]. Injected like the trace. */
   vehicle?: [number, number] | null;
+  /** Route history. Injected on its own channel, only when `version` changes. */
+  history?: MapGLHistory | null;
+  showHistory?: boolean;
   style?: StyleProp<ViewStyle>;
   /**
    * Fires when the map cannot be drawn at all (no WebGL, engine download failed, tiles
@@ -295,9 +320,14 @@ function areasBounds(areas: MapGLArea[]): Bounds | null {
  * re-injected on every poll. Rounding roughly halves the string for a ~1 m difference.
  */
 function traceLines(trace: MapGLTrace | null | undefined): [number, number][][] {
-  if (!trace || !trace.lines) return [];
+  return cleanLines(trace?.lines);
+}
+
+/** The rounding-and-splitting pass above, for any list of lines (trace, outside runs, history). */
+function cleanLines(lines: [number, number][][] | null | undefined): [number, number][][] {
+  if (!lines) return [];
   const out: [number, number][][] = [];
-  for (const line of trace.lines) {
+  for (const line of lines) {
     if (!line || line.length < 2) continue;
     // A bad point BREAKS the line, it does not get skipped over. Dropping it and carrying on would
     // join the fix before it to the fix after it, and that join is a straight line across whatever
@@ -350,8 +380,14 @@ function updatePayload(
     traceKind: trace?.kind === 'snapped' ? 'snapped' : 'raw',
     traceBounds: accumulateBounds(lines, null),
     traceTrip: trace?.tripId ? String(trace.tripId) : '',
+    outside: multiLineFC(cleanLines(trace?.outsideLines)),
     vehicle: vehiclePoint(vehicle),
   };
+}
+
+/** The history payload, on its own channel — see MapGLHistory. */
+function historyPayload(history: MapGLHistory | null | undefined) {
+  return multiLineFC(cleanLines(history?.lines));
 }
 
 /* --------------------------------------------------------------------------------------------
@@ -375,7 +411,9 @@ function buildHtml(
   styleUrl: string,
   initialCamera: { center: [number, number]; zoom: number } | null,
   showAreas: boolean,
-  showRoads: boolean
+  showRoads: boolean,
+  history: MapGLHistory | null | undefined,
+  showHistory: boolean
 ): string {
   const { covered, uncovered } = splitRoads(roads);
   const initial = updatePayload(trace, vehicle);
@@ -417,10 +455,13 @@ body{background:#eef1f5}
   // The most recent payload seen, starting from the one baked into this page. Read back whenever
   // layers have to be re-installed (see installLayers) so the redraw shows the current trace.
   var LAST      = INITIAL;
+  // History on its own variable and channel: it is the one payload that is both large and rare.
+  var LAST_HISTORY = ${jsonForScript(historyPayload(history))};
   var BOUNDS    = ${jsonForScript(bounds)};
   var STYLE     = ${jsonForScript(styleUrl)};
   var CAMERA    = ${jsonForScript(initialCamera ?? null)};
-  var VISIBLE   = ${jsonForScript({ areas: showAreas !== false, roads: showRoads !== false })};
+  var VISIBLE   = ${jsonForScript({ areas: showAreas !== false, roads: showRoads !== false, history: showHistory !== false })};
+  var EMPTY_FC  = { type: 'FeatureCollection', features: [] };
 
   function post(o){ try { window.ReactNativeWebView.postMessage(JSON.stringify(o)); } catch(e){} }
 
@@ -571,6 +612,13 @@ body{background:#eef1f5}
     map.setLayoutProperty('trace-raw', 'visibility', hasTrace && !snapped ? 'visible' : 'none');
     map.setLayoutProperty('trace-snapped', 'visibility', hasTrace && snapped ? 'visible' : 'none');
 
+    // The out-of-area stretches sit on top of the snapped trace, so they only make sense when
+    // the trace they annotate is showing.
+    var osrc = map.getSource('trace-outside');
+    if (osrc) osrc.setData(p.outside || EMPTY_FC);
+    var hasOutside = !!(p.outside && p.outside.features && p.outside.features.length);
+    map.setLayoutProperty('trace-outside', 'visibility', hasTrace && snapped && hasOutside ? 'visible' : 'none');
+
     var vsrc = map.getSource('vehicle');
     if (vsrc) {
       vsrc.setData(p.vehicle
@@ -617,9 +665,11 @@ body{background:#eef1f5}
     map.addSource('areas', { type: 'geojson', data: AREAS });
     map.addSource('roads-covered', { type: 'geojson', data: COVERED });
     map.addSource('roads-uncovered', { type: 'geojson', data: UNCOVERED });
+    map.addSource('history', { type: 'geojson', data: LAST_HISTORY });
     // LAST, not INITIAL — on a re-install after a style swap the baked-in trace is minutes old.
     map.addSource('trace', { type: 'geojson', data: LAST.trace });
-    map.addSource('vehicle', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addSource('trace-outside', { type: 'geojson', data: LAST.outside || EMPTY_FC });
+    map.addSource('vehicle', { type: 'geojson', data: EMPTY_FC });
 
     map.addLayer({
       id: 'area-fill', type: 'fill', source: 'areas',
@@ -628,6 +678,18 @@ body{background:#eef1f5}
     map.addLayer({
       id: 'area-outline', type: 'line', source: 'areas',
       paint: { 'line-color': '${COLOR_AREA}', 'line-width': 2, 'line-opacity': 0.85 }
+    });
+
+    // History goes UNDER the roads. It answers "have I been here", which is context; the red road
+    // on top answers "does this still need doing", which is the job, and must never be hidden.
+    map.addLayer({
+      id: 'history-line', type: 'line', source: 'history',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': '${COLOR_HISTORY}',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.2, 14, 2.4, 18, 4.5],
+        'line-opacity': 0.55
+      }
     });
 
     // Road width by zoom, not by road class: at phone zooms the useful signal is "is there a line
@@ -664,6 +726,12 @@ body{background:#eef1f5}
       id: 'trace-snapped', type: 'line', source: 'trace',
       layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
       paint: { 'line-color': '${COLOR_TRACE}', 'line-width': traceWidth, 'line-opacity': 1 }
+    });
+    // Over the snapped trace: the stretches of it that were outside the assigned polygon.
+    map.addLayer({
+      id: 'trace-outside', type: 'line', source: 'trace-outside',
+      layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
+      paint: { 'line-color': '${COLOR_OUTSIDE}', 'line-width': traceWidth, 'line-opacity': 1 }
     });
 
     map.addLayer({
@@ -723,7 +791,8 @@ body{background:#eef1f5}
     if (!installed) return;
     var pairs = [
       ['area-fill', VISIBLE.areas], ['area-outline', VISIBLE.areas],
-      ['roads-covered', VISIBLE.roads], ['roads-uncovered', VISIBLE.roads]
+      ['roads-covered', VISIBLE.roads], ['roads-uncovered', VISIBLE.roads],
+      ['history-line', VISIBLE.history]
     ];
     for (var i = 0; i < pairs.length; i++) {
       try {
@@ -774,6 +843,7 @@ body{background:#eef1f5}
       if (c.cmd === 'visibility') {
         VISIBLE.areas = !!c.areas;
         VISIBLE.roads = !!c.roads;
+        VISIBLE.history = !!c.history;
         applyVisibility();
         return;
       }
@@ -796,6 +866,15 @@ body{background:#eef1f5}
     if (p) LAST = p;
     try { apply(p, false); } catch(e){ post({ t: 'error', message: String((e && e.message) || e) }); }
   };
+
+  // Same idea for history, on its own channel. Remembered for re-installs like LAST is.
+  window.__mapglSetHistory = function(fc){
+    if (fc) LAST_HISTORY = fc;
+    try {
+      var s = map.getSource && map.getSource('history');
+      if (s) s.setData(LAST_HISTORY);
+    } catch(e){ post({ t: 'error', message: String((e && e.message) || e) }); }
+  };
 })();
 </script></body></html>`;
 }
@@ -811,6 +890,8 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
   areas = NO_AREAS,
   trace = null,
   vehicle = null,
+  history = null,
+  showHistory = true,
   style,
   onUnsupported,
   styleUrl = MAP_STYLE,
@@ -845,6 +926,12 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
   traceRef.current = trace;
   const vehicleRef = useRef(vehicle);
   vehicleRef.current = vehicle;
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  // Which history version the CURRENT page holds — baked at build, then whatever was last pushed.
+  // A remount (retry, reload) starts again from the baked one, so both are kept.
+  const pageHistoryVersionRef = useRef<string>('');
+  const bakedHistoryVersionRef = useRef<string>('');
   const onUnsupportedRef = useRef(onUnsupported);
   onUnsupportedRef.current = onUnsupported;
 
@@ -870,8 +957,15 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
 
   const styleUrlRef = useRef(styleUrl);
   const initialCameraRef = useRef(initialCamera);
+  // Kept CURRENT, not frozen at mount: the HTML is rebuilt whenever roads or areas change, and a
+  // page baked with the first render's visibility would silently switch a layer the driver had
+  // turned off back on (or hide one they had turned on) on the next roads refresh.
   const showAreasRef = useRef(showAreas);
+  showAreasRef.current = showAreas;
   const showRoadsRef = useRef(showRoads);
+  showRoadsRef.current = showRoads;
+  const showHistoryRef = useRef(showHistory);
+  showHistoryRef.current = showHistory;
 
   /** Fire-and-forget command into the live page. No-op until the page says it is ready. */
   const command = useCallback((cmd: Record<string, unknown>) => {
@@ -896,8 +990,8 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
   const firstToggle = useRef(true);
   useEffect(() => {
     if (firstToggle.current) { firstToggle.current = false; return; }
-    command({ cmd: 'visibility', areas: showAreas, roads: showRoads });
-  }, [showAreas, showRoads, command]);
+    command({ cmd: 'visibility', areas: showAreas, roads: showRoads, history: showHistory });
+  }, [showAreas, showRoads, showHistory, command]);
 
   const firstStyle = useRef(true);
   useEffect(() => {
@@ -910,8 +1004,10 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
     // NOTE the dependency list below: styleUrl is intentionally NOT in it. A basemap swap goes
     // through __mapglCommand so the driver keeps their camera; re-deriving the HTML would reload
     // the whole engine. The values passed here are only ever the INITIAL ones.
-    () =>
-      buildHtml(
+    () => {
+      bakedHistoryVersionRef.current = historyRef.current?.version ?? '';
+      pageHistoryVersionRef.current = bakedHistoryVersionRef.current;
+      return buildHtml(
         roads,
         areas,
         traceRef.current,
@@ -919,8 +1015,11 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
         styleUrlRef.current,
         initialCameraRef.current,
         showAreasRef.current,
-        showRoadsRef.current
-      ),
+        showRoadsRef.current,
+        historyRef.current,
+        showHistoryRef.current
+      );
+    },
     [roads, areas]
   );
 
@@ -928,6 +1027,8 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
   // still applies.
   useEffect(() => {
     readyRef.current = false;
+    // A fresh document holds only what was baked into the HTML, whatever was pushed since.
+    pageHistoryVersionRef.current = bakedHistoryVersionRef.current;
     setStatus('loading');
     setReason('');
   }, [html, attempt]);
@@ -977,6 +1078,24 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
     push(trace, vehicle);
   }, [trace, vehicle, push]);
 
+  /**
+   * History is injected only when its version moves — never on the trace tick, and never when the
+   * page already holds this version (it was baked into the HTML, or pushed a moment ago).
+   */
+  const pushHistory = useCallback((h: MapGLHistory | null | undefined) => {
+    const version = h?.version ?? '';
+    if (version === pageHistoryVersionRef.current) return;
+    pageHistoryVersionRef.current = version;
+    webRef.current?.injectJavaScript(
+      `if(window.__mapglSetHistory)window.__mapglSetHistory(${jsonForScript(historyPayload(h))});true;`
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!readyRef.current) return;
+    pushHistory(history);
+  }, [history, pushHistory]);
+
   const onMessage = useCallback(
     (e: WebViewMessageEvent) => {
       let msg: { t?: string; reason?: string; message?: string };
@@ -989,6 +1108,14 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
         readyRef.current = true;
         setStatus('ready');
         push(traceRef.current, vehicleRef.current);
+        pushHistory(historyRef.current);
+        // A toggle between build and ready was dropped by `command` (not ready yet); re-assert.
+        command({
+          cmd: 'visibility',
+          areas: showAreasRef.current,
+          roads: showRoadsRef.current,
+          history: showHistoryRef.current,
+        });
       } else if (msg.t === 'camera') {
         const c = (msg as { center?: [number, number]; zoom?: number });
         if (Array.isArray(c.center) && typeof c.zoom === 'number') {
@@ -1004,7 +1131,7 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
       // 't: error' is non-fatal map noise (a missing tile, a failed glyph) and is swallowed on
       // purpose — surfacing it would put an alarming banner over a working map.
     },
-    [push]
+    [push, pushHistory, command]
   );
 
   const onLoadError = useCallback(() => {
@@ -1017,6 +1144,7 @@ export const MapGL = forwardRef<MapGLHandle, MapGLProps>(function MapGL({
 
   const onLoadStart = useCallback(() => {
     readyRef.current = false;
+    pageHistoryVersionRef.current = bakedHistoryVersionRef.current;
   }, []);
 
   if (status === 'unsupported') {

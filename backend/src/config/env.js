@@ -283,4 +283,31 @@ module.exports = {
   // keeps the ledger honest while letting a report exclude the questionable kilometres. Set false
   // only if the business would rather under-claim than over-claim.
   UKM_REVIEW_CLAIMS_COVERAGE: (process.env.UKM_REVIEW_CLAIMS_COVERAGE || 'true').toLowerCase() !== 'false',
+
+  // ---- Assigned-network coverage: services/linkCoverage.js ----
+  // The rules that decide when a snapped route has "covered" one of the customer's road links, and
+  // when a metre of driving counts as inside the driver's assigned polygon. Business contract, same
+  // as the block above: a change here changes what turns blue on every driver's phone and what the
+  // assigned-route UKM figure says.
+  LINK_COVERAGE_ENABLED: (process.env.LINK_COVERAGE_ENABLED || 'true').toLowerCase() !== 'false',
+  // How far a snapped route may sit from a link's centreline and still count as driving it. The
+  // "slight buffer" from the requirement. Snapped geometry sits on the OSM centreline and HERE links
+  // on theirs; the two disagree by a few metres on ordinary streets and by more on dual carriageways.
+  LINK_COVER_BUFFER_METERS: parseFloat(process.env.LINK_COVER_BUFFER_METERS || '15'),
+  // Share of a link's length that must be within the buffer before the whole link is claimed. Stops
+  // a 5 m touch at an intersection claiming a 900 m street, while a driver who turned off two-thirds
+  // of the way along still gets it. The fraction is stored on the claim for disputes.
+  LINK_COVER_MIN_FRACTION: parseFloat(process.env.LINK_COVER_MIN_FRACTION || '0.6'),
+  // Route heading must agree with the link (or its reverse, for two-way links) within this. This is
+  // what keeps the two carriageways of a divided road apart: they are 20 m from each other, well
+  // inside the buffer, and only their travel direction tells them apart.
+  LINK_COVER_HEADING_MAX_DELTA_DEG: parseFloat(process.env.LINK_COVER_HEADING_MAX_DELTA_DEG || '60'),
+  // A point this close to an assigned polygon's boundary counts as inside it. SA2 boundaries run
+  // down the middle of streets, so a driver on the boundary street is doing their job whichever
+  // side of the line the map-matcher put them.
+  AREA_BOUNDARY_BUFFER_METERS: parseFloat(process.env.AREA_BOUNDARY_BUFFER_METERS || '20'),
+
+  // ---- Driver route history: GET /api/tracking/my-history ----
+  MY_HISTORY_DEFAULT_DAYS: parseInt(process.env.MY_HISTORY_DEFAULT_DAYS || '30', 10),
+  MY_HISTORY_MAX_DAYS: parseInt(process.env.MY_HISTORY_MAX_DAYS || '180', 10),
 };

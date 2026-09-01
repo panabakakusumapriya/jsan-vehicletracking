@@ -10,6 +10,8 @@ const LinkCoverage = require('../models/LinkCoverage');
 const Project = require('../models/Project');
 const AreaAssignment = require('../models/AreaAssignment');
 const User = require('../models/User');
+const Trip = require('../models/Trip');
+const { rebuildNetworkCoverage } = require('../services/linkCoverage');
 
 const networkImport = require('../services/networkImport');
 const { kickImportRunner } = require('../services/importRunner');
@@ -447,6 +449,42 @@ async function activateVersion(req, res) {
   version.activatedAt = new Date();
   version.activatedBy = req.user._id;
   await version.save();
+
+  // Every closed trip on the project was measured against the OLD network, or against none. Their
+  // link figures go back to "not established" — a stale number that looks fresh is worse than a
+  // pending one — and the new version's ledger is rebuilt in the background right here, not left
+  // to the map-match worker (which does not run at all when Valhalla is disabled). The cleared
+  // stamp also hands them to that worker's catch-up sweep as a second net if the rebuild dies.
+  // Legacy trips with no projectId are the one set this cannot reach; backfill:link-coverage does.
+  await Trip.updateMany(
+    { projectId: version.projectId, status: { $in: ['completed', 'timed_out'] } },
+    [
+      {
+        $set: {
+          linkCoverageStatus: 'pending',
+          linkCoverageComputedAt: null,
+          assignedNetworkVersionId: null,
+          inAreaMeters: null,
+          outAreaMeters: null,
+          linkUkmMeters: null,
+          linkUkmNetworkMeters: null,
+          linkCoveredCount: null,
+          // The driver-facing figure follows the basis: an assigned driver's number is now
+          // unknown; an unassigned driver's global figure is unaffected by a network change.
+          effectiveUkmMeters: {
+            $cond: [{ $eq: ['$ukmBasis', 'assigned'] }, null, { $ifNull: ['$globalUniqueMeters', null] }],
+          },
+        },
+      },
+      { $unset: ['outAreaShapes', 'linkUkmShapes'] },
+    ]
+  );
+
+  setImmediate(() => {
+    rebuildNetworkCoverage(version._id)
+      .then((s) => console.log(`network: coverage rebuilt for version ${version._id}: ${s.attributed} trip(s), ${s.coveredLinks} link(s)`))
+      .catch((err) => console.error(`network: coverage rebuild for version ${version._id} failed:`, err.message));
+  });
 
   return res.json({ version });
 }

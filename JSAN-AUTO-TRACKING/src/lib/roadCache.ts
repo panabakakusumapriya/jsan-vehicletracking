@@ -31,7 +31,7 @@
  */
 import { Directory, File, Paths } from 'expo-file-system';
 
-import { apiMyRoads, type MyRoads } from './api';
+import { apiMyHistory, apiMyRoads, type MyHistory, type MyRoads } from './api';
 import { decodeRouteShapeLines } from './polyline';
 
 // ---------------------------------------------------------------------------------------------
@@ -368,6 +368,7 @@ export async function clearAllRoads(): Promise<void> {
  */
 export async function clearRoadCache(): Promise<void> {
   memory.clear();
+  historyMemory.clear();
   resetTraceState();
   const d = fs();
   if (!d) return;
@@ -606,4 +607,144 @@ export async function clearTrace(tripId?: string): Promise<void> {
   }
   resetTraceState();
   deleteQuietly(traceFile());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Route history (every closed trip in a window, drawn grey under the current route)
+// ---------------------------------------------------------------------------------------------
+
+type HistoryEnvelope = {
+  schema: number;
+  /** Whose history this is. Checked on read: a handset is shared between shifts, and a window
+   *  keyed by days alone would hand driver A's month to driver B. */
+  driverId: string;
+  days: number;
+  version: string;
+  fetchedAt: number;
+  data: MyHistory;
+};
+
+export type HistoryResult = {
+  data: MyHistory;
+  source: RoadsSource;
+  fetchedAt: number;
+  /** Server `version` differed from the cached one — the drawn lines need rebuilding. */
+  changed: boolean;
+  /** Network failed; this is the last good copy. */
+  stale: boolean;
+};
+
+/**
+ * Shorter than the roads' 12 h because history genuinely moves during a shift: a trip that ended
+ * an hour ago becomes snapped and attributed within minutes, and the driver wants to see it turn
+ * from a raw squiggle into a proper route. Still far from the 15 s poll — a month of routes is
+ * megabytes, and the screen forces a refresh at the two moments that actually change the answer
+ * (a manual refresh, and the current trip finishing its match).
+ */
+const HISTORY_MAX_AGE_MS = 10 * 60 * 1000;
+
+const historyMemory = new Map<string, HistoryEnvelope>();
+const historyInFlight = new Map<string, Promise<HistoryResult>>();
+
+const historyKey = (driverId: string, days: number) => `${safeKey(driverId)}:${Math.max(1, Math.floor(days))}`;
+
+function historyFile(driverId: string, days: number): File | null {
+  const d = fs();
+  if (!d) return null;
+  try {
+    return new File(d.root, `history-${safeKey(driverId)}-${Math.max(1, Math.floor(days))}.json`);
+  } catch {
+    return null;
+  }
+}
+
+async function readHistoryEnvelope(driverId: string, days: number): Promise<HistoryEnvelope | null> {
+  const file = historyFile(driverId, days);
+  if (!file) return null;
+  try {
+    if (!file.exists) return null;
+    const parsed = JSON.parse(await file.text()) as HistoryEnvelope;
+    if (!parsed || parsed.schema !== CACHE_SCHEMA || parsed.days !== days) return null;
+    if (parsed.driverId !== driverId) return null;
+    if (typeof parsed.version !== 'string' || typeof parsed.fetchedAt !== 'number') return null;
+    if (!parsed.data || !Array.isArray(parsed.data.trips) || !parsed.data.totals) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeHistoryEnvelope(env: HistoryEnvelope): void {
+  const file = historyFile(env.driverId, env.days);
+  if (!file) return;
+  try {
+    if (!file.exists) file.create({ intermediates: true, overwrite: true });
+    file.write(JSON.stringify(env));
+  } catch {
+    /* the memory copy still serves this session */
+  }
+}
+
+async function fetchAndStoreHistory(token: string, driverId: string, days: number): Promise<HistoryResult> {
+  const key = historyKey(driverId, days);
+  const cached = historyMemory.get(key);
+  const previous = cached ?? (await readHistoryEnvelope(driverId, days));
+  const previousSource: RoadsSource = cached ? 'memory' : 'disk';
+  try {
+    const data = await apiMyHistory(token, days);
+    if (!data || typeof data.version !== 'string' || !Array.isArray(data.trips)) {
+      throw new Error('Malformed my-history response');
+    }
+    const now = Date.now();
+    const changed = !previous || previous.version !== data.version;
+    const env: HistoryEnvelope = { schema: CACHE_SCHEMA, driverId, days, version: data.version, fetchedAt: now, data };
+    historyMemory.set(key, env);
+    if (changed || !previous || now - previous.fetchedAt > REWRITE_AFTER_MS) writeHistoryEnvelope(env);
+    return { data, source: 'network', fetchedAt: now, changed, stale: false };
+  } catch (err) {
+    if (previous) {
+      historyMemory.set(key, previous);
+      return { data: previous.data, source: previousSource, fetchedAt: previous.fetchedAt, changed: false, stale: true };
+    }
+    throw err;
+  }
+}
+
+/**
+ * One driver's route history for a window: cached copy if still fresh, otherwise fetched and
+ * stored. `force` revalidates regardless of age. Throws only with no cached copy AND a failed
+ * network call, like getRoads(). Keyed by driver as well as window, because the cache outlives a
+ * sign-in on a shared handset.
+ */
+export async function getHistory(
+  token: string,
+  driverId: string,
+  days: number,
+  opts: { force?: boolean; maxAgeMs?: number } = {},
+): Promise<HistoryResult> {
+  const key = historyKey(driverId, days);
+  const maxAge = opts.maxAgeMs ?? HISTORY_MAX_AGE_MS;
+  const now = Date.now();
+  if (!opts.force) {
+    const mem = historyMemory.get(key);
+    if (mem && now - mem.fetchedAt < maxAge) {
+      return { data: mem.data, source: 'memory', fetchedAt: mem.fetchedAt, changed: false, stale: false };
+    }
+    const disk = await readHistoryEnvelope(driverId, days);
+    if (disk) {
+      historyMemory.set(key, disk);
+      if (now - disk.fetchedAt < maxAge) {
+        return { data: disk.data, source: 'disk', fetchedAt: disk.fetchedAt, changed: false, stale: false };
+      }
+    }
+  }
+  const pending = historyInFlight.get(key);
+  if (pending) return pending;
+  const p = fetchAndStoreHistory(token, driverId, days);
+  historyInFlight.set(key, p);
+  try {
+    return await p;
+  } finally {
+    historyInFlight.delete(key);
+  }
 }

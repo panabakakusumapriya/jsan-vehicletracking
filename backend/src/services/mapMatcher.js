@@ -4,6 +4,7 @@ const env = require('../config/env');
 const { matchTrace } = require('./valhalla');
 const { recomputeDriverUkm } = require('./roadSegments');
 const { attributeTrip, computeTripMetrics } = require('./globalUkm');
+const { attributeTripLinks } = require('./linkCoverage');
 
 /**
  * Background worker: snaps each completed trip's raw GPS trace onto the road network via
@@ -103,6 +104,19 @@ async function processTrip(tripId) {
       console.error(`map-matcher: global UKM attribution failed for trip ${trip._id}:`, err.message);
     }
 
+    // Assigned-network coverage: which of the customer's links this trip covered, and how much of
+    // it was driven inside the driver's polygons. This is what turns roads blue on the phone. A
+    // THIRD independent call, non-fatal like the two above — the three answer different questions
+    // and none of them may take the others down.
+    if (env.LINK_COVERAGE_ENABLED) {
+      try {
+        await attributeTripLinks(trip._id);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`map-matcher: link coverage attribution failed for trip ${trip._id}:`, err.message);
+      }
+    }
+
     return 'matched';
   } catch (err) {
     await Trip.updateOne(
@@ -192,6 +206,41 @@ async function tick() {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('map-matcher: global UKM catch-up sweep failed:', err.message);
+    }
+  }
+
+  // And once more for the assigned-network ledger: trips matched before this engine existed, or
+  // re-matched since their links were last attributed. A network activated AFTER a trip was stamped
+  // no_network is the one case this cannot see — that is what backfill:link-coverage is for.
+  if (env.LINK_COVERAGE_ENABLED) {
+    try {
+      const stale = await Trip.find({
+        status: { $in: ['completed', 'timed_out'] },
+        mapMatchStatus: 'matched',
+        cleanedRouteShapes: { $exists: true, $ne: [] },
+        $or: [
+          { linkCoverageComputedAt: null },
+          { $expr: { $lt: ['$linkCoverageComputedAt', '$mapMatchedAt'] } },
+        ],
+      })
+        .select('_id')
+        .sort({ startedAt: 1 })
+        .limit(env.MAP_MATCH_MAX_PER_TICK);
+
+      // Per trip, not around the loop: one trip failing (it is stamped failed and will not be
+      // fetched again) must not abandon the rest of the batch.
+      for (const { _id } of stale) {
+        try {
+          await attributeTripLinks(_id);
+          counts.linkCoverageAttributed = (counts.linkCoverageAttributed || 0) + 1;
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(`map-matcher: link coverage attribution failed for trip ${_id}:`, err.message);
+        }
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('map-matcher: link coverage catch-up sweep failed:', err.message);
     }
   }
 

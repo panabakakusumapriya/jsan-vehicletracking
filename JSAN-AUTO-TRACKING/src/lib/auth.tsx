@@ -4,6 +4,8 @@ import { AppState } from 'react-native';
 
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { apiLogin, apiLogout, apiMe, apiUpdateTimezone, setUnauthorizedHandler, type AuthUser } from './api';
+import { clearMapPrefs } from './mapPrefs';
+import { clearRoadCache } from './roadCache';
 import { deviceTimezone } from './timezone';
 
 type AuthState = {
@@ -137,6 +139,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     await SecureStore.deleteItemAsync(TOKEN_KEY);
     await SecureStore.deleteItemAsync(USER_KEY);
+    // Handsets are shared between shifts. The road/history cache and the saved camera are one
+    // driver's assignment and route history; the next person to sign in must not inherit them.
+    try { await clearRoadCache(); } catch { /* nothing to clean, or storage unavailable */ }
+    try { await clearMapPrefs(state.user?._id); } catch { /* same */ }
     setState({ loading: false, token: null, user: null });
   };
 
@@ -156,8 +162,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setUnauthorizedHandler(async () => {
       try { await VehicleTracker.stop(); } catch { /* module may be absent */ }
+      // Same cleanup as signOut(): this path ends a session too, and on a shared handset the
+      // next driver must not inherit this one's cached roads, history and camera. The user id is
+      // read back from storage because this handler is registered once and would otherwise close
+      // over the first render's (empty) state.
+      let userId: string | null = null;
+      try {
+        const raw = await SecureStore.getItemAsync(USER_KEY);
+        userId = raw ? (JSON.parse(raw) as AuthUser)._id ?? null : null;
+      } catch { /* no stored user */ }
       await SecureStore.deleteItemAsync(TOKEN_KEY);
       await SecureStore.deleteItemAsync(USER_KEY);
+      try { await clearRoadCache(); } catch { /* nothing to clean, or storage unavailable */ }
+      try { await clearMapPrefs(userId); } catch { /* same */ }
       setState({ loading: false, token: null, user: null });
     });
     return () => setUnauthorizedHandler(null);

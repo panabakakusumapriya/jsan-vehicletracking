@@ -136,6 +136,49 @@ const tripSchema = new mongoose.Schema(
     // its code, and so a re-run can target only trips left behind by an older version.
     ukmAlgorithmVersion: { type: String, default: null },
 
+    // ---- Assigned-network coverage — see services/linkCoverage.js ----
+    // The two blocks above measure road against OTHER DRIVING. This block measures it against the
+    // CUSTOMER'S NETWORK: which of the road links they asked for did this trip cover, and how much
+    // of the driving happened inside the polygons the driver was actually assigned.
+    //
+    // What the figures were measured against. The polygons the driver held while this trip was
+    // driven (an assignment released the next day still counted on the day), and the network version
+    // that was active when it was attributed. Empty assignedAreaIds means "no polygon" — the
+    // in/out split is then null, not zero, and UKM falls back to the global figure.
+    assignedAreaIds: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'WorkArea' }], default: [] },
+    assignedNetworkVersionId: { type: mongoose.Schema.Types.ObjectId, ref: 'NetworkVersion', default: null },
+    // Snapped distance driven inside / outside the assigned polygons (physical, repeats included —
+    // this is "where did the driving happen", not "how much road was new"). A point within
+    // AREA_BOUNDARY_BUFFER_METERS of the boundary is inside.
+    inAreaMeters: { type: Number, default: null },
+    outAreaMeters: { type: Number, default: null },
+    // The out-of-area stretches, polyline6, so the driver's map and the trip page can colour them.
+    outAreaShapes: { type: [String], default: undefined },
+    // ASSIGNED-ROUTE UKM: length of the customer's links, inside the driver's assigned areas, that
+    // this trip was the first in the network to cover. Null when the driver held no polygon.
+    linkUkmMeters: { type: Number, default: null },
+    // Same, counting links anywhere in the network — a driver who covered a neighbouring area's
+    // street still covered it for the project, even if it does not count toward their own patch.
+    linkUkmNetworkMeters: { type: Number, default: null },
+    // Geometry of the assigned links this trip first-covered (polyline6, one per link).
+    linkUkmShapes: { type: [String], default: undefined },
+    // Links this trip drove at all, owned or repeat.
+    linkCoveredCount: { type: Number, default: null },
+    // no_network - the trip's project has no active network version, so there is nothing to measure
+    //              against. Not an error; not zero either.
+    linkCoverageStatus: {
+      type: String,
+      enum: ['pending', 'computed', 'review', 'no_network', 'failed'],
+      default: 'pending',
+    },
+    linkCoverageComputedAt: { type: Date, default: null },
+    // Which UKM the driver is measured on — see services/ukmBasis.js. 'assigned' when polygons were
+    // held (and a network existed to measure against), 'global' otherwise. effectiveUkmMeters is
+    // the corresponding figure copied into one field so reports, the phone and the trip page all
+    // read the same number without re-deciding the rule.
+    ukmBasis: { type: String, enum: ['assigned', 'global', null], default: null },
+    effectiveUkmMeters: { type: Number, default: null },
+
     // Set when the watchdog raised a "driver offline" alert for this trip, cleared when the
     // device starts reporting again. Doubles as the de-dupe lock: the watchdog only alerts
     // on a conditional update from null, so a restart (or a second server instance) can

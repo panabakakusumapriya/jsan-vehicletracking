@@ -443,6 +443,8 @@ export function Trips() {
                                 <th>Distance</th>
                                 <th>Max speed</th>
                                 <th>Points</th>
+                                <th title="Unique kilometers: assigned roads first covered by the trip when the driver held a polygon, otherwise road new to the whole programme">UKM</th>
+                                <th title="Snapped distance driven outside the polygons the driver was assigned during the trip">Outside area</th>
                                 <th></th>
                               </tr>
                             </thead>
@@ -461,6 +463,19 @@ export function Trips() {
                                   <td style={{ fontWeight: 600 }}>{km(t.distanceMeters)}</td>
                                   <td>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
                                   <td style={{ color: 'var(--muted)' }}>{t.pointCount}</td>
+                                  <td
+                                    style={{ fontWeight: 600 }}
+                                    title={t.effectiveUkmMeters == null
+                                      ? (t.status === 'active' ? 'Computed once the trip ends and is map-matched' : 'Not established yet — this is not zero')
+                                      : t.ukmBasis === 'assigned' ? 'Measured against the assigned road network' : 'Measured against all driving in the programme'}
+                                  >
+                                    {t.effectiveUkmMeters != null
+                                      ? <>{km(t.effectiveUkmMeters)}{t.ukmBasis && <span style={{ marginLeft: 5, fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase' }}>{t.ukmBasis}</span>}</>
+                                      : <span style={{ color: 'var(--muted)' }}>—</span>}
+                                  </td>
+                                  <td style={{ color: (t.outAreaMeters ?? 0) > 0 ? '#d97706' : 'var(--muted)', fontWeight: (t.outAreaMeters ?? 0) > 0 ? 600 : 400 }}>
+                                    {t.outAreaMeters != null ? km(t.outAreaMeters) : '—'}
+                                  </td>
                                   <td onClick={e => e.stopPropagation()}>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                       {t.status === 'active' && (

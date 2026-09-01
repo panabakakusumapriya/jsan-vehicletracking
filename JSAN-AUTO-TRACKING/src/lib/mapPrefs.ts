@@ -36,10 +36,15 @@ export const BASEMAPS: { id: Basemap; label: string; url: string }[] = [
 export const basemapUrl = (id: Basemap): string =>
   (BASEMAPS.find((b) => b.id === id) ?? BASEMAPS[0]).url;
 
+/** How much route history to draw under the current route. 0 = off. */
+export type HistoryDays = 0 | 7 | 30 | 90;
+export const HISTORY_OPTIONS: HistoryDays[] = [0, 7, 30, 90];
+
 export interface MapPrefs {
   basemap: Basemap;
   showAreas: boolean;
   showRoads: boolean;
+  historyDays: HistoryDays;
   /** Last camera position, [lon, lat]. Undefined until the driver has moved the map once. */
   center?: [number, number];
   zoom?: number;
@@ -49,6 +54,7 @@ export const DEFAULT_PREFS: MapPrefs = {
   basemap: 'liberty',
   showAreas: true,
   showRoads: true,
+  historyDays: 30,
 };
 
 const ROOT_DIR_NAME = 'jsan-map';
@@ -101,6 +107,9 @@ function coerce(raw: unknown): MapPrefs {
     basemap,
     showAreas: typeof p.showAreas === 'boolean' ? p.showAreas : DEFAULT_PREFS.showAreas,
     showRoads: typeof p.showRoads === 'boolean' ? p.showRoads : DEFAULT_PREFS.showRoads,
+    historyDays: HISTORY_OPTIONS.includes(p.historyDays as HistoryDays)
+      ? (p.historyDays as HistoryDays)
+      : DEFAULT_PREFS.historyDays,
     center,
     zoom,
   };

@@ -5,6 +5,7 @@ const { haversineMeters } = require('../utils/geo');
 const { encodePolyline6 } = require('./valhalla');
 const { segmentKey, decodePolyline6 } = require('./roadSegments');
 const { scopeForTrip } = require('./coverageScope');
+const { syncEffectiveUkm } = require('./ukmBasis');
 
 /**
  * GLOBAL UKM — road counted once for the whole coverage programme, not once per driver.
@@ -393,6 +394,7 @@ async function computeTripMetrics(tripId) {
         $unset: { ukmUniqueShapes: 1, ukmDuplicateShapes: 1 },
       }
     );
+    await syncEffectiveUkm(trip._id);
     return { tripId: trip._id, status, globalUniqueMeters: null };
   }
 
@@ -442,6 +444,8 @@ async function computeTripMetrics(tripId) {
       },
     }
   );
+  // The driver-facing figure follows this number for unassigned drivers — see ukmBasis.js.
+  await syncEffectiveUkm(trip._id);
 
   return {
     tripId: trip._id,

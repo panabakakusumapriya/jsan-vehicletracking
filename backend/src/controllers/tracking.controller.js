@@ -5,8 +5,11 @@ const RejectedPoint = require('../models/RejectedPoint');
 const NetworkVersion = require('../models/NetworkVersion');
 const AreaAssignment = require('../models/AreaAssignment');
 const WorkArea = require('../models/WorkArea');
+const { releaseLinks } = require('../services/linkCoverage');
 const asyncHandler = require('../utils/asyncHandler');
-const { haversineMeters } = require('../utils/geo');
+const { haversineMeters, simplifyPath } = require('../utils/geo');
+const { decodePolyline6 } = require('../services/roadSegments');
+const { encodePolyline6 } = require('../services/valhalla');
 const { timezoneFromCoords } = require('../utils/tzFromCoords');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { emitLocation } = require('../realtime/io');
@@ -149,6 +152,16 @@ exports.ingest = asyncHandler(async (req, res) => {
               globalUniqueMeters: null,
               unmatchedReviewMeters: null,
               globalUkmComputedAt: null,
+              // And the assigned-network figures, for the same reason. A live trip must not carry
+              // an in/out-of-area split or a UKM frozen from before the timeout.
+              linkCoverageStatus: 'pending',
+              linkCoverageComputedAt: null,
+              inAreaMeters: null,
+              outAreaMeters: null,
+              linkUkmMeters: null,
+              linkUkmNetworkMeters: null,
+              linkCoveredCount: null,
+              effectiveUkmMeters: null,
             },
             $unset: {
               cleanedRouteShapes: 1,
@@ -156,9 +169,16 @@ exports.ingest = asyncHandler(async (req, res) => {
               endLocation: 1,
               ukmUniqueShapes: 1,
               ukmDuplicateShapes: 1,
+              outAreaShapes: 1,
+              linkUkmShapes: 1,
             },
           }
         );
+        // Its claims on the customer's links were made on a partial drive; they are re-made when
+        // the trip finally closes and is attributed again.
+        if (trip.assignedNetworkVersionId) {
+          await releaseLinks(trip._id, trip.assignedNetworkVersionId).catch(() => {});
+        }
         trip.status = 'active';
         trip.endedAt = null;
       }
@@ -1053,4 +1073,130 @@ exports.myRoads = asyncHandler(async (req, res) => {
   if (!roads) return res.status(403).json({ error: 'You are not assigned to this area' });
 
   await sendCompressed(req, res, roads);
+});
+
+/**
+ * GET /api/tracking/my-history?days=30   (driver only)
+ *
+ * Every closed trip the driver drove in the window, as drawable geometry plus the per-trip figures
+ * the phone shows — so a driver can see where they have already been, not just today's route.
+ * my-session deliberately stays "the current trip": this payload is megabytes for a busy month and
+ * has no place on a 15-second poll. The app caches it and asks again only on open, on refresh, and
+ * when the current trip finishes matching.
+ *
+ * Geometry is the snapped route where the trip has one, simplified at 10 m — history is drawn as a
+ * thin grey line under everything else and the wobble between corners is invisible at that width.
+ * Trips the matcher has not (or could not) snap ship their raw trace at 15 m instead, limited to
+ * the most recent few: a raw trace is the full point stream and those trips are rare.
+ *
+ * `version` is a cheap change key (`count.maxUpdatedAt`) so an unchanged month is not re-drawn.
+ */
+const HISTORY_MAX_VERTICES = 400000;
+const HISTORY_MAX_RAW_TRIPS = 20;
+const HISTORY_SNAPPED_TOLERANCE_M = 10;
+const HISTORY_RAW_TOLERANCE_M = 15;
+
+const reencode = (coords, tolerance) => {
+  const simplified = simplifyPath(coords, tolerance);
+  if (simplified.length < 2) return null;
+  return { shape: encodePolyline6(simplified.map(([lon, lat]) => ({ lat, lon }))), vertices: simplified.length };
+};
+
+exports.myHistory = asyncHandler(async (req, res) => {
+  const requested = parseInt(String(req.query.days || ''), 10);
+  const days = Math.min(
+    env.MY_HISTORY_MAX_DAYS,
+    Math.max(1, Number.isFinite(requested) ? requested : env.MY_HISTORY_DEFAULT_DAYS)
+  );
+  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const trips = await Trip.find({
+    driverId: req.user._id,
+    status: { $in: ['completed', 'timed_out'] },
+    startedAt: { $gte: from },
+  })
+    .select(
+      'startedAt endedAt status distanceMeters cleanedDistanceMeters mapMatchStatus ' +
+        'cleanedRouteShapes outAreaShapes inAreaMeters outAreaMeters effectiveUkmMeters ukmBasis ' +
+        'ukmStatus linkCoverageStatus assignedAreaIds updatedAt'
+    )
+    .sort({ startedAt: -1 })
+    .lean();
+
+  const out = [];
+  const totals = { trips: 0, distanceMeters: 0, cleanedMeters: 0, inAreaMeters: 0, outAreaMeters: 0, ukmMeters: 0, ukmPendingTrips: 0 };
+  let vertices = 0;
+  let rawShipped = 0;
+  let truncated = false;
+  let maxUpdated = 0;
+
+  for (const t of trips) {
+    if (t.updatedAt) maxUpdated = Math.max(maxUpdated, new Date(t.updatedAt).getTime());
+
+    // Totals cover the WHOLE window, whether or not a trip's geometry made it under the vertex
+    // ceiling — the summary line says "last 30 days", and it has to mean that.
+    totals.trips += 1;
+    totals.distanceMeters += t.distanceMeters || 0;
+    totals.cleanedMeters += t.cleanedDistanceMeters || 0;
+    if (t.inAreaMeters != null) totals.inAreaMeters += t.inAreaMeters;
+    if (t.outAreaMeters != null) totals.outAreaMeters += t.outAreaMeters;
+    if (t.effectiveUkmMeters != null) totals.ukmMeters += t.effectiveUkmMeters;
+    else totals.ukmPendingTrips += 1;
+    if (truncated) continue;
+
+    let kind = 'snapped';
+    const shapes = [];
+    let tripVertices = 0;
+
+    if (t.mapMatchStatus === 'matched' && t.cleanedRouteShapes && t.cleanedRouteShapes.length) {
+      for (const s of t.cleanedRouteShapes) {
+        let pts;
+        try { pts = decodePolyline6(s); } catch { continue; }
+        const r = reencode(pts.map((p) => [p.lon, p.lat]), HISTORY_SNAPPED_TOLERANCE_M);
+        if (r) { shapes.push(r.shape); tripVertices += r.vertices; }
+      }
+    } else {
+      kind = 'raw';
+      if (rawShipped < HISTORY_MAX_RAW_TRIPS) {
+        rawShipped += 1;
+        const pts = await LocationPoint.find({ tripId: t._id }).sort({ recordedAt: 1 }).select('lat lon -_id').lean();
+        const r = reencode(pts.map((p) => [p.lon, p.lat]), HISTORY_RAW_TOLERANCE_M);
+        if (r) { shapes.push(r.shape); tripVertices += r.vertices; }
+      }
+    }
+
+    // Newest first, so hitting the ceiling drops the OLDEST trips' geometry — the least worth a
+    // redraw. Their figures were already counted above.
+    if (vertices + tripVertices > HISTORY_MAX_VERTICES) { truncated = true; continue; }
+    vertices += tripVertices;
+
+    out.push({
+      id: String(t._id),
+      startedAt: t.startedAt,
+      endedAt: t.endedAt,
+      status: t.status,
+      kind,
+      shapes,
+      outAreaShapes: t.outAreaShapes || [],
+      distanceMeters: t.distanceMeters || 0,
+      cleanedDistanceMeters: t.cleanedDistanceMeters ?? null,
+      inAreaMeters: t.inAreaMeters ?? null,
+      outAreaMeters: t.outAreaMeters ?? null,
+      // null means "not established yet" — the app must not render it as 0. A null basis means
+      // the link pass has not run for this trip; the global figure is what it is measured on so far.
+      ukmMeters: t.effectiveUkmMeters ?? null,
+      ukmBasis: t.ukmBasis || 'global',
+      ukmStatus: t.ukmStatus || 'pending',
+    });
+  }
+
+  await sendCompressed(req, res, {
+    days,
+    from,
+    generatedAt: new Date(),
+    version: `${trips.length}.${maxUpdated}`,
+    truncated,
+    totals,
+    trips: out,
+  });
 });

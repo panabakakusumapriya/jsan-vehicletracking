@@ -170,6 +170,45 @@ function UkmScopeBadge({ trip }: { trip: Trip }) {
   );
 }
 
+/**
+ * Says the UKM figure on screen is the ASSIGNED-ROUTE one — measured against the customer's road
+ * links inside the polygons this driver held, not against other driving — and gives the global
+ * figure alongside so the two are never confused. The tooltip carries the reconciliation.
+ */
+function AssignedUkmBadge({ trip }: { trip: Trip }) {
+  const kmOf = (m: number | null | undefined) => (m == null ? '—' : (m / 1000).toFixed(1));
+  const areas = trip.assignedAreaIds?.length ?? 0;
+  const title =
+    `Assigned-route UKM: the customer's road links inside the ${areas} polygon${areas === 1 ? '' : 's'} this driver held ` +
+    'during the trip that no trip in the network had covered before. A link counts once at least 60% of it lies ' +
+    'within 15 m of the snapped route, driving in a permitted direction.' +
+    `\n\nAssigned links first covered: ${kmOf(trip.linkUkmMeters)} km` +
+    `\nNetwork links first covered, any area: ${kmOf(trip.linkUkmNetworkMeters)} km` +
+    `\nGlobal UKM (all driving, deduplicated across the programme): ${kmOf(trip.globalUniqueMeters)} km` +
+    (trip.linkCoverageStatus === 'review'
+      ? '\n\nFlagged REVIEW: part of the trace could not be snapped, so the link matches are indicative.'
+      : '');
+  return (
+    <>
+      <span
+        title={title}
+        style={{
+          fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+          padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap',
+          color: 'var(--brand)', border: '1px solid var(--brand)',
+        }}
+      >
+        assigned roads
+      </span>
+      {trip.globalUniqueMeters != null && (
+        <span style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }} title="Global UKM over the whole route, for comparison">
+          global {kmOf(trip.globalUniqueMeters)} km
+        </span>
+      )}
+    </>
+  );
+}
+
 /* ── Who already had this road ──
  *
  * The breakdown behind the "Already covered" tile: for every piece of road this trip drove that
@@ -398,9 +437,21 @@ export function TripDetail() {
   // not reached. Both come from the server; nothing here decides what counts as new.
   const ukmPaths = useMemo(() => {
     if (mode !== 'cleaned') return null;
-    const shapes = trip?.ukmUniqueShapes?.length ? trip.ukmUniqueShapes : trip?.ukmNewShapes;
+    // A driver measured on assigned roads gets the links they first-covered highlighted — the
+    // geometry behind THEIR number — rather than the global stretches, which answer a different
+    // question. Both come from the server; nothing here decides what counts.
+    // Never the global stretches under an "assigned roads" label: an assigned driver whose trip
+    // first-covered no assigned link gets no highlight, which is the truthful picture.
+    const shapes = trip?.ukmBasis === 'assigned'
+      ? trip.linkUkmShapes
+      : trip?.ukmUniqueShapes?.length ? trip.ukmUniqueShapes : trip?.ukmNewShapes;
     if (!shapes?.length) return null;
     return shapes.map((s) => decodeRouteShapes([s])).filter((p) => p.length > 1);
+  }, [mode, trip]);
+  // The stretches driven outside the assigned polygon, drawn amber over the route.
+  const outsidePaths = useMemo(() => {
+    if (mode !== 'cleaned' || !trip?.outAreaShapes?.length) return null;
+    return trip.outAreaShapes.map((s) => decodeRouteShapes([s])).filter((p) => p.length > 1);
   }, [mode, trip]);
 
   // Camera follows the vehicle during playback — rotates to face the driving
@@ -418,8 +469,8 @@ export function TripDetail() {
   }, [playback.currentTimeMs, playback.playing, points]);
 
   const layers = useMemo(
-    () => buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths),
-    [points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths]
+    () => buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths, outsidePaths),
+    [points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths, outsidePaths]
   );
 
   if (loading) return <div className="muted">Loading trip…</div>;
@@ -427,6 +478,12 @@ export function TripDetail() {
 
   const start: [number, number] = points[0] ? [points[0].lon, points[0].lat] : [78.45, 17.42];
   const driver = typeof trip.driverId === 'object' ? trip.driverId.name : 'Driver';
+  // The figure the UKM tile shows. An assigned driver's number is the assigned-route one and
+  // nothing else — falling back to the global figure under an "assigned roads" badge would put a
+  // different question's answer beside the wrong label.
+  const ukmValue = trip.ukmBasis === 'assigned'
+    ? trip.effectiveUkmMeters ?? null
+    : trip.effectiveUkmMeters ?? trip.globalUniqueMeters ?? trip.ukmMeters ?? null;
 
   return (
     <div>
@@ -464,15 +521,42 @@ export function TripDetail() {
           subtract two numbers that were measured differently. Hidden until the trip is matched
           too — a dash would imply "no unique road" when the truth is "not computed yet".
         */}
-        {mode === 'cleaned' && (trip.globalUniqueMeters ?? trip.ukmMeters) != null && (
+        {mode === 'cleaned' && (ukmValue != null || trip.ukmBasis === 'assigned') && (
           <div className="stat">
-            <div className="v">{km(trip.globalUniqueMeters ?? trip.ukmMeters ?? 0)}</div>
+            <div className="v" title={ukmValue == null ? 'Not established yet — this is not zero' : undefined}>
+              {ukmValue != null ? km(ukmValue) : '—'}
+            </div>
             <div className="k" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <span title="Unique kilometers">UKM</span>
-              <UkmScopeBadge trip={trip} />
-              <UkmNote trip={trip} />
+              {trip.ukmBasis === 'assigned' ? (
+                <AssignedUkmBadge trip={trip} />
+              ) : (
+                <>
+                  <UkmScopeBadge trip={trip} />
+                  <UkmNote trip={trip} />
+                </>
+              )}
             </div>
           </div>
+        )}
+        {/* Where the driving happened, against the polygons the driver held during the trip.
+            Only when they held one: with no polygon there is no inside, and a "0 km outside"
+            would read as a driver who stayed in their patch rather than one who had none. */}
+        {mode === 'cleaned' && trip.inAreaMeters != null && (
+          <>
+            <div className="stat">
+              <div className="v">{km(trip.inAreaMeters)}</div>
+              <div className="k">In assigned area</div>
+            </div>
+            <div className="stat">
+              <div className="v" style={{ color: (trip.outAreaMeters ?? 0) > 0 ? '#d97706' : undefined }}>
+                {km(trip.outAreaMeters ?? 0)}
+              </div>
+              <div className="k" title="Snapped distance driven outside every polygon the driver was assigned during this trip (a 20 m boundary tolerance is applied). Real kilometres, but not the job.">
+                Outside area
+              </div>
+            </div>
+          </>
         )}
         {/* The road this trip covered that the programme already had. Shown next to UKM because
             the pair is the whole story — 27 km of road of which 12 km was already ours says
@@ -552,7 +636,7 @@ export function TripDetail() {
         <Map3D ref={mapRef} center={start} zoom={14} layers={layers} />
         {/* Two colours on a map need saying out loud — without this the muted stretches read as
             a rendering glitch rather than "the driver had been here before". */}
-        {ukmPaths && ukmPaths.length > 0 && (
+        {((ukmPaths && ukmPaths.length > 0) || (outsidePaths && outsidePaths.length > 0)) && (
           <div
             style={{
               position: 'absolute', bottom: 12, left: 12, zIndex: 1,
@@ -562,14 +646,26 @@ export function TripDetail() {
               fontSize: 11.5, fontWeight: 600, boxShadow: '0 1px 4px rgba(0,0,0,0.10)',
             }}
           >
-            <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-              <span style={{ width: 16, height: 4, borderRadius: 2, background: 'rgb(16,185,129)' }} />
-              UKM — new road this trip
-            </span>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--muted)' }}>
-              <span style={{ width: 16, height: 4, borderRadius: 2, background: 'rgb(148,163,184)' }} />
-              {trip.globalUniqueMeters != null ? 'Already covered by the programme' : 'Driven on an earlier trip'}
-            </span>
+            {ukmPaths && ukmPaths.length > 0 && (
+              <>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ width: 16, height: 4, borderRadius: 2, background: 'rgb(16,185,129)' }} />
+                  {trip.ukmBasis === 'assigned' ? 'UKM — assigned roads first covered by this trip' : 'UKM — new road this trip'}
+                </span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'var(--muted)' }}>
+                  <span style={{ width: 16, height: 4, borderRadius: 2, background: 'rgb(148,163,184)' }} />
+                  {trip.ukmBasis === 'assigned'
+                    ? 'Rest of the route'
+                    : trip.globalUniqueMeters != null ? 'Already covered by the programme' : 'Driven on an earlier trip'}
+                </span>
+              </>
+            )}
+            {outsidePaths && outsidePaths.length > 0 && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 7, color: '#b45309' }}>
+                <span style={{ width: 16, height: 4, borderRadius: 2, background: 'rgb(245,158,11)' }} />
+                Outside the assigned area
+              </span>
+            )}
           </div>
         )}
       </div>

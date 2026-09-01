@@ -38,6 +38,18 @@ router.get('/my-areas', authenticate, requireRole('user'), ctrl.myAreas);
 // Driver reads the individual roads inside one of those areas, flagged driven / not driven.
 router.get('/my-roads', authenticate, requireRole('user'), roadsLimiter, ctrl.myRoads);
 
+// Driver reads their own route history. Heavy like my-roads (a month of snapped routes), so it
+// gets the same kind of per-driver cap; the app caches it and asks a handful of times a day.
+const historyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many history requests; try again shortly' },
+});
+router.get('/my-history', authenticate, requireRole('user'), historyLimiter, ctrl.myHistory);
+
 // Admins / managers read the live snapshot.
 router.get('/live', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.live);
 

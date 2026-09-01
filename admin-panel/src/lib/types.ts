@@ -346,6 +346,26 @@ export interface Trip {
   ukmDuplicateShapes?: string[] | null;
   globalUkmComputedAt?: string | null;
   ukmAlgorithmVersion?: string | null;
+
+  // ---- Assigned-network coverage: measured against the customer's road links and the polygons
+  // the driver held during the trip. See backend services/linkCoverage.js.
+  assignedAreaIds?: string[];
+  assignedNetworkVersionId?: string | null;
+  // Snapped distance inside / outside the assigned polygons. null when no polygon was held.
+  inAreaMeters?: number | null;
+  outAreaMeters?: number | null;
+  outAreaShapes?: string[] | null;
+  // Assigned-route UKM: the customer's links inside the driver's areas that this trip covered first.
+  linkUkmMeters?: number | null;
+  // Same, any area of the network.
+  linkUkmNetworkMeters?: number | null;
+  linkUkmShapes?: string[] | null;
+  linkCoveredCount?: number | null;
+  linkCoverageStatus?: 'pending' | 'computed' | 'review' | 'no_network' | 'failed';
+  linkCoverageComputedAt?: string | null;
+  // Which UKM the driver is measured on, and that figure — the one every surface should show.
+  ukmBasis?: 'assigned' | 'global' | null;
+  effectiveUkmMeters?: number | null;
 }
 
 export interface LiveDriver {

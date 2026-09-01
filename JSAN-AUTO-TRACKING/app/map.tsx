@@ -11,16 +11,19 @@ import { useAuth } from '@/src/lib/auth';
 import {
   BASEMAPS,
   DEFAULT_PREFS,
+  HISTORY_OPTIONS,
   basemapUrl,
   loadMapPrefs,
   saveMapPrefs,
+  type HistoryDays,
   type MapPrefs,
 } from '@/src/lib/mapPrefs';
 import { API_BASE_URL, IS_CUSTOM_API } from '@/src/lib/config';
 import { TabBar } from '@/src/components/TabBar';
-import { MapGL, type MapGLHandle, type MapGLTrace, type RoadTuple } from '@/src/components/MapGL';
-import { apiMyAreas, type MyArea } from '@/src/lib/api';
-import { getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
+import { MapGL, type MapGLHandle, type MapGLHistory, type MapGLTrace, type RoadTuple } from '@/src/components/MapGL';
+import { apiMyAreas, type MyArea, type MyHistory } from '@/src/lib/api';
+import { decodeRouteShapeLines } from '@/src/lib/polyline';
+import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
 
 const C = {
   brand:    '#7c3aed',
@@ -45,7 +48,14 @@ const C = {
   roadTodo:  '#dc2626', // assigned, not yet driven
   roadDone:  '#2563eb', // already covered
   roadTrace: '#059669', // the current drive
+  roadHistory: '#6b7280', // earlier trips, drawn under everything
+  outside:   '#f59e0b', // the current drive, outside the assigned polygon
 };
+
+/** The Layers panel cycles through the history windows; 0 is off. */
+const nextHistoryDays = (d: HistoryDays): HistoryDays =>
+  HISTORY_OPTIONS[(HISTORY_OPTIONS.indexOf(d) + 1) % HISTORY_OPTIONS.length];
+const historyLabel = (d: HistoryDays) => (d === 0 ? 'OFF' : `${d} D`);
 
 /**
  * Stable empty defaults, as module constants rather than `[]` literals.
@@ -84,6 +94,17 @@ interface Trip {
    */
   mapMatchStatus?: string | null;
   cleanedRouteShapes?: string[] | null;
+  /**
+   * Assigned-network figures, written by the server after matching (see backend
+   * services/linkCoverage.js). All null until then, and in/out stay null on a trip driven with no
+   * polygon assigned — null means "not established", never zero.
+   */
+  linkCoverageStatus?: string | null;
+  inAreaMeters?: number | null;
+  outAreaMeters?: number | null;
+  outAreaShapes?: string[] | null;
+  effectiveUkmMeters?: number | null;
+  ukmBasis?: 'assigned' | 'global' | null;
 }
 
 function km(m: number) {
@@ -126,6 +147,19 @@ export default function MapScreen() {
 
   const [trace,    setTrace]    = useState<MapGLTrace | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
+
+  /**
+   * Route history: every closed trip in the chosen window, drawn grey under the current route.
+   * `history` carries the figures for the summary line; `historyLines` is the decoded geometry,
+   * rebuilt only when the server's version moves — decoding a month of polylines on every poll
+   * would be wasted work, and handing MapGL a new object would re-inject megabytes.
+   */
+  const [history, setHistory] = useState<MyHistory | null>(null);
+  const [historyLines, setHistoryLines] = useState<MapGLHistory | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyStale, setHistoryStale] = useState(false);
+  const historyKeyRef = useRef<string | null>(null);
+  const historyDaysRef = useRef<HistoryDays>(DEFAULT_PREFS.historyDays);
 
   /**
    * Map preferences, remembered per driver.
@@ -334,6 +368,44 @@ export default function MapScreen() {
     setRoadsLoading(false);
   }, [token]);
 
+  /**
+   * The driver's route history, via the on-device cache. Fetched on open, on refresh, when the
+   * window changes, and when the current trip finishes its server-side processing — never on the
+   * 15 s poll. Days = 0 means the layer is off and nothing is held.
+   */
+  const loadHistory = useCallback(async (days: HistoryDays, force: boolean) => {
+    if (!token || !driverId || days === 0) {
+      historyKeyRef.current = null;
+      setHistory(null);
+      setHistoryLines(null);
+      setHistoryError(null);
+      setHistoryStale(false);
+      return;
+    }
+    try {
+      const r = await getHistory(token, driverId, days, { force });
+      // The window may have moved while this was in flight (OFF -> 7 d -> 30 d in quick taps, or
+      // the saved preference arriving after the default fired). A superseded answer is dropped
+      // rather than overwriting the state the current window already set.
+      if (!mountedRef.current || historyDaysRef.current !== days) return;
+      setHistoryError(null);
+      setHistoryStale(r.stale);
+      setHistory(r.data);
+      const key = `${days}:${r.data.version}`;
+      if (key !== historyKeyRef.current) {
+        historyKeyRef.current = key;
+        const lines: [number, number][][] = [];
+        for (const t of r.data.trips) for (const line of decodeRouteShapeLines(t.shapes)) lines.push(line);
+        setHistoryLines({ version: key, lines });
+      }
+    } catch (e) {
+      // The last known history stays drawn; the failure is stated, not swallowed.
+      if (mountedRef.current && historyDaysRef.current === days) {
+        setHistoryError(errMsg(e, 'Could not load your route history'));
+      }
+    }
+  }, [token, driverId]);
+
   const fetchSession = useCallback(async (silent = false) => {
     if (!token) return;
     if (!silent) setLoading(true);
@@ -371,6 +443,60 @@ export default function MapScreen() {
    */
   useEffect(() => { loadRoads(areas, false); }, [areas, loadRoads]);
 
+  historyDaysRef.current = prefs.historyDays;
+  // Not before the saved preferences are in: firing on the default window and then again on the
+  // real one would download a month a driver had switched off.
+  useEffect(() => {
+    if (!prefsReady) return;
+    loadHistory(prefs.historyDays, false);
+  }, [prefsReady, prefs.historyDays, loadHistory]);
+
+  /**
+   * The moments the server's answer actually changes, read off the session poll:
+   *   - the current trip finishes map-matching, and then finishes link attribution — that is when
+   *     the streets it drove turn blue and its in/out-of-area split appears, so the roads are
+   *     force-refreshed rather than waiting up to 12 h;
+   *   - the trip on screen is replaced (a new one started) — the old one is history now.
+   * Both are transitions, not states: a key that has not moved does nothing, and the first poll
+   * after mount only records where things stand.
+   */
+  const pipelineKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = trip
+      ? `${trip._id}:${trip.status}:${trip.mapMatchStatus ?? ''}:${trip.linkCoverageStatus ?? ''}`
+      : '';
+    const prev = pipelineKeyRef.current;
+    pipelineKeyRef.current = key;
+    // No trip before (mount, or the first poll landing) and no trip after are not transitions —
+    // the first session answer must not be read as "a new trip started" and cost a forced download.
+    if (!prev || !key || prev === key) return;
+    const [prevTrip, , prevMatch, prevLinks] = prev.split(':');
+    if (prevTrip !== key.split(':')[0]) { loadHistory(historyDaysRef.current, true); return; }
+
+    const LINKS_DONE = ['computed', 'review', 'no_network', 'failed'];
+    const matchedNow = trip?.mapMatchStatus === 'matched' && prevMatch !== 'matched';
+    const linksDoneNow =
+      LINKS_DONE.includes(trip?.linkCoverageStatus ?? '') && !LINKS_DONE.includes(prevLinks ?? '');
+
+    // History changes at both moments (raw squiggle -> snapped route, then the figures land). The
+    // roads only change at the second: nothing turns blue until the links have been attributed,
+    // and a ~250 KB re-download on the first would find the same version every time.
+    if (matchedNow || linksDoneNow) loadHistory(historyDaysRef.current, true);
+    if (linksDoneNow) loadRoads(areasRef.current, true);
+  }, [trip, loadRoads, loadHistory]);
+
+  /**
+   * A slow revalidation for the case the poll cannot see: yesterday's trip finishing attribution
+   * while today's is on screen. getHistory() only touches the network once its copy is older than
+   * its own max age, so this is a check, not a download.
+   */
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (historyDaysRef.current > 0) loadHistory(historyDaysRef.current, false);
+    }, 10 * 60_000);
+    return () => clearInterval(t);
+  }, [loadHistory]);
+
   /**
    * The trace. resolveTrace() owns the raw-vs-snapped contract - raw GPS while driving, the
    * polyline6-decoded cleanedRouteShapes once mapMatchStatus is 'matched' - and persists whichever
@@ -385,10 +511,13 @@ export default function MapScreen() {
     (async () => {
       const t = await resolveTrace(trip, points);
       if (cancelled || !mountedRef.current) return;
-      const sig = t ? `${t.tripId}:${t.kind}:${t.count}` : '';
+      // The out-of-area stretches are decided server-side after snapping, so they belong to the
+      // snapped trace only — a live raw trace has no such thing yet.
+      const outsideLines = t && t.kind === 'snapped' ? decodeRouteShapeLines(trip?.outAreaShapes) : [];
+      const sig = t ? `${t.tripId}:${t.kind}:${t.count}:${outsideLines.length}` : '';
       if (sig === traceSigRef.current) return;
       traceSigRef.current = sig;
-      setTrace(t);
+      setTrace(t ? { ...t, outsideLines } : null);
     })();
     return () => { cancelled = true; };
   }, [trip, points]);
@@ -479,6 +608,16 @@ export default function MapScreen() {
             <Text style={s.panelLabel}>Roads</Text>
             <Text style={[s.panelState, prefs.showRoads && s.panelStateOn]}>{prefs.showRoads ? 'ON' : 'OFF'}</Text>
           </TouchableOpacity>
+          {/* Cycles Off → 7 d → 30 d → 90 d. A window, not a toggle, because "everything I have ever
+              driven" is megabytes on a metered plan and a month is what a driver actually asks for. */}
+          <TouchableOpacity
+            style={s.panelRow}
+            onPress={() => updatePrefs({ historyDays: nextHistoryDays(prefs.historyDays) })}
+            accessibilityLabel="Route history window"
+          >
+            <Text style={s.panelLabel}>History</Text>
+            <Text style={[s.panelState, prefs.historyDays > 0 && s.panelStateOn]}>{historyLabel(prefs.historyDays)}</Text>
+          </TouchableOpacity>
 
           {/* The background-map picker is hidden while there is only one style to pick. It renders
               again automatically if another is added to BASEMAPS — see src/lib/mapPrefs.ts. */}
@@ -513,7 +652,8 @@ export default function MapScreen() {
     fetchSession(true);
     // Areas first: if the allocation changed, the forced road load must be for the new list.
     fetchAreas().then((list) => loadRoads(list, true));
-  }, [fetchSession, fetchAreas, loadRoads]);
+    loadHistory(historyDaysRef.current, true);
+  }, [fetchSession, fetchAreas, loadRoads, loadHistory]);
 
   const notices = [
     // Which backend this build talks to, whenever it is NOT the production default. Twice now,
@@ -527,6 +667,9 @@ export default function MapScreen() {
     // the reason - it gives the driver the one number the map would have shown them.
     mapError     && `! Map unavailable - ${roadStats.todo.toLocaleString()} of ${roadStats.total.toLocaleString()} assigned roads still to drive.`,
     roadsNote    && `Note: ${roadsNote}`,
+    prefs.historyDays > 0 && historyError && `! Route history - ${historyError}`,
+    prefs.historyDays > 0 && historyStale && !historyError && 'Note: route history is your last saved copy',
+    prefs.historyDays > 0 && history?.truncated && `Note: only the most recent trips are drawn - ${history.days} days of routes is too much to show in full`,
   ].filter((n): n is string => Boolean(n));
 
   const banner = notices.length > 0 ? (
@@ -557,6 +700,18 @@ export default function MapScreen() {
         <View style={[s.legendDot, { backgroundColor: C.roadTrace }]} />
         <Text style={s.legendText}>Your route</Text>
       </View>
+      {(trace?.outsideLines?.length ?? 0) > 0 && (
+        <View style={s.legendItem}>
+          <View style={[s.legendDot, { backgroundColor: C.outside }]} />
+          <Text style={s.legendText}>Outside your area</Text>
+        </View>
+      )}
+      {prefs.historyDays > 0 && (
+        <View style={s.legendItem}>
+          <View style={[s.legendDot, { backgroundColor: C.roadHistory }]} />
+          <Text style={s.legendText}>Earlier trips ({prefs.historyDays} d)</Text>
+        </View>
+      )}
       {roadsLoading && (
         <View style={s.legendItem}>
           <ActivityIndicator size="small" color={C.muted} />
@@ -599,6 +754,7 @@ export default function MapScreen() {
     if (mapError) return null;             // MapGL draws its own failure panel; do not double up
     if (loading && !trip && areas.length === 0) return 'Loading…';
     if (trace && trace.lines.length > 0) return null;
+    if (historyLines && historyLines.lines.length > 0) return null; // earlier trips are content too
     if (roads.length > 0 || areas.length > 0) {
       return trip
         ? (trip.status === 'active' ? 'Waiting for GPS…' : null)
@@ -621,6 +777,34 @@ export default function MapScreen() {
           <View style={s.statCard}><Text style={s.statV}>{km(trip.distanceMeters)}</Text><Text style={s.statK}>Distance</Text></View>
           <View style={s.statCard}><Text style={s.statV}>{Math.round(trip.maxSpeedKmh)} km/h</Text><Text style={s.statK}>Top speed</Text></View>
           <View style={s.statCard}><Text style={s.statV}>{elapsed(trip.startedAt)}</Text><Text style={s.statK}>Started</Text></View>
+          {/* Where the driving happened — only once the server has split it, and only for a trip
+              driven with a polygon assigned (no polygon: nothing to be inside of). */}
+          {trip.inAreaMeters != null && (
+            <>
+              <View style={s.statCard}>
+                <Text style={s.statV}>{km(trip.inAreaMeters)}</Text>
+                <Text style={s.statK}>In your area</Text>
+              </View>
+              <View style={s.statCard}>
+                <Text style={[s.statV, (trip.outAreaMeters ?? 0) > 0 && { color: C.warn }]}>{km(trip.outAreaMeters ?? 0)}</Text>
+                <Text style={s.statK}>Outside area</Text>
+              </View>
+            </>
+          )}
+          {/* UKM is a post-trip figure; showing "pending" on a live trip would only invite the
+              driver to keep checking a number that cannot move until they stop. */}
+          {trip.status !== 'active' && (
+            <View style={s.statCard}>
+              <Text style={s.statV}>{trip.effectiveUkmMeters != null ? km(trip.effectiveUkmMeters) : '…'}</Text>
+              <Text style={s.statK}>
+                {trip.effectiveUkmMeters == null
+                  ? 'UKM · calculating'
+                  : trip.ukmBasis === 'assigned' ? 'UKM · assigned roads'
+                  : trip.ukmBasis === 'global' ? 'UKM · all roads'
+                  : 'UKM'}
+              </Text>
+            </View>
+          )}
         </View>
       )}
 
@@ -649,6 +833,18 @@ export default function MapScreen() {
       {banner}
       {legend}
 
+      {/* One line for the window: how much was driven, how much of it was new. Pending trips are
+          named rather than folded in as zero — a UKM that has not been worked out yet is not 0. */}
+      {prefs.historyDays > 0 && history && (
+        <View style={s.historyRow}>
+          <Text style={s.historyText} numberOfLines={1}>
+            {`Last ${history.days} d · ${history.totals.trips} trip${history.totals.trips === 1 ? '' : 's'} · ${km(history.totals.distanceMeters)} driven · ${km(history.totals.ukmMeters)} UKM`}
+            {history.totals.ukmPendingTrips ? ` (${history.totals.ukmPendingTrips} pending)` : ''}
+            {history.totals.outAreaMeters > 0 ? ` · ${km(history.totals.outAreaMeters)} outside area` : ''}
+          </Text>
+        </View>
+      )}
+
       {/* MapGL — MapLibre GL on WebGL inside a WebView. Rendered unconditionally. */}
       <View style={s.mapWrap}>
         <MapGL
@@ -662,6 +858,8 @@ export default function MapScreen() {
           areas={areas}
           trace={trace}
           vehicle={vehicle}
+          history={historyLines}
+          showHistory={prefs.historyDays > 0}
           onUnsupported={setMapError}
         />
         {controls}
@@ -700,6 +898,9 @@ const s = StyleSheet.create({
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   legendDot:  { width: 22, height: 4, borderRadius: 2 },
   legendText: { fontSize: 11, color: C.muted },
+
+  historyRow:  { paddingHorizontal: 14, paddingVertical: 5, backgroundColor: C.bg, borderBottomWidth: 1, borderBottomColor: C.border },
+  historyText: { fontSize: 11, color: '#4b5563', fontWeight: '600' },
 
   mapWrap:   { flex: 1 },
 

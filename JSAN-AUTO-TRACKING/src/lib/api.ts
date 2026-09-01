@@ -168,3 +168,57 @@ export type MyRoads = {
 export function apiMyRoads(token: string, areaId: string): Promise<MyRoads> {
   return request(`/api/tracking/my-roads?areaId=${encodeURIComponent(areaId)}`, {}, token);
 }
+
+/** One closed trip in the driver's route history. */
+export type MyHistoryTrip = {
+  id: string;
+  startedAt: string;
+  endedAt: string | null;
+  status: string;
+  /** 'snapped' shapes are the matched route; 'raw' is the simplified GPS trace of an unmatched trip. */
+  kind: 'snapped' | 'raw';
+  /** polyline6, one per continuous stretch — decode with decodeRouteShapeLines(). */
+  shapes: string[];
+  /** The parts of this trip driven outside the driver's assigned polygons, polyline6. */
+  outAreaShapes: string[];
+  distanceMeters: number;
+  cleanedDistanceMeters: number | null;
+  inAreaMeters: number | null;
+  outAreaMeters: number | null;
+  /** The driver-facing unique km. null = not established yet, which is NOT zero. */
+  ukmMeters: number | null;
+  ukmBasis: 'assigned' | 'global';
+  ukmStatus: string;
+};
+
+export type MyHistory = {
+  days: number;
+  from: string;
+  generatedAt: string;
+  /** Change key — same value means nothing in the window moved, skip the redraw. */
+  version: string;
+  /** True when the oldest trips were dropped to stay under the server's vertex ceiling. */
+  truncated: boolean;
+  totals: {
+    trips: number;
+    distanceMeters: number;
+    cleanedMeters: number;
+    inAreaMeters: number;
+    outAreaMeters: number;
+    ukmMeters: number;
+    /** Trips whose UKM is still being worked out — their km is NOT in ukmMeters. */
+    ukmPendingTrips: number;
+  };
+  trips: MyHistoryTrip[];
+};
+
+/**
+ * The driver's closed trips over the last `days`, as drawable geometry plus per-trip figures.
+ *
+ * Go through roadCache.getHistory(), never call this from a screen: a month of routes is megabytes
+ * and the server rate-limits it per driver. It is fetched on open, on refresh, and when the
+ * current trip finishes matching — never on the 15 s session poll.
+ */
+export function apiMyHistory(token: string, days: number): Promise<MyHistory> {
+  return request(`/api/tracking/my-history?days=${encodeURIComponent(String(days))}`, {}, token);
+}

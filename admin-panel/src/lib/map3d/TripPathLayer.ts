@@ -18,6 +18,9 @@ const SNAPPED_TINT: [number, number, number] = [13, 148, 136]; // teal — visua
 // shades of one hue read as "signal strength" and this is a category difference, not a degree.
 const REPEATED_TINT: [number, number, number] = [148, 163, 184];
 const UKM_TINT: [number, number, number] = [16, 185, 129]; // emerald — the new road
+// Driven outside the driver's assigned polygon. Amber: real kilometres that were not the job,
+// distinct from both "new road" (emerald) and "already covered" (slate).
+const OUTSIDE_TINT: [number, number, number] = [245, 158, 11];
 const START_COLOR: [number, number, number] = [5, 150, 105]; // matches the old 2D start markers
 const MARKER_LINE_COLOR: [number, number, number] = [255, 255, 255];
 
@@ -133,7 +136,8 @@ export function buildReplayLayers(
   elapsedMs: number,
   fading: boolean,
   snappedPath?: [number, number][] | null,
-  ukmPaths?: [number, number][][] | null
+  ukmPaths?: [number, number][][] | null,
+  outsidePaths?: [number, number][][] | null
 ) {
   if (points.length === 0) return [];
 
@@ -168,6 +172,23 @@ export function buildReplayLayers(
           getColor: UKM_TINT,
           // Slightly wider so the highlight covers the muted line under it rather than letting a
           // fringe of grey show through along the edges.
+          getWidth: 7,
+          widthMinPixels: 5,
+          capRounded: true,
+          jointRounded: true,
+        })
+      );
+    }
+    // Out-of-area stretches on top of everything: whether that road was new is one question,
+    // whether the driver should have been there is another, and the second one wins visually.
+    const outside = outsidePaths?.filter((p) => p.length > 1) ?? [];
+    if (outside.length) {
+      layers.push(
+        new PathLayer({
+          id: 'trip-replay-path-outside',
+          data: outside.map((path) => ({ path })),
+          getPath: (d) => d.path,
+          getColor: OUTSIDE_TINT,
           getWidth: 7,
           widthMinPixels: 5,
           capRounded: true,
