@@ -2,7 +2,7 @@
   "expo": {
     "name": "JSAN-AUTO-TRACKING",
     "slug": "jsanvtsauto",
-    "version": "1.0.12",
+    "version": "1.0.13",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "jsanautotracking",
