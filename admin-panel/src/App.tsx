@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
+import { DriverLayout } from './components/DriverLayout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AssetHistory } from './pages/AssetHistory';
 import { Couriers } from './pages/Couriers';
@@ -20,6 +21,12 @@ import { Vehicles } from './pages/Vehicles';
 import { AppHealth } from './pages/AppHealth';
 import { Ukm } from './pages/Ukm';
 import { Weather } from './pages/Weather';
+import { SsdsPortal } from './pages/SsdsPortal';
+import { SsdsTimesheets } from './pages/SsdsTimesheets';
+import { SsdsDailyReports } from './pages/SsdsDailyReports';
+import { DriverMySsds } from './pages/DriverMySsds';
+import { DriverMyTimesheets } from './pages/DriverMyTimesheets';
+import { DriverMyDailyReports } from './pages/DriverMyDailyReports';
 
 export default function App() {
   return (
@@ -50,7 +57,7 @@ export default function App() {
         <Route
           path="/managers"
           element={
-            <ProtectedRoute adminOnly>
+            <ProtectedRoute adminOnly tabKey="managers">
               <Managers />
             </ProtectedRoute>
           }
@@ -58,7 +65,7 @@ export default function App() {
         <Route
           path="/projects"
           element={
-            <ProtectedRoute adminOnly>
+            <ProtectedRoute adminOnly tabKey="projects">
               <Projects />
             </ProtectedRoute>
           }
@@ -66,11 +73,47 @@ export default function App() {
         <Route
           path="/app-updates"
           element={
-            <ProtectedRoute adminOnly>
+            <ProtectedRoute adminOnly tabKey="app_updates">
               <AppUpdates />
             </ProtectedRoute>
           }
         />
+        <Route
+          path="/ssds-portal"
+          element={
+            <ProtectedRoute tabKey="ssds_portal">
+              <SsdsPortal />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/ssds-timesheets"
+          element={
+            <ProtectedRoute tabKey="timesheets">
+              <SsdsTimesheets />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/ssds-daily-reports"
+          element={
+            <ProtectedRoute tabKey="daily_status_report">
+              <SsdsDailyReports />
+            </ProtectedRoute>
+          }
+        />
+      </Route>
+      {/* ── Driver Portal ── */}
+      <Route
+        element={
+          <ProtectedRoute>
+            <DriverLayout />
+          </ProtectedRoute>
+        }
+      >
+        <Route path="/driver" element={<DriverMySsds />} />
+        <Route path="/driver/timesheets" element={<DriverMyTimesheets />} />
+        <Route path="/driver/daily-reports" element={<DriverMyDailyReports />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

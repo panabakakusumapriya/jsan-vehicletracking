@@ -42,6 +42,9 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1121.0",
+    "@aws-sdk/lib-storage": "^3.1121.0",
+    "@aws-sdk/s3-request-presigner": "^3.1121.0",
     "archiver": "^7.0.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -52,9 +55,11 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.6.0",
     "morgan": "^1.10.0",
+    "multer": "^2.3.0",
     "socket.io": "^4.7.5",
     "tz-lookup": "^6.1.25",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "mongodb-memory-server": "^11.2.0",

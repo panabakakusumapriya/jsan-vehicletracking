@@ -51,6 +51,7 @@ export default defineConfig(async ({ mode }) => {
       port: 5173,
       proxy: {
         '/api': { target: backend, changeOrigin: true },
+        '/uploads': { target: backend, changeOrigin: true },
         '/socket.io': { target: backend, ws: true, changeOrigin: true },
         '/health': { target: backend, changeOrigin: true },
       },

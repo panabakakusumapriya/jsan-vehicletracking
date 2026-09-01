@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { dt } from '../lib/format';
-import type { Project, User } from '../lib/types';
+import type { Project, User, TabKey, TabPermission } from '../lib/types';
+import { TAB_LABELS, ADMIN_PANEL_TABS, SSDS_TABS, ADMIN_ONLY_TABS } from '../lib/types';
 
 const idOf = (ref: unknown): string =>
   ref && typeof ref === 'object' ? String((ref as { _id: string })._id) : (ref ? String(ref) : '');
@@ -36,6 +38,64 @@ function ProjectPicker({ projects, selectedIds, onToggle }: {
           </label>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Lets an admin assign edit / view / hidden per tab for a user. Grouped into
+ * "Admin Panel" tabs and "SSDS Tool" tabs so the layout stays clean.
+ */
+function TabPermissionsPicker({ value, onChange }: {
+  value: Partial<Record<TabKey, TabPermission>>;
+  onChange: (v: Partial<Record<TabKey, TabPermission>>) => void;
+}) {
+  const set = (key: TabKey, perm: TabPermission) => {
+    onChange({ ...value, [key]: perm });
+  };
+
+  const renderGroup = (label: string, keys: readonly TabKey[]) => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '.5px' }}>{label}</div>
+      <div style={{ border: '1px solid var(--line-2)', borderRadius: 'var(--radius)', background: 'var(--panel)', overflow: 'hidden' }}>
+        {/* Header */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 70px 70px', padding: '6px 10px', fontSize: 11, fontWeight: 600, color: 'var(--muted)', borderBottom: '1px solid var(--line-2)' }}>
+          <span>Module</span>
+          <span style={{ textAlign: 'center' }}>Edit</span>
+          <span style={{ textAlign: 'center' }}>View</span>
+          <span style={{ textAlign: 'center' }}>Hidden</span>
+        </div>
+        {keys.map((key) => {
+          const current = value[key] || (ADMIN_ONLY_TABS.includes(key) ? 'hidden' : 'edit');
+          return (
+            <div key={key} style={{
+              display: 'grid', gridTemplateColumns: '1fr 70px 70px 70px',
+              padding: '7px 10px', fontSize: 12.5,
+              borderBottom: '1px solid var(--line)',
+              alignItems: 'center',
+            }}>
+              <span>{TAB_LABELS[key]}</span>
+              {(['edit', 'view', 'hidden'] as TabPermission[]).map((perm) => (
+                <label key={perm} style={{ display: 'flex', justifyContent: 'center', cursor: 'pointer' }}>
+                  <input
+                    type="radio"
+                    name={`perm-${key}`}
+                    checked={current === perm}
+                    onChange={() => set(key, perm)}
+                  />
+                </label>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      {renderGroup('Admin Panel Tabs', ADMIN_PANEL_TABS)}
+      {renderGroup('SSDS Tool Tabs', SSDS_TABS)}
     </div>
   );
 }
@@ -146,8 +206,12 @@ export function Managers() {
 function AddUser({ managers, projects, onClose, onSaved }: {
   managers: User[]; projects: Project[]; onClose: () => void; onSaved: () => void;
 }) {
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === 'admin';
   const [form, setForm] = useState({ name: '', email: '', password: '', phone: '', role: 'manager', managerId: '' });
   const [projectIds, setProjectIds] = useState<string[]>([]);
+  const [tabPermissions, setTabPermissions] = useState<Partial<Record<TabKey, TabPermission>>>({});
+  const [showPermissions, setShowPermissions] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
@@ -173,6 +237,7 @@ function AddUser({ managers, projects, onClose, onSaved }: {
         role: form.role,
         managerId: form.role === 'team_lead' ? form.managerId : undefined,
         projectIds,
+        tabPermissions: Object.keys(tabPermissions).length ? tabPermissions : undefined,
       });
       onSaved();
     } catch (e) {
@@ -221,6 +286,24 @@ function AddUser({ managers, projects, onClose, onSaved }: {
         </div>
       )}
 
+      {isAdmin && (
+        <div className="field">
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ fontSize: 12.5, padding: '6px 0' }}
+            onClick={() => setShowPermissions((v) => !v)}
+          >
+            {showPermissions ? '▼' : '▶'} Module Permissions
+          </button>
+          {showPermissions && (
+            <div style={{ marginTop: 8 }}>
+              <TabPermissionsPicker value={tabPermissions} onChange={setTabPermissions} />
+            </div>
+          )}
+        </div>
+      )}
+
       {error && <div className="error-text">{error}</div>}
       <div className="modal-actions">
         <button className="btn-ghost" onClick={onClose}>
@@ -237,12 +320,18 @@ function AddUser({ managers, projects, onClose, onSaved }: {
 function EditUser({ user, managers, projects, onClose, onSaved }: {
   user: User; managers: User[]; projects: Project[]; onClose: () => void; onSaved: () => void;
 }) {
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === 'admin';
   const currentManagerId = user.managerId && typeof user.managerId === 'object' ? user.managerId._id : (user.managerId || '');
   const [form, setForm] = useState({
     name: user.name, email: user.email, phone: user.phone || '', password: '', role: user.role,
     managerId: currentManagerId as string,
   });
   const [projectIds, setProjectIds] = useState<string[]>(idsOf(user.projectIds));
+  const [tabPermissions, setTabPermissions] = useState<Partial<Record<TabKey, TabPermission>>>(
+    (user.tabPermissions as Partial<Record<TabKey, TabPermission>>) || {}
+  );
+  const [showPermissions, setShowPermissions] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }));
@@ -262,11 +351,9 @@ function EditUser({ user, managers, projects, onClose, onSaved }: {
         role: form.role,
         managerId: form.role === 'team_lead' ? form.managerId : null,
       };
-      // Only sent when non-empty — clearing every checkbox on a legacy account (created before
-      // Projects existed) must not silently wipe an already-assigned set just because this
-      // edit didn't mean to touch it, and must not block unrelated edits.
       if (projectIds.length) body.projectIds = projectIds;
       if (form.password) body.password = form.password;
+      if (isAdmin) body.tabPermissions = tabPermissions;
       await api.patch(`/api/users/${user._id}`, body);
       onSaved();
     } catch (e) {
@@ -312,6 +399,25 @@ function EditUser({ user, managers, projects, onClose, onSaved }: {
         <label>New password (leave blank to keep current)</label>
         <input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Leave blank to keep current" />
       </div>
+
+      {isAdmin && (
+        <div className="field">
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ fontSize: 12.5, padding: '6px 0' }}
+            onClick={() => setShowPermissions((v) => !v)}
+          >
+            {showPermissions ? '▼' : '▶'} Module Permissions
+          </button>
+          {showPermissions && (
+            <div style={{ marginTop: 8 }}>
+              <TabPermissionsPicker value={tabPermissions} onChange={setTabPermissions} />
+            </div>
+          )}
+        </div>
+      )}
+
       {error && <div className="error-text">{error}</div>}
       <div className="modal-actions">
         <button className="btn-ghost" onClick={onClose}>Cancel</button>

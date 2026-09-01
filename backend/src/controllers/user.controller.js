@@ -193,6 +193,7 @@ exports.create = asyncHandler(async (req, res) => {
     androidVersion: b.androidVersion || null,
     phoneCase: b.phoneCase || null,
     phoneScreenguard: b.phoneScreenguard || null,
+    tabPermissions: (req.user.role === 'admin' && b.tabPermissions && typeof b.tabPermissions === 'object') ? b.tabPermissions : {},
   });
   await user.setPassword(password);
   await user.save();
@@ -281,6 +282,12 @@ exports.update = asyncHandler(async (req, res) => {
   for (const [kind, ids] of [['vehicle', b.vehicleIds], ['mobile', b.mobileDeviceIds]]) {
     const problems = await syncAssets(user, kind, ids, req.user);
     if (problems) assetProblems.push(...problems);
+  }
+  // Tab/module permissions — only admins may set these.
+  if (b.tabPermissions !== undefined && req.user.role === 'admin') {
+    if (b.tabPermissions && typeof b.tabPermissions === 'object') {
+      user.tabPermissions = new Map(Object.entries(b.tabPermissions));
+    }
   }
   if (b.role !== undefined && User.ROLES.includes(b.role)) user.role = b.role;
   if (b.teamLeadId !== undefined) user.teamLeadId = b.teamLeadId || null;

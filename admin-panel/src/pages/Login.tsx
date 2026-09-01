@@ -65,14 +65,14 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
 
-  if (token && user) return <Navigate to="/" replace />;
+  if (token && user) return <Navigate to={user.role === 'user' ? '/driver' : '/'} replace />;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
-      await signIn(email.trim(), password);
-      navigate('/', { replace: true });
+      const u = await signIn(email.trim(), password);
+      navigate(u.role === 'user' ? '/driver' : '/', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -185,7 +185,7 @@ export function Login() {
           </form>
 
           <p className="login-card-foot">
-            Secure admin access &nbsp;·&nbsp; Driver portal is a separate Android app
+            Admins &amp; managers access the fleet dashboard &nbsp;·&nbsp; Drivers access the driver portal
           </p>
         </div>
       </div>

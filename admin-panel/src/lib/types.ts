@@ -1,4 +1,48 @@
 export type Role = 'admin' | 'manager' | 'team_lead' | 'user';
+export type TabPermission = 'edit' | 'view' | 'hidden';
+
+/** All tab keys across admin panel and SSDS tool. */
+export const ALL_TAB_KEYS = [
+  'live_map', 'trips', 'drivers', 'mobiles', 'vehicles', 'weather', 'hotels',
+  'couriers', 'ukm', 'app_health', 'asset_history', 'reports',
+  'managers', 'projects', 'app_updates',
+  'ssds_portal', 'timesheets', 'daily_status_report',
+] as const;
+
+export type TabKey = typeof ALL_TAB_KEYS[number];
+
+export const TAB_LABELS: Record<TabKey, string> = {
+  live_map: 'Live Map',
+  trips: 'Trips',
+  drivers: 'Drivers',
+  mobiles: 'Mobiles',
+  vehicles: 'Vehicles',
+  weather: 'Predictive Weather',
+  hotels: 'Hotels',
+  couriers: 'Couriers',
+  ukm: 'UKM',
+  app_health: 'App Health',
+  asset_history: 'Asset History',
+  reports: 'Reports',
+  managers: 'Users',
+  projects: 'Projects',
+  app_updates: 'App Updates',
+  ssds_portal: 'SSDS Portal',
+  timesheets: 'Timesheets',
+  daily_status_report: 'Daily Status Report',
+};
+
+export const ADMIN_PANEL_TABS: TabKey[] = [
+  'live_map', 'trips', 'drivers', 'mobiles', 'vehicles', 'weather', 'hotels',
+  'couriers', 'ukm', 'app_health', 'asset_history', 'reports',
+  'managers', 'projects', 'app_updates',
+];
+
+export const SSDS_TABS: TabKey[] = ['ssds_portal', 'timesheets', 'daily_status_report'];
+
+export const ADMIN_ONLY_TABS: TabKey[] = [
+  'managers', 'projects', 'app_updates',
+];
 
 /** The tenancy boundary managers/team leads/drivers operate inside. Admin-managed. */
 export interface Project {
@@ -66,6 +110,7 @@ export interface User {
   androidVersion?: string | null;
   phoneCase?: string | null;
   phoneScreenguard?: string | null;
+  tabPermissions?: Partial<Record<TabKey, TabPermission>>;
 }
 
 export interface Vehicle {

@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, tokenStore } from './api';
-import type { User } from './types';
+import type { TabKey, TabPermission, User } from './types';
+import { ADMIN_ONLY_TABS } from './types';
 
 interface AuthValue {
   loading: boolean;
@@ -44,8 +45,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email,
       password,
     });
-    if (!['admin', 'manager', 'team_lead'].includes(u.role)) {
-      throw new Error('This panel is for admins, managers and team leads only.');
+    if (!['admin', 'manager', 'team_lead', 'user'].includes(u.role)) {
+      throw new Error('Invalid account role.');
     }
     tokenStore.set(t);
     localStorage.setItem(USER_KEY, JSON.stringify(u));
@@ -72,4 +73,14 @@ export function useAuth(): AuthValue {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');
   return ctx;
+}
+
+/** Returns the effective permission for a given tab key for the current user. */
+export function useTabPermission(tabKey: TabKey): TabPermission {
+  const { user } = useAuth();
+  if (!user) return 'hidden';
+  if (user.role === 'admin') return 'edit';
+  if (user.tabPermissions?.[tabKey]) return user.tabPermissions[tabKey]!;
+  if (ADMIN_ONLY_TABS.includes(tabKey)) return 'hidden';
+  return 'edit';
 }

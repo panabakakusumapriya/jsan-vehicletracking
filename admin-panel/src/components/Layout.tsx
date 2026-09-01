@@ -5,6 +5,8 @@ import { syncExistingSubscription } from '../lib/push';
 import { AlertsBell } from './AlertsBell';
 import { AlertToaster } from './AlertToaster';
 import { PwaBanner } from './PwaBanner';
+import type { TabKey, TabPermission } from '../lib/types';
+import { ADMIN_ONLY_TABS } from '../lib/types';
 
 const MapIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -118,6 +120,7 @@ const PackageIcon = () => (
   </svg>
 );
 
+<<<<<<< Updated upstream
 const CoverageIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 5.5 9 3l6 2.5L21 3v13l-6 2.5L9 16l-6 2.5z"/>
@@ -140,7 +143,58 @@ const links = [
   { to: '/app-health', label: 'App Health',         Icon: HealthIcon },
   { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
   { to: '/reports',  label: 'Reports',             Icon: ReportIcon },
+=======
+const links: { to: string; label: string; end?: boolean; Icon: () => JSX.Element; tabKey: TabKey }[] = [
+  { to: '/',         label: 'Live Map', end: true, Icon: MapIcon,    tabKey: 'live_map'      },
+  { to: '/trips',    label: 'Trips',              Icon: TripIcon,   tabKey: 'trips'          },
+  { to: '/drivers',  label: 'Drivers',            Icon: DriverIcon, tabKey: 'drivers'        },
+  { to: '/mobiles',  label: 'Mobiles',            Icon: PhoneIcon,  tabKey: 'mobiles'        },
+  { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon,tabKey: 'vehicles'       },
+  { to: '/weather',  label: 'Predictive Weather', Icon: WeatherIcon,tabKey: 'weather'        },
+  { to: '/hotels',   label: 'Hotels',             Icon: BedIcon,    tabKey: 'hotels'         },
+  { to: '/couriers', label: 'Couriers',           Icon: PackageIcon,tabKey: 'couriers'       },
+  { to: '/ukm',        label: 'UKM',              Icon: UkmIcon,    tabKey: 'ukm'            },
+  { to: '/app-health', label: 'App Health',       Icon: HealthIcon, tabKey: 'app_health'     },
+  { to: '/asset-history', label: 'Asset History',  Icon: HistoryIcon,tabKey: 'asset_history'  },
+  { to: '/reports',  label: 'Reports',            Icon: ReportIcon, tabKey: 'reports'        },
+>>>>>>> Stashed changes
 ];
+
+const adminLinks: { to: string; label: string; Icon: () => JSX.Element; tabKey: TabKey }[] = [
+  { to: '/managers',    label: 'Users',       Icon: ManagerIcon, tabKey: 'managers'    },
+  { to: '/projects',    label: 'Projects',    Icon: ProjectIcon, tabKey: 'projects'    },
+  { to: '/app-updates', label: 'App Updates', Icon: UpdateIcon,  tabKey: 'app_updates' },
+];
+
+const SsdsIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>
+  </svg>
+);
+const TimesheetIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+  </svg>
+);
+const DailyReportIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>
+  </svg>
+);
+
+const ssdsLinks: { to: string; label: string; Icon: () => JSX.Element; tabKey: TabKey }[] = [
+  { to: '/ssds-portal',        label: 'SSDS Portal',         Icon: SsdsIcon,        tabKey: 'ssds_portal'         },
+  { to: '/ssds-timesheets',    label: 'Timesheets',          Icon: TimesheetIcon,   tabKey: 'timesheets'          },
+  { to: '/ssds-daily-reports', label: 'Daily Status Report', Icon: DailyReportIcon, tabKey: 'daily_status_report' },
+];
+
+/** Resolve a tab's effective permission for the current user. */
+function getTabPermission(tabKey: TabKey, role: string, tabPermissions?: Partial<Record<TabKey, TabPermission>>): TabPermission {
+  if (role === 'admin') return 'edit';
+  if (tabPermissions?.[tabKey]) return tabPermissions[tabKey]!;
+  if (ADMIN_ONLY_TABS.includes(tabKey)) return 'hidden';
+  return 'edit';
+}
 
 function getInitials(name: string) {
   return name.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
@@ -210,31 +264,51 @@ export function Layout() {
         {/* Nav */}
         <nav>
           <div className="nav-section-label">Main Menu</div>
-          {links.map(({ to, label, end, Icon }) => (
+          {links
+            .filter(({ tabKey }) => getTabPermission(tabKey, user?.role || '', user?.tabPermissions) !== 'hidden')
+            .map(({ to, label, end, Icon }) => (
             <NavLink
               key={to} to={to} end={end}
               className={({ isActive }) => isActive ? 'active' : ''}
               title={label}
             >
-              {/* Wrapped so rail mode can hide the text and leave the icon. */}
               <Icon /><span className="nav-label">{label}</span>
             </NavLink>
           ))}
 
-          {user?.role === 'admin' && (
-            <>
-              <div className="nav-section-label" style={{ marginTop: 8 }}>Admin</div>
-              <NavLink to="/managers" title="Users" className={({ isActive }) => isActive ? 'active' : ''}>
-                <ManagerIcon /><span className="nav-label">Users</span>
-              </NavLink>
-              <NavLink to="/projects" title="Projects" className={({ isActive }) => isActive ? 'active' : ''}>
-                <ProjectIcon /><span className="nav-label">Projects</span>
-              </NavLink>
-              <NavLink to="/app-updates" title="App Updates" className={({ isActive }) => isActive ? 'active' : ''}>
-                <UpdateIcon /><span className="nav-label">App Updates</span>
-              </NavLink>
-            </>
-          )}
+          {(() => {
+            const visibleAdmin = adminLinks.filter(
+              ({ tabKey }) => getTabPermission(tabKey, user?.role || '', user?.tabPermissions) !== 'hidden'
+            );
+            if (!visibleAdmin.length) return null;
+            return (
+              <>
+                <div className="nav-section-label" style={{ marginTop: 8 }}>Admin</div>
+                {visibleAdmin.map(({ to, label, Icon }) => (
+                  <NavLink key={to} to={to} title={label} className={({ isActive }) => isActive ? 'active' : ''}>
+                    <Icon /><span className="nav-label">{label}</span>
+                  </NavLink>
+                ))}
+              </>
+            );
+          })()}
+
+          {(() => {
+            const visibleSsds = ssdsLinks.filter(
+              ({ tabKey }) => getTabPermission(tabKey, user?.role || '', user?.tabPermissions) !== 'hidden'
+            );
+            if (!visibleSsds.length) return null;
+            return (
+              <>
+                <div className="nav-section-label" style={{ marginTop: 8 }}>SSDS Tool</div>
+                {visibleSsds.map(({ to, label, Icon }) => (
+                  <NavLink key={to} to={to} title={label} className={({ isActive }) => isActive ? 'active' : ''}>
+                    <Icon /><span className="nav-label">{label}</span>
+                  </NavLink>
+                ))}
+              </>
+            );
+          })()}
         </nav>
 
         {/* Footer */}

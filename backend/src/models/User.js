@@ -63,6 +63,15 @@ const userSchema = new mongoose.Schema(
     androidVersion: { type: String, trim: true, default: null },
     phoneCase: { type: String, trim: true, default: null },
     phoneScreenguard: { type: String, trim: true, default: null },
+
+    // Per-user tab/module permissions. Each key is a tab identifier, each value is one of
+    // 'edit', 'view', or 'hidden'. Admins (super admins) always have full access regardless
+    // of what's stored here. Missing keys fall back to role-based defaults.
+    // Keys cover both admin-panel tabs and external SSDS tool tabs:
+    //   Admin panel: live_map, trips, drivers, mobiles, vehicles, weather, hotels, couriers,
+    //                ukm, app_health, asset_history, reports, managers, projects, app_updates
+    //   SSDS tool:   ssds_portal, timesheets, daily_status_report
+    tabPermissions: { type: Map, of: { type: String, enum: ['edit', 'view', 'hidden'] }, default: new Map() },
   },
   { timestamps: true }
 );
@@ -81,6 +90,12 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
   delete obj.activeSessionId; // never leak the session secret to clients
   delete obj.sessionLastSeenAt;
   delete obj.__v;
+  // Mongoose Maps serialize as a Map object in some versions; always ensure a plain object.
+  if (obj.tabPermissions instanceof Map) {
+    obj.tabPermissions = Object.fromEntries(obj.tabPermissions);
+  } else if (!obj.tabPermissions || typeof obj.tabPermissions !== 'object') {
+    obj.tabPermissions = {};
+  }
   return obj;
 };
 

@@ -77,6 +77,38 @@ exports.me = asyncHandler(async (req, res) => {
   res.json({ user: req.user.toSafeJSON() });
 });
 
+// GET /api/auth/permissions
+// Returns the current user's tab permissions — used by the SSDS tool and admin panel.
+// Admins always get full 'edit' on every tab. Other roles get their stored permissions
+// with defaults applied for any missing keys.
+exports.permissions = asyncHandler(async (req, res) => {
+  const ALL_TABS = [
+    'live_map', 'trips', 'drivers', 'mobiles', 'vehicles', 'weather', 'hotels',
+    'couriers', 'ukm', 'app_health', 'asset_history', 'reports',
+    'managers', 'projects', 'app_updates',
+    'ssds_portal', 'timesheets', 'daily_status_report',
+  ];
+  const ADMIN_ONLY_TABS = ['managers', 'projects', 'app_updates', 'ssds_portal', 'timesheets', 'daily_status_report'];
+
+  const stored = req.user.tabPermissions instanceof Map
+    ? Object.fromEntries(req.user.tabPermissions)
+    : (req.user.tabPermissions || {});
+
+  const permissions = {};
+  for (const tab of ALL_TABS) {
+    if (req.user.role === 'admin') {
+      permissions[tab] = 'edit';
+    } else if (stored[tab]) {
+      permissions[tab] = stored[tab];
+    } else if (ADMIN_ONLY_TABS.includes(tab)) {
+      permissions[tab] = 'hidden';
+    } else {
+      permissions[tab] = 'edit'; // default for non-admin tabs
+    }
+  }
+  res.json({ permissions, role: req.user.role, userId: req.user._id });
+});
+
 // PATCH /api/auth/timezone  { timezone, country? }
 // The mobile app calls this on every sign-in with the device's own IANA zone, and again
 // whenever it changes — a driver who crosses into another zone re-reports without being asked.
