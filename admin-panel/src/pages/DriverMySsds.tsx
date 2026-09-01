@@ -221,7 +221,7 @@ export function DriverMySsds() {
           )}
 
           {/* Form fields */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+          <div className="driver-ssds-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
             <label>
               <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>SSD Number *</span>
               <input className="input" value={newSsdNumber} onChange={e => setNewSsdNumber(e.target.value)} placeholder="e.g. SSD-001" />

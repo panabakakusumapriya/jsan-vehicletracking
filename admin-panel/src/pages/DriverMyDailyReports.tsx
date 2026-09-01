@@ -43,8 +43,8 @@ export function DriverMyDailyReports() {
         </div>
       </div>
 
-      <div className="card" style={{ padding: 0 }}>
-        <table>
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table style={{ minWidth: 600 }}>
           <thead>
             <tr>
               <th>Report Type</th>
