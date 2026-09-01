@@ -69,7 +69,7 @@ const userSchema = new mongoose.Schema(
     // of what's stored here. Missing keys fall back to role-based defaults.
     // Keys cover both admin-panel tabs and external SSDS tool tabs:
     //   Admin panel: live_map, trips, drivers, mobiles, vehicles, weather, hotels, couriers,
-    //                ukm, app_health, asset_history, reports, managers, projects, app_updates
+    //                ukm, coverage, app_health, asset_history, reports, managers, projects, app_updates
     //   SSDS tool:   ssds_portal, timesheets, daily_status_report
     tabPermissions: { type: Map, of: { type: String, enum: ['edit', 'view', 'hidden'] }, default: new Map() },
   },

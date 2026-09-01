@@ -138,7 +138,11 @@ const links: { to: string; label: string; end?: boolean; Icon: () => JSX.Element
   { to: '/hotels',   label: 'Hotels',             Icon: BedIcon,    tabKey: 'hotels'         },
   { to: '/couriers', label: 'Couriers',           Icon: PackageIcon,tabKey: 'couriers'       },
   { to: '/ukm',        label: 'UKM',              Icon: UkmIcon,    tabKey: 'ukm'            },
+<<<<<<< Updated upstream
   { to: '/coverage',   label: 'Coverage',         Icon: CoverageIcon, tabKey: 'coverage'     },
+=======
+  { to: '/coverage',   label: 'Coverage',           Icon: CoverageIcon,tabKey: 'coverage'       },
+>>>>>>> Stashed changes
   { to: '/app-health', label: 'App Health',       Icon: HealthIcon, tabKey: 'app_health'     },
   { to: '/asset-history', label: 'Asset History',  Icon: HistoryIcon,tabKey: 'asset_history'  },
   { to: '/reports',  label: 'Reports',            Icon: ReportIcon, tabKey: 'reports'        },

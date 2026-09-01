@@ -84,7 +84,7 @@ exports.me = asyncHandler(async (req, res) => {
 exports.permissions = asyncHandler(async (req, res) => {
   const ALL_TABS = [
     'live_map', 'trips', 'drivers', 'mobiles', 'vehicles', 'weather', 'hotels',
-    'couriers', 'ukm', 'app_health', 'asset_history', 'reports',
+    'couriers', 'ukm', 'coverage', 'app_health', 'asset_history', 'reports',
     'managers', 'projects', 'app_updates',
     'ssds_portal', 'timesheets', 'daily_status_report',
   ];
