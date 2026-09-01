@@ -67,8 +67,8 @@ export function DriverMyTimesheets() {
         <button className="btn-ghost" onClick={load} style={{ fontSize: 12 }}>Apply</button>
       </div>
 
-      <div className="card" style={{ padding: 0 }}>
-        <table>
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table style={{ minWidth: 600 }}>
           <thead>
             <tr>
               <th>Date</th>

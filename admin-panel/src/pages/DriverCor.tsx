@@ -136,8 +136,8 @@ export function DriverCor() {
       </div>
 
       {/* Declarations table */}
-      <div className="card" style={{ padding: 0 }}>
-        <table>
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table style={{ minWidth: 700 }}>
           <thead>
             <tr>
               <th>Date</th>
