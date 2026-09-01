@@ -4,7 +4,7 @@ export type TabPermission = 'edit' | 'view' | 'hidden';
 /** All tab keys across admin panel and SSDS tool. */
 export const ALL_TAB_KEYS = [
   'live_map', 'trips', 'drivers', 'mobiles', 'vehicles', 'weather', 'hotels',
-  'couriers', 'ukm', 'app_health', 'asset_history', 'reports',
+  'couriers', 'ukm', 'coverage', 'app_health', 'asset_history', 'reports',
   'managers', 'projects', 'app_updates',
   'ssds_portal', 'timesheets', 'daily_status_report',
 ] as const;
@@ -21,6 +21,7 @@ export const TAB_LABELS: Record<TabKey, string> = {
   hotels: 'Hotels',
   couriers: 'Couriers',
   ukm: 'UKM',
+  coverage: 'Coverage',
   app_health: 'App Health',
   asset_history: 'Asset History',
   reports: 'Reports',
@@ -34,7 +35,7 @@ export const TAB_LABELS: Record<TabKey, string> = {
 
 export const ADMIN_PANEL_TABS: TabKey[] = [
   'live_map', 'trips', 'drivers', 'mobiles', 'vehicles', 'weather', 'hotels',
-  'couriers', 'ukm', 'app_health', 'asset_history', 'reports',
+  'couriers', 'ukm', 'coverage', 'app_health', 'asset_history', 'reports',
   'managers', 'projects', 'app_updates',
 ];
 

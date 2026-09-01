@@ -120,7 +120,6 @@ const PackageIcon = () => (
   </svg>
 );
 
-<<<<<<< Updated upstream
 const CoverageIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 5.5 9 3l6 2.5L21 3v13l-6 2.5L9 16l-6 2.5z"/>
@@ -129,21 +128,6 @@ const CoverageIcon = () => (
   </svg>
 );
 
-const links = [
-  { to: '/',         label: 'Live Map', end: true, Icon: MapIcon    },
-  { to: '/trips',    label: 'Trips',              Icon: TripIcon   },
-  { to: '/drivers',  label: 'Drivers',            Icon: DriverIcon },
-  { to: '/mobiles',  label: 'Mobiles',            Icon: PhoneIcon  },
-  { to: '/vehicles', label: 'Vehicles',           Icon: VehicleIcon},
-  { to: '/weather',  label: 'Predictive Weather',  Icon: WeatherIcon},
-  { to: '/hotels',   label: 'Hotels',             Icon: BedIcon    },
-  { to: '/couriers', label: 'Couriers',           Icon: PackageIcon},
-  { to: '/ukm',        label: 'UKM',                 Icon: UkmIcon    },
-  { to: '/coverage',   label: 'Coverage',            Icon: CoverageIcon },
-  { to: '/app-health', label: 'App Health',         Icon: HealthIcon },
-  { to: '/asset-history', label: 'Asset History', Icon: HistoryIcon },
-  { to: '/reports',  label: 'Reports',             Icon: ReportIcon },
-=======
 const links: { to: string; label: string; end?: boolean; Icon: () => JSX.Element; tabKey: TabKey }[] = [
   { to: '/',         label: 'Live Map', end: true, Icon: MapIcon,    tabKey: 'live_map'      },
   { to: '/trips',    label: 'Trips',              Icon: TripIcon,   tabKey: 'trips'          },
@@ -154,10 +138,10 @@ const links: { to: string; label: string; end?: boolean; Icon: () => JSX.Element
   { to: '/hotels',   label: 'Hotels',             Icon: BedIcon,    tabKey: 'hotels'         },
   { to: '/couriers', label: 'Couriers',           Icon: PackageIcon,tabKey: 'couriers'       },
   { to: '/ukm',        label: 'UKM',              Icon: UkmIcon,    tabKey: 'ukm'            },
+  { to: '/coverage',   label: 'Coverage',         Icon: CoverageIcon, tabKey: 'coverage'     },
   { to: '/app-health', label: 'App Health',       Icon: HealthIcon, tabKey: 'app_health'     },
   { to: '/asset-history', label: 'Asset History',  Icon: HistoryIcon,tabKey: 'asset_history'  },
   { to: '/reports',  label: 'Reports',            Icon: ReportIcon, tabKey: 'reports'        },
->>>>>>> Stashed changes
 ];
 
 const adminLinks: { to: string; label: string; Icon: () => JSX.Element; tabKey: TabKey }[] = [
