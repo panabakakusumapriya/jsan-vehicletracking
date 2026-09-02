@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ssdsApi } from '../lib/ssdsApi';
 import { API_URL } from '../lib/api';
-import Tesseract from 'tesseract.js';
+import { extractFromImages } from '../lib/ocrAi';
 
 interface SsdRecord {
   _id: string;
@@ -9,6 +9,11 @@ interface SsdRecord {
   ssdStatus: string;
   ssdComments: string;
   ssdImageUrl: string;
+  ssdImageUrls?: string[];
+  rigId?: string;
+  dataUnit?: string;
+  shippingCompany?: string;
+  trackingNumber?: string;
   lastUpdated?: string;
   createdAt?: string;
 }
@@ -22,6 +27,7 @@ interface DriverInfo {
 }
 
 const SSD_STATUSES = ['In Camera', 'Empty - with driver', 'Filled - with driver', 'Shipped'];
+const SHIPPING_COMPANIES = ['UPS', 'FedEx', 'AU Post'];
 
 export function DriverMySsds() {
   const [driver, setDriver] = useState<DriverInfo | null>(null);
@@ -40,11 +46,16 @@ export function DriverMySsds() {
   const [newSsdNumber, setNewSsdNumber] = useState('');
   const [newSsdStatus, setNewSsdStatus] = useState('');
   const [newSsdComments, setNewSsdComments] = useState('');
-  const [capturedFile, setCapturedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [newRigId, setNewRigId] = useState('');
+  const [newDataUnit, setNewDataUnit] = useState('');
+  const [newShippingCompany, setNewShippingCompany] = useState('');
+  const [newTrackingNumber, setNewTrackingNumber] = useState('');
+  const [capturedFiles, setCapturedFiles] = useState<File[]>([]);
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
 
-  // Image lightbox
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  // Image lightbox (multi)
+  const [lightboxUrls, setLightboxUrls] = useState<string[]>([]);
+  const [lightboxIdx, setLightboxIdx] = useState(0);
 
   // OCR
   const [ocrLoading, setOcrLoading] = useState(false);
@@ -88,47 +99,45 @@ export function DriverMySsds() {
     setNewSsdNumber('');
     setNewSsdStatus('');
     setNewSsdComments('');
-    setCapturedFile(null);
-    setPreviewUrl(null);
+    setNewRigId('');
+    setNewDataUnit('');
+    setNewShippingCompany('');
+    setNewTrackingNumber('');
+    setCapturedFiles([]);
+    setPreviewUrls([]);
   };
   const closeAddForm = () => setShowAddForm(false);
 
   const handleImageCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || !files.length) return;
+    const newFiles = Array.from(files);
+    const newUrls = newFiles.map(f => URL.createObjectURL(f));
+    setCapturedFiles(prev => [...prev, ...newFiles]);
+    setPreviewUrls(prev => [...prev, ...newUrls]);
 
-    const url = URL.createObjectURL(file);
-    setPreviewUrl(url);
-    setCapturedFile(file);
     setOcrLoading(true);
     setOcrProgress(0);
-
     try {
-      const result = await Tesseract.recognize(file, 'eng', {
-        logger: (m: { status: string; progress: number }) => {
-          if (m.status === 'recognizing text') setOcrProgress(Math.round(m.progress * 100));
-        },
-      });
-      const text = result.data.text.trim();
-
-      // Extract SN (Serial Number) / SSD number from text
-      const snMatch =
-        text.match(/\bSN[-:\s]*([A-Z0-9-]+)/i) ||
-        text.match(/\bS\/N[-:\s]*([A-Z0-9-]+)/i) ||
-        text.match(/\bSerial\s*(?:No\.?|Number)[-:\s]*([A-Z0-9-]+)/i) ||
-        text.match(/SSD[-\s]?\d+/i) ||
-        text.match(/\b\d{3,}\b/);
-
-      if (snMatch) {
-        const extracted = snMatch[1] || snMatch[0];
-        setNewSsdNumber(extracted.trim());
-      }
+      const result = await extractFromImages(newFiles, setOcrProgress);
+      if (!newSsdNumber && result.ssdNumber) setNewSsdNumber(result.ssdNumber);
+      if (!newDataUnit && result.dataUnit) setNewDataUnit(result.dataUnit);
+      if (!newTrackingNumber && result.trackingNumber) setNewTrackingNumber(result.trackingNumber);
+      if (!newShippingCompany && result.shippingCompany) setNewShippingCompany(result.shippingCompany);
     } catch (err: any) {
-      alert('OCR failed: ' + err.message);
+      alert('AI OCR failed: ' + err.message);
     } finally {
       setOcrLoading(false);
-      if (fileRef.current) fileRef.current.value = '';
     }
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const removeImage = (idx: number) => {
+    setCapturedFiles(prev => prev.filter((_, i) => i !== idx));
+    setPreviewUrls(prev => {
+      URL.revokeObjectURL(prev[idx]);
+      return prev.filter((_, i) => i !== idx);
+    });
   };
 
   const handleCreateSsd = async () => {
@@ -139,7 +148,11 @@ export function DriverMySsds() {
       formData.append('ssdNumber', newSsdNumber.trim());
       formData.append('ssdStatus', newSsdStatus);
       formData.append('comments', newSsdComments);
-      if (capturedFile) formData.append('ssdImage', capturedFile);
+      formData.append('rigId', newRigId);
+      formData.append('dataUnit', newDataUnit);
+      formData.append('shippingCompany', newShippingCompany);
+      formData.append('trackingNumber', newTrackingNumber);
+      capturedFiles.forEach(f => formData.append('ssdImages', f));
 
       await ssdsApi.postForm('/my/ssds', formData);
       setShowAddForm(false);
@@ -190,18 +203,12 @@ export function DriverMySsds() {
             <button className="btn-ghost" onClick={closeAddForm} style={{ fontSize: 12 }}>Cancel</button>
           </div>
 
-          {/* Capture Image */}
+          {/* Capture Images — multiple with OCR */}
           <div style={{ marginBottom: 18 }}>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              onChange={handleImageCapture}
-              style={{ display: 'none' }}
-            />
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Capture SSD Images (OCR extracts Data Unit &amp; Tracking #)</div>
+            <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
             <button className="btn" onClick={() => fileRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 13 }}>
-              {ocrLoading ? 'Extracting SSD Number...' : previewUrl ? 'Recapture Image' : 'Capture SSD Image'}
+              {ocrLoading ? 'Extracting...' : 'Add Image'}
             </button>
             {ocrLoading && (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 12 }}>
@@ -213,10 +220,19 @@ export function DriverMySsds() {
             )}
           </div>
 
-          {/* Image Preview */}
-          {previewUrl && (
-            <div style={{ marginBottom: 18 }}>
-              <img src={previewUrl} alt="SSD Card" style={{ maxWidth: 320, maxHeight: 220, borderRadius: 8, border: '1px solid var(--border)' }} />
+          {/* Image Previews */}
+          {previewUrls.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
+              {previewUrls.map((url, idx) => (
+                <div key={idx} style={{ position: 'relative' }}>
+                  <img src={url} alt={`SSD ${idx + 1}`} style={{ width: 100, height: 70, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
+                  <button type="button" onClick={() => removeImage(idx)} style={{
+                    position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%',
+                    background: 'var(--danger, #dc2626)', color: '#fff', border: 'none', cursor: 'pointer',
+                    fontSize: 11, lineHeight: '18px', textAlign: 'center', padding: 0,
+                  }}>×</button>
+                </div>
+              ))}
             </div>
           )}
 
@@ -232,6 +248,25 @@ export function DriverMySsds() {
                 <option value="">Select...</option>
                 {SSD_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
+            </label>
+            <label>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Rig ID</span>
+              <input className="input" value={newRigId} onChange={e => setNewRigId(e.target.value)} placeholder="e.g. HT480" />
+            </label>
+            <label>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Data Unit</span>
+              <input className="input" value={newDataUnit} onChange={e => setNewDataUnit(e.target.value)} placeholder="e.g. 47451" />
+            </label>
+            <label>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Shipping Company</span>
+              <select className="input" value={newShippingCompany} onChange={e => setNewShippingCompany(e.target.value)}>
+                <option value="">Select...</option>
+                {SHIPPING_COMPANIES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <label>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Tracking Number</span>
+              <input className="input" value={newTrackingNumber} onChange={e => setNewTrackingNumber(e.target.value)} placeholder="e.g. 1221572804..." />
             </label>
             <label>
               <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Date</span>
@@ -259,20 +294,26 @@ export function DriverMySsds() {
         </div>
       ) : records.length > 0 && (
         <div className="card" style={{ padding: 0, overflowX: 'auto', width: '100%' }}>
-          <table style={{ minWidth: 700 }}>
+          <table style={{ minWidth: 1000 }}>
             <thead>
               <tr>
                 <th>SSD Number</th>
                 <th>Status</th>
+                <th>Rig ID</th>
+                <th>Data Unit</th>
+                <th>Shipping Company</th>
+                <th>Tracking Number</th>
                 <th>Date</th>
                 <th>Last Updated</th>
                 <th>Comments</th>
-                <th>Image</th>
+                <th>Images</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {records.map(rec => (
+              {records.map(rec => {
+                const imgs = rec.ssdImageUrls?.length ? rec.ssdImageUrls : rec.ssdImageUrl ? [rec.ssdImageUrl] : [];
+                return (
                 <tr key={rec._id}>
                   {editingId === rec._id ? (
                     <>
@@ -283,14 +324,22 @@ export function DriverMySsds() {
                           {SSD_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                         </select>
                       </td>
+                      <td>{rec.rigId || '—'}</td>
+                      <td>{rec.dataUnit || '—'}</td>
+                      <td>{rec.shippingCompany || '—'}</td>
+                      <td style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rec.trackingNumber}>{rec.trackingNumber || '—'}</td>
                       <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{rec.createdAt ? new Date(rec.createdAt).toLocaleDateString() : '—'}</td>
                       <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{rec.lastUpdated || '—'}</td>
                       <td>
                         <textarea className="input" rows={2} value={editComments} onChange={e => setEditComments(e.target.value)} style={{ minWidth: 160 }} />
                       </td>
                       <td>
-                        {rec.ssdImageUrl && (
-                          <img src={imgUrl(rec.ssdImageUrl)} alt="SSD" style={{ width: 60, height: 40, objectFit: 'cover', borderRadius: 4 }} />
+                        {imgs.length > 0 && (
+                          <div style={{ display: 'flex', gap: 3 }}>
+                            {imgs.map((url, idx) => (
+                              <img key={idx} src={imgUrl(url)} alt="SSD" style={{ width: 40, height: 28, objectFit: 'cover', borderRadius: 3 }} />
+                            ))}
+                          </div>
                         )}
                       </td>
                       <td>
@@ -301,7 +350,7 @@ export function DriverMySsds() {
                           <button className="btn-ghost" onClick={cancelEdit} style={{ fontSize: 11, padding: '4px 8px' }}>Cancel</button>
                         </div>
                       </td>
-</>
+                    </>
                   ) : (
                     <>
                       <td style={{ fontWeight: 600 }}>{rec.ssdNumber}</td>
@@ -310,37 +359,65 @@ export function DriverMySsds() {
                           {rec.ssdStatus || '—'}
                         </span>
                       </td>
+                      <td>{rec.rigId || '—'}</td>
+                      <td>{rec.dataUnit || '—'}</td>
+                      <td>{rec.shippingCompany || '—'}</td>
+                      <td style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rec.trackingNumber}>{rec.trackingNumber || '—'}</td>
                       <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{rec.createdAt ? new Date(rec.createdAt).toLocaleDateString() : '—'}</td>
                       <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{rec.lastUpdated || '—'}</td>
                       <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rec.ssdComments}>
                         {rec.ssdComments || '—'}
                       </td>
                       <td>
-                        {rec.ssdImageUrl ? (
-                          <img src={imgUrl(rec.ssdImageUrl)} alt="SSD" style={{ width: 60, height: 40, objectFit: 'cover', borderRadius: 4, cursor: 'pointer' }}
-                            onClick={() => setLightboxUrl(imgUrl(rec.ssdImageUrl))} />
+                        {imgs.length > 0 ? (
+                          <div style={{ display: 'flex', gap: 3 }}>
+                            {imgs.map((url, idx) => (
+                              <img key={idx} src={imgUrl(url)} alt="SSD" style={{ width: 40, height: 28, objectFit: 'cover', borderRadius: 3, cursor: 'pointer' }}
+                                onClick={() => { setLightboxUrls(imgs.map(imgUrl)); setLightboxIdx(idx); }} />
+                            ))}
+                          </div>
                         ) : <span className="muted">—</span>}
                       </td>
                       <td>
                         <button className="btn-ghost" onClick={() => startEdit(rec)} style={{ fontSize: 11, padding: '4px 8px' }}>Edit</button>
                       </td>
-</>
+                    </>
                   )}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Image Lightbox */}
-      {lightboxUrl && (
-        <div onClick={() => setLightboxUrl(null)} style={{
+      {/* Image Lightbox — multi-image with nav */}
+      {lightboxUrls.length > 0 && (
+        <div onClick={() => setLightboxUrls([])} style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center',
           zIndex: 9999, cursor: 'pointer',
         }}>
-          <img src={lightboxUrl} alt="SSD Card" style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 8 }} />
+          <div onClick={e => e.stopPropagation()} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 16 }}>
+            {lightboxUrls.length > 1 && (
+              <button onClick={() => setLightboxIdx(i => (i - 1 + lightboxUrls.length) % lightboxUrls.length)} style={{
+                background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', fontSize: 28, cursor: 'pointer',
+                borderRadius: '50%', width: 40, height: 40, lineHeight: '40px',
+              }}>‹</button>
+            )}
+            <img src={lightboxUrls[lightboxIdx]} alt="SSD Card" style={{ maxWidth: '80vw', maxHeight: '85vh', borderRadius: 8 }} />
+            {lightboxUrls.length > 1 && (
+              <button onClick={() => setLightboxIdx(i => (i + 1) % lightboxUrls.length)} style={{
+                background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', fontSize: 28, cursor: 'pointer',
+                borderRadius: '50%', width: 40, height: 40, lineHeight: '40px',
+              }}>›</button>
+            )}
+          </div>
+          {lightboxUrls.length > 1 && (
+            <div style={{ position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)', color: '#fff', fontSize: 13 }}>
+              {lightboxIdx + 1} / {lightboxUrls.length}
+            </div>
+          )}
         </div>
       )}
     </div>

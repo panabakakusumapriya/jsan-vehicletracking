@@ -127,6 +127,11 @@ exports.getSsds = asyncHandler(async (req, res) => {
         ssdStatus: ssd['SSD Status'] || '',
         ssdComments: ssd.comments || '',
         ssdImageUrl: ssd.ssdImageUrl || ssd.ssdImagePath || '',
+        ssdImageUrls: ssd.ssdImageUrls || (ssd.ssdImageUrl ? [ssd.ssdImageUrl] : ssd.ssdImagePath ? [ssd.ssdImagePath] : []),
+        rigId: ssd.rigId || '',
+        dataUnit: ssd.dataUnit || '',
+        shippingCompany: ssd.shippingCompany || '',
+        trackingNumber: ssd.trackingNumber || '',
         lastUpdated: ssd['Last Updated'] || '',
         createdAt: ssd.createdAt || '',
       });
@@ -155,22 +160,43 @@ exports.getSsdsHistory = asyncHandler(async (req, res) => {
 
 exports.exportSsds = asyncHandler(async (req, res) => {
   const XLSX = require('xlsx');
+  const { startDate, endDate } = req.query;
   // Re-use getSsds logic by calling it internally (fake res to capture json)
   const captured = {};
   const fakeRes = { json: (d) => { captured.data = d; } };
-  await exports.getSsds({ ...req }, fakeRes);
-  const rows = (captured.data?.data || []).map(d => ({
+  await exports.getSsds(req, fakeRes);
+  let rows = captured.data?.data || [];
+
+  // Filter by date range if provided
+  if (startDate || endDate) {
+    rows = rows.filter(d => {
+      let date = '';
+      try {
+        if (d.createdAt) date = new Date(d.createdAt).toISOString().split('T')[0];
+      } catch { /* invalid date */ }
+      if (!date) return false;
+      if (startDate && date < startDate) return false;
+      if (endDate && date > endDate) return false;
+      return true;
+    });
+  }
+
+  const exportRows = rows.map(d => ({
     'Driver': d.name || '',
     'Email': d.email || '',
     'Country': d.country || '',
     'VID': d.vehicle?.vid || '',
     'SSD': d.ssdNumber || '',
     'Status': d.ssdStatus || '',
-    'Date': d.createdAt ? new Date(d.createdAt).toISOString().split('T')[0] : '',
+    'Rig ID': d.rigId || '',
+    'Data Unit': d.dataUnit || '',
+    'Shipping Company': d.shippingCompany || '',
+    'Tracking Number': d.trackingNumber || '',
+    'Date': (() => { try { return d.createdAt ? new Date(d.createdAt).toISOString().split('T')[0] : ''; } catch { return ''; } })(),
     'Last Updated': d.lastUpdated || '',
     'Comments': d.ssdComments || '',
   }));
-  const ws = XLSX.utils.json_to_sheet(rows);
+  const ws = XLSX.utils.json_to_sheet(exportRows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'SSDS');
   const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -317,7 +343,7 @@ exports.exportDailyReports = asyncHandler(async (req, res) => {
 
 exports.createDriver = asyncHandler(async (req, res) => {
   const { drivers: ssdCol } = getSsdsCollections();
-  const { userId, ssdNumber, ssdStatus, comments } = req.body;
+  const { userId, ssdNumber, ssdStatus, comments, rigId, dataUnit, shippingCompany, trackingNumber } = req.body;
   if (!userId) return res.status(400).json({ error: 'userId is required' });
   if (!ssdNumber) return res.status(400).json({ error: 'SSD Number is required' });
 
@@ -333,19 +359,30 @@ exports.createDriver = asyncHandler(async (req, res) => {
     'SSD Number': ssdNumber || '',
     'SSD Status': ssdStatus || '',
     comments: comments || '',
+    rigId: rigId || '',
+    dataUnit: dataUnit || '',
+    shippingCompany: shippingCompany || '',
+    trackingNumber: trackingNumber || '',
     'Last Updated': getISTDate(),
     createdAt: new Date(),
     createdBy: req.user._id.toString(),
   };
 
-  // Store image if uploaded
-  if (req.file) {
-    if (isS3Configured() && req.file.buffer) {
-      const s3Key = await uploadToS3(req.file.buffer, req.file.originalname, userId);
-      doc.ssdImageUrl = '/api/ssds/image/' + encodeURIComponent(s3Key);
-    } else if (req.file.filename) {
-      doc.ssdImageUrl = '/uploads/ssd/' + req.file.filename;
+  // Store multiple images if uploaded
+  const imageUrls = [];
+  if (req.files && req.files.length) {
+    for (const file of req.files) {
+      if (isS3Configured() && file.buffer) {
+        const s3Key = await uploadToS3(file.buffer, file.originalname, userId);
+        imageUrls.push('/api/ssds/image/' + encodeURIComponent(s3Key));
+      } else if (file.filename) {
+        imageUrls.push('/uploads/ssd/' + file.filename);
+      }
     }
+  }
+  if (imageUrls.length) {
+    doc.ssdImageUrls = imageUrls;
+    doc.ssdImageUrl = imageUrls[0]; // backward compat
   }
 
   const result = await ssdCol.insertOne(doc);
@@ -360,11 +397,15 @@ exports.updateDriver = asyncHandler(async (req, res) => {
   const { drivers: ssdCol } = getSsdsCollections();
   const id = req.params.id;
 
-  const { ssdNumber, ssdStatus, comments } = req.body;
+  const { ssdNumber, ssdStatus, comments, rigId, dataUnit, shippingCompany, trackingNumber } = req.body;
   const updates = {};
   if (ssdNumber !== undefined) updates['SSD Number'] = ssdNumber;
   if (ssdStatus !== undefined) updates['SSD Status'] = ssdStatus;
   if (comments !== undefined) updates.comments = comments;
+  if (rigId !== undefined) updates.rigId = rigId;
+  if (dataUnit !== undefined) updates.dataUnit = dataUnit;
+  if (shippingCompany !== undefined) updates.shippingCompany = shippingCompany;
+  if (trackingNumber !== undefined) updates.trackingNumber = trackingNumber;
   updates['Last Updated'] = getISTDate();
 
   // Try matching by record _id first, fallback to userId
@@ -632,7 +673,7 @@ exports.assignProject = asyncHandler(async (req, res) => {
 exports.createMySsds = asyncHandler(async (req, res) => {
   const { drivers: ssdCol } = getSsdsCollections();
   const userId = req.user._id.toString();
-  const { ssdNumber, ssdStatus, comments } = req.body;
+  const { ssdNumber, ssdStatus, comments, rigId, dataUnit, shippingCompany, trackingNumber } = req.body;
 
   if (!ssdNumber || !ssdNumber.trim()) return res.status(400).json({ error: 'SSD Number is required' });
 
@@ -645,20 +686,31 @@ exports.createMySsds = asyncHandler(async (req, res) => {
     'SSD Number': ssdNumber.trim(),
     'SSD Status': ssdStatus || '',
     comments: comments || '',
+    rigId: rigId || '',
+    dataUnit: dataUnit || '',
+    shippingCompany: shippingCompany || '',
+    trackingNumber: trackingNumber || '',
     'Last Updated': getISTDate(),
     createdAt: new Date(),
     createdBy: userId,
     createdByDriver: true,
   };
 
-  // Store image: S3 key in production, local path in dev
-  if (req.file) {
-    if (isS3Configured() && req.file.buffer) {
-      const s3Key = await uploadToS3(req.file.buffer, req.file.originalname, userId);
-      doc.ssdImageUrl = '/api/ssds/image/' + encodeURIComponent(s3Key);
-    } else if (req.file.filename) {
-      doc.ssdImageUrl = '/uploads/ssd/' + req.file.filename;
+  // Store multiple images
+  const imageUrls = [];
+  if (req.files && req.files.length) {
+    for (const file of req.files) {
+      if (isS3Configured() && file.buffer) {
+        const s3Key = await uploadToS3(file.buffer, file.originalname, userId);
+        imageUrls.push('/api/ssds/image/' + encodeURIComponent(s3Key));
+      } else if (file.filename) {
+        imageUrls.push('/uploads/ssd/' + file.filename);
+      }
     }
+  }
+  if (imageUrls.length) {
+    doc.ssdImageUrls = imageUrls;
+    doc.ssdImageUrl = imageUrls[0]; // backward compat
   }
 
   const result = await ssdCol.insertOne(doc);
@@ -716,6 +768,11 @@ exports.myDriverSsds = asyncHandler(async (req, res) => {
       ssdStatus: ssd['SSD Status'] || '',
       ssdComments: ssd.comments || '',
       ssdImageUrl: ssd.ssdImageUrl || ssd.ssdImagePath || '',
+      ssdImageUrls: ssd.ssdImageUrls || (ssd.ssdImageUrl ? [ssd.ssdImageUrl] : ssd.ssdImagePath ? [ssd.ssdImagePath] : []),
+      rigId: ssd.rigId || '',
+      dataUnit: ssd.dataUnit || '',
+      shippingCompany: ssd.shippingCompany || '',
+      trackingNumber: ssd.trackingNumber || '',
       lastUpdated: ssd['Last Updated'] || '',
       createdAt: ssd.createdAt || '',
     })),

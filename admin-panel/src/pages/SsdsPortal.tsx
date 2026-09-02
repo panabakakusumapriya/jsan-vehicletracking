@@ -4,7 +4,7 @@ import { api, API_URL } from '../lib/api';
 import { ssdsApi } from '../lib/ssdsApi';
 import { Modal } from '../components/Modal';
 import type { Project, User } from '../lib/types';
-import Tesseract from 'tesseract.js';
+import { extractFromImages } from '../lib/ocrAi';
 
 interface SsdsDriver {
   _id: string;
@@ -17,6 +17,11 @@ interface SsdsDriver {
   ssdStatus: string;
   ssdComments: string;
   ssdImageUrl?: string;
+  ssdImageUrls?: string[];
+  rigId?: string;
+  dataUnit?: string;
+  shippingCompany?: string;
+  trackingNumber?: string;
   lastUpdated?: string;
   createdAt?: string;
   active?: boolean;
@@ -29,6 +34,7 @@ interface SsdsData {
 }
 
 const SSD_STATUSES = ['In Camera', 'Empty - with driver', 'Filled - with driver', 'Shipped'];
+const SHIPPING_COMPANIES = ['UPS', 'FedEx', 'AU Post'];
 const M = () => <span className="muted">—</span>;
 const todayStr = () => new Date().toISOString().split('T')[0];
 
@@ -46,7 +52,8 @@ export function SsdsPortal() {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [projects, setProjects] = useState<Project[]>([]);
 
   // Form state
@@ -55,18 +62,25 @@ export function SsdsPortal() {
   const [ssdNumber, setSsdNumber] = useState('');
   const [ssdStatus, setSsdStatus] = useState('');
   const [ssdComments, setSsdComments] = useState('');
+  const [rigId, setRigId] = useState('');
+  const [dataUnit, setDataUnit] = useState('');
+  const [shippingCompany, setShippingCompany] = useState('');
+  const [trackingNumber, setTrackingNumber] = useState('');
   const [saving, setSaving] = useState(false);
 
   // Add mode: pick a driver
   const [allDrivers, setAllDrivers] = useState<User[]>([]);
   const [selectedUserId, setSelectedUserId] = useState('');
 
-  // OCR + image (add mode only)
-  const [capturedFile, setCapturedFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  // OCR + multiple images (add mode only)
+  const [capturedFiles, setCapturedFiles] = useState<File[]>([]);
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Lightbox for multiple images
+  const [lightboxUrls, setLightboxUrls] = useState<string[]>([]);
+  const [lightboxIdx, setLightboxIdx] = useState(0);
 
   useEffect(() => {
     api.get<{ projects: Project[] }>('/api/projects').then(r => setProjects(r.projects)).catch(() => {});
@@ -88,6 +102,8 @@ export function SsdsPortal() {
   const handleExport = () => {
     const params = new URLSearchParams();
     if (projectFilter) params.set('projectId', projectFilter);
+    if (startDate) params.set('startDate', startDate);
+    if (endDate) params.set('endDate', endDate);
     const qs = params.toString();
     ssdsApi.download(`/ssds/export${qs ? '?' + qs : ''}`).catch(e => alert(e.message));
   };
@@ -100,8 +116,12 @@ export function SsdsPortal() {
     setSsdNumber('');
     setSsdStatus('');
     setSsdComments('');
-    setCapturedFile(null);
-    setPreviewUrl(null);
+    setRigId('');
+    setDataUnit('');
+    setShippingCompany('');
+    setTrackingNumber('');
+    setCapturedFiles([]);
+    setPreviewUrls([]);
   };
 
   const openEdit = (d: SsdsDriver) => {
@@ -111,8 +131,12 @@ export function SsdsPortal() {
     setSsdNumber(d.ssdNumber);
     setSsdStatus(d.ssdStatus);
     setSsdComments(d.ssdComments);
-    setCapturedFile(null);
-    setPreviewUrl(null);
+    setRigId(d.rigId || '');
+    setDataUnit(d.dataUnit || '');
+    setShippingCompany(d.shippingCompany || '');
+    setTrackingNumber(d.trackingNumber || '');
+    setCapturedFiles([]);
+    setPreviewUrls([]);
   };
 
   const closeForm = () => {
@@ -120,63 +144,63 @@ export function SsdsPortal() {
     setEditingDriver(null);
   };
 
-  // OCR capture for add mode
+  // AI OCR — uses Gemini Flash Lite for fast extraction (all images in parallel)
   const handleImageCapture = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    setPreviewUrl(url);
-    setCapturedFile(file);
+    const files = e.target.files;
+    if (!files || !files.length) return;
+    const newFiles = Array.from(files);
+    const newUrls = newFiles.map(f => URL.createObjectURL(f));
+    setCapturedFiles(prev => [...prev, ...newFiles]);
+    setPreviewUrls(prev => [...prev, ...newUrls]);
+
     setOcrLoading(true);
     setOcrProgress(0);
     try {
-      const result = await Tesseract.recognize(file, 'eng', {
-        logger: (m: { status: string; progress: number }) => {
-          if (m.status === 'recognizing text') setOcrProgress(Math.round(m.progress * 100));
-        },
-      });
-      const text = result.data.text.trim();
-      const snMatch =
-        text.match(/\bSN[-:\s]*([A-Z0-9-]+)/i) ||
-        text.match(/\bS\/N[-:\s]*([A-Z0-9-]+)/i) ||
-        text.match(/\bSerial\s*(?:No\.?|Number)[-:\s]*([A-Z0-9-]+)/i) ||
-        text.match(/SSD[-\s]?\d+/i) ||
-        text.match(/\b\d{3,}\b/);
-      if (snMatch) {
-        setSsdNumber((snMatch[1] || snMatch[0]).trim());
-      }
+      const result = await extractFromImages(newFiles, setOcrProgress);
+      if (!ssdNumber && result.ssdNumber) setSsdNumber(result.ssdNumber);
+      if (!dataUnit && result.dataUnit) setDataUnit(result.dataUnit);
+      if (!trackingNumber && result.trackingNumber) setTrackingNumber(result.trackingNumber);
+      if (!shippingCompany && result.shippingCompany) setShippingCompany(result.shippingCompany);
     } catch (err: any) {
-      alert('OCR failed: ' + err.message);
+      alert('AI OCR failed: ' + err.message);
     } finally {
       setOcrLoading(false);
-      if (fileRef.current) fileRef.current.value = '';
     }
+    if (fileRef.current) fileRef.current.value = '';
+  };
+
+  const removeImage = (idx: number) => {
+    setCapturedFiles(prev => prev.filter((_, i) => i !== idx));
+    setPreviewUrls(prev => {
+      URL.revokeObjectURL(prev[idx]);
+      return prev.filter((_, i) => i !== idx);
+    });
   };
 
   const handleSave = async () => {
     setSaving(true);
     try {
+      const extraFields = { rigId, dataUnit, shippingCompany, trackingNumber };
       if (formMode === 'edit' && editingDriver) {
         if (editingDriver.ssdRecordId) {
-          await ssdsApi.patch(`/ssds/${editingDriver.ssdRecordId}`, { ssdNumber, ssdStatus, comments: ssdComments });
+          await ssdsApi.patch(`/ssds/${editingDriver.ssdRecordId}`, { ssdNumber, ssdStatus, comments: ssdComments, ...extraFields });
         } else {
-          await ssdsApi.post('/ssds', { userId: editingDriver._id, ssdNumber, ssdStatus, comments: ssdComments });
+          await ssdsApi.post('/ssds', { userId: editingDriver._id, ssdNumber, ssdStatus, comments: ssdComments, ...extraFields });
         }
       } else if (formMode === 'add') {
         if (!selectedUserId) return alert('Please select a driver');
         if (!ssdNumber.trim()) return alert('SSD Number is required');
-        // Use FormData if image is captured
-        if (capturedFile) {
-          const fd = new FormData();
-          fd.append('userId', selectedUserId);
-          fd.append('ssdNumber', ssdNumber);
-          fd.append('ssdStatus', ssdStatus);
-          fd.append('comments', ssdComments);
-          fd.append('ssdImage', capturedFile);
-          await ssdsApi.postForm('/ssds', fd);
-        } else {
-          await ssdsApi.post('/ssds', { userId: selectedUserId, ssdNumber, ssdStatus, comments: ssdComments });
-        }
+        const fd = new FormData();
+        fd.append('userId', selectedUserId);
+        fd.append('ssdNumber', ssdNumber);
+        fd.append('ssdStatus', ssdStatus);
+        fd.append('comments', ssdComments);
+        fd.append('rigId', rigId);
+        fd.append('dataUnit', dataUnit);
+        fd.append('shippingCompany', shippingCompany);
+        fd.append('trackingNumber', trackingNumber);
+        capturedFiles.forEach(f => fd.append('ssdImages', f));
+        await ssdsApi.postForm('/ssds', fd);
       }
       closeForm();
       load();
@@ -196,9 +220,17 @@ export function SsdsPortal() {
   if (!data) return null;
 
   const filtered = data.data.filter(d => {
-    if (!search) return true;
-    const s = search.toLowerCase();
-    return `${d.name} ${d.email} ${d.country} ${d.vehicle?.vid || ''} ${d.ssdNumber}`.toLowerCase().includes(s);
+    if (search) {
+      const s = search.toLowerCase();
+      if (!`${d.name} ${d.email} ${d.country} ${d.vehicle?.vid || ''} ${d.ssdNumber}`.toLowerCase().includes(s)) return false;
+    }
+    if (startDate || endDate) {
+      const date = d.createdAt ? new Date(d.createdAt).toISOString().split('T')[0] : '';
+      if (!date) return false;
+      if (startDate && date < startDate) return false;
+      if (endDate && date > endDate) return false;
+    }
+    return true;
   });
 
   const availableDrivers = allDrivers;
@@ -234,12 +266,17 @@ export function SsdsPortal() {
           {isAdmin && <option value="unassigned">Unassigned</option>}
           {projects.map(p => <option key={p._id} value={p._id}>{p.name}</option>)}
         </select>
+        <input className="input" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} title="From date" style={{ maxWidth: 150 }} />
+        <input className="input" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} title="To date" style={{ maxWidth: 150 }} />
+        {(startDate || endDate) && (
+          <button className="btn-ghost" style={{ fontSize: 11, padding: '4px 8px' }} onClick={() => { setStartDate(''); setEndDate(''); }}>Clear dates</button>
+        )}
         <span className="muted" style={{ fontSize: 12 }}>{filtered.length} records</span>
       </div>
 
       {/* Table */}
       <div className="card" style={{ padding: 0, overflowX: 'auto', width: '100%' }}>
-        <table style={{ minWidth: 900 }}>
+        <table style={{ minWidth: 1200 }}>
           <thead>
             <tr>
               <th>Driver</th>
@@ -248,15 +285,21 @@ export function SsdsPortal() {
               <th>VID</th>
               <th>SSD</th>
               <th>Status</th>
+              <th>Rig ID</th>
+              <th>Data Unit</th>
+              <th>Shipping Company</th>
+              <th>Tracking Number</th>
               <th>Date</th>
               <th>Last Updated</th>
               <th>Comments</th>
-              <th>Image</th>
+              <th>Images</th>
               {canEdit && <th>Actions</th>}
             </tr>
           </thead>
           <tbody>
-            {filtered.map((d, i) => (
+            {filtered.map((d, i) => {
+              const imgs = d.ssdImageUrls?.length ? d.ssdImageUrls : d.ssdImageUrl ? [d.ssdImageUrl] : [];
+              return (
               <tr key={d.ssdRecordId || `${d._id}-${i}`}>
                 <td style={{ fontWeight: 600 }}>{d.name}</td>
                 <td>{d.email}</td>
@@ -265,11 +308,15 @@ export function SsdsPortal() {
                 <td>{d.ssdNumber ? <span className="badge blue">{d.ssdNumber}</span> : <M />}</td>
                 <td>
                   {d.ssdStatus ? (
-                    <span className={`badge ${d.ssdStatus === 'In Camera' ? 'blue' : d.ssdStatus === 'Filled - with driver' ? 'green' : d.ssdStatus === 'Empty - with driver' ? 'yellow' : d.ssdStatus === 'Shipped' ? 'gray' : 'gray'}`}>
+                    <span className={`badge ${d.ssdStatus === 'In Camera' ? 'blue' : d.ssdStatus === 'Filled - with driver' ? 'green' : d.ssdStatus === 'Empty - with driver' ? 'yellow' : 'gray'}`}>
                       {d.ssdStatus}
                     </span>
                   ) : <M />}
                 </td>
+                <td>{d.rigId || <M />}</td>
+                <td>{d.dataUnit || <M />}</td>
+                <td>{d.shippingCompany || <M />}</td>
+                <td style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.trackingNumber}>{d.trackingNumber || <M />}</td>
                 <td className="muted" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
                   {d.createdAt ? new Date(d.createdAt).toLocaleDateString() : <M />}
                 </td>
@@ -278,9 +325,13 @@ export function SsdsPortal() {
                 </td>
                 <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.ssdComments}>{d.ssdComments || <M />}</td>
                 <td>
-                  {d.ssdImageUrl ? (
-                    <img src={resolveImgUrl(d.ssdImageUrl)} alt="SSD" style={{ width: 50, height: 34, objectFit: 'cover', borderRadius: 4, cursor: 'pointer' }}
-                      onClick={() => setLightboxUrl(resolveImgUrl(d.ssdImageUrl))} />
+                  {imgs.length > 0 ? (
+                    <div style={{ display: 'flex', gap: 3 }}>
+                      {imgs.map((url, idx) => (
+                        <img key={idx} src={resolveImgUrl(url)} alt="SSD" style={{ width: 36, height: 28, objectFit: 'cover', borderRadius: 3, cursor: 'pointer' }}
+                          onClick={() => { setLightboxUrls(imgs.map(resolveImgUrl)); setLightboxIdx(idx); }} />
+                      ))}
+                    </div>
                   ) : <M />}
                 </td>
                 {canEdit && (
@@ -294,9 +345,10 @@ export function SsdsPortal() {
                   </td>
                 )}
               </tr>
-            ))}
+              );
+            })}
             {filtered.length === 0 && (
-              <tr><td colSpan={canEdit ? 11 : 10} className="muted" style={{ textAlign: 'center', padding: 28 }}>No drivers found.</td></tr>
+              <tr><td colSpan={canEdit ? 15 : 14} className="muted" style={{ textAlign: 'center', padding: 28 }}>No drivers found.</td></tr>
             )}
           </tbody>
         </table>
@@ -337,21 +389,30 @@ export function SsdsPortal() {
                   );
                 })()}
 
-                {/* OCR Capture (add mode only) */}
+                {/* Image Capture — multiple images with OCR */}
                 <div style={{ padding: '12px 14px', background: 'var(--surface)', borderRadius: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Scan SSD Card (optional)</div>
-                  <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={handleImageCapture} style={{ display: 'none' }} />
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Capture SSD Images (optional — OCR extracts Data Unit &amp; Tracking #)</div>
+                  <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
                   <button className="btn" onClick={() => fileRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 12 }}>
-                    {ocrLoading ? 'Extracting...' : previewUrl ? 'Recapture' : 'Capture SSD Image'}
+                    {ocrLoading ? 'Extracting...' : 'Add Image'}
                   </button>
                   {ocrLoading && (
                     <span style={{ marginLeft: 10 }}>
                       <span className="muted" style={{ fontSize: 12 }}>{ocrProgress}%</span>
                     </span>
                   )}
-                  {previewUrl && (
-                    <div style={{ marginTop: 10 }}>
-                      <img src={previewUrl} alt="SSD" style={{ maxWidth: 240, maxHeight: 160, borderRadius: 6, border: '1px solid var(--border)' }} />
+                  {previewUrls.length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                      {previewUrls.map((url, idx) => (
+                        <div key={idx} style={{ position: 'relative' }}>
+                          <img src={url} alt={`SSD ${idx + 1}`} style={{ width: 100, height: 70, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
+                          <button type="button" onClick={() => removeImage(idx)} style={{
+                            position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%',
+                            background: 'var(--danger, #dc2626)', color: '#fff', border: 'none', cursor: 'pointer',
+                            fontSize: 11, lineHeight: '18px', textAlign: 'center', padding: 0,
+                          }}>×</button>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -369,6 +430,29 @@ export function SsdsPortal() {
                 <option value="">Select...</option>
                 {SSD_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
+            </label>
+
+            <label>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Rig ID</span>
+              <input className="input" value={rigId} onChange={e => setRigId(e.target.value)} placeholder="e.g. HT480" />
+            </label>
+
+            <label>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Data Unit</span>
+              <input className="input" value={dataUnit} onChange={e => setDataUnit(e.target.value)} placeholder="e.g. 47451" />
+            </label>
+
+            <label>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Shipping Company</span>
+              <select className="input" value={shippingCompany} onChange={e => setShippingCompany(e.target.value)}>
+                <option value="">Select...</option>
+                {SHIPPING_COMPANIES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+
+            <label>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 4 }}>Tracking Number</span>
+              <input className="input" value={trackingNumber} onChange={e => setTrackingNumber(e.target.value)} placeholder="e.g. 1221572804240006..." />
             </label>
 
             <label>
@@ -391,14 +475,33 @@ export function SsdsPortal() {
         </Modal>
       )}
 
-      {/* Image Lightbox */}
-      {lightboxUrl && (
-        <div onClick={() => setLightboxUrl(null)} style={{
+      {/* Image Lightbox — multi-image with nav */}
+      {lightboxUrls.length > 0 && (
+        <div onClick={() => setLightboxUrls([])} style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center',
           zIndex: 9999, cursor: 'pointer',
         }}>
-          <img src={lightboxUrl} alt="SSD Card" style={{ maxWidth: '90vw', maxHeight: '90vh', borderRadius: 8 }} />
+          <div onClick={e => e.stopPropagation()} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 16 }}>
+            {lightboxUrls.length > 1 && (
+              <button onClick={() => setLightboxIdx(i => (i - 1 + lightboxUrls.length) % lightboxUrls.length)} style={{
+                background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', fontSize: 28, cursor: 'pointer',
+                borderRadius: '50%', width: 40, height: 40, lineHeight: '40px',
+              }}>‹</button>
+            )}
+            <img src={lightboxUrls[lightboxIdx]} alt="SSD Card" style={{ maxWidth: '80vw', maxHeight: '85vh', borderRadius: 8 }} />
+            {lightboxUrls.length > 1 && (
+              <button onClick={() => setLightboxIdx(i => (i + 1) % lightboxUrls.length)} style={{
+                background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', fontSize: 28, cursor: 'pointer',
+                borderRadius: '50%', width: 40, height: 40, lineHeight: '40px',
+              }}>›</button>
+            )}
+          </div>
+          {lightboxUrls.length > 1 && (
+            <div style={{ position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)', color: '#fff', fontSize: 13 }}>
+              {lightboxIdx + 1} / {lightboxUrls.length}
+            </div>
+          )}
         </div>
       )}
     </div>

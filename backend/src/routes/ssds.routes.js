@@ -37,7 +37,7 @@ router.use(authenticate);
 // ── Driver portal (role: user) ──
 // Drivers see only their own records, matched by email.
 router.get('/my/ssds', ctrl.myDriverSsds);
-router.post('/my/ssds', ssdUpload.single('ssdImage'), ctrl.createMySsds);
+router.post('/my/ssds', ssdUpload.array('ssdImages', 10), ctrl.createMySsds);
 router.patch('/my/ssds/:id', ctrl.updateMySsds);
 router.patch('/my/ssds', ctrl.updateMySsds);
 router.get('/my/timesheets', ctrl.myDriverTimesheets);
@@ -54,7 +54,7 @@ const adminManager = requireRole('admin', 'manager');
 router.get('/ssds', adminManagerTl, ctrl.getSsds);
 router.get('/ssds/export', adminManagerTl, ctrl.exportSsds);
 router.get('/ssds/history', adminManagerTl, ctrl.getSsdsHistory);
-router.post('/ssds', adminManager, ssdUpload.single('ssdImage'), ctrl.createDriver);
+router.post('/ssds', adminManager, ssdUpload.array('ssdImages', 10), ctrl.createDriver);
 router.patch('/ssds/:id', adminManager, ctrl.updateDriver);
 router.delete('/ssds/:id', adminManager, ctrl.deleteDriver);
 
