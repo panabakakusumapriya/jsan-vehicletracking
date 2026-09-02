@@ -60,7 +60,8 @@ export function DriverMySsds() {
   // OCR
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
     setLoading(true);
@@ -129,7 +130,8 @@ export function DriverMySsds() {
     } finally {
       setOcrLoading(false);
     }
-    if (fileRef.current) fileRef.current.value = '';
+    if (cameraRef.current) cameraRef.current.value = '';
+    if (galleryRef.current) galleryRef.current.value = '';
   };
 
   const removeImage = (idx: number) => {
@@ -206,10 +208,16 @@ export function DriverMySsds() {
           {/* Capture Images — multiple with OCR */}
           <div style={{ marginBottom: 18 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Capture SSD Images (OCR extracts Data Unit &amp; Tracking #)</div>
-            <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
-            <button className="btn" onClick={() => fileRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 13 }}>
-              {ocrLoading ? 'Extracting...' : 'Add Image'}
-            </button>
+            <input ref={cameraRef} type="file" accept="image/*" capture="environment" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
+            <input ref={galleryRef} type="file" accept="image/*" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn" onClick={() => cameraRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 13 }}>
+                {ocrLoading ? 'Extracting...' : '📷 Camera'}
+              </button>
+              <button className="btn" onClick={() => galleryRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 13 }}>
+                🖼️ Gallery
+              </button>
+            </div>
             {ocrLoading && (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 12 }}>
                 <div style={{ width: 100, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>

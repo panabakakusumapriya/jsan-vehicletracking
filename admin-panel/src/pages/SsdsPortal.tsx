@@ -77,7 +77,8 @@ export function SsdsPortal() {
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const galleryRef = useRef<HTMLInputElement>(null);
   // Lightbox for multiple images
   const [lightboxUrls, setLightboxUrls] = useState<string[]>([]);
   const [lightboxIdx, setLightboxIdx] = useState(0);
@@ -166,7 +167,8 @@ export function SsdsPortal() {
     } finally {
       setOcrLoading(false);
     }
-    if (fileRef.current) fileRef.current.value = '';
+    if (cameraRef.current) cameraRef.current.value = '';
+    if (galleryRef.current) galleryRef.current.value = '';
   };
 
   const removeImage = (idx: number) => {
@@ -392,10 +394,16 @@ export function SsdsPortal() {
                 {/* Image Capture — multiple images with OCR */}
                 <div style={{ padding: '12px 14px', background: 'var(--surface)', borderRadius: 8 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Capture SSD Images (optional — OCR extracts Data Unit &amp; Tracking #)</div>
-                  <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
-                  <button className="btn" onClick={() => fileRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 12 }}>
-                    {ocrLoading ? 'Extracting...' : 'Add Image'}
-                  </button>
+                  <input ref={cameraRef} type="file" accept="image/*" capture="environment" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
+                  <input ref={galleryRef} type="file" accept="image/*" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn" onClick={() => cameraRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 12 }}>
+                      {ocrLoading ? 'Extracting...' : '📷 Camera'}
+                    </button>
+                    <button className="btn" onClick={() => galleryRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 12 }}>
+                      🖼️ Gallery
+                    </button>
+                  </div>
                   {ocrLoading && (
                     <span style={{ marginLeft: 10 }}>
                       <span className="muted" style={{ fontSize: 12 }}>{ocrProgress}%</span>
