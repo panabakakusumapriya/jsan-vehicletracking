@@ -59,7 +59,7 @@ const features = [
 export function Login() {
   const { signIn, token, user } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState('admin@jsan.local');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
