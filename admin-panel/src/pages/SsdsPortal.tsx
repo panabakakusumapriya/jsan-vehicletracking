@@ -392,7 +392,7 @@ export function SsdsPortal() {
                 {/* Image Capture — multiple images with OCR */}
                 <div style={{ padding: '12px 14px', background: 'var(--surface)', borderRadius: 8 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Capture SSD Images (optional — OCR extracts Data Unit &amp; Tracking #)</div>
-                  <input ref={fileRef} type="file" accept="image/*" capture="environment" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
+                  <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleImageCapture} style={{ display: 'none' }} />
                   <button className="btn" onClick={() => fileRef.current?.click()} disabled={ocrLoading} style={{ fontSize: 12 }}>
                     {ocrLoading ? 'Extracting...' : 'Add Image'}
                   </button>
