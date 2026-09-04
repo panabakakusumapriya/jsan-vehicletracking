@@ -6,6 +6,7 @@ import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 import { buildLivePathLayers } from '../lib/map3d/TripPathLayer';
 import { useInterpolatedPosition } from '../lib/map3d/useInterpolatedPosition';
 import type { Trip } from '../lib/types';
+import { useTripMarkers } from '../components/TripMarkers';
 
 interface Point {
   lat: number;
@@ -26,6 +27,8 @@ export function SessionMap() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mapRef = useRef<Map3DHandle>(null);
+  // Markers the driver dropped during THIS trip — drawn on the route, tap → Google Maps.
+  const tripMarkers = useTripMarkers(id);
 
   const fetchData = async (silent = false) => {
     if (!id) return;
@@ -74,8 +77,11 @@ export function SessionMap() {
   }, [points]);
 
   const layers = useMemo(
-    () => buildLivePathLayers(points, animatedVehicle, trip ? trip.status !== 'active' : false),
-    [points, animatedVehicle, trip]
+    () => [
+      ...buildLivePathLayers(points, animatedVehicle, trip ? trip.status !== 'active' : false),
+      ...tripMarkers.layers,
+    ],
+    [points, animatedVehicle, trip, tripMarkers.layers]
   );
 
   if (loading) return <div className="muted" style={{ padding: 32 }}>Loading session…</div>;
@@ -154,8 +160,9 @@ export function SessionMap() {
       </div>
 
       {/* Map */}
-      <div className="map-wrap" style={{ height: 'calc(100vh - 300px - var(--topbar-h))', minHeight: 420 }}>
-        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} />
+      <div className="map-wrap" style={{ height: 'calc(100vh - 300px - var(--topbar-h))', minHeight: 420, position: 'relative' }}>
+        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} />
+        {tripMarkers.popup}
       </div>
 
       {points.length === 0 && (

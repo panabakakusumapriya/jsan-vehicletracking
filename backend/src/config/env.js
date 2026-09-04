@@ -37,6 +37,11 @@ module.exports = {
   // loss / crashed test session) and auto-closed so it stops lingering on the live map.
   // Kept well above the device's 10s heartbeat and normal GPS blips. Default 15 min.
   SESSION_DEAD_AFTER_SECONDS: parseInt(process.env.SESSION_DEAD_AFTER_SECONDS || '900', 10),
+  // A trip running longer than this is a forgotten session, not a drive: force-completed by
+  // the watchdog so map-matching (snapping) starts and the next shift begins on a clean
+  // slate. The device ends it on its own at the same mark; this is the server-side backstop
+  // for builds that predate the device-side cap.
+  TRIP_MAX_DURATION_HOURS: parseFloat(process.env.TRIP_MAX_DURATION_HOURS || '8'),
 
   // ---- Alerts (web push to the admin panel PWA) ----
   // Master switch for the background watchdog that raises driver-offline alerts.

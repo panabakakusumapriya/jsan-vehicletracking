@@ -2,7 +2,7 @@
   "expo": {
     "name": "JSAN-AUTO-TRACKING",
     "slug": "jsanvtsauto",
-    "version": "1.0.13",
+    "version": "1.0.14",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "jsanautotracking",
@@ -68,7 +68,8 @@
           "isAndroidForegroundServiceEnabled": true
         }
       ],
-      "expo-dev-client"
+      "expo-dev-client",
+      "@maplibre/maplibre-react-native"
     ],
     "experiments": {
       "typedRoutes": true,

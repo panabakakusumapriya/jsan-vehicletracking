@@ -14,8 +14,10 @@ export type LocationEvent = {
   lat: number;
   lon: number;
   speedKmh: number;
-  tripId: string;
-  tripStatus: 'active' | 'ended' | 'timed_out';
+  /** null while idle — the service emits fixes before a trip starts so the driver's own map dot
+   *  can move; nothing is recorded or uploaded for those. */
+  tripId: string | null;
+  tripStatus: 'active' | 'ended' | 'timed_out' | 'idle';
   recordedAt: string;
 };
 

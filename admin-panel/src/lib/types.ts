@@ -5,7 +5,7 @@ export type TabPermission = 'edit' | 'view' | 'hidden';
 export const ALL_TAB_KEYS = [
   'live_map', 'trips', 'drivers', 'mobiles', 'vehicles', 'weather', 'hotels',
   'couriers', 'ukm', 'coverage', 'app_health', 'asset_history', 'reports',
-  'managers', 'projects', 'app_updates',
+  'managers', 'projects', 'app_updates', 'markers',
   'ssds_portal', 'timesheets', 'daily_status_report',
 ] as const;
 
@@ -28,6 +28,7 @@ export const TAB_LABELS: Record<TabKey, string> = {
   managers: 'Users',
   projects: 'Projects',
   app_updates: 'App Updates',
+  markers: 'Markers',
   ssds_portal: 'SSDS Portal',
   timesheets: 'Timesheets',
   daily_status_report: 'Daily Status Report',
@@ -42,7 +43,7 @@ export const ADMIN_PANEL_TABS: TabKey[] = [
 export const SSDS_TABS: TabKey[] = ['ssds_portal', 'timesheets', 'daily_status_report'];
 
 export const ADMIN_ONLY_TABS: TabKey[] = [
-  'managers', 'projects', 'app_updates',
+  'managers', 'projects', 'app_updates', 'markers',
 ];
 
 /** The tenancy boundary managers/team leads/drivers operate inside. Admin-managed. */

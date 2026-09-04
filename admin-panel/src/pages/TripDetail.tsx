@@ -9,6 +9,7 @@ import { buildReplayLayers, vehicleAtElapsed } from '../lib/map3d/TripPathLayer'
 import { useTripPlayback } from '../lib/map3d/useTripPlayback';
 import { decodeRouteShapes } from '../lib/polyline';
 import type { Trip } from '../lib/types';
+import { useTripMarkers } from '../components/TripMarkers';
 
 interface PathPoint {
   lat: number;
@@ -403,6 +404,8 @@ export function TripDetail() {
   const [showOverlap, setShowOverlap] = useState(false);
   const mapRef = useRef<Map3DHandle>(null);
   const lastFlyRef = useRef(0);
+  // Markers the driver dropped during THIS trip — drawn on the route, click → Google Maps.
+  const tripMarkers = useTripMarkers(id);
 
   useEffect(() => {
     if (!id) return;
@@ -469,8 +472,11 @@ export function TripDetail() {
   }, [playback.currentTimeMs, playback.playing, points]);
 
   const layers = useMemo(
-    () => buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths, outsidePaths),
-    [points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths, outsidePaths]
+    () => [
+      ...buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths, outsidePaths),
+      ...tripMarkers.layers,
+    ],
+    [points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths, outsidePaths, tripMarkers.layers]
   );
 
   if (loading) return <div className="muted">Loading trip…</div>;
@@ -633,7 +639,8 @@ export function TripDetail() {
       )}
 
       <div className="map-wrap" style={{ height: 'calc(100vh - 340px - var(--topbar-h))', minHeight: 380, position: 'relative' }}>
-        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} />
+        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} />
+        {tripMarkers.popup}
         {/* Two colours on a map need saying out loud — without this the muted stretches read as
             a rendering glitch rather than "the driver had been here before". */}
         {((ukmPaths && ukmPaths.length > 0) || (outsidePaths && outsidePaths.length > 0)) && (

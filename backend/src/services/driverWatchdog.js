@@ -2,7 +2,7 @@ const Trip = require('../models/Trip');
 const env = require('../config/env');
 const { emitAlert } = require('../realtime/io');
 const { sendToUsers, watcherIdsForDriver, isConfigured } = require('./push');
-const { closeDeadTrips, driversWithLiveApp } = require('./tripLifecycle');
+const { closeDeadTrips, closeOverlongTrips, driversWithLiveApp } = require('./tripLifecycle');
 
 /**
  * Background watchdog: notices when a driver on an active trip stops reporting and tells
@@ -157,7 +157,9 @@ async function tick() {
   // Trips that stayed silent past the dead-session window are closed here too, so the map
   // clears itself even on days when nobody opens the panel.
   const closed = await closeDeadTrips();
-  return { offline, online, closed };
+  // Forgotten sessions past the max trip duration: force-completed so snapping starts.
+  const overlong = await closeOverlongTrips();
+  return { offline, online, closed: closed + overlong };
 }
 
 function startWatchdog() {

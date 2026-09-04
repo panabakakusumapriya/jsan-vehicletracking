@@ -12,7 +12,7 @@
  * referenced as a full static property access for the transform to find it. Destructuring
  * process.env, or building the key dynamically, silently yields undefined.
  */
-const DEFAULT_API_URL = 'http://192.168.2.66:4000';
+const DEFAULT_API_URL = 'https://backend-jsan-vehicletracking-production.up.railway.app';
 
 const configured = process.env.EXPO_PUBLIC_API_URL;
 

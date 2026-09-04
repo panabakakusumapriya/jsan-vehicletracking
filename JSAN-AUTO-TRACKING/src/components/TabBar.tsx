@@ -1,6 +1,7 @@
 import { router, usePathname } from 'expo-router';
 import { useEffect } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { useAuth } from '@/src/lib/auth';
 
@@ -11,9 +12,12 @@ const C = {
   muted:  '#9ca3af',
 };
 
+// Icons are FontAwesome (bundled with Expo via @expo/vector-icons) rather than emoji: emoji
+// render differently per OEM keyboard/font and cannot take the active tint. Which tabs a
+// driver actually sees is the project's call — enabledModules, filtered below.
 const ALL_TABS = [
-  { path: '/home', label: 'Dashboard', icon: '⚡', module: 'dashboard' },
-  { path: '/map',  label: 'My Map',    icon: '🗺️', module: 'map'       },
+  { path: '/home', label: 'Dashboard', icon: 'tachometer' as const, module: 'dashboard' },
+  { path: '/map',  label: 'My Map',    icon: 'map' as const,        module: 'map'       },
 ];
 
 export function TabBar() {
@@ -48,7 +52,7 @@ export function TabBar() {
             activeOpacity={0.7}
           >
             {active && <View style={s.indicator} />}
-            <Text style={s.icon}>{tab.icon}</Text>
+            <FontAwesome name={tab.icon} size={19} color={active ? C.brand : C.muted} />
             <Text style={[s.label, active && s.labelActive]}>{tab.label}</Text>
           </TouchableOpacity>
         );
@@ -67,7 +71,6 @@ const s = StyleSheet.create({
     paddingTop: 8,
   },
   tab:         { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, paddingVertical: 4 },
-  icon:        { fontSize: 20 },
   label:       { fontSize: 11, fontWeight: '600', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.4 },
   labelActive: { color: C.brand },
   indicator:   { position: 'absolute', top: 0, left: '25%', right: '25%', height: 3, borderRadius: 2, backgroundColor: C.brand },

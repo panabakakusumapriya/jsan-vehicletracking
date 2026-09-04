@@ -61,6 +61,8 @@ export default function Home() {
   const [uploadError, setUploadError] = useState<UploadError>(null);
   const [daylightInfo, setDaylightInfo] = useState<VehicleTracker.DaylightInfo | null>(null);
   const started = useRef(false);
+  /** `${token}|${driverId}` last handed to the native service — dedupes configure() calls. */
+  const lastConfiguredRef = useRef<string | null>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -93,6 +95,9 @@ export default function Home() {
   useEffect(() => {
     if (started.current || !user || !token) return;
     started.current = true;
+    // Primed synchronously, so the token-follow effect below is a no-op on first mount — this
+    // effect owns the first configure() (and its API_BASE_URL guard runs first).
+    lastConfiguredRef.current = `${token}|${user._id}`;
     (async () => {
       if (!VehicleTracker.isSupported) {
         setUiState('idle');
@@ -125,15 +130,53 @@ export default function Home() {
     })();
   }, [user, token, refreshStatus]);
 
+  /**
+   * The service's token must FOLLOW the app's, not freeze at first launch. `started` guards the
+   * one-time startup above, which means a re-login while the process was alive used to leave the
+   * native uploader holding the superseded token: the backend's single-session rule 401s it
+   * forever, points pile up in device SQLite, and the driver's live map freezes at the last
+   * uploaded fix while everything else looks healthy. configure() only rewrites the service's
+   * stored config, so re-running it on every token change is cheap and safe.
+   */
+  useEffect(() => {
+    // Same guard as the startup path: configure() persists whatever it is given, so an empty
+    // API_BASE_URL here would clobber a previously valid stored config.
+    if (!started.current || !API_BASE_URL || !token || !user?._id) return;
+    const key = `${token}|${user._id}`;
+    // Primed by the startup effect, so first mount does not configure twice; a refreshed user
+    // object carrying the same token/id (timezone sync and the like) is a no-op too.
+    if (lastConfiguredRef.current === key) return;
+    lastConfiguredRef.current = key;
+    VehicleTracker.configure(API_BASE_URL, token, user._id).catch(() => {});
+  }, [user, token]);
+
   useEffect(() => {
     const subs = [
       VehicleTracker.addStateListener(e => { setUiState(e.state === 'tracking' ? 'tracking' : 'idle'); refreshStatus(); }),
-      VehicleTracker.addLocationListener(e => { setLastFix(e); setUiState('tracking'); setUploadError(null); }),
+      // Idle fixes (tripStatus 'idle') exist for the map dot only — they must not flip the home
+      // card to "Trip in progress" while the vehicle is parked.
+      VehicleTracker.addLocationListener(e => {
+        // Deduped: identical parked fixes (idle emits every 5-10 s) must not re-render the screen.
+        setLastFix(prev =>
+          prev && prev.lat === e.lat && prev.lon === e.lon && prev.tripStatus === e.tripStatus
+            ? prev : e);
+        if (e.tripStatus === 'active') setUiState('tracking');
+      }),
       VehicleTracker.addTripEndListener(() => { setUiState('idle'); refreshStatus(); }),
       VehicleTracker.addUploadErrorListener(e => { setUploadError(e); }),
     ].filter(Boolean);
     return () => subs.forEach(s => s?.remove());
   }, [refreshStatus]);
+
+  // Upload failures re-fire on every failed flush (~10-30 s), each replacing the event object and
+  // re-arming this timer — the banner stays up while failures continue and clears itself 90 s
+  // after the last one. The old rule (clear on the next recorded trip point) left a stale
+  // "re-login" banner up all night whenever the queue recovered while the vehicle was parked.
+  useEffect(() => {
+    if (!uploadError) return;
+    const t = setTimeout(() => setUploadError(null), 90_000);
+    return () => clearTimeout(t);
+  }, [uploadError]);
 
   useEffect(() => { const id = setInterval(refreshStatus, 4000); return () => clearInterval(id); }, [refreshStatus]);
 

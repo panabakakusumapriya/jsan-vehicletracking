@@ -12,6 +12,7 @@ import { Login } from './pages/Login';
 import { AppUpdates } from './pages/AppUpdates';
 import { Managers } from './pages/Managers';
 import { Projects } from './pages/Projects';
+import { Markers } from './pages/Markers';
 import { SessionMap } from './pages/SessionMap';
 import { TripDetail } from './pages/TripDetail';
 import { Trips } from './pages/Trips';
@@ -67,6 +68,14 @@ export default function App() {
           element={
             <ProtectedRoute adminOnly tabKey="projects">
               <Projects />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/markers"
+          element={
+            <ProtectedRoute adminOnly tabKey="markers">
+              <Markers />
             </ProtectedRoute>
           }
         />

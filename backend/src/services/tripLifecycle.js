@@ -100,4 +100,33 @@ async function closeDeadTrips(extraFilter = {}) {
   return res.modifiedCount || 0;
 }
 
-module.exports = { closeDeadTrips, driversWithLiveApp };
+/**
+ * Force-complete trips that have been running longer than TRIP_MAX_DURATION_HOURS.
+ *
+ * An 8-hour-plus "trip" is a forgotten session (tracking left on overnight, a device that
+ * never went still), not a drive. Closing it as 'completed' — not 'timed_out' — matters
+ * twice over: the ingest revive path only reopens 'timed_out' trips, so this close STICKS
+ * even while an old build keeps streaming points at it; and the map-matcher sweeps
+ * completed trips with a pending match, so snapping starts on its next tick without help.
+ */
+async function closeOverlongTrips() {
+  const maxMs = env.TRIP_MAX_DURATION_HOURS * 60 * 60 * 1000;
+  if (!Number.isFinite(maxMs) || maxMs <= 0) return 0;
+  const cutoff = new Date(Date.now() - maxMs);
+  const overlong = await Trip.find({ status: 'active', startedAt: { $lt: cutoff } })
+    .select('_id driverId')
+    .lean();
+  if (!overlong.length) return 0;
+
+  const res = await Trip.updateMany(
+    { _id: { $in: overlong.map((t) => t._id) } },
+    { $set: { status: 'completed', endedAt: new Date() } }
+  );
+  // Fire-and-forget UKM computation, same as the dead-trip close.
+  for (const t of overlong) {
+    computeTripUkm(t._id, t.driverId).catch(() => {});
+  }
+  return res.modifiedCount || 0;
+}
+
+module.exports = { closeDeadTrips, closeOverlongTrips, driversWithLiveApp };

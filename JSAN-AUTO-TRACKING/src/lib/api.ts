@@ -223,3 +223,41 @@ export type MyHistory = {
 export function apiMyHistory(token: string, days: number): Promise<MyHistory> {
   return request(`/api/tracking/my-history?days=${encodeURIComponent(String(days))}`, {}, token);
 }
+
+/* ── Markers ─────────────────────────────────────────────────────────────── */
+
+/** One marker category, as the admins defined it in the portal. */
+export type MarkerCategory = {
+  id: string;
+  name: string;
+  color: string;
+  /** The reasons this flag covers, comma-separated — shown under the name in the picker. */
+  description?: string | null;
+  active?: boolean;
+};
+
+/** One dropped marker, flat and ready to draw. */
+export type MapMarker = {
+  id: string;
+  lat: number;
+  lon: number;
+  category: MarkerCategory | null;
+  driverName: string | null;
+  vehiclePlate: string | null;
+  recordedAt: string;
+};
+
+export function apiMarkerCategories(token: string): Promise<{ categories: MarkerCategory[] }> {
+  return request('/api/markers/categories', {}, token);
+}
+
+export function apiMyMarkers(token: string): Promise<{ markers: MapMarker[] }> {
+  return request('/api/markers/mine', {}, token);
+}
+
+export function apiDropMarker(
+  token: string,
+  m: { lat: number; lon: number; categoryId: string; clientId: string; recordedAt: string }
+): Promise<{ marker: MapMarker }> {
+  return request('/api/markers', { method: 'POST', body: JSON.stringify(m) }, token);
+}

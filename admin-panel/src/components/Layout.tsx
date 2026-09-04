@@ -89,11 +89,6 @@ const WeatherIcon = () => (
   </svg>
 );
 
-const UkmIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M18 6L6 18"/><path d="M8 6h10v10"/>
-  </svg>
-);
 const HealthIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
@@ -137,17 +132,24 @@ const links: { to: string; label: string; end?: boolean; Icon: () => JSX.Element
   { to: '/weather',  label: 'Predictive Weather', Icon: WeatherIcon,tabKey: 'weather'        },
   { to: '/hotels',   label: 'Hotels',             Icon: BedIcon,    tabKey: 'hotels'         },
   { to: '/couriers', label: 'Couriers',           Icon: PackageIcon,tabKey: 'couriers'       },
-  { to: '/ukm',        label: 'UKM',              Icon: UkmIcon,    tabKey: 'ukm'            },
   { to: '/coverage',   label: 'Coverage',           Icon: CoverageIcon,tabKey: 'coverage'       },
   { to: '/app-health', label: 'App Health',       Icon: HealthIcon, tabKey: 'app_health'     },
   { to: '/asset-history', label: 'Asset History',  Icon: HistoryIcon,tabKey: 'asset_history'  },
   { to: '/reports',  label: 'Reports',            Icon: ReportIcon, tabKey: 'reports'        },
 ];
 
+const FlagIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 22V4"/>
+    <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V4s-1 1-4 1-5-2-8-2-4 1-4 1"/>
+  </svg>
+);
+
 const adminLinks: { to: string; label: string; Icon: () => JSX.Element; tabKey: TabKey }[] = [
   { to: '/managers',    label: 'Users',       Icon: ManagerIcon, tabKey: 'managers'    },
   { to: '/projects',    label: 'Projects',    Icon: ProjectIcon, tabKey: 'projects'    },
   { to: '/app-updates', label: 'App Updates', Icon: UpdateIcon,  tabKey: 'app_updates' },
+  { to: '/markers',     label: 'Markers',     Icon: FlagIcon,    tabKey: 'markers'     },
 ];
 
 const SsdsIcon = () => (

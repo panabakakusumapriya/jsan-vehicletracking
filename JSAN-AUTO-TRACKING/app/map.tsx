@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Modal,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -20,10 +21,18 @@ import {
 } from '@/src/lib/mapPrefs';
 import { API_BASE_URL, IS_CUSTOM_API } from '@/src/lib/config';
 import { TabBar } from '@/src/components/TabBar';
-import { MapGL, type MapGLHandle, type MapGLHistory, type MapGLTrace, type RoadTuple } from '@/src/components/MapGL';
-import { apiMyAreas, type MyArea, type MyHistory } from '@/src/lib/api';
+import { type MapGLHandle, type MapGLHistory, type MapGLMarkers, type MapGLTrace, type MapGLTrail, type RoadTuple } from '@/src/components/mapTypes';
+import { DriverMap } from '@/src/components/DriverMap';
+import {
+  apiDropMarker, apiMarkerCategories, apiMyAreas, apiMyMarkers,
+  type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
+} from '@/src/lib/api';
+import { enqueueMarker, flushMarkerQueue, newClientId } from '@/src/lib/markerQueue';
+import * as Location from 'expo-location';
 import { decodeRouteShapeLines } from '@/src/lib/polyline';
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
+import * as VehicleTracker from '@/modules/vehicle-tracker';
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 const C = {
   brand:    '#7c3aed',
@@ -40,10 +49,10 @@ const C = {
   warnEdge: '#fde68a',
 
   /**
-   * The coverage colour contract. These three are duplicated inside MapGL, which needs them as
-   * literals in the style it generates for the WebView. The duplication is deliberate but it is a
-   * trap: a legend that disagrees with the map is worse than no legend, because the driver trusts
-   * it. If one side ever changes, change both.
+   * The coverage colour contract. These are duplicated inside the map engine (MapNative), which
+   * needs them as layer literals. The duplication is deliberate but it is a trap: a legend that
+   * disagrees with the map is worse than no legend, because the driver trusts it. If one side
+   * ever changes, change both.
    */
   roadTodo:  '#dc2626', // assigned, not yet driven
   roadDone:  '#2563eb', // already covered
@@ -60,10 +69,9 @@ const historyLabel = (d: HistoryDays) => (d === 0 ? 'OFF' : `${d} D`);
 /**
  * Stable empty defaults, as module constants rather than `[]` literals.
  *
- * MapGL bakes `roads` and `areas` into the WebView's HTML, so a new array IDENTITY - not new
- * contents, identity - re-mounts the WebView: it re-downloads the map engine, re-fetches tiles and
- * resets the camera. Calling setRoads([]) twice would do exactly that. Everything below is written
- * to hand MapGL the same array back whenever nothing actually changed.
+ * The map memoises its derived layer data on array IDENTITY - not contents, identity. A fresh
+ * `[]` per render would re-derive and re-upload every layer for a map that has not changed.
+ * Everything below is written to hand the map the same array back whenever nothing moved.
  */
 const NO_ROADS: RoadTuple[] = [];
 const NO_AREAS: MyArea[] = [];
@@ -71,10 +79,10 @@ const NO_AREAS: MyArea[] = [];
 /**
  * Ceiling on links actually handed to the map, across ALL of the driver's areas.
  *
- * The server caps one area at 20,000 links, which MapGL measures at ~3.8 MB of generated HTML. A
- * driver holding five areas would be ~19 MB of HTML in a phone WebView, which is not a slow map,
- * it is a dead one. So the same 20,000 is applied to the combined set, and the overflow is reported
- * rather than silently dropped. Areas fill in the order my-areas returns them.
+ * The server caps one area at 20,000 links. A driver holding five areas would hand the phone's
+ * GPU five times that as layer data - not a slow map, a dead one. So the same 20,000 is applied
+ * to the combined set, and the overflow is reported rather than silently dropped. Areas fill in
+ * the order my-areas returns them.
  */
 const MAX_DRAWN_LINKS = 20000;
 
@@ -110,6 +118,10 @@ interface Trip {
 function km(m: number) {
   if (!m) return '0 km';
   return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
+}
+
+function fmtMarkerTime(iso: string) {
+  return new Date(iso).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 function elapsed(iso: string) {
@@ -148,11 +160,35 @@ export default function MapScreen() {
   const [trace,    setTrace]    = useState<MapGLTrace | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
 
+  /** The phone's own latest GPS fix, [lon, lat]. Position lives in state (deduped — identical
+   *  coordinates keep their identity, so a parked phone is not a full render every 5 s);
+   *  freshness lives in the ref, updated on every event without causing a render. The `vehicle`
+   *  memo combines the two. */
+  const [liveFix, setLiveFix] = useState<[number, number] | null>(null);
+  const liveFixAtRef = useRef(0);
+  /** Last native upload failure. Each event replaces the object, re-arming the 90 s expiry timer
+   *  beside the listener that sets it. */
+  const [uploadErr, setUploadErr] = useState<{ msg: string; at: number } | null>(null);
+
+  /** Driver-dropped markers: categories from the admin portal, drops from this screen. */
+  const [markerCats, setMarkerCats] = useState<MarkerCategory[]>([]);
+  const [markers, setMarkers] = useState<MapMarker[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  /** Category being POSITIONED: the picker chose the flag, now the map centre is the pin. */
+  const [placing, setPlacing] = useState<MarkerCategory | null>(null);
+  const [tappedMarker, setTappedMarker] = useState<MapMarker | null>(null);
+  const [markerNote, setMarkerNote] = useState<string | null>(null);
+
+  /** Live local breadcrumb of the CURRENT trip, straight from the service's fixes. */
+  const [trail, setTrail] = useState<MapGLTrail>({ version: 0, line: [] });
+  const trailLineRef = useRef<[number, number][]>([]);
+  const trailTripRef = useRef<string | null>(null);
+
   /**
    * Route history: every closed trip in the chosen window, drawn grey under the current route.
    * `history` carries the figures for the summary line; `historyLines` is the decoded geometry,
    * rebuilt only when the server's version moves — decoding a month of polylines on every poll
-   * would be wasted work, and handing MapGL a new object would re-inject megabytes.
+   * would be wasted work, and handing the map a new object would re-upload megabytes.
    */
   const [history, setHistory] = useState<MyHistory | null>(null);
   const [historyLines, setHistoryLines] = useState<MapGLHistory | null>(null);
@@ -164,9 +200,9 @@ export default function MapScreen() {
   /**
    * Map preferences, remembered per driver.
    *
-   * `prefsReady` gates the map: MapGL bakes the opening camera and basemap into its HTML, so
-   * rendering before the saved values load would open at the default view and then either stay
-   * wrong or re-mount to correct itself. One short wait is better than a visible jump.
+   * `prefsReady` gates the map: the opening camera is applied exactly once at map creation, so
+   * rendering before the saved values load would open at the default view and stay there. One
+   * short wait is better than a visible jump.
    */
   const [prefs, setPrefs] = useState<MapPrefs>(DEFAULT_PREFS);
   const [prefsReady, setPrefsReady] = useState(false);
@@ -195,20 +231,52 @@ export default function MapScreen() {
 
   /**
    * Camera persistence. Written straight to storage WITHOUT going through React state — the
-   * opening camera is baked into MapGL's HTML, so feeding every pan back into state would
-   * regenerate that HTML and reload the map underneath the driver's finger.
+   * opening camera is read exactly once at mount, so state has nothing to react to, and a
+   * per-pan setState would re-render the whole screen for a value only the disk cares about.
    */
+  /** Where the camera last settled — the placement pin drops at this point. */
+  const lastCameraRef = useRef<[number, number] | null>(null);
+
   const onCamera = useCallback(
     (center: [number, number], zoom: number) => {
+      lastCameraRef.current = center;
       void saveMapPrefs(driverId, { center, zoom });
     },
     [driverId]
   );
 
-  /** Opening camera, read once. Changing it later must not re-mount the map. */
+  /**
+   * Opening camera, read once. Changing it later must not re-mount the map.
+   *
+   * The driver's CURRENT position wins: a shift starts wherever the vehicle is, and opening on
+   * the assigned polygon (or yesterday's pan) framed a place the driver may be an hour away
+   * from. The polygon is still drawn — it slides into view as they approach it. Last-known
+   * position is used because it answers instantly; the live dot corrects within seconds.
+   */
+  const [locReady, setLocReady] = useState(false);
+  const startPosRef = useRef<[number, number] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const perm = await Location.getForegroundPermissionsAsync();
+        if (perm.granted) {
+          const fix = await Location.getLastKnownPositionAsync();
+          if (alive && fix) startPosRef.current = [fix.coords.longitude, fix.coords.latitude];
+        }
+      } catch { /* no position — the saved camera or auto-framing takes over */ }
+      if (alive) setLocReady(true);
+    })();
+    return () => { alive = false; };
+  }, []);
+
   const initialCameraRef = useRef<{ center: [number, number]; zoom: number } | null>(null);
-  if (prefsReady && initialCameraRef.current === null && prefs.center && prefs.zoom) {
-    initialCameraRef.current = { center: prefs.center, zoom: prefs.zoom };
+  if (prefsReady && locReady && initialCameraRef.current === null) {
+    if (startPosRef.current) {
+      initialCameraRef.current = { center: startPosRef.current, zoom: 15 };
+    } else if (prefs.center && prefs.zoom) {
+      initialCameraRef.current = { center: prefs.center, zoom: prefs.zoom };
+    }
   }
 
   const timerRef   = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -267,7 +335,7 @@ export default function MapScreen() {
       // discarding the areas list here handed that loss straight back.
       //
       // The signature is kept for the same reason: a retry that returns the identical allocation
-      // must be a no-op, not a new array identity, because a new identity re-mounts the WebView.
+      // must be a no-op, not a new array identity, because identity is what the map keys on.
       setAreasError(errMsg(e, 'Could not load your allocated areas'));
       return areasRef.current;
     }
@@ -281,8 +349,8 @@ export default function MapScreen() {
    * `force` (pull-to-refresh) is the only thing that revalidates sooner.
    *
    * Every area is loaded, and the result is committed once, when all of them have settled. Per-area
-   * commits would each be a new `roads` identity and therefore a full WebView re-mount - the map
-   * would reload once per area instead of drawing once.
+   * commits would each be a new `roads` identity and therefore a fresh layer rebuild - the map
+   * would redraw once per area instead of once.
    */
   const loadRoads = useCallback(async (list: MyArea[], force: boolean) => {
     if (!token) return;
@@ -335,7 +403,7 @@ export default function MapScreen() {
      * `version` is the server's own coverage cache key - it moves when, and only when, something in
      * the area changed colour. Comparing the joined versions is how a refresh that found nothing
      * new leaves the `roads` array identity alone, and so leaves the map alone, instead of
-     * re-mounting a WebView to redraw the same 20,000 polylines.
+     * re-uploading the same 20,000 polylines to the GPU.
      */
     const key = ok.map((r) => `${r.data.areaId}@${r.data.version}`).join('|');
     if (key !== roadsKeyRef.current) {
@@ -415,6 +483,9 @@ export default function MapScreen() {
       });
       // An unchecked !res.ok used to fall through as `{ trip: undefined }`, which rendered as the
       // "no trips found" empty state - a 401 or a 500 looked exactly like an idle driver.
+      // A dead token (session superseded, or expiry) must READ as one — not as a generic
+      // network hiccup the driver keeps waiting out.
+      if (res.status === 401) throw new Error('Session expired — sign out and sign in again.');
       if (!res.ok) throw new Error(`Session request failed (${res.status})`);
       const data: { trip: Trip | null; points: Point[] } = await res.json();
       setTrip(data.trip ?? null);
@@ -503,8 +574,8 @@ export default function MapScreen() {
    * one applies, so this screen only has to decide when to re-render.
    *
    * The signature guard is that decision: the trace object is rebuilt on every 15 s poll, and
-   * handing MapGL a new identity re-injects the payload into the live page. Cheap, but pointless
-   * when the trip has not moved, and a parked vehicle polls just as often as a moving one.
+   * handing the map a new identity re-derives the trace layer. Cheap, but pointless when the
+   * trip has not moved, and a parked vehicle polls just as often as a moving one.
    */
   useEffect(() => {
     let cancelled = false;
@@ -522,15 +593,222 @@ export default function MapScreen() {
     return () => { cancelled = true; };
   }, [trip, points]);
 
-  /** Latest usable fix as [lon, lat] - GeoJSON order, which is what MapGL wants; the tracking API
-   *  hands them over as {lat, lon}, so this is the one place they get flipped. */
+  /**
+   * The dot is the PHONE's GPS, not the server's copy of it.
+   *
+   * It used to be the last point of the 15 s /my-session poll, which put an upload batch, the
+   * network, the database and a poll interval between the vehicle and its own dot. Whenever any
+   * link stalled — upload backoff, a superseded token, no signal, or simply the trip-start gate
+   * (30 m at 10 km/h) before which nothing uploads at all — the dot froze at the last uploaded
+   * point while the driver kept driving. Every "stale dot" report was one of those stalls.
+   *
+   * The service already emits each recorded fix (and now idle fixes) as a JS event; the driver's
+   * own map is exactly what those events are for. Zero extra network, zero battery: the fixes
+   * exist either way.
+   */
+  useEffect(() => {
+    const subs = [
+      VehicleTracker.addLocationListener((e) => {
+        if (!Number.isFinite(e.lat) || !Number.isFinite(e.lon)) return;
+        liveFixAtRef.current = Date.now();
+        // Functional + deduped: a parked vehicle emits identical coordinates every 5-30 s, and
+        // each fresh array identity would otherwise be a full screen render plus a WebView
+        // injection for a dot that has not moved.
+        setLiveFix((prev) => (prev && prev[0] === e.lon && prev[1] === e.lat ? prev : [e.lon, e.lat]));
+
+        // Live breadcrumb: draw the road AS IT IS DRIVEN, no upload + poll round trip. Trip
+        // fixes only — idle fixes would sketch the walk to the car. ~12 m gate (1e-4 deg is
+        // ~11 m): tighter bloats the line, looser cuts corners. Bounded to the recent stretch;
+        // the server's raw trace carries the full route within a poll or two anyway.
+        if (e.tripStatus === 'active' && e.tripId) {
+          if (trailTripRef.current !== e.tripId) {
+            trailTripRef.current = e.tripId;
+            trailLineRef.current = [];
+          }
+          const line = trailLineRef.current;
+          const last = line[line.length - 1];
+          const moved = !last
+            || Math.abs(last[0] - e.lon) > 1.1e-4 || Math.abs(last[1] - e.lat) > 1.1e-4;
+          if (moved) {
+            line.push([e.lon, e.lat]);
+            if (line.length > 600) line.splice(0, line.length - 600);
+            setTrail({ version: Date.now(), line: [...line] });
+          }
+        }
+      }),
+      // Trip over: the breadcrumb's job is done — the server trace (and soon the snapped
+      // route) owns the drawing from here.
+      VehicleTracker.addTripEndListener(() => {
+        trailTripRef.current = null;
+        trailLineRef.current = [];
+        setTrail({ version: Date.now(), line: [] });
+      }),
+      // Upload failures were only ever shown on the home screen; drivers live on this one.
+      VehicleTracker.addUploadErrorListener((e) => setUploadErr({ msg: e.message, at: Date.now() })),
+    ].filter(Boolean);
+    return () => subs.forEach((s) => s?.remove());
+  }, []);
+
+  // The notice owns its own lifetime. Failures re-fire on every failed flush (~10-30 s), each
+  // replacing the event object and re-arming this timer — the banner stays up exactly while
+  // failures continue and clears itself 90 s after the last one, with no reliance on anything
+  // else happening to re-render the screen.
+  useEffect(() => {
+    if (!uploadErr) return;
+    const t = setTimeout(() => setUploadErr(null), 90_000);
+    return () => clearTimeout(t);
+  }, [uploadErr]);
+
+  /** How long a native fix stays authoritative. The longest healthy emit gap is the 30 s
+   *  stationary heartbeat, so 90 s of silence means the local stream is dead — service stopped,
+   *  permissions revoked, or this handset is only VIEWING a trip another device is recording —
+   *  and the server's copy is the better answer. */
+  const LIVE_FIX_MAX_AGE_MS = 90_000;
+
+  /** Latest usable fix as [lon, lat] - GeoJSON order, which is what the map wants (server points
+   *  arrive as {lat, lon} and are flipped here; native fixes were flipped in the listener). A
+   *  FRESH native fix wins — it is where this phone actually is. A stale one yields back to the
+   *  server points, so a dead local stream falls back instead of pinning the dot forever; the
+   *  freshness is re-read on every render, and the 15 s poll guarantees renders keep coming. */
   const vehicle = useMemo<[number, number] | null>(() => {
+    const localFresh = liveFix && Date.now() - liveFixAtRef.current < LIVE_FIX_MAX_AGE_MS;
+    if (localFresh) return liveFix;
     for (let i = points.length - 1; i >= 0; i--) {
       const p = points[i];
       if (p && Number.isFinite(p.lat) && Number.isFinite(p.lon)) return [p.lon, p.lat];
     }
-    return null;
-  }, [points]);
+    return liveFix; // a stale local fix still beats no dot at all
+  }, [liveFix, points]);
+
+  /* ── Markers ──────────────────────────────────────────────────────────────
+   * Dropped exactly where connectivity is worst — that is the point of the feature — so
+   * delivery is outbox-based: try now, queue on failure, flush on the next screen open.
+   * Categories come from the admin portal; the colour is the flag.
+   */
+  const loadMarkers = useCallback(async () => {
+    if (!token) return;
+    try {
+      const [cats, mine] = await Promise.all([apiMarkerCategories(token), apiMyMarkers(token)]);
+      setMarkerCats(cats.categories.filter((c) => c.active !== false));
+      setMarkers(mine.markers);
+    } catch { /* auxiliary layer — the map must not degrade over it */ }
+  }, [token]);
+
+  useEffect(() => {
+    loadMarkers();
+    if (token) {
+      flushMarkerQueue(token)
+        .then((r) => { if (r.sent.length > 0) loadMarkers(); })
+        .catch(() => {});
+    }
+  }, [loadMarkers, token]);
+
+  // Transient toast-like note; self-clearing so it cannot go stale.
+  useEffect(() => {
+    if (!markerNote) return;
+    const t = setTimeout(() => setMarkerNote(null), 6000);
+    return () => clearTimeout(t);
+  }, [markerNote]);
+
+  /** The actual drop, at an explicit position — placement decides WHERE, this only delivers. */
+  const dropAt = useCallback(async (cat: MarkerCategory, pos: [number, number]) => {
+    const pending = {
+      clientId: newClientId(),
+      lat: pos[1],
+      lon: pos[0],
+      categoryId: cat.id,
+      recordedAt: new Date().toISOString(),
+    };
+    // On the map immediately — the driver must SEE the drop landed; delivery is separate.
+    setMarkers((cur) => [
+      ...cur,
+      { id: pending.clientId, lat: pending.lat, lon: pending.lon, category: cat,
+        driverName: user?.name ?? null, vehiclePlate: null, recordedAt: pending.recordedAt },
+    ]);
+    try {
+      if (!token) throw new Error('no session');
+      await apiDropMarker(token, pending);
+      setMarkerNote(`Marker dropped: ${cat.name}`);
+    } catch {
+      enqueueMarker(pending);
+      setMarkerNote('No signal — marker saved on this phone, it uploads automatically later.');
+    }
+  }, [token, user]);
+
+  /** Colour chosen — now the driver positions the pin: the map centre IS the marker. */
+  const beginPlacing = useCallback((cat: MarkerCategory) => {
+    setPickerOpen(false);
+    setTappedMarker(null);
+    setPlacing(cat);
+    // Start from where the driver IS, and seed the camera ref with the same position: the
+    // confirm below reads that ref, and a programmatic recentre does not fire onCamera — so
+    // without the seed, confirming untouched could drop the marker at a minutes-old pan
+    // instead of under the pin the driver is looking at.
+    if (liveFix && Date.now() - liveFixAtRef.current < 30_000) {
+      lastCameraRef.current = liveFix;
+      mapRef.current?.flyTo(liveFix, 16);
+    } else {
+      mapRef.current?.recenter();
+    }
+  }, [liveFix]);
+
+  const confirmPlace = useCallback(async () => {
+    if (!placing) return;
+    const cat = placing;
+    // The camera centre the driver settled on; before any pan it falls back to the opening
+    // position, and failing even that, to one honest GPS reading (Expo Go first-run case).
+    let pos: [number, number] | null =
+      lastCameraRef.current ?? initialCameraRef.current?.center ?? null;
+    if (!pos) {
+      setMarkerNote('Getting GPS position…');
+      try {
+        const perm = await Location.getForegroundPermissionsAsync();
+        const granted = perm.granted || (await Location.requestForegroundPermissionsAsync()).granted;
+        if (granted) {
+          const fix = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          pos = [fix.coords.longitude, fix.coords.latitude];
+        }
+      } catch { /* falls through to the message below */ }
+    }
+    setPlacing(null);
+    if (!pos) { setMarkerNote('No GPS position yet — cannot drop a marker.'); return; }
+    await dropAt(cat, pos);
+  }, [placing, dropAt]);
+
+  /** Markers in the map's layer shape; the id doubles as the tap key back into `markers`. */
+  const markersLayer = useMemo<MapGLMarkers>(() => ({
+    version: markers.map((m) => m.id).join(','),
+    points: markers.map((m) => ({
+      id: m.id, lon: m.lon, lat: m.lat, color: m.category?.color ?? '#ef4444',
+    })),
+  }), [markers]);
+
+  const onMarkerTap = useCallback((id: string) => {
+    const m = markers.find((x) => x.id === id);
+    if (m) setTappedMarker(m);
+  }, [markers]);
+
+  /** The my-location button: land on where the phone IS, not where the map last was. */
+  const goToMyLocation = useCallback(async () => {
+    // Fresh native fix — instant. Otherwise one honest GPS read (the Expo Go path).
+    if (liveFix && Date.now() - liveFixAtRef.current < 30_000) {
+      mapRef.current?.flyTo(liveFix, 16);
+      return;
+    }
+    try {
+      const perm = await Location.getForegroundPermissionsAsync();
+      const granted = perm.granted || (await Location.requestForegroundPermissionsAsync()).granted;
+      if (granted) {
+        const fix = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const pos: [number, number] = [fix.coords.longitude, fix.coords.latitude];
+        liveFixAtRef.current = Date.now();
+        setLiveFix(pos);
+        mapRef.current?.flyTo(pos, 16);
+        return;
+      }
+    } catch { /* fall back to whatever the map already knows */ }
+    mapRef.current?.recenter();
+  }, [liveFix]);
 
   /**
    * Hand the driver off to real turn-by-turn navigation.
@@ -576,8 +854,18 @@ export default function MapScreen() {
         <TouchableOpacity style={s.ctrlBtn} onPress={() => mapRef.current?.zoomOut()} accessibilityLabel="Zoom out">
           <Text style={s.ctrlIcon}>−</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={s.ctrlBtn} onPress={() => mapRef.current?.recenter()} accessibilityLabel="Recentre">
-          <Text style={s.ctrlIcon}>◎</Text>
+        {/* THE my-location button — the standard GPS arrow, because that is the icon every
+            driver's thumb already knows. The Google-Maps handoff below gets signposts instead:
+            two arrow-ish buttons is how "center on me" opens another app. */}
+        <TouchableOpacity style={s.ctrlBtn} onPress={goToMyLocation} accessibilityLabel="Go to my location">
+          <FontAwesome name="location-arrow" size={17} color="#0f172a" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[s.ctrlBtn, s.ctrlBtnFlag]}
+          onPress={() => setPickerOpen(true)}
+          accessibilityLabel="Drop a marker here"
+        >
+          <Text style={[s.ctrlIcon, { color: '#dc2626' }]}>⚑</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[s.ctrlBtn, showControls && s.ctrlBtnOn]}
@@ -592,7 +880,7 @@ export default function MapScreen() {
             onPress={() => navigateTo(navTarget.lon, navTarget.lat, navTarget.name)}
             accessibilityLabel="Navigate to my area"
           >
-            <Text style={[s.ctrlIcon, { color: '#ffffff' }]}>➤</Text>
+            <FontAwesome name="map-signs" size={16} color="#ffffff" />
           </TouchableOpacity>
         )}
       </View>
@@ -655,6 +943,10 @@ export default function MapScreen() {
     loadHistory(historyDaysRef.current, true);
   }, [fetchSession, fetchAreas, loadRoads, loadHistory]);
 
+  // Lifetime is owned by the expiry timer beside the listener — a non-null uploadErr is current
+  // by definition when this renders.
+  const uploadNotice = uploadErr?.msg ?? null;
+
   const notices = [
     // Which backend this build talks to, whenever it is NOT the production default. Twice now,
     // "the fix isn't working" turned out to be a client pointed at a different server than the one
@@ -663,7 +955,9 @@ export default function MapScreen() {
     sessionError && `! Live session - ${sessionError}`,
     areasError   && `! Allocated areas - ${areasError}`,
     roadsError   && `! ${roadsError}`,
-    // MapGL draws its own "Map unavailable" panel in place of the map, so this line does not repeat
+    uploadNotice && `! Tracking upload - ${uploadNotice}`,
+    markerNote   && `Note: ${markerNote}`,
+    // The map draws its own "unavailable" panel in place of itself, so this line does not repeat
     // the reason - it gives the driver the one number the map would have shown them.
     mapError     && `! Map unavailable - ${roadStats.todo.toLocaleString()} of ${roadStats.total.toLocaleString()} assigned roads still to drive.`,
     roadsNote    && `Note: ${roadsNote}`,
@@ -737,7 +1031,7 @@ export default function MapScreen() {
    * into its HTML: rendering before the saved camera is read would either lose it or force a
    * visible jump. It is a local file read — milliseconds — not a network call.
    */
-  if (!prefsReady) {
+  if (!prefsReady || !locReady) {
     return (
       <View style={{ flex: 1 }}>
         <View style={s.center}>
@@ -845,9 +1139,9 @@ export default function MapScreen() {
         </View>
       )}
 
-      {/* MapGL — MapLibre GL on WebGL inside a WebView. Rendered unconditionally. */}
+      {/* DriverMap — native MapLibre; Expo Go (no native module) gets a build-needed notice. */}
       <View style={s.mapWrap}>
-        <MapGL
+        <DriverMap
           ref={mapRef}
           styleUrl={basemapUrl(prefs.basemap)}
           initialCamera={initialCameraRef.current}
@@ -860,6 +1154,9 @@ export default function MapScreen() {
           vehicle={vehicle}
           history={historyLines}
           showHistory={prefs.historyDays > 0}
+          markers={markersLayer}
+          onMarkerTap={onMarkerTap}
+          trail={trail}
           onUnsupported={setMapError}
         />
         {controls}
@@ -868,6 +1165,81 @@ export default function MapScreen() {
             <Text style={s.hintText}>{hint}</Text>
           </View>
         )}
+
+        {/* Marker details — the reviewed popup: what, who, when, and a straight Google link. */}
+        {tappedMarker && !placing && (
+          <View style={s.markerCard}>
+            <View style={s.markerHead}>
+              <Text style={s.markerTitle}>{tappedMarker.category?.name ?? 'Marker'}</Text>
+              <TouchableOpacity onPress={() => setTappedMarker(null)} accessibilityLabel="Close">
+                <Text style={s.markerClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={s.markerMeta}>
+              {[
+                [tappedMarker.driverName, tappedMarker.vehiclePlate].filter(Boolean).join(' '),
+                fmtMarkerTime(tappedMarker.recordedAt),
+                elapsed(tappedMarker.recordedAt),
+              ].filter(Boolean).join(' · ')}
+            </Text>
+            <TouchableOpacity
+              onPress={() => Linking.openURL(
+                `https://www.google.com/maps/search/?api=1&query=${tappedMarker.lat},${tappedMarker.lon}`
+              )}
+            >
+              <Text style={s.markerLink}>Open in Google Maps ↗</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Placement mode: the pin rides the map centre — pan to position, then drop. */}
+        {placing && (
+          <View pointerEvents="none" style={s.placeWrap}>
+            <View style={{ alignItems: 'center', transform: [{ translateY: -24 }] }}>
+              <View style={[s.placeHead, { backgroundColor: placing.color }]} />
+              <View style={s.placeStick} />
+            </View>
+          </View>
+        )}
+        {placing && (
+          <View style={s.placeBar}>
+            <Text style={s.placeText} numberOfLines={1}>
+              {placing.name} — move the map, the pin marks the spot
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              <TouchableOpacity style={s.placeCancel} onPress={() => setPlacing(null)}>
+                <Text style={s.placeCancelTxt}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={s.placeDrop} onPress={confirmPlace}>
+                <Text style={s.placeDropTxt}>Drop marker here</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Category picker — which flag is this? Defined by admins, coloured like the dots. */}
+        <Modal visible={pickerOpen} transparent animationType="slide" onRequestClose={() => setPickerOpen(false)}>
+          <TouchableOpacity style={s.sheetBackdrop} activeOpacity={1} onPress={() => setPickerOpen(false)}>
+            <View style={s.sheet}>
+              <Text style={s.sheetTitle}>Drop a marker here</Text>
+              <Text style={s.sheetSub}>Pick the flag — then position the pin and drop it.</Text>
+              {markerCats.map((c) => (
+                <TouchableOpacity key={c.id} style={s.sheetRow} onPress={() => beginPlacing(c)}>
+                  <View style={[s.sheetDot, { backgroundColor: c.color }]} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.sheetLabel}>{c.name}</Text>
+                    {!!c.description && (
+                      <Text style={s.sheetDesc} numberOfLines={2}>{c.description}</Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              ))}
+              {markerCats.length === 0 && (
+                <Text style={s.sheetEmpty}>No marker categories defined yet — ask your manager to add them in the portal.</Text>
+              )}
+            </View>
+          </TouchableOpacity>
+        </Modal>
       </View>
 
       <TabBar />
@@ -903,6 +1275,64 @@ const s = StyleSheet.create({
   historyText: { fontSize: 11, color: '#4b5563', fontWeight: '600' },
 
   mapWrap:   { flex: 1 },
+
+  /* ---- markers ---- */
+  ctrlBtnFlag: { backgroundColor: '#fef2f2', borderColor: '#fecaca' },
+  markerCard: {
+    position: 'absolute', left: 12, right: 60, bottom: 14,
+    backgroundColor: 'rgba(255,255,255,0.98)', borderRadius: 12, padding: 12,
+    borderWidth: 1, borderColor: '#e2e8f0',
+    shadowColor: '#0f172a', shadowOpacity: 0.2, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 }, elevation: 4,
+  },
+  markerHead:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  markerTitle: { fontSize: 14.5, fontWeight: '800', color: '#0f172a' },
+  markerClose: { fontSize: 14, color: '#64748b', paddingHorizontal: 4 },
+  markerMeta:  { fontSize: 12.5, color: '#64748b', marginTop: 3 },
+  markerLink:  { fontSize: 13.5, color: '#2563eb', fontWeight: '700', marginTop: 8 },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: '#ffffff', borderTopLeftRadius: 16, borderTopRightRadius: 16,
+    paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28,
+  },
+  sheetTitle: { fontSize: 15, fontWeight: '800', color: '#0f172a' },
+  sheetSub:   { fontSize: 12, color: '#64748b', marginTop: 2, marginBottom: 8 },
+  sheetRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#f1f5f9',
+  },
+  sheetDot: {
+    width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: '#ffffff',
+    shadowColor: '#0f172a', shadowOpacity: 0.25, shadowRadius: 2,
+    shadowOffset: { width: 0, height: 1 }, elevation: 2,
+  },
+  sheetLabel: { fontSize: 14.5, color: '#0f172a', fontWeight: '700' },
+  sheetDesc:  { fontSize: 11.5, color: '#64748b', marginTop: 2, lineHeight: 15 },
+  sheetEmpty: { fontSize: 13, color: '#64748b', paddingVertical: 10 },
+
+  /* ---- marker placement ---- */
+  placeWrap: {
+    position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  placeHead: {
+    width: 26, height: 26, borderRadius: 13, borderWidth: 3, borderColor: '#ffffff',
+    shadowColor: '#0f172a', shadowOpacity: 0.35, shadowRadius: 3,
+    shadowOffset: { width: 0, height: 2 }, elevation: 4,
+  },
+  placeStick: { width: 3, height: 22, backgroundColor: '#0f172a', borderRadius: 2, opacity: 0.75 },
+  placeBar: {
+    position: 'absolute', left: 12, right: 60, bottom: 14,
+    backgroundColor: 'rgba(255,255,255,0.98)', borderRadius: 12, padding: 12,
+    borderWidth: 1, borderColor: '#e2e8f0',
+    shadowColor: '#0f172a', shadowOpacity: 0.2, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 }, elevation: 4,
+  },
+  placeText:      { fontSize: 12.5, fontWeight: '700', color: '#0f172a' },
+  placeCancel:    { flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 9, backgroundColor: '#f1f5f9' },
+  placeCancelTxt: { fontSize: 13, fontWeight: '700', color: '#475569' },
+  placeDrop:      { flex: 2, alignItems: 'center', paddingVertical: 9, borderRadius: 9, backgroundColor: '#7c3aed' },
+  placeDropTxt:   { fontSize: 13, fontWeight: '700', color: '#ffffff' },
 
 
   /* ---- map controls overlay ---- */

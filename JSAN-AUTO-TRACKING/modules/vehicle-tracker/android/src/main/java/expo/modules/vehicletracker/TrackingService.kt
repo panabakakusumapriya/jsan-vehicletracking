@@ -89,6 +89,13 @@ class TrackingService : Service() {
         const val TRIP_END_NO_MOVE_MS       = 10 * 60 * 1000L
 
         /**
+         * Hard cap on one trip's length. Anything past this is a forgotten session, not a
+         * drive — end it so the server can snap it, and let the next movement start a fresh
+         * trip. Mirrored server-side (TRIP_MAX_DURATION_HOURS) as a backstop for old builds.
+         */
+        const val TRIP_MAX_DURATION_MS      = 8 * 60 * 60 * 1000L
+
+        /**
          * If no trip starts within this window after service launch, stop the service
          * to save battery. ActivityTransitionReceiver re-launches when movement resumes.
          */
@@ -150,6 +157,15 @@ class TrackingService : Service() {
          */
         const val STATIONARY_HEARTBEAT_MS   = 30_000L
 
+        /**
+         * How often an IDLE fix is emitted to JS while no trip is running. The driver's map dot
+         * rides these events; before them it sat on the previous trip's endpoint until the
+         * trip-start gate (TRIP_START_DISTANCE_M at TRIP_START_MIN_SPEED_KMH) passed, the batch
+         * uploaded and the poll returned — the reported "stale dot". JS-event only: nothing is
+         * recorded or uploaded for an idle fix.
+         */
+        const val IDLE_EMIT_MS              = 5_000L
+
         fun start(ctx: Context) {
             ContextCompat.startForegroundService(ctx, Intent(ctx, TrackingService::class.java))
         }
@@ -185,6 +201,7 @@ class TrackingService : Service() {
 
     // ── Misc ─────────────────────────────────────────────────────────────────
     private var lastLocation: Location? = null   // for speed derivation
+    private var lastIdleEmitMs = 0L              // throttles idle fixes emitted to JS
 
     /** Reject fixes with accuracy worse than this — underground, urban canyon reflections. */
     private val MAX_ACCURACY_M = 100f
@@ -353,6 +370,19 @@ class TrackingService : Service() {
         val tripId   = TrackingConfig.currentTripId(this)
 
         if (tripId == null) {
+            // Live position for the driver's own map while idle — the dot must move even before
+            // a trip starts, or the driver stares at yesterday's endpoint while approaching their
+            // assigned roads. Emit only: no DB point, no upload, no trip.
+            // elapsedRealtime, not wall clock: an NTP/cell time correction that moves the clock
+            // backwards must not silence idle emits for the length of the jump. locMap() is the
+            // shared payload builder — it also guards a zero location.time the way every other
+            // emit path does.
+            val idleTick = android.os.SystemClock.elapsedRealtime()
+            if (idleTick - lastIdleEmitMs >= IDLE_EMIT_MS) {
+                lastIdleEmitMs = idleTick
+                TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, null, "idle", location.time))
+            }
+
             // ── IDLE: watch for a vehicle-speed movement to start a trip ────
             if (startWatchPos == null) {
                 startWatchPos  = location
@@ -370,6 +400,7 @@ class TrackingService : Service() {
                     // ── START TRIP ───────────────────────────────────────────
                     val newId = UUID.randomUUID().toString()
                     TrackingConfig.setCurrentTripId(this, newId)
+                    TrackingConfig.setTripStartedAt(this, now)
                     TrackingConfig.setIdleSince(this, 0L)
 
                     lastRecordedLat  = rawLat
@@ -483,6 +514,14 @@ class TrackingService : Service() {
             return
         }
 
+        // Hard cap: a "trip" running past TRIP_MAX_DURATION_MS is a forgotten session. End it
+        // now — the server snaps it, and the next movement starts a fresh trip cleanly.
+        val tripStartedAt = TrackingConfig.tripStartedAt(this)
+        if (tripStartedAt > 0L && now - tripStartedAt >= TRIP_MAX_DURATION_MS) {
+            endTrip(tripId, now)
+            return
+        }
+
         // Active trip — has the vehicle moved 50 m recently?
         if (lastMovedMs > 0L && now - lastMovedMs >= TRIP_END_NO_MOVE_MS) {
             // 10 minutes without 50 m of movement → vehicle is genuinely parked.
@@ -516,6 +555,7 @@ class TrackingService : Service() {
         val endLon = lastRecordedLon
         insertPoint(endLat, endLon, 0.0, tripId, "ended", now)
         TrackingConfig.setCurrentTripId(this, null)
+        TrackingConfig.setTripStartedAt(this, 0L)
         TrackingConfig.setIdleSince(this, now)
         hasLastRecorded = false
         lastMovedMs     = 0L
@@ -733,7 +773,7 @@ class TrackingService : Service() {
 
     private fun locMap(
         lat: Double, lon: Double, speedKmh: Double,
-        tripId: String, status: String, locationTime: Long,
+        tripId: String?, status: String, locationTime: Long,
     ) = mapOf(
         "lat"        to lat,
         "lon"        to lon,

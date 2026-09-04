@@ -33,6 +33,11 @@ object TrackingConfig {
     fun setCurrentTripId(ctx: Context, id: String?) =
         prefs(ctx).edit().putString("currentTripId", id).apply()
 
+    /** epoch ms when the current trip started (0 = no trip). Drives the max-duration cap. */
+    fun tripStartedAt(ctx: Context): Long = prefs(ctx).getLong("tripStartedAt", 0L)
+    fun setTripStartedAt(ctx: Context, ms: Long) =
+        prefs(ctx).edit().putLong("tripStartedAt", ms).apply()
+
     /** epoch ms when speed first dropped to ~0 within the current trip (0 = moving). */
     fun stillSince(ctx: Context): Long = prefs(ctx).getLong("stillSince", 0L)
     fun setStillSince(ctx: Context, ms: Long) = prefs(ctx).edit().putLong("stillSince", ms).apply()

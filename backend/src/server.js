@@ -7,6 +7,7 @@ const { startWatchdog } = require('./services/driverWatchdog');
 const { startMapMatcher } = require('./services/mapMatcher');
 const { startExportRunner } = require('./services/exportRunner');
 const { startImportRunner } = require('./services/importRunner');
+const { seedDefaultCategories } = require('./controllers/marker.controller');
 
 async function start() {
   await connectDB();
@@ -24,6 +25,7 @@ async function start() {
     startMapMatcher();
     startExportRunner();
     startImportRunner();
+    seedDefaultCategories();
     console.log('');
   });
 }
