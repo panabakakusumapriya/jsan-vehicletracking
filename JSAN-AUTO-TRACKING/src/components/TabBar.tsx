@@ -1,5 +1,8 @@
 import { router, usePathname } from 'expo-router';
+import { useEffect } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+import { useAuth } from '@/src/lib/auth';
 
 const C = {
   brand:  '#7c3aed',
@@ -8,21 +11,34 @@ const C = {
   muted:  '#9ca3af',
 };
 
-/**
- * app/map.tsx has existed and been registered in _layout.tsx all along, but nothing in the UI
- * navigated to it — no tab, no button, no link — so the screen was unreachable and the app looked
- * like it only had a dashboard. It shows the driver's route and the work areas allocated to them.
- */
-const TABS = [
-  { path: '/home', label: 'Dashboard', icon: '⚡' },
-  { path: '/map',  label: 'My Map',    icon: '🗺️' },
+const ALL_TABS = [
+  { path: '/home', label: 'Dashboard', icon: '⚡', module: 'dashboard' },
+  { path: '/map',  label: 'My Map',    icon: '🗺️', module: 'map'       },
 ];
 
 export function TabBar() {
   const pathname = usePathname();
+  const { user } = useAuth();
+
+  // Filter tabs based on project's enabledModules
+  const enabled = user?.enabledModules;
+  const tabs = (Array.isArray(enabled) && enabled.length > 0)
+    ? ALL_TABS.filter(t => enabled.includes(t.module))
+    : ALL_TABS;
+
+  // If current screen is not in the allowed tabs, redirect to the first allowed tab
+  useEffect(() => {
+    if (tabs.length > 0 && !tabs.some(t => t.path === pathname)) {
+      router.replace(tabs[0].path as any);
+    }
+  }, [tabs, pathname]);
+
+  // Only 1 tab — no need to show tab bar, but the redirect above handles navigation
+  if (tabs.length <= 1) return null;
+
   return (
     <View style={s.bar}>
-      {TABS.map(tab => {
+      {tabs.map(tab => {
         const active = pathname === tab.path;
         return (
           <TouchableOpacity

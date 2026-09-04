@@ -33,7 +33,7 @@ interface SsdsData {
   total_ssds: number;
 }
 
-const SSD_STATUSES = ['In Camera', 'Empty - with driver', 'Filled - with driver', 'Shipped'];
+const SSD_STATUSES = ['In Camera', 'Empty - with driver', 'Filled - with driver', 'Shipped', 'Damaged/Not Working'];
 const SHIPPING_COMPANIES = ['UPS', 'FedEx', 'AU Post'];
 const M = () => <span className="muted">—</span>;
 const todayStr = () => new Date().toISOString().split('T')[0];
@@ -310,7 +310,7 @@ export function SsdsPortal() {
                 <td>{d.ssdNumber ? <span className="badge blue">{d.ssdNumber}</span> : <M />}</td>
                 <td>
                   {d.ssdStatus ? (
-                    <span className={`badge ${d.ssdStatus === 'In Camera' ? 'blue' : d.ssdStatus === 'Filled - with driver' ? 'green' : d.ssdStatus === 'Empty - with driver' ? 'yellow' : 'gray'}`}>
+                    <span className={`badge ${d.ssdStatus === 'In Camera' ? 'blue' : d.ssdStatus === 'Filled - with driver' ? 'green' : d.ssdStatus === 'Empty - with driver' ? 'yellow' : d.ssdStatus === 'Damaged/Not Working' ? 'red' : 'gray'}`}>
                       {d.ssdStatus}
                     </span>
                   ) : <M />}

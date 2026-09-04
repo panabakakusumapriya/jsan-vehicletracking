@@ -11,6 +11,19 @@ const asyncHandler = require('../utils/asyncHandler');
 // location every ~10s, so an active session stays well within this window.
 const SESSION_IDLE_MS = 2 * 60 * 1000;
 
+// Attach enabledModules from the driver's project to the user object
+async function attachEnabledModules(userData) {
+  if (userData.role === 'user' && userData.projectIds?.length) {
+    const Project = require('../models/Project');
+    const pid = userData.projectIds[0]?._id || userData.projectIds[0];
+    const project = await Project.findById(pid).select('enabledModules').lean();
+    if (project) {
+      userData.enabledModules = project.enabledModules || ['dashboard', 'map'];
+    }
+  }
+  return userData;
+}
+
 // POST /api/auth/login  { email, password }
 exports.login = asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};
@@ -45,7 +58,8 @@ exports.login = asyncHandler(async (req, res) => {
       driverName: user.name, driverEmail: user.email,
       country: user.country, project: user.project,
     }).catch(() => {});
-    return res.json({ token: signToken(user, sessionId), user: user.toSafeJSON() });
+    const driverData = await attachEnabledModules(user.toSafeJSON());
+    return res.json({ token: signToken(user, sessionId), user: driverData });
   }
 
   // Admins / managers may sign in from multiple places (web panel, etc.).
@@ -74,7 +88,8 @@ exports.logout = asyncHandler(async (req, res) => {
 
 // GET /api/auth/me
 exports.me = asyncHandler(async (req, res) => {
-  res.json({ user: req.user.toSafeJSON() });
+  const userData = await attachEnabledModules(req.user.toSafeJSON());
+  res.json({ user: userData });
 });
 
 // GET /api/auth/permissions

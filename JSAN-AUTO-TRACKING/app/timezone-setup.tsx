@@ -91,7 +91,12 @@ export default function TimezoneSetup() {
       await VehicleTracker.setTimezone(selectedTz);
       // Refresh user in SecureStore so the auth gate doesn't loop back here
       await refreshUser();
-      router.replace('/home');
+      const enabled = user?.enabledModules;
+      if (Array.isArray(enabled) && enabled.length > 0 && !enabled.includes('dashboard') && enabled.includes('map')) {
+        router.replace('/map' as any);
+      } else {
+        router.replace('/home');
+      }
     } catch (e: any) {
       setError(e?.message ?? 'Failed to save timezone');
     } finally {

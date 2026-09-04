@@ -67,7 +67,13 @@ export default function Login() {
       if (!user.timezone) {
         router.replace('/timezone-setup' as any);
       } else {
-        router.replace('/home');
+        // Navigate to first enabled module, default to /home
+        const enabled = user.enabledModules;
+        if (Array.isArray(enabled) && enabled.length > 0 && !enabled.includes('dashboard') && enabled.includes('map')) {
+          router.replace('/map' as any);
+        } else {
+          router.replace('/home');
+        }
       }
     } catch (e: any) {
       // Someone is already signed in with this account on another device — surface a popup.

@@ -31,6 +31,7 @@ export type AuthUser = {
   vehicleId?: string | null;
   timezone?: string | null;
   country?: string | null;
+  enabledModules?: string[];
 };
 
 async function request(path: string, options: RequestInit = {}, token?: string | null) {

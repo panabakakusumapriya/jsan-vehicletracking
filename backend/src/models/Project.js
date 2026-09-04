@@ -12,6 +12,12 @@ const projectSchema = new mongoose.Schema(
     country: { type: String, trim: true, default: null },
     active: { type: Boolean, default: true },
 
+    // Which mobile app tabs are enabled for this project's drivers.
+    enabledModules: {
+      type: [String],
+      default: ['dashboard', 'map'],
+    },
+
     // Which dedup universe this project's coverage belongs to. Projects sharing a scope share one
     // history: a road first driven under Project A is not new road again under Project B. That is
     // the whole point — the customer is not billed twice because the street sat on a boundary

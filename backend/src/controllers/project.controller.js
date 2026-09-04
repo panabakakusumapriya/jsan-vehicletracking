@@ -14,21 +14,19 @@ exports.list = asyncHandler(async (req, res) => {
 
 // POST /api/projects  (admin only)
 exports.create = asyncHandler(async (req, res) => {
-  const { name, code, country, coverageScopeId, coverageCycleId } = req.body || {};
+  const { name, code, country, coverageScopeId, coverageCycleId, enabledModules } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Project name is required' });
 
   try {
-    const project = await Project.create({
+    const doc = {
       name: name.trim(),
       code: code || null,
       country: country || null,
-      // Which dedup universe this project's roads belong to. Left null on purpose when not given:
-      // null resolves to the fleet-wide default scope, so a new project deduplicates against
-      // everything else, which is the required behaviour. Setting a distinct scope is what CREATES
-      // billable duplicate coverage, so it has to be asked for. See services/coverageScope.js.
       coverageScopeId: coverageScopeId?.trim() || null,
       coverageCycleId: coverageCycleId?.trim() || null,
-    });
+    };
+    if (Array.isArray(enabledModules)) doc.enabledModules = enabledModules;
+    const project = await Project.create(doc);
     res.status(201).json({ project });
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ error: 'A project with that name already exists' });
@@ -41,11 +39,15 @@ exports.update = asyncHandler(async (req, res) => {
   const project = await Project.findById(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
-  const { name, code, country, active, coverageScopeId, coverageCycleId } = req.body || {};
+  const { name, code, country, active, coverageScopeId, coverageCycleId, enabledModules } = req.body || {};
   if (name !== undefined) project.name = name;
   if (code !== undefined) project.code = code || null;
   if (country !== undefined) project.country = country || null;
   if (active !== undefined) project.active = active;
+  if (Array.isArray(enabledModules)) {
+    project.enabledModules = enabledModules;
+    project.markModified('enabledModules');
+  }
 
   // Changing the scope changes which history FUTURE trips are deduplicated against. It does not
   // rewrite the past: every trip carries the scope it was stamped with at start, so roads already

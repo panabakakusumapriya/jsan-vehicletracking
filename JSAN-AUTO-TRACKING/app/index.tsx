@@ -17,9 +17,10 @@ export default function Index() {
 
   // Only drivers ('user') use this app; admins/managers use the web panel.
   if (token && user?.role === 'user') {
-    // No timezone gate. The server resolves the zone from the driver's own coordinates on the
-    // first location it receives, so asking them to pick one from a list was both an extra
-    // step before they could start work and less accurate than the answer we can derive.
+    const enabled = user.enabledModules;
+    if (Array.isArray(enabled) && enabled.length > 0 && !enabled.includes('dashboard') && enabled.includes('map')) {
+      return <Redirect href="/map" />;
+    }
     return <Redirect href="/home" />;
   }
   return <Redirect href="/login" />;

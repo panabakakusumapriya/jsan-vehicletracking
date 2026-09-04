@@ -76,10 +76,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // never re-check the zone. Values are passed explicitly because the state set above
       // has not landed yet.
       if (token && restored) {
-        const updated = await pushTimezone(token, restored);
-        if (updated.timezone !== restored.timezone) {
-          await SecureStore.setItemAsync(USER_KEY, JSON.stringify(updated));
-          setState((prev) => ({ ...prev, user: updated }));
+        // Refresh user data from server (picks up enabledModules, timezone changes, etc.)
+        try {
+          const { user: fresh } = await apiMe(token);
+          await SecureStore.setItemAsync(USER_KEY, JSON.stringify(fresh));
+          setState((prev) => ({ ...prev, user: fresh }));
+        } catch {
+          // Offline — fall back to timezone push with local data
+          const updated = await pushTimezone(token, restored);
+          if (updated.timezone !== restored.timezone) {
+            await SecureStore.setItemAsync(USER_KEY, JSON.stringify(updated));
+            setState((prev) => ({ ...prev, user: updated }));
+          }
         }
       }
     })();

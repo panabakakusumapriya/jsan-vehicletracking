@@ -44,6 +44,9 @@ Rules:
 Return empty string for any field not visible.`;
 
 async function callGemini(base64: string, mimeType: string): Promise<OcrResult> {
+  if (!GEMINI_API_KEY) {
+    throw new Error('Gemini API key not configured. Please set VITE_GEMINI_API_KEY in environment variables.');
+  }
   const response = await fetch(GEMINI_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

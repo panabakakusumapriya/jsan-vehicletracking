@@ -26,7 +26,7 @@ interface DriverInfo {
   project?: string | null;
 }
 
-const SSD_STATUSES = ['In Camera', 'Empty - with driver', 'Filled - with driver', 'Shipped'];
+const SSD_STATUSES = ['In Camera', 'Empty - with driver', 'Filled - with driver', 'Shipped', 'Damaged/Not Working'];
 const SHIPPING_COMPANIES = ['UPS', 'FedEx', 'AU Post'];
 
 export function DriverMySsds() {
@@ -363,7 +363,7 @@ export function DriverMySsds() {
                     <>
                       <td style={{ fontWeight: 600 }}>{rec.ssdNumber}</td>
                       <td>
-                        <span className={`badge ${rec.ssdStatus === 'In Camera' ? 'blue' : rec.ssdStatus === 'Filled - with driver' ? 'green' : rec.ssdStatus === 'Empty - with driver' ? 'yellow' : 'gray'}`}>
+                        <span className={`badge ${rec.ssdStatus === 'In Camera' ? 'blue' : rec.ssdStatus === 'Filled - with driver' ? 'green' : rec.ssdStatus === 'Empty - with driver' ? 'yellow' : rec.ssdStatus === 'Damaged/Not Working' ? 'red' : 'gray'}`}>
                           {rec.ssdStatus || '—'}
                         </span>
                       </td>

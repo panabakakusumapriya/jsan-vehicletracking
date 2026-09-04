@@ -59,6 +59,7 @@ export interface Project {
   coverageScopeId?: string | null;
   // Optional uniqueness reset inside a scope, for a deliberately repeated capture campaign.
   coverageCycleId?: string | null;
+  enabledModules?: string[];
   createdAt?: string;
 }
 
@@ -112,6 +113,7 @@ export interface User {
   phoneCase?: string | null;
   phoneScreenguard?: string | null;
   tabPermissions?: Partial<Record<TabKey, TabPermission>>;
+  enabledModules?: string[];
 }
 
 export interface Vehicle {

@@ -98,6 +98,11 @@ export function Projects() {
 }
 
 function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose: () => void; onSaved: () => void }) {
+  const ALL_MODULES = [
+    { key: 'dashboard', label: 'Dashboard' },
+    { key: 'map', label: 'My Map' },
+  ];
+
   const [form, setForm] = useState({
     name: project?.name || '',
     code: project?.code || '',
@@ -105,6 +110,7 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
     coverageScopeId: project?.coverageScopeId || '',
     coverageCycleId: project?.coverageCycleId || '',
     active: project?.active ?? true,
+    enabledModules: Array.isArray(project?.enabledModules) ? project.enabledModules : ['dashboard', 'map'],
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -118,11 +124,10 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
         name: form.name.trim(),
         code: form.code || null,
         country: form.country || null,
-        // Empty means "use the shared default scope" — the backend stores null and resolves it at
-        // read time, rather than freezing today's default name into every project row.
         coverageScopeId: form.coverageScopeId.trim() || null,
         coverageCycleId: form.coverageCycleId.trim() || null,
         active: form.active,
+        enabledModules: form.enabledModules,
       };
       if (project) await api.patch(`/api/projects/${project._id}`, body);
       else await api.post('/api/projects', body);
@@ -170,6 +175,32 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
           again.
         </div>
       </div>
+      <div className="field">
+        <label>Mobile App Permissions</label>
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginBottom: 8, lineHeight: 1.5 }}>
+          Select which tabs are visible in the mobile app for drivers in this project.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {ALL_MODULES.map(m => (
+            <label key={m.key} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={form.enabledModules.includes(m.key)}
+                onChange={e => {
+                  setForm(f => ({
+                    ...f,
+                    enabledModules: e.target.checked
+                      ? [...f.enabledModules, m.key]
+                      : f.enabledModules.filter(k => k !== m.key),
+                  }));
+                }}
+              />
+              {m.label}
+            </label>
+          ))}
+        </div>
+      </div>
+
       {project && (
         <div className="field">
           <label>Status</label>
