@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { useAuth } from '@/src/lib/auth';
 import { API_BASE_URL } from '@/src/lib/config';
@@ -37,6 +38,17 @@ export function TrackingBootstrap() {
         /* the permission gate + home's startup surface failures; this must never crash the tree */
       }
     })();
+  }, [user, token]);
+
+  // A napping service (10-minute idle stop) must revive the moment the driver RETURNS to
+  // the app — not only when Activity Recognition notices a drive. start() is idempotent and
+  // a foreground start is always legal, so this is free insurance: open app = tracker up.
+  useEffect(() => {
+    if (!user || user.role !== 'user' || !token || !VehicleTracker.isSupported) return;
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active') VehicleTracker.start().catch(() => {});
+    });
+    return () => sub.remove();
   }, [user, token]);
 
   return null;
