@@ -274,7 +274,9 @@ exports.ingest = asyncHandler(async (req, res) => {
         // Only accumulate distance for real movement (> 5 m)
         if (segDist >= 5) addedDistance += segDist;
       }
-      if (doc.speedKmh > maxSpeed) maxSpeed = doc.speedKmh;
+      // Clamped: a single multipath teleport from an old build must not brand the trip with a
+      // 211 km/h "top speed" forever. New builds reject these device-side; this is the backstop.
+      if (doc.speedKmh > maxSpeed && doc.speedKmh <= 250) maxSpeed = doc.speedKmh;
       addedCount += 1;
       last = { lat: p.lat, lon: p.lon, speed: doc.speedKmh, heading: doc.heading, recordedAt };
     }

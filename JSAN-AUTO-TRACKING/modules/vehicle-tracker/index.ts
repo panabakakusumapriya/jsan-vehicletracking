@@ -119,6 +119,17 @@ export async function setTimezone(timezoneId: string): Promise<void> {
   if (native) await native.setTimezone(timezoneId);
 }
 
+/** Whether the app is exempt from battery optimisation — the #1 background-tracking killer. */
+export async function isIgnoringBatteryOptimizations(): Promise<boolean> {
+  if (native) return native.isIgnoringBatteryOptimizations();
+  return true; // no engine — nothing to exempt
+}
+
+/** Opens the system dialog asking for the exemption. */
+export async function requestIgnoreBatteryOptimizations(): Promise<void> {
+  if (native) await native.requestIgnoreBatteryOptimizations();
+}
+
 export function addLocationListener(cb: (e: LocationEvent) => void): EventSubscription | null {
   return native ? native.addListener('onLocation', cb) : null;
 }
@@ -145,6 +156,8 @@ export default {
   getDaylightInfo,
   setDaylightOnly,
   setTimezone,
+  isIgnoringBatteryOptimizations,
+  requestIgnoreBatteryOptimizations,
   addLocationListener,
   addTripStartListener,
   addTripEndListener,

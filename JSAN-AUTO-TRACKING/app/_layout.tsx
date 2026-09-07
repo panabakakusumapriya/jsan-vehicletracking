@@ -6,6 +6,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState as RNAppState,
   Linking,
   Platform,
   ScrollView,
@@ -19,12 +20,16 @@ import 'react-native-reanimated';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider } from '@/src/lib/auth';
 import { API_BASE_URL } from '@/src/lib/config';
+import * as Location from 'expo-location';
 import {
-  type PermissionHealth,
-  getPermissionHealth,
+  type FullTrackingHealth,
+  getFullTrackingHealth,
+  isAllTrackingHealthOk,
   requestAllPermissions,
-  isCriticalHealthOk,
 } from '@/src/lib/permissions';
+import * as VehicleTracker from '@/modules/vehicle-tracker';
+import { TrackingBootstrap } from '@/src/components/TrackingBootstrap';
+import { TrackingGuard } from '@/src/components/TrackingGuard';
 
 /** Always in sync with app.json — never hardcode this manually. */
 const APP_VERSION = Constants.expoConfig?.version ?? '1.0.0';
@@ -149,7 +154,7 @@ function MandatoryUpdateScreen({
 // ── Permission health check screen ────────────────────────────────────────────
 
 type PermRow = {
-  key: keyof PermissionHealth;
+  key: keyof FullTrackingHealth;
   label: string;
   description: string;
   critical: boolean;
@@ -172,16 +177,28 @@ const PERM_ROWS: PermRow[] = [
   {
     key: 'activityRecognition',
     label: 'Activity Recognition',
-    description: 'Detects driving motion to wake tracking automatically after stops.',
-    critical: false,
+    description: 'THE background restart: after 10 quiet minutes the tracker sleeps, and this is the only signal Android lets wake it when driving resumes.',
+    critical: true,
     minVersion: 29,
   },
   {
     key: 'notifications',
     label: 'Notifications',
     description: 'Required to show the persistent foreground-service notification (Android 13+).',
-    critical: false,
+    critical: true,
     minVersion: 33,
+  },
+  {
+    key: 'batteryExempt',
+    label: 'Battery Unrestricted',
+    description: 'An "optimised" app has its tracker culled minutes after the screen goes dark.',
+    critical: true,
+  },
+  {
+    key: 'locationServices',
+    label: 'Location (GPS) On',
+    description: 'The device-wide location switch — everything above is moot with it off.',
+    critical: true,
   },
 ];
 
@@ -216,21 +233,26 @@ function PermissionHealthScreen({
   health,
   requesting,
   onRequestAll,
+  onRequestBattery,
   onContinue,
 }: {
-  health: PermissionHealth;
+  health: FullTrackingHealth;
   requesting: boolean;
   onRequestAll: () => void;
+  onRequestBattery: () => void;
   onContinue: () => void;
 }) {
   const version = Platform.OS === 'android'
     ? (typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10))
     : 0;
 
-  const criticalOk = isCriticalHealthOk(health);
+  // HARD GATE: every row must be green (or N/A on this Android version). Location alone is
+  // not tracking — a driver signing in with battery optimisation on is a driver who vanishes
+  // at the first long stop. Nobody proceeds half-armed.
   const allGranted = PERM_ROWS
     .filter(r => r.minVersion === undefined || version >= r.minVersion)
     .every(r => health[r.key] === 'granted' || health[r.key] === 'unavailable');
+  const criticalOk = allGranted;
 
   const rows = PERM_ROWS.filter(r =>
     Platform.OS === 'android' && (r.minVersion === undefined || version >= r.minVersion)
@@ -291,8 +313,11 @@ function PermissionHealthScreen({
               </Text>
             </View>
           </View>
-          <TouchableOpacity style={ph.tipBtn} onPress={() => Linking.openSettings()}>
-            <Text style={ph.tipBtnText}>Open App Settings →</Text>
+          <TouchableOpacity style={ph.tipBtn} onPress={onRequestBattery}>
+            <Text style={ph.tipBtnText}>Disable battery optimization →</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={{ alignItems: 'center', paddingTop: 10 }} onPress={() => Linking.openSettings()}>
+            <Text style={{ color: C.amber, fontSize: 12.5, fontWeight: '600' }}>Open App Settings instead</Text>
           </TouchableOpacity>
         </View>
 
@@ -352,11 +377,13 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
   const [appState, setAppState] = useState<AppState>('checking');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [health, setHealth] = useState<PermissionHealth>({
+  const [health, setHealth] = useState<FullTrackingHealth>({
     fineLocation: 'denied',
     backgroundLocation: 'denied',
     activityRecognition: 'denied',
     notifications: 'denied',
+    batteryExempt: 'denied',
+    locationServices: 'denied',
   });
   const [requesting, setRequesting] = useState(false);
   const ran = useRef(false);
@@ -404,14 +431,10 @@ export default function RootLayout() {
 
       // 4. Check permission health (Android only — skip gate on web/iOS)
       if (Platform.OS === 'android') {
-        const h = await getPermissionHealth();
+        const h = await getFullTrackingHealth();
         setHealth(h);
-        // If all critical permissions are already granted, skip the health screen
-        if (isCriticalHealthOk(h)) {
-          setAppState('ready');
-        } else {
-          setAppState('permission-check');
-        }
+        // The gate opens ONLY on a full six-for-six — see PermissionHealthScreen.
+        setAppState(isAllTrackingHealthOk(h) ? 'ready' : 'permission-check');
       } else {
         setAppState('ready');
       }
@@ -436,17 +459,43 @@ export default function RootLayout() {
 
   const handleRequestAll = async () => {
     setRequesting(true);
-    const h = await requestAllPermissions();
+    await requestAllPermissions();
+    let h = await getFullTrackingHealth();
+    // The battery dialog cannot be batched with runtime permissions — chain it when needed.
+    if (h.batteryExempt === 'denied') {
+      try { await VehicleTracker.requestIgnoreBatteryOptimizations(); } catch { /* settings path remains */ }
+      h = await getFullTrackingHealth();
+    }
+    // Same for the GPS master switch — Android has a system dialog for flipping it on.
+    if (h.locationServices === 'denied') {
+      try { await Location.enableNetworkProviderAsync(); } catch { /* declined — the row stays red */ }
+      h = await getFullTrackingHealth();
+    }
     setHealth(h);
     setRequesting(false);
-    // Auto-advance if critical permissions now granted
-    if (isCriticalHealthOk(h)) {
-      // Small delay so user sees the green status before navigating
+    if (isAllTrackingHealthOk(h)) {
+      // Small delay so the user sees the green board before navigating
       setTimeout(() => setAppState('ready'), 600);
     }
   };
 
+  const handleRequestBattery = async () => {
+    try { await VehicleTracker.requestIgnoreBatteryOptimizations(); } catch { Linking.openSettings(); }
+  };
+
   const handleContinue = () => setAppState('ready');
+
+  // The battery dialog and the GPS switch live OUTSIDE the app — re-audit whenever the user
+  // comes back from Settings, so the board goes green without them hunting for a refresh.
+  useEffect(() => {
+    if (appState !== 'permission-check') return;
+    const sub = RNAppState.addEventListener('change', async (st) => {
+      if (st !== 'active') return;
+      const h = await getFullTrackingHealth();
+      setHealth(h);
+    });
+    return () => sub.remove();
+  }, [appState]);
 
   // ── Gated screens (before navigator mounts) ──
 
@@ -459,6 +508,7 @@ export default function RootLayout() {
         health={health}
         requesting={requesting}
         onRequestAll={handleRequestAll}
+        onRequestBattery={handleRequestBattery}
         onContinue={handleContinue}
       />
     );
@@ -466,6 +516,8 @@ export default function RootLayout() {
 
   return (
     <AuthProvider>
+      {/* Session-level: tracking starts for every driver, whatever tabs a project enables. */}
+      <TrackingBootstrap />
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
@@ -475,6 +527,8 @@ export default function RootLayout() {
           <Stack.Screen name="map" />
         </Stack>
         <StatusBar style="auto" />
+        {/* Post-login hard gate: mid-session permission loss blocks the app until fixed. */}
+        <TrackingGuard />
       </ThemeProvider>
     </AuthProvider>
   );

@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import * as VehicleTracker from '@/modules/vehicle-tracker';
+import { TrackingChecklist } from '@/src/components/TrackingChecklist';
 import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
 import { ensurePermissions } from '@/src/lib/permissions';
@@ -125,6 +126,15 @@ export default function Home() {
 
       await VehicleTracker.configure(API_BASE_URL, token, user._id);
       await VehicleTracker.start();
+      // Battery optimisation is the #1 silent tracking killer: an "optimised" app has its
+      // service culled minutes after the screen goes dark. Ask for the exemption up front —
+      // one system dialog; a driver who declines still shows up in App Health, because the
+      // heartbeats carry batteryRestricted.
+      try {
+        if (!(await VehicleTracker.isIgnoringBatteryOptimizations())) {
+          await VehicleTracker.requestIgnoreBatteryOptimizations();
+        }
+      } catch { /* dialog unavailable — the heartbeat flag still reports the state */ }
       setUiState('idle');
       refreshStatus();
     })();
@@ -260,6 +270,11 @@ export default function Home() {
           </TouchableOpacity>
         )}
       </View>
+
+      {/* ── Tracking health checklist — the same six switches the login gate enforces,
+             kept visible so post-login regressions (revoked permission, OEM re-enabling
+             battery limits, GPS toggled off) are seen, not suffered. ── */}
+      <TrackingChecklist />
 
       {/* ── Daylight info ── */}
       {daylightInfo?.sunrise && daylightInfo?.sunset && (

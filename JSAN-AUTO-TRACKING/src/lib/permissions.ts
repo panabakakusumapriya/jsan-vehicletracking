@@ -1,5 +1,6 @@
 import * as Location from 'expo-location';
 import { PermissionsAndroid, Platform } from 'react-native';
+import * as VehicleTracker from '@/modules/vehicle-tracker';
 
 export type PermissionResult = { ok: boolean; message?: string };
 
@@ -96,12 +97,54 @@ export async function ensurePermissions(): Promise<PermissionResult> {
       message: 'Please set location access to "Allow all the time" so trips are tracked in the background.',
     };
   }
+  // Without this, the idle-timeout stop is PERMANENT: the service saves battery by stopping
+  // after 10 quiet minutes, and the activity-recognition transition is the only thing that
+  // legally restarts it from the background when driving resumes.
+  if (health.activityRecognition === 'denied' || health.activityRecognition === 'blocked') {
+    return {
+      ok: false,
+      message: 'Physical activity permission is required — it is what restarts tracking when you begin driving.',
+    };
+  }
 
   return { ok: true };
 }
 
 export async function checkLocationEnabled(): Promise<boolean> {
   return Location.hasServicesEnabledAsync();
+}
+
+/**
+ * The FULL tracking health: runtime permissions PLUS the two switches no permission API
+ * covers — the battery-optimisation exemption and the GPS master switch. This is the
+ * MyCarTracks-grade bar: all six green or tracking is degraded, and the app says so.
+ */
+export type FullTrackingHealth = PermissionHealth & {
+  batteryExempt: PermissionStatus;
+  locationServices: PermissionStatus;
+};
+
+export async function getFullTrackingHealth(): Promise<FullTrackingHealth> {
+  const base = await getPermissionHealth();
+  let batteryExempt: PermissionStatus = 'unavailable';
+  let locationServices: PermissionStatus = 'unavailable';
+  if (Platform.OS === 'android') {
+    try {
+      batteryExempt = (await VehicleTracker.isIgnoringBatteryOptimizations()) ? 'granted' : 'denied';
+    } catch { batteryExempt = 'unavailable'; }
+    try {
+      locationServices = (await Location.hasServicesEnabledAsync()) ? 'granted' : 'denied';
+    } catch { locationServices = 'unavailable'; }
+  }
+  return { ...base, batteryExempt, locationServices };
+}
+
+export function isAllTrackingHealthOk(h: FullTrackingHealth): boolean {
+  const keys: (keyof FullTrackingHealth)[] = [
+    'fineLocation', 'backgroundLocation', 'activityRecognition',
+    'notifications', 'batteryExempt', 'locationServices',
+  ];
+  return keys.every((k) => h[k] === 'granted' || h[k] === 'unavailable');
 }
 
 /** True when the two critical permissions for tracking are granted. */

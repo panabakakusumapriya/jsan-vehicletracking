@@ -28,6 +28,7 @@ import {
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
 } from '@/src/lib/api';
 import { enqueueMarker, flushMarkerQueue, newClientId } from '@/src/lib/markerQueue';
+import { buildRoadIndex, hitLinkIds, loadLiveCovered, saveLiveCovered } from '@/src/lib/liveCover';
 import * as Location from 'expo-location';
 import { decodeRouteShapeLines } from '@/src/lib/polyline';
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
@@ -183,6 +184,20 @@ export default function MapScreen() {
   const [trail, setTrail] = useState<MapGLTrail>({ version: 0, line: [] });
   const trailLineRef = useRef<[number, number][]>([]);
   const trailTripRef = useRef<string | null>(null);
+
+  /**
+   * LIVE coverage — streets flip blue AS they are driven. The server's post-trip link
+   * attribution stays the audited truth (it force-refreshes the roads and replaces this),
+   * but "do I take that red street?" needs answering mid-shift, not at end of day.
+   */
+  const [liveCovered, setLiveCovered] = useState<{ version: number; ids: Set<string> }>(
+    () => ({ version: 0, ids: new Set<string>() })
+  );
+  const liveCoveredRef = useRef(liveCovered);
+  liveCoveredRef.current = liveCovered;
+  const roadIndex = useMemo(() => (roads.length ? buildRoadIndex(roads) : null), [roads]);
+  const roadIndexRef = useRef(roadIndex);
+  roadIndexRef.current = roadIndex;
 
   /**
    * Route history: every closed trip in the chosen window, drawn grey under the current route.
@@ -514,6 +529,14 @@ export default function MapScreen() {
    */
   useEffect(() => { loadRoads(areas, false); }, [areas, loadRoads]);
 
+  // Rehydrate the live-covered set for THIS roads version: an app restart mid-shift must not
+  // paint the morning's work red again while the server is still processing its trips. A new
+  // roads version (post-trip attribution landed) starts a fresh set — the server has spoken.
+  useEffect(() => {
+    const ids = loadLiveCovered(roadsKeyRef.current ?? '');
+    setLiveCovered({ version: Date.now(), ids });
+  }, [roads]);
+
   historyDaysRef.current = prefs.historyDays;
   // Not before the saved preferences are in: firing on the default window and then again on the
   // real one would download a month a driver had switched off.
@@ -620,6 +643,26 @@ export default function MapScreen() {
         // fixes only — idle fixes would sketch the walk to the car. ~12 m gate (1e-4 deg is
         // ~11 m): tighter bloats the line, looser cuts corners. Bounded to the recent stretch;
         // the server's raw trace carries the full route within a poll or two anyway.
+        // Flip the street blue AS IT IS DRIVEN — the awareness the red/blue map exists for.
+        // Grid lookup + point-to-segment ≤25 m; the set only ever grows within a roads version.
+        if (e.tripStatus === 'active') {
+          const idx = roadIndexRef.current;
+          if (idx) {
+            const hits = hitLinkIds(idx, e.lon, e.lat);
+            if (hits.length) {
+              const cur = liveCoveredRef.current;
+              let changed = false;
+              for (const id of hits) {
+                if (!cur.ids.has(id)) { cur.ids.add(id); changed = true; }
+              }
+              if (changed) {
+                setLiveCovered({ version: Date.now(), ids: cur.ids });
+                saveLiveCovered(roadsKeyRef.current ?? '', cur.ids);
+              }
+            }
+          }
+        }
+
         if (e.tripStatus === 'active' && e.tripId) {
           if (trailTripRef.current !== e.tripId) {
             trailTripRef.current = e.tripId;
@@ -930,9 +973,11 @@ export default function MapScreen() {
   /** Counts for the legend, and the only thing left to show if the map itself cannot be drawn. */
   const roadStats = useMemo(() => {
     let covered = 0;
-    for (const r of roads) if (r[2] === 1) covered += 1;
+    for (const r of roads) if (r[2] === 1 || liveCovered.ids.has(r[0])) covered += 1;
     return { total: roads.length, covered, todo: roads.length - covered };
-  }, [roads]);
+    // The Set mutates in place; version is its change signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roads, liveCovered.version]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -1157,6 +1202,7 @@ export default function MapScreen() {
           markers={markersLayer}
           onMarkerTap={onMarkerTap}
           trail={trail}
+          liveCovered={liveCovered}
           onUnsupported={setMapError}
         />
         {controls}

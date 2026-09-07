@@ -122,6 +122,7 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
     markers = null,
     onMarkerTap,
     trail = null,
+    liveCovered = null,
   }: MapGLProps,
   ref
 ) {
@@ -133,16 +134,20 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
   /* ── derived GeoJSON (memoised — the library diffs on identity) ── */
 
   const { coveredFC, uncoveredFC } = useMemo(() => {
+    const liveIds = liveCovered?.ids;
     const covered: [number, number][][] = [];
     const uncovered: [number, number][][] = [];
     for (const r of roads) {
       const coords = r[3];
       if (!coords || coords.length < 2) continue;
-      if (r[2]) covered.push(coords);
+      // Server-confirmed OR seen driven by THIS phone just now — blue either way. The
+      // server's post-trip attribution later replaces the live guess with the audited truth.
+      if (r[2] || (liveIds && liveIds.has(r[0]))) covered.push(coords);
       else uncovered.push(coords);
     }
     return { coveredFC: multiLineFC(covered), uncoveredFC: multiLineFC(uncovered) };
-  }, [roads]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roads, liveCovered?.version]);
 
   const areasData = useMemo(() => areasFC(areas), [areas]);
   const historyFC = useMemo(() => multiLineFC(history?.lines ?? []), [history]);

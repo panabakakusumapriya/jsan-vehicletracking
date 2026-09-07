@@ -111,6 +111,9 @@ export interface MapGLProps {
   onMarkerTap?: (id: string) => void;
   /** Live local breadcrumb for the current trip. */
   trail?: MapGLTrail | null;
+  /** Links THIS phone has seen driven right now — drawn as covered immediately, ahead of the
+   *  server's post-trip attribution (which later replaces the live guess with audited truth). */
+  liveCovered?: { version: number; ids: ReadonlySet<string> } | null;
   style?: StyleProp<ViewStyle>;
   /**
    * Fires when the map cannot be drawn at all (style failed to load, no GL). The component

@@ -84,5 +84,26 @@ class VehicleTrackerModule : Module() {
         AsyncFunction("setTimezone") { timezoneId: String ->
             TrackingConfig.setTimezoneId(context, timezoneId)
         }
+
+        // ── Battery optimisation: the #1 silent background-tracking killer ───
+        AsyncFunction("isIgnoringBatteryOptimizations") {
+            val pm = context.getSystemService(android.content.Context.POWER_SERVICE)
+                as? android.os.PowerManager
+            pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+        }
+
+        AsyncFunction("requestIgnoreBatteryOptimizations") {
+            val intent = android.content.Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                android.net.Uri.parse("package:" + context.packageName)
+            )
+            val activity = appContext.currentActivity
+            if (activity != null) {
+                activity.startActivity(intent)
+            } else {
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            }
+        }
     }
 }

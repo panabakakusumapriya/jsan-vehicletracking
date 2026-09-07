@@ -82,6 +82,21 @@ class TrackingService : Service() {
         const val POINT_DISTANCE_M          = 10f
 
         /**
+         * Route points use an ADAPTIVE precision rule: movement only counts once it exceeds
+         * the fix's own error radius (see the record gate). A flat 35 m cutoff was tried
+         * first and starved real tracking — a phone in a pocket or bag rides at 35–80 m
+         * accuracy for whole shifts, which recorded nothing and let the 10-minute no-move
+         * timer end live trips mid-drive. TRIP STARTS stay stricter: arming a new trip off a
+         * fuzzy fix is how a parked phone "starts driving" (Ali Azhar, 2026-09-07: 48 m avg
+         * accuracy, 9.7 phantom km inside a 3 km box).
+         */
+        const val TRIP_START_MAX_ACCURACY_M = 50f
+
+        /** A recorded-point jump implying more than this is a GPS teleport, not driving —
+         *  Ali's same session carried a 211 km/h spike from one multipath bounce. */
+        const val MAX_PLAUSIBLE_SPEED_KMH   = 180.0
+
+        /**
          * If the vehicle has not moved POINT_DISTANCE_M for this long, the trip ends.
          * 10 min comfortably covers all traffic signal waits (even HITEC City / KPHB
          * junction which runs up to 150 s) without splitting trips.
@@ -202,6 +217,7 @@ class TrackingService : Service() {
     // ── Misc ─────────────────────────────────────────────────────────────────
     private var lastLocation: Location? = null   // for speed derivation
     private var lastIdleEmitMs = 0L              // throttles idle fixes emitted to JS
+    private var lastRecordedAtMs = 0L            // when the last route point was minted (teleport gate)
 
     /** Reject fixes with accuracy worse than this — underground, urban canyon reflections. */
     private val MAX_ACCURACY_M = 100f
@@ -383,6 +399,20 @@ class TrackingService : Service() {
                 TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, null, "idle", location.time))
             }
 
+            // A poor fix must not ARM or ADVANCE the trip-start watch: with 48 m error, the
+            // 30 m start distance is satisfied by jitter alone and a parked phone "starts
+            // driving". The dot above still moved — only the watch ignores the fix. The idle
+            // timeout still runs on this path: a phone parked in a bad-GPS garage must not
+            // hold the service alive forever just because its fixes are fuzzy.
+            if (accuracy > TRIP_START_MAX_ACCURACY_M) {
+                val fuzzyIdleSince = TrackingConfig.idleSince(this)
+                if (fuzzyIdleSince > 0L && now - fuzzyIdleSince >= IDLE_TIMEOUT_MS) {
+                    emitState("idle_timeout")
+                    stopSelf()
+                }
+                return
+            }
+
             // ── IDLE: watch for a vehicle-speed movement to start a trip ────
             if (startWatchPos == null) {
                 startWatchPos  = location
@@ -392,7 +422,9 @@ class TrackingService : Service() {
 
             val distFromWatch = startWatchPos!!.distanceTo(location)
 
-            if (distFromWatch >= TRIP_START_DISTANCE_M) {
+            // Adaptive: the start distance must beat the fix's error radius with margin, or
+            // 40 m of jitter at 40 m accuracy reads as a 40 m drive.
+            if (distFromWatch >= maxOf(TRIP_START_DISTANCE_M, accuracy * 1.5f)) {
                 val elapsedSec    = ((now - startWatchTime) / 1000.0).coerceAtLeast(0.1)
                 val avgSpeedKmh   = (distFromWatch / elapsedSec) * 3.6
 
@@ -405,6 +437,7 @@ class TrackingService : Service() {
 
                     lastRecordedLat  = rawLat
                     lastRecordedLon  = rawLon
+                    lastRecordedAtMs = now
                     hasLastRecorded  = true
                     lastMovedMs      = now
                     lastHeartbeatMs  = now
@@ -435,6 +468,7 @@ class TrackingService : Service() {
             if (!hasLastRecorded) {
                 lastRecordedLat = rawLat
                 lastRecordedLon = rawLon
+                lastRecordedAtMs = now
                 hasLastRecorded = true
                 lastMovedMs     = now
                 return
@@ -444,9 +478,26 @@ class TrackingService : Service() {
                 lastRecordedLat, lastRecordedLon, rawLat, rawLon
             )
 
-            if (distFromLast >= POINT_DISTANCE_M) {
+            // Adaptive record gate: movement counts once it beats the fix's OWN error radius.
+            // A 12 m fix records every 12 m; a 60 m fix (pocket, bag, dense urban) records
+            // every 60 m — sparser but REAL, where a flat cutoff recorded nothing and the
+            // no-move timer then killed live trips mid-drive.
+            val minMoveM = maxOf(POINT_DISTANCE_M, accuracy)
+            if (distFromLast >= minMoveM) {
+                // ── Noise gates ─────────────────────────────────────────────
+                // 1. Google's STILL detector says the phone is not moving, and GPS agrees the
+                //    speed is under walking pace — that displacement is drift. Real pull-aways
+                //    carry speed within a fix or two and pass straight through.
+                if (TrackingConfig.isStill(this) && speedKmh < 8.0) return
+                // 2. Teleports: a jump implying an impossible speed is multipath, not a road.
+                if (lastRecordedAtMs > 0L) {
+                    val dtSec = ((now - lastRecordedAtMs).coerceAtLeast(1L)) / 1000.0
+                    if ((distFromLast / dtSec) * 3.6 > MAX_PLAUSIBLE_SPEED_KMH) return
+                }
+
                 lastRecordedLat  = rawLat
                 lastRecordedLon  = rawLon
+                lastRecordedAtMs = now
                 lastMovedMs      = now
                 lastHeartbeatMs  = now
 
