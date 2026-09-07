@@ -97,6 +97,22 @@ class TrackingService : Service() {
         const val MAX_PLAUSIBLE_SPEED_KMH   = 180.0
 
         /**
+         * Density controls for slow / congested driving. Recording is decided by MOVEMENT, not
+         * by accuracy — a stop-go city drive (madhav, 2026-09-07: 33 min, avg 14 km/h) produced
+         * only 19 points at 106 m spacing because the old gate spaced points by GPS error and
+         * suppressed every sub-8 km/h crawl. Map-matching then failed (0.45 of 3 km snapped).
+         */
+        // Record at least this often while the vehicle is moving, even under the distance gate —
+        // this is what keeps a 5 km/h jam crawl dense enough for the matcher.
+        const val RECORD_MIN_INTERVAL_MS    = 8_000L
+        // The time trigger still needs SOME real displacement, so a dead-stop does not mint a
+        // point every 8 s of pure GPS jitter.
+        const val RECORD_MIN_MOVE_M         = 6f
+        // Above this GPS speed the vehicle is moving even if the activity model still says STILL
+        // (a slow crawl reads as still to the detector) — so crawling traffic is never suppressed.
+        const val RECORD_MOVING_SPEED_KMH   = 3.0
+
+        /**
          * If the vehicle has not moved POINT_DISTANCE_M for this long, the trip ends.
          * 10 min comfortably covers all traffic signal waits (even HITEC City / KPHB
          * junction which runs up to 150 s) without splitting trips.
@@ -125,7 +141,7 @@ class TrackingService : Service() {
          * Kept at 3 s: the route drawn on the map is only as good as its densest sampling, and at
          * 60 km/h a 3 s gap is already 50 m of straight-lined corner.
          */
-        const val LOCATION_INTERVAL_MS      = 3_000L
+        const val LOCATION_INTERVAL_MS      = 2_000L
         const val FASTEST_MS                = 1_000L
 
         /**
@@ -478,20 +494,19 @@ class TrackingService : Service() {
                 lastRecordedLat, lastRecordedLon, rawLat, rawLon
             )
 
-            // Adaptive record gate: movement counts once it beats the fix's OWN error radius.
-            // A 12 m fix records every 12 m; a 60 m fix (pocket, bag, dense urban) records
-            // every 60 m — sparser but REAL, where a flat cutoff recorded nothing and the
-            // no-move timer then killed live trips mid-drive.
-            val minMoveM = maxOf(POINT_DISTANCE_M, accuracy)
-            if (distFromLast >= minMoveM) {
-                // ── Noise gates ─────────────────────────────────────────────
-                // 1. Google's STILL detector says the phone is not moving, and GPS agrees the
-                //    speed is under walking pace — that displacement is drift. Real pull-aways
-                //    carry speed within a fix or two and pass straight through.
-                if (TrackingConfig.isStill(this) && speedKmh < 8.0) return
-                // 2. Teleports: a jump implying an impossible speed is multipath, not a road.
+            // Recording is decided by MOVEMENT STATE, not by accuracy (accuracy is only the
+            // 100 m hard reject above and the trip-start gate). "Moving" = the activity model is
+            // not STILL, OR GPS shows a real crawl — either way a jam is driving, not drift.
+            val moving = !TrackingConfig.isStill(this) || speedKmh >= RECORD_MOVING_SPEED_KMH
+            val dtMs = if (lastRecordedAtMs > 0L) now - lastRecordedAtMs else Long.MAX_VALUE
+            // Distance OR time trigger. Distance stops fast roads over-sampling; the time trigger
+            // keeps slow/congested roads dense so the matcher can snap them to the street grid.
+            val distTrigger = distFromLast >= POINT_DISTANCE_M
+            val timeTrigger = dtMs >= RECORD_MIN_INTERVAL_MS && distFromLast >= RECORD_MIN_MOVE_M
+            if (moving && (distTrigger || timeTrigger)) {
+                // Teleport guard: a jump implying an impossible speed is multipath, not a road.
                 if (lastRecordedAtMs > 0L) {
-                    val dtSec = ((now - lastRecordedAtMs).coerceAtLeast(1L)) / 1000.0
+                    val dtSec = (dtMs.coerceAtLeast(1L)) / 1000.0
                     if ((distFromLast / dtSec) * 3.6 > MAX_PLAUSIBLE_SPEED_KMH) return
                 }
 
