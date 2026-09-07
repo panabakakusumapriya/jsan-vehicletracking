@@ -119,6 +119,7 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
     showAreas = true,
     showRoads = true,
     onCamera,
+    onUserPan,
     markers = null,
     onMarkerTap,
     trail = null,
@@ -188,12 +189,18 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
   }, []); // initial only — later framing is the driver's own business
 
   const armedRef = useRef(false);
+  const onUserPanRef = useRef(onUserPan);
+  onUserPanRef.current = onUserPan;
   const onRegionDidChange = useCallback(
     (e: NativeSyntheticEvent<ViewStateChangeEvent>) => {
       const v = e.nativeEvent;
       // Only after the driver has touched the map: auto-framing at load must not overwrite
       // the remembered camera (same rule as the WebView's cameraArmed gate).
-      if (v.userInteraction) armedRef.current = true;
+      if (v.userInteraction) {
+        armedRef.current = true;
+        // Real gesture — follow-mode decides whether it was a pan-away or just a pinch.
+        onUserPanRef.current?.([v.center[0], v.center[1]]);
+      }
       if (!armedRef.current) return;
       onCamera?.([v.center[0], v.center[1]], v.zoom);
     },
@@ -216,7 +223,12 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
       }
     },
     flyTo: (center: [number, number], zoom?: number) => {
-      cameraRef.current?.easeTo({ center, zoom: zoom ?? 15, duration: 500 });
+      // No zoom given = the driver's current zoom stays — a recentre must never reset it.
+      if (zoom === undefined) cameraRef.current?.easeTo({ center, duration: 500 });
+      else cameraRef.current?.easeTo({ center, zoom, duration: 500 });
+    },
+    panTo: (center: [number, number]) => {
+      cameraRef.current?.easeTo({ center, duration: 700 });
     },
   }), []);
 

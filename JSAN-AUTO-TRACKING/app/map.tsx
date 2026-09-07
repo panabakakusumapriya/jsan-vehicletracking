@@ -167,6 +167,16 @@ export default function MapScreen() {
    *  memo combines the two. */
   const [liveFix, setLiveFix] = useState<[number, number] | null>(null);
   const liveFixAtRef = useRef(0);
+
+  /**
+   * FOLLOW MODE: the camera rides along with the driver, at whatever zoom THEY chose —
+   * panning never touches the zoom. A real pan-away suspends it (the driver is looking at
+   * something); a pinch does not (they are choosing their working zoom). The my-location
+   * button resumes it. Placement mode pauses it — the pin needs a still map.
+   */
+  const followRef = useRef(true);
+  const lastPanPosRef = useRef<[number, number] | null>(null);
+  const placingRef = useRef(false);
   /** Last native upload failure. Each event replaces the object, re-arming the 90 s expiry timer
    *  beside the listener that sets it. */
   const [uploadErr, setUploadErr] = useState<{ msg: string; at: number } | null>(null);
@@ -639,6 +649,18 @@ export default function MapScreen() {
         // injection for a dot that has not moved.
         setLiveFix((prev) => (prev && prev[0] === e.lon && prev[1] === e.lat ? prev : [e.lon, e.lat]));
 
+        // Follow the drive: pan (never zoom) to each fix that actually moved, unless the
+        // driver panned away or is placing a marker.
+        if (followRef.current && !placingRef.current) {
+          const lp = lastPanPosRef.current;
+          const movedForPan = !lp
+            || Math.abs(lp[0] - e.lon) > 5e-5 || Math.abs(lp[1] - e.lat) > 5e-5;
+          if (movedForPan) {
+            lastPanPosRef.current = [e.lon, e.lat];
+            mapRef.current?.panTo([e.lon, e.lat]);
+          }
+        }
+
         // Live breadcrumb: draw the road AS IT IS DRIVEN, no upload + poll round trip. Trip
         // fixes only — idle fixes would sketch the walk to the car. ~12 m gate (1e-4 deg is
         // ~11 m): tighter bloats the line, looser cuts corners. Bounded to the recent stretch;
@@ -783,6 +805,7 @@ export default function MapScreen() {
     setPickerOpen(false);
     setTappedMarker(null);
     setPlacing(cat);
+    placingRef.current = true;
     // Start from where the driver IS, and seed the camera ref with the same position: the
     // confirm below reads that ref, and a programmatic recentre does not fire onCamera — so
     // without the seed, confirming untouched could drop the marker at a minutes-old pan
@@ -814,6 +837,8 @@ export default function MapScreen() {
       } catch { /* falls through to the message below */ }
     }
     setPlacing(null);
+    placingRef.current = false;
+    followRef.current = true;
     if (!pos) { setMarkerNote('No GPS position yet — cannot drop a marker.'); return; }
     await dropAt(cat, pos);
   }, [placing, dropAt]);
@@ -831,11 +856,24 @@ export default function MapScreen() {
     if (m) setTappedMarker(m);
   }, [markers]);
 
-  /** The my-location button: land on where the phone IS, not where the map last was. */
+  /** What a real pan-away looks like vs a pinch: the centre leaving the followed position
+   *  by ~80 m+. Pinch keeps the centre put, so following (and the chosen zoom) survive it. */
+  const onUserPan = useCallback((center: [number, number]) => {
+    const p = lastPanPosRef.current;
+    if (!p) return;
+    if (Math.abs(p[0] - center[0]) > 8e-4 || Math.abs(p[1] - center[1]) > 8e-4) {
+      followRef.current = false;
+    }
+  }, []);
+
+  /** The my-location button: land on where the phone IS — at the driver's CURRENT zoom —
+   *  and resume follow-mode. */
   const goToMyLocation = useCallback(async () => {
+    followRef.current = true;
     // Fresh native fix — instant. Otherwise one honest GPS read (the Expo Go path).
     if (liveFix && Date.now() - liveFixAtRef.current < 30_000) {
-      mapRef.current?.flyTo(liveFix, 16);
+      lastPanPosRef.current = liveFix;
+      mapRef.current?.flyTo(liveFix);
       return;
     }
     try {
@@ -846,7 +884,8 @@ export default function MapScreen() {
         const pos: [number, number] = [fix.coords.longitude, fix.coords.latitude];
         liveFixAtRef.current = Date.now();
         setLiveFix(pos);
-        mapRef.current?.flyTo(pos, 16);
+        lastPanPosRef.current = pos;
+        mapRef.current?.flyTo(pos);
         return;
       }
     } catch { /* fall back to whatever the map already knows */ }
@@ -1201,6 +1240,7 @@ export default function MapScreen() {
           showHistory={prefs.historyDays > 0}
           markers={markersLayer}
           onMarkerTap={onMarkerTap}
+          onUserPan={onUserPan}
           trail={trail}
           liveCovered={liveCovered}
           onUnsupported={setMapError}
@@ -1253,7 +1293,10 @@ export default function MapScreen() {
               {placing.name} — move the map, the pin marks the spot
             </Text>
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-              <TouchableOpacity style={s.placeCancel} onPress={() => setPlacing(null)}>
+              <TouchableOpacity
+                style={s.placeCancel}
+                onPress={() => { setPlacing(null); placingRef.current = false; followRef.current = true; }}
+              >
                 <Text style={s.placeCancelTxt}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity style={s.placeDrop} onPress={confirmPlace}>

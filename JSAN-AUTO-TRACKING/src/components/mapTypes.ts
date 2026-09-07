@@ -134,6 +134,12 @@ export interface MapGLProps {
    * auto-framing at load never fires it.
    */
   onCamera?: (center: [number, number], zoom: number) => void;
+  /**
+   * Fires ONLY for a real user gesture (pan/pinch), with the resulting centre — never for
+   * programmatic camera moves. Follow-mode uses it to tell "driver panned away" (suspend)
+   * from "driver pinch-zoomed" (keep following at the new zoom).
+   */
+  onUserPan?: (center: [number, number]) => void;
 }
 
 /** Imperative controls, for on-screen zoom and recentre buttons. */
@@ -142,6 +148,8 @@ export interface MapGLHandle {
   zoomOut(): void;
   /** Centre on the live vehicle if there is one. */
   recenter(): void;
-  /** Fly to an explicit [lon, lat] — where the my-location button lands. */
+  /** Fly to an explicit [lon, lat]. Omit zoom to KEEP the driver's current zoom. */
   flyTo(center: [number, number], zoom?: number): void;
+  /** Pan to [lon, lat] at the CURRENT zoom — what follow-mode uses every fix. */
+  panTo(center: [number, number]): void;
 }
