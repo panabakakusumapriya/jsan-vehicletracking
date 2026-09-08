@@ -522,9 +522,8 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="login" />
-          <Stack.Screen name="home" />
+          <Stack.Screen name="(tabs)" />
           <Stack.Screen name="timezone-setup" />
-          <Stack.Screen name="map" />
         </Stack>
         <StatusBar style="auto" />
         {/* Post-login hard gate: mid-session permission loss blocks the app until fixed. */}

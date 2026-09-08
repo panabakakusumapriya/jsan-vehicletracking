@@ -20,7 +20,6 @@ import {
   type MapPrefs,
 } from '@/src/lib/mapPrefs';
 import { API_BASE_URL, IS_CUSTOM_API } from '@/src/lib/config';
-import { TabBar } from '@/src/components/TabBar';
 import { type MapGLHandle, type MapGLHistory, type MapGLMarkers, type MapGLTrace, type MapGLTrail, type RoadTuple } from '@/src/components/mapTypes';
 import { DriverMap } from '@/src/components/DriverMap';
 import {
@@ -1122,7 +1121,6 @@ export default function MapScreen() {
           <ActivityIndicator color={C.brand} size="large" />
           <Text style={s.loadText}>Loading map…</Text>
         </View>
-        <TabBar />
       </View>
     );
   }
@@ -1331,7 +1329,6 @@ export default function MapScreen() {
         </Modal>
       </View>
 
-      <TabBar />
     </View>
   );
 }

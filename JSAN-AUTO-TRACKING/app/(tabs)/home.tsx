@@ -16,7 +16,6 @@ import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
 import { ensurePermissions } from '@/src/lib/permissions';
 import { deviceTimezone } from '@/src/lib/timezone';
-import { TabBar } from '@/src/components/TabBar';
 
 type UiState = 'starting' | 'idle' | 'tracking' | 'blocked' | 'night';
 type UploadError = { reason: string; message: string; code?: number } | null;
@@ -306,7 +305,6 @@ export default function Home() {
       {/* spacer */}
       <View style={{ paddingBottom: 20 }} />
     </ScrollView>
-    <TabBar />
     </View>
   );
 }
