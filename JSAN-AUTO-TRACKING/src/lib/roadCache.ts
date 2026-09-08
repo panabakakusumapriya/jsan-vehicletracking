@@ -516,16 +516,32 @@ function saveTraceSlot(trace: TripTrace, force = false): void {
  * (0, 0) in the Gulf of Guinea. Both end a line rather than being quietly skipped, because the
  * gap is real information: the driver was not there.
  */
+/** Break the raw trace when two fixes are >200 m apart — a signal gap, not a road, so drawing a
+ *  straight connector across it is the "sudden straight line". (Null markers already split too.) */
+const RAW_GAP_M = 200;
 function rawToLines(points: readonly (TracePoint | null | undefined)[]): [number, number][][] {
   const lines: [number, number][][] = [];
   let current: [number, number][] = [];
+  let prev: TracePoint | null = null;
   for (const p of points) {
     if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon)) {
       if (current.length > 1) lines.push(current);
       current = [];
+      prev = null;
       continue;
     }
+    if (prev) {
+      const R = 6371000, r = (x: number) => (x * Math.PI) / 180;
+      const dLat = r(p.lat - prev.lat), dLon = r(p.lon - prev.lon);
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(prev.lat)) * Math.cos(r(p.lat)) * Math.sin(dLon / 2) ** 2;
+      const dist = 2 * R * Math.asin(Math.sqrt(h));
+      if (dist > RAW_GAP_M) {
+        if (current.length > 1) lines.push(current);
+        current = [];
+      }
+    }
     current.push([p.lon, p.lat]);
+    prev = p;
   }
   if (current.length > 1) lines.push(current);
   return lines;

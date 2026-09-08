@@ -25,6 +25,43 @@ const START_COLOR: [number, number, number] = [5, 150, 105]; // matches the old 
 const MARKER_LINE_COLOR: [number, number, number] = [255, 255, 255];
 
 /**
+ * A jump between two consecutive fixes that is a DATA GAP, not a road — signal loss, a tunnel,
+ * the app killed, or background GPS throttling. Connecting across it draws a false straight line
+ * (the "sudden straight lines" bug: an 11.6 km trip with a 4.2 km straight jump across a 6.6 min
+ * gap). Beyond either threshold the line is broken instead of drawn.
+ */
+const GAP_DIST_M = 200;
+const GAP_TIME_S = 90;
+
+function metersBetween(a: TripPoint, b: TripPoint): number {
+  const R = 6371000, r = (x: number) => (x * Math.PI) / 180;
+  const dLat = r(b.lat - a.lat), dLon = r(b.lon - a.lon);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function isGap(a: TripPoint, b: TripPoint): boolean {
+  if (metersBetween(a, b) > GAP_DIST_M) return true;
+  const dt = (new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime()) / 1000;
+  return dt > GAP_TIME_S;
+}
+
+/** Split a point list into contiguous runs, cut wherever a gap sits between two fixes. */
+function splitRuns(points: TripPoint[]): TripPoint[][] {
+  const runs: TripPoint[][] = [];
+  let cur: TripPoint[] = [];
+  for (let i = 0; i < points.length; i++) {
+    if (i > 0 && isGap(points[i - 1], points[i])) {
+      if (cur.length) runs.push(cur);
+      cur = [];
+    }
+    cur.push(points[i]);
+  }
+  if (cur.length) runs.push(cur);
+  return runs;
+}
+
+/**
  * Start/End ground markers, matching the old 2D Leaflet circle markers.
  * Floated 3m above ground and rendered with depth testing off: these are flat
  * discs at ground level, which nearby 3D building extrusions can occlude from
@@ -141,9 +178,6 @@ export function buildReplayLayers(
 ) {
   if (points.length === 0) return [];
 
-  const t0 = new Date(points[0].recordedAt).getTime();
-  const timestamps = points.map((p) => (new Date(p.recordedAt).getTime() - t0) / 1000);
-
   const layers = [];
   if (snappedPath && snappedPath.length > 1) {
     // With UKM stretches available the route is drawn in two passes: the whole thing muted
@@ -197,23 +231,29 @@ export function buildReplayLayers(
       );
     }
   } else if (points.length > 1) {
-    const path = points.map((p) => [p.lon, p.lat]);
-    layers.push(
-      new TripsLayer({
-        id: 'trip-replay-path',
-        data: [{ path, timestamps }],
-        getPath: (d) => d.path,
-        getTimestamps: (d) => d.timestamps,
-        getColor: TINT,
-        opacity: 0.85,
-        widthMinPixels: 4,
-        fadeTrail: fading,
-        trailLength: Math.max(timestamps[timestamps.length - 1], 1),
-        currentTime: elapsedMs / 1000,
-        capRounded: true,
-        jointRounded: true,
-      })
-    );
+    // Raw fallback (unsnapped): one TripsLayer per contiguous run so the reveal animation never
+    // draws a straight connector across a signal gap.
+    splitRuns(points).forEach((run, ri) => {
+      if (run.length < 2) return;
+      const rt0 = new Date(run[0].recordedAt).getTime();
+      const rts = run.map((p) => (new Date(p.recordedAt).getTime() - rt0) / 1000);
+      layers.push(
+        new TripsLayer({
+          id: 'trip-replay-path-' + ri,
+          data: [{ path: run.map((p) => [p.lon, p.lat]), timestamps: rts }],
+          getPath: (d) => d.path,
+          getTimestamps: (d) => d.timestamps,
+          getColor: TINT,
+          opacity: 0.85,
+          widthMinPixels: 4,
+          fadeTrail: fading,
+          trailLength: Math.max(rts[rts.length - 1], 1),
+          currentTime: elapsedMs / 1000,
+          capRounded: true,
+          jointRounded: true,
+        })
+      );
+    });
   }
 
   // Fixed start/end markers -- unlike the vehicle (which moves as you scrub),
@@ -244,6 +284,8 @@ export function buildLivePathLayers(
     for (let i = 0; i < points.length - 1; i++) {
       const a = points[i];
       const b = points[i + 1];
+      // Break the line across a data gap — a straight connector there is a lie about the route.
+      if (isGap(a, b)) continue;
       segments.push({
         path: [[a.lon, a.lat], [b.lon, b.lat]],
         speedKmh: a.speedKmh ?? 0,
