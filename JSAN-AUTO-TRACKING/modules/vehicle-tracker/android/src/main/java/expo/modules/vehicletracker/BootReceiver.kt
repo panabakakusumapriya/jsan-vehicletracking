@@ -26,21 +26,18 @@ class BootReceiver : BroadcastReceiver() {
             return
         }
 
-        // Skip boot-start if it's outside daylight hours
-        if (TrackingConfig.isDaylightOnly(context)) {
-            val tzId = TrackingConfig.timezoneId(context)
-            val lat = TrackingConfig.lastLat(context)
-            val lon = TrackingConfig.lastLon(context)
-            if (tzId != null && !lat.isNaN() && !lon.isNaN()) {
-                val daylight = SunTimes.today(lat, lon, tzId)
-                if (daylight != null && !daylight.isDaylight(System.currentTimeMillis())) {
-                    Log.i("JSANBoot", "Skipping auto-start: outside daylight hours (sunrise ${daylight.sunriseFormatted()})")
-                    return
-                }
-            }
-        }
-
+        // NO daylight gate here.
+        //
+        // Daylight-only tracking was retired everywhere else (it lost whole night shifts, and the
+        // resulting silence made the server watchdog close live trips), but this one path still
+        // enforced it — and it reads the PERSISTED preference, which is still `true` on every
+        // handset that ran a build from before the policy changed. The effect was that those
+        // devices silently refused to resume tracking after any night-time reboot, forever, with
+        // nothing in the UI to explain it.
         Log.i("JSANBoot", "Restarting TrackingService after $action")
         TrackingService.start(context)
+        // Arm the restart alarm too: a reboot is exactly when an OEM power manager is most
+        // likely to drop the service again a few minutes later.
+        ServiceWatchdog.schedule(context)
     }
 }

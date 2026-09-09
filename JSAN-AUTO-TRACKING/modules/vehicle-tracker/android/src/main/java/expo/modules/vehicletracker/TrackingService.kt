@@ -15,7 +15,11 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
 import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -75,6 +79,8 @@ class TrackingService : Service() {
         private const val NOTIF_ID   = 4711
         private const val CHANNEL_ID = "jsan_tracking"
         private const val WAKE_TAG   = "jsan:tracking"
+        private const val EXTRA_ACTIVITY_WAKE = "activityWake"
+
 
         /** Distance the vehicle must travel from the watch position to start a trip. */
         const val TRIP_START_DISTANCE_M     = 30f
@@ -107,6 +113,49 @@ class TrackingService : Service() {
          * walk long enough to outlive the veto keeps re-firing WALKING transitions anyway.
          */
         const val FOOT_VETO_MS = 10 * 60 * 1000L
+
+        /**
+         * The VEHICLE gate — the one that does not ask how fast you are going.
+         *
+         * Both gates above are speed-shaped, and speed is a bad proxy for "this is a vehicle" on
+         * this fleet's roads: a survey crawl, a queue at a gate or a jam never averages
+         * TRIP_START_MIN_SPEED_KMH, and below TRIP_START_SLOW_MIN_SPEED_KMH nothing could start a
+         * trip at all. So when MotionClassifier has positively identified a VEHICLE from the
+         * sensors (gait absence, cadence, gyro, activity model, speed — see that file), the trip
+         * starts on movement alone: this much ground covered at barely more than walking pace.
+         *
+         * The distance floor is smaller than the fast gate's because the classifier has already
+         * ruled out the thing the distance was guarding against — a pedestrian. What remains to
+         * guard against is GPS drift, so the accuracy bar is TIGHTER than either other gate
+         * (drift scales with the error radius, and 20 m is inside a 50 m error radius), and the
+         * jitter floor scales at 2x rather than 1.5x.
+         *
+         * At 1 km/h this fires after ~72 s of creeping — and PRE_START_BUFFER then backfills the
+         * route from the first metre, so the trip still begins where the movement did.
+         */
+        const val TRIP_START_VEHICLE_DISTANCE_M     = 20f
+        const val TRIP_START_VEHICLE_MIN_SPEED_KMH  = 0.8
+        const val TRIP_START_VEHICLE_MAX_ACCURACY_M = 25f
+
+        /**
+         * How often Play Services reports the ranked activity list WITH confidences. The
+         * transition API this service already uses only fires on edges and carries no
+         * confidence, which is why a stale ON_FOOT from walking to the car could veto the slow
+         * gate for ten minutes; these updates let MotionClassifier weigh both how sure the model
+         * is and how long ago it said so.
+         */
+        const val ACTIVITY_UPDATE_INTERVAL_MS = 10_000L
+
+        /**
+         * Baseline bounds for the ground speed handed to MotionClassifier. Doppler speed from a
+         * single fix collapses to zero at a crawl — the exact regime the vehicle gate exists to
+         * catch — so the classifier is also fed displacement measured over a sliding 8-30 s
+         * window, which stays honest down to walking pace. Shorter than the minimum and jitter
+         * dominates; longer than the maximum and a vehicle pulling away after a long park reads
+         * as stationary because the reference is stale.
+         */
+        const val GROUND_REF_MIN_MS = 8_000L
+        const val GROUND_REF_MAX_MS = 30_000L
 
         /**
          * The pre-start buffer. Everything driven BEFORE the start gate passes used to be lost:
@@ -201,6 +250,8 @@ class TrackingService : Service() {
          * would.
          */
         const val LOCATION_INTERVAL_STATIONARY_MS = 10_000L
+        /** Low-power watch after the initial idle window; enough to feed motion fusion. */
+        const val LOCATION_INTERVAL_DORMANT_MS = 30_000L
 
         /**
          * How long without movement before dropping to the stationary cadence. Longer than a
@@ -242,9 +293,45 @@ class TrackingService : Service() {
          */
         const val IDLE_EMIT_MS              = 5_000L
 
-        fun start(ctx: Context) {
-            ContextCompat.startForegroundService(ctx, Intent(ctx, TrackingService::class.java))
+        /**
+         * Ask for the service, and never throw at the caller.
+         *
+         * Three of the four callers are BroadcastReceivers, where an escaping exception is an app
+         * crash rather than a failed start — and Android 12+ throws
+         * ForegroundServiceStartNotAllowedException here whenever the app is in the background
+         * and not exempt from battery optimisation. That is precisely the state a phone is in
+         * when Activity Recognition reports the driver has started moving, so the one path that
+         * exists to resume tracking was also the one most likely to kill the app instead.
+         *
+         * A refused start hands off to the watchdog alarm, which will try again from a context
+         * the system is happier about.
+         */
+        fun start(ctx: Context, activityWake: Boolean = false) {
+            val intent = Intent(ctx, TrackingService::class.java)
+                .putExtra(EXTRA_ACTIVITY_WAKE, activityWake)
+            try {
+                ContextCompat.startForegroundService(ctx, intent)
+            } catch (e: Exception) {
+                Log.w("JSANTracking", "startForegroundService refused: ${e.message}")
+                ServiceWatchdog.scheduleRetry(ctx)
+            }
         }
+
+        /**
+         * How long the fused provider may go silent before we stop believing in it.
+         *
+         * Google Play Services is not present on every handset this fleet buys (and is stale or
+         * disabled on plenty more). requestLocationUpdates does not throw in that case — it
+         * returns a Task that quietly never delivers, so the service looked perfectly healthy
+         * while recording nothing at all. This is the timeout that turns that silence into a
+         * switch to the platform LocationManager.
+         */
+        const val NO_FIX_FALLBACK_MS = 90_000L
+
+        /** App-health heartbeat cadence, by how much is actually going on. */
+        const val HEARTBEAT_ACTIVE_MS  = 30_000L
+        const val HEARTBEAT_IDLE_MS    = 2 * 60 * 1000L
+        const val HEARTBEAT_DORMANT_MS = 10 * 60 * 1000L
 
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, TrackingService::class.java))
@@ -253,6 +340,23 @@ class TrackingService : Service() {
 
     private lateinit var fused: FusedLocationProviderClient
     private lateinit var db: LocationDatabase
+
+    /** Vehicle-vs-foot sensor fusion. Owns the accelerometer/gyroscope while the service runs. */
+    private lateinit var motion: MotionClassifier
+    private var activityUpdatesPi: PendingIntent? = null
+    /** configure/start may be called by session bootstrap, Home, and AppState; initialise once. */
+    private var runtimeStarted = false
+    /** Sparse, balanced-power monitoring after IDLE_TIMEOUT_MS; classifier remains alive. */
+    private var dormant = false
+
+    /** Set once we have given up on Play Services and driven GPS ourselves instead. */
+    private var legacyProviderActive = false
+    /** elapsedRealtime of the last fix from ANY provider — drives NO_FIX_FALLBACK_MS. */
+    private var lastFixElapsedMs = 0L
+    /** Last text pushed to the notification, so identical updates are not re-posted. */
+    private var lastNotificationText: String? = null
+    /** Created once; recreating it on every notification update is pure overhead. */
+    private var notificationChannelReady = false
 
     /** Keeps CPU alive when screen is off so GPS fixes are not dropped. */
     private var wakeLock: PowerManager.WakeLock? = null
@@ -274,17 +378,26 @@ class TrackingService : Service() {
     private var lastMovedMs: Long = 0L
     /** Throttles the server keep-alive heartbeat while parked. */
     private var lastHeartbeatMs: Long = 0L
+    private var tripStartedElapsedMs: Long = 0L
+    private var idleStartedElapsedMs: Long = 0L
 
     // ── Misc ─────────────────────────────────────────────────────────────────
     private var lastLocation: Location? = null   // for speed derivation
     private var lastIdleEmitMs = 0L              // throttles idle fixes emitted to JS
     private var lastRecordedAtMs = 0L            // when the last route point was minted (teleport gate)
 
+    // ── Long-baseline ground speed for MotionClassifier (see GROUND_REF_MIN_MS) ──
+    private var groundRefLoc: Location? = null
+    private var groundRefMs: Long = 0L
+    private var lastGroundKmh: Double? = null
+    private var lastGroundAtMs: Long = 0L
+
     /** One remembered idle fix — see PRE_START_BUFFER_MS. */
     private data class BufferedFix(
         val lat: Double, val lon: Double, val speedKmh: Double,
         val heading: Double?, val accuracy: Double?, val altitude: Double?,
         val timeMs: Long,
+        val elapsedMs: Long,
     )
     private val preStartBuffer = ArrayDeque<BufferedFix>()
 
@@ -319,8 +432,14 @@ class TrackingService : Service() {
     private val tickRunnable = object : Runnable {
         override fun run() {
             try { onTick() } catch (_: Exception) {}
-            // App health heartbeat — sends every ~30s (self-throttled)
-            try { HeartbeatSender.sendIfDue(applicationContext) } catch (_: Exception) {}
+            // App health heartbeat. Rate depends on whether anything is actually happening:
+            // a parked or dormant phone was sending 2,880 of these a day, each one waking the
+            // cellular radio into its high-power state for 10-20 s. That is the same cost the
+            // upload batching was introduced to remove, being paid all night for a payload that
+            // has not changed.
+            try {
+                HeartbeatSender.sendIfDue(applicationContext, heartbeatIntervalMs())
+            } catch (_: Exception) {}
             ticker.postDelayed(this, TICK_INTERVAL_MS)
         }
     }
@@ -339,35 +458,64 @@ class TrackingService : Service() {
         }
     }
 
+    /** Fixes from the platform provider when Play Services cannot supply them. */
+    private val legacyListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) = processFix(location)
+        @Deprecated("Required below API 29; no longer called above it.")
+        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCreate() {
         super.onCreate()
-        fused = LocationServices.getFusedLocationProviderClient(this)
-        db    = LocationDatabase(this)
-        acquireWakeLock()
+        fused  = LocationServices.getFusedLocationProviderClient(this)
+        db     = LocationDatabase(this)
+        motion = MotionClassifier(applicationContext)
+        motion.start()
         registerConnectivityReceiver()
+        ServiceWatchdog.schedule(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (runtimeStarted) {
+            if (intent?.getBooleanExtra(EXTRA_ACTIVITY_WAKE, false) == true && dormant) {
+                dormant = false
+                motion.setLowPower(false)
+                TrackingConfig.setIdleSince(this, System.currentTimeMillis())
+                idleStartedElapsedMs = SystemClock.elapsedRealtime()
+                applyCadence(idleStartedElapsedMs)
+                updateNotification("Vehicle movement detected")
+            }
+            return START_STICKY
+        }
+        runtimeStarted = true
         startForegroundCompat(notification("Waiting for movement…"))
 
-        val now = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()
+        val wallNow = System.currentTimeMillis()
 
         // If a trip was active before the service was killed (START_STICKY restart),
         // restore the movement timer so we don't immediately end the trip on restart.
         // hasLastRecorded stays false — processFix will re-anchor on the first fix.
         if (TrackingConfig.currentTripId(this) != null) {
+            acquireWakeLock()
+            tripStartedElapsedMs = now
             if (lastMovedMs == 0L) lastMovedMs = now
             if (lastHeartbeatMs == 0L) lastHeartbeatMs = now
         } else {
+            releaseWakeLock()
             // Entering idle — record when we started waiting so idle timeout works.
             if (TrackingConfig.idleSince(this) == 0L) {
-                TrackingConfig.setIdleSince(this, now)
+                TrackingConfig.setIdleSince(this, wallNow)
             }
+            idleStartedElapsedMs = now
         }
 
         registerActivityTransitions()
+        registerActivityUpdates()
         ticker.removeCallbacks(tickRunnable)
         ticker.postDelayed(tickRunnable, TICK_INTERVAL_MS)
 
@@ -375,6 +523,10 @@ class TrackingService : Service() {
         // calls for — so there is no separate startLocationUpdates() call here. `cadence = null`
         // guarantees it cannot take its no-change early return and leave GPS unregistered.
         cadence = null
+        // The silence timer runs from now, not from the first fix: a provider that never delivers
+        // anything at all would otherwise never trip it, and that is exactly the failure mode on
+        // a handset without usable Google Play Services.
+        lastFixElapsedMs = now
         applyCadence(now)
         uploadTicker.removeCallbacks(uploadRunnable)
         uploadTicker.postDelayed(uploadRunnable, uploadIntervalMs())
@@ -387,8 +539,34 @@ class TrackingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * The driver swiping the app out of Recents must not end their shift.
+     *
+     * Stock Android keeps a started foreground service running here, but MIUI, ColorOS,
+     * FuntouchOS and EMUI all tear the process down on a swipe and ignore START_STICKY while
+     * doing it. The alarm outlives the process, so it is the only thing that can still put the
+     * service back afterwards.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (TrackingConfig.isEnabled(this)) ServiceWatchdog.scheduleRetry(this)
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         try { fused.removeLocationUpdates(locationCallback) } catch (_: Exception) {}
+        stopLegacyLocationUpdates()
+        // Whatever is taking the service down — OEM killer, memory pressure, stopSelf — leave the
+        // alarm armed unless tracking was deliberately switched off, so there is a way back.
+        if (TrackingConfig.isEnabled(this)) ServiceWatchdog.scheduleRetry(this, 30_000L)
+        else ServiceWatchdog.cancel(this)
+        motion.stop()
+        // Transitions are deliberately LEFT registered — they are what wakes this service back up
+        // after the idle timeout. Continuous updates only feed the classifier, which is not
+        // running once the service is gone, so they are released here.
+        activityUpdatesPi?.let { pi ->
+            try { ActivityRecognition.getClient(this).removeActivityUpdates(pi) } catch (_: Exception) {}
+        }
+        activityUpdatesPi = null
         ticker.removeCallbacks(tickRunnable)
         uploadTicker.removeCallbacks(uploadRunnable)
         releaseWakeLock()
@@ -425,11 +603,23 @@ class TrackingService : Service() {
     // ── Core state machine ────────────────────────────────────────────────────
 
     private fun processFix(location: Location) {
-        val now = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()
+        val wallNow = System.currentTimeMillis()
+        // Proof of life for whichever provider delivered this — see NO_FIX_FALLBACK_MS.
+        lastFixElapsedMs = now
 
         // ── Hard reject: awful accuracy ─────────────────────────────────────
         val accuracy = if (location.hasAccuracy()) location.accuracy else 30f
-        if (accuracy > MAX_ACCURACY_M) return
+        if (accuracy > MAX_ACCURACY_M) {
+            // Never record a bad coordinate. Doppler speed is independent of horizontal
+            // accuracy, so corroborated vehicle motion may only refresh the stop timer.
+            val dopplerKmh = if (location.hasSpeed() && location.speed >= 0f) location.speed * 3.6 else 0.0
+            motion.onGpsFix(dopplerKmh, null)
+            if (TrackingConfig.currentTripId(this) != null &&
+                dopplerKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH && motion.isVehicle(now)
+            ) lastMovedMs = now
+            return
+        }
 
         // Use raw GPS coordinates directly — no smoothing, no spike rejection.
         // OSRM map-matching will be added server-side later for road snapping.
@@ -452,6 +642,20 @@ class TrackingService : Service() {
 
         val speedKmh = computeSpeedKmh(location)   // updates lastLocation
         addSpeed(speedKmh)                             // feed rolling 3-speed window
+        // Both speeds, because the fix's own Doppler reading is the one that fails at a crawl.
+        val groundKmh = groundSpeedKmh(location, now)
+        motion.onGpsFix(speedKmh, groundKmh)
+        /**
+         * How fast the phone is moving RIGHT NOW, over the last 8-30 s.
+         *
+         * Deliberately not avgSpeedKmh below, which is measured from the trip-start watch anchor
+         * and is only meaningful when that anchor is fresh. The anchor is set on the first idle
+         * fix and only re-anchored once 30 m has been covered, so after a long park it can be
+         * many minutes old — and 20 m spread over eight minutes averages to nothing. The vehicle
+         * gate would then never see a speed above its floor no matter how the vehicle was
+         * actually moving, which is the reverse of the bug it exists to fix.
+         */
+        val recentKmh = maxOf(speedKmh, groundKmh ?: 0.0)
         val tripId   = TrackingConfig.currentTripId(this)
 
         if (tripId == null) {
@@ -474,10 +678,8 @@ class TrackingService : Service() {
             // timeout still runs on this path: a phone parked in a bad-GPS garage must not
             // hold the service alive forever just because its fixes are fuzzy.
             if (accuracy > TRIP_START_MAX_ACCURACY_M) {
-                val fuzzyIdleSince = TrackingConfig.idleSince(this)
-                if (fuzzyIdleSince > 0L && now - fuzzyIdleSince >= IDLE_TIMEOUT_MS) {
-                    emitState("idle_timeout")
-                    stopSelf()
+                if (idleStartedElapsedMs > 0L && now - idleStartedElapsedMs >= IDLE_TIMEOUT_MS) {
+                    enterDormant(now)
                 }
                 return
             }
@@ -486,7 +688,7 @@ class TrackingService : Service() {
             // Flushed into the trip retroactively on start, so nothing driven before the gate
             // fires is lost. Spacing-gated: a parked phone appends nothing, and occasional 5 m
             // jitter costs a stray point near the anchor, not a stream of them.
-            val fixTimeMs = if (location.time > 0) location.time else now
+            val fixTimeMs = if (location.time > 0) location.time else wallNow
             val lastBuffered = preStartBuffer.lastOrNull()
             if (lastBuffered == null ||
                 haversineMeters(lastBuffered.lat, lastBuffered.lon, rawLat, rawLon) >= PRE_START_BUFFER_SPACING_M
@@ -497,9 +699,10 @@ class TrackingService : Service() {
                     accuracy = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
                     altitude = if (location.hasAltitude()) location.altitude else null,
                     timeMs = fixTimeMs,
+                    elapsedMs = now,
                 ))
                 while (preStartBuffer.size > PRE_START_BUFFER_MAX) preStartBuffer.removeFirst()
-                while (preStartBuffer.isNotEmpty() && now - preStartBuffer.first().timeMs > PRE_START_BUFFER_MS) {
+                while (preStartBuffer.isNotEmpty() && now - preStartBuffer.first().elapsedMs > PRE_START_BUFFER_MS) {
                     preStartBuffer.removeFirst()
                 }
             }
@@ -512,33 +715,82 @@ class TrackingService : Service() {
             }
 
             val distFromWatch = startWatchPos!!.distanceTo(location)
+            val elapsedSec    = ((now - startWatchTime) / 1000.0).coerceAtLeast(0.1)
+            val avgSpeedKmh   = (distFromWatch / elapsedSec) * 3.6
 
-            // Adaptive: the start distance must beat the fix's error radius with margin, or
+            // What the sensors say the phone is DOING, independent of how fast it is going.
+            val vehicleConfirmed = motion.isVehicle(now)
+            if (vehicleConfirmed && dormant) {
+                // Promote sparse monitoring to road-quality GPS as soon as sensor fusion sees a
+                // vehicle, even when Play Services never emitted an IN_VEHICLE transition.
+                dormant = false
+                motion.setLowPower(false)
+                TrackingConfig.setIdleSince(this, wallNow)
+                idleStartedElapsedMs = now
+                applyCadence(now)
+            }
+
+            // Adaptive: a start distance must beat the fix's error radius with margin, or
             // 40 m of jitter at 40 m accuracy reads as a 40 m drive.
-            if (distFromWatch >= maxOf(TRIP_START_DISTANCE_M, accuracy * 1.5f)) {
-                val elapsedSec    = ((now - startWatchTime) / 1000.0).coerceAtLeast(0.1)
-                val avgSpeedKmh   = (distFromWatch / elapsedSec) * 3.6
+            val speedGateReach   = distFromWatch >= maxOf(TRIP_START_DISTANCE_M, accuracy * 1.5f)
+            val vehicleGateReach = distFromWatch >= maxOf(TRIP_START_VEHICLE_DISTANCE_M, accuracy * 2f)
 
-                // Two gates in. Fast is the original: a normal pull-away clears 10 km/h within
-                // the first 30 m. Slow is for congestion, where no stretch ever reaches 10 km/h:
-                // enough accumulated ground at a crawl also counts — but only on the activity
-                // model's word that this is a vehicle, because the same 100 m at 3 km/h is
-                // exactly what walking looks like.
-                val fastStart = avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH
-                // Veto, not requirement — see FOOT_VETO_MS for why a positive "vehicle" verdict
-                // must not be the price of admission.
+            if (speedGateReach || vehicleGateReach) {
+                // Three gates in.
+                //
+                // FAST is the original: a normal pull-away clears 10 km/h within the first 30 m.
+                // It now also wants a REASON to believe this is a vehicle, because a runner can
+                // hold that average over 30 m. Any of three will do, and the third is the usual
+                // one: the accelerometer is alive and sees nothing walking. Note what does NOT
+                // veto here — a "walking" verdict. At 10 km/h that verdict is wrong by
+                // construction, and must not be allowed to cost a trip.
+                //
+                // SLOW is for congestion, where no stretch ever reaches 10 km/h: enough
+                // accumulated ground at a crawl also counts, provided nothing recently said
+                // "on foot" AND something positively says "vehicle". That requirement was
+                // unaffordable before MotionClassifier existed — the only witness was Play
+                // Services, which goes quiet through exactly the crawls that need it, which is
+                // why this gate ran on a bare veto (see FOOT_VETO_MS) and measured 33 km against
+                // a reference app's 43. With a sensor verdict available in seconds, requiring
+                // one costs nothing and keeps pedestrians out.
+                //
+                // VEHICLE is the new one, and it asks a different question entirely: not "is
+                // this fast enough to be driving" but "is this phone in a vehicle". When the
+                // sensors say it is, TRIP_START_VEHICLE_DISTANCE_M of movement at barely above
+                // a standstill starts the trip — 1 km/h of creep included.
+                val fastStart = speedGateReach &&
+                    avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
+                    (
+                        vehicleConfirmed ||
+                        avgSpeedKmh >= 20.0 ||
+                        (motion.hasUsableGaitWindow(now) && !motion.isRunningOnFoot(now))
+                    )
+
+                // The foot veto still stands on its own: a fresh ON_FOOT shuts the slow gate
+                // even if something else claims a vehicle. FOOT_VETO_MS explains why it is
+                // deliberately short-lived.
                 val footRecently = TrackingConfig.lastActivity(this) == TrackingConfig.ACTIVITY_FOOT &&
-                    now - TrackingConfig.lastActivityAt(this) < FOOT_VETO_MS
-                val slowStart = avgSpeedKmh >= TRIP_START_SLOW_MIN_SPEED_KMH &&
+                    wallNow - TrackingConfig.lastActivityAt(this) < FOOT_VETO_MS
+                val vehicleRecently = TrackingConfig.lastActivity(this) == TrackingConfig.ACTIVITY_VEHICLE &&
+                    wallNow - TrackingConfig.lastActivityAt(this) < FOOT_VETO_MS
+                val slowStart = speedGateReach &&
+                    avgSpeedKmh >= TRIP_START_SLOW_MIN_SPEED_KMH &&
                     distFromWatch >= TRIP_START_SLOW_DISTANCE_M &&
-                    !footRecently
+                    !footRecently && (vehicleConfirmed || vehicleRecently)
 
-                if (fastStart || slowStart) {
+                val vehicleStart = vehicleConfirmed &&
+                    vehicleGateReach &&
+                    accuracy <= TRIP_START_VEHICLE_MAX_ACCURACY_M &&
+                    recentKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH
+
+                if (fastStart || slowStart || vehicleStart) {
                     // ── START TRIP ───────────────────────────────────────────
                     val newId = UUID.randomUUID().toString()
                     TrackingConfig.setCurrentTripId(this, newId)
-                    TrackingConfig.setTripStartedAt(this, now)
+                    TrackingConfig.setTripStartedAt(this, wallNow)
+                    tripStartedElapsedMs = now
                     TrackingConfig.setIdleSince(this, 0L)
+                    acquireWakeLock()
 
                     lastRecordedLat  = rawLat
                     lastRecordedLon  = rawLon
@@ -548,13 +800,27 @@ class TrackingService : Service() {
                     lastHeartbeatMs  = now
                     startWatchPos    = null
                     recentSpeeds.clear()
+                    val gate = when {
+                        fastStart -> "fast"
+                        slowStart -> "slow"
+                        else      -> "vehicle"
+                    }
 
                     // Flush the buffered approach BEFORE the start point: every good fix since
                     // the watch anchored becomes part of the trip, with its original timestamp,
                     // so the server's startedAt (the earliest point in the batch) is when the
                     // movement began — not when the gate finally recognised it.
+                    var previousBuffered: BufferedFix? = null
                     for (b in preStartBuffer) {
-                        if (b.timeMs < startWatchTime || b.timeMs >= fixTimeMs) continue
+                        if (b.elapsedMs < startWatchTime || b.elapsedMs >= now) continue
+                        val previous = previousBuffered
+                        if (previous != null) {
+                            val d = haversineMeters(previous.lat, previous.lon, b.lat, b.lon)
+                            val minMove = maxOf(8f, ((b.accuracy ?: 30.0) * 0.75).toFloat())
+                            if (d < minMove) continue // stationary jitter, not an approach leg
+                            val seconds = ((b.elapsedMs - previous.elapsedMs).coerceAtLeast(1L)) / 1000.0
+                            if ((d / seconds) * 3.6 > MAX_PLAUSIBLE_SPEED_KMH) continue
+                        }
                         db.insert(QueuedPoint(
                             clientId     = UUID.randomUUID().toString(),
                             clientTripId = newId,
@@ -569,19 +835,27 @@ class TrackingService : Service() {
                             recordedAt   = iso(b.timeMs),
                             tripStatus   = "active",
                         ))
+                        previousBuffered = b
                     }
                     preStartBuffer.clear()
 
-                    savePoint(rawLat, rawLon, location, speedKmh, newId, "active", now)
-                    TrackerEvents.emit("onTripStart", mapOf("tripId" to newId, "recordedAt" to iso(location.time)))
+                    savePoint(rawLat, rawLon, location, speedKmh, newId, "active", wallNow)
+                    TrackerEvents.emit("onTripStart", mapOf(
+                        "tripId" to newId,
+                        "recordedAt" to iso(if (location.time > 0) location.time else wallNow)
+                    ))
                     TrackerEvents.emit("onLocation",  locMap(rawLat, rawLon, speedKmh, newId, "active", location.time))
                     emitState("tracking")
-                    updateNotification("Trip started • ${speedKmh.roundToInt()} km/h")
+                    updateNotification("Trip started ($gate) • ${speedKmh.roundToInt()} km/h")
                     applyCadence(now)
                     triggerUpload()
-                } else if (avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH) {
+                } else if (speedGateReach && avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH &&
+                           !(vehicleConfirmed && recentKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH)) {
                     // Slower than any crawl worth calling driving — drift, not a trip. Re-anchor
-                    // so the watch measures fresh.
+                    // so the watch measures fresh. The exception is a vehicle that is genuinely
+                    // moving right now: on a fuzzy fix the vehicle gate needs more than 30 m
+                    // (accuracy * 2), so re-anchoring at 30 m would throw the creep's accumulated
+                    // ground away just short of the gate, every time, forever.
                     startWatchPos  = location
                     startWatchTime = now
                 }
@@ -590,10 +864,10 @@ class TrackingService : Service() {
                 // came in under 10 km/h and the accumulated distance was thrown away. Keeping the
                 // anchor lets the crawl keep building toward the slow gate.
             } else {
-                val idleSince = TrackingConfig.idleSince(this)
-                if (idleSince > 0L && now - idleSince >= IDLE_TIMEOUT_MS) {
-                    emitState("idle_timeout")
-                    stopSelf()
+                // Nothing has moved far enough for any gate. The ticker checks this too, so the
+                // service still self-terminates when GPS goes quiet entirely.
+                if (idleStartedElapsedMs > 0L && now - idleStartedElapsedMs >= IDLE_TIMEOUT_MS) {
+                    enterDormant(now)
                 }
             }
 
@@ -621,10 +895,29 @@ class TrackingService : Service() {
             // not being recorded also meant lastMovedMs never advanced, so the 10-minute
             // no-move timer could end a trip that was inching forward the whole time. Ten real
             // metres of displacement is something neither model can veto.
+            //
+            // A FOURTH witness, and the one that matters below ~2 km/h: the sensor classifier
+            // says this is a vehicle and the sliding ground-speed baseline says it is moving.
+            //
+            // Without it, a crawl slower than RECORD_MOVING_SPEED_KMH with Activity Recognition
+            // reporting STILL falls back to the displacement witness, which needs
+            // max(10 m, 1.5x accuracy) before it will admit any movement happened. At 1 km/h and
+            // 12 m accuracy that is 65 SECONDS between recorded points — and the server splits a
+            // trace wherever two fixes are more than MAP_MATCH_SPLIT_GAP_SECONDS (45 s) apart,
+            // then discards any run left holding fewer than two points. So the exact stretches
+            // the vehicle start gate was built to capture were recorded, uploaded, and then
+            // dropped by the matcher: no snapped road line, and no matched distance.
+            //
+            // This witness lets the 8 s time trigger apply instead, which puts the same crawl at
+            // 14-36 s between points — comfortably inside the split threshold. It cannot fire on
+            // a parked vehicle: it needs a VEHICLE verdict AND real displacement over an 8-30 s
+            // baseline, which is the same evidence the trip-start gate already trusts, and the
+            // time trigger still enforces its own accuracy-scaled displacement floor underneath.
             val displacementMoving = distFromLast >= maxOf(POINT_DISTANCE_M, accuracy * 1.5f)
             val moving = displacementMoving ||
                 !TrackingConfig.isStill(this) ||
-                speedKmh >= RECORD_MOVING_SPEED_KMH
+                speedKmh >= RECORD_MOVING_SPEED_KMH ||
+                (motion.isVehicle(now) && recentKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH)
             val dtMs = if (lastRecordedAtMs > 0L) now - lastRecordedAtMs else Long.MAX_VALUE
             // Distance OR time trigger. Distance stops fast roads over-sampling; the time trigger
             // keeps slow/congested roads dense so the matcher can snap them to the street grid.
@@ -647,7 +940,7 @@ class TrackingService : Service() {
                 lastMovedMs      = now
                 lastHeartbeatMs  = now
 
-                savePoint(rawLat, rawLon, location, speedKmh, tripId, "active", now)
+                savePoint(rawLat, rawLon, location, speedKmh, tripId, "active", wallNow)
                 TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, tripId, "active", location.time))
                 updateNotification("Trip • ${speedKmh.roundToInt()} km/h")
                 // Deliberately NO upload here. The point is in SQLite; uploadRunnable batches it
@@ -686,13 +979,26 @@ class TrackingService : Service() {
      */
     private fun onTick() {
         if (!TrackingConfig.isEnabled(this)) return
-        val now    = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()
+        val wallNow = System.currentTimeMillis()
 
         // The MOVING -> STATIONARY direction is only ever noticed here: it is defined by the
         // ABSENCE of movement, so no GPS callback will announce it. (The reverse direction is
         // applied straight from processFix, so pulling away is immediate rather than waiting out
         // a tick.)
         applyCadence(now)
+
+        // Play Services can accept a location request and then simply never deliver — it is
+        // absent, disabled or too old. Nothing reports that: requestLocationUpdates returns a
+        // Task that never completes and the service looks perfectly healthy while recording
+        // nothing. Silence is the only symptom, so silence is what is watched for.
+        if (!legacyProviderActive && lastFixElapsedMs > 0L &&
+            now - lastFixElapsedMs >= NO_FIX_FALLBACK_MS
+        ) {
+            Log.w("JSANTracking", "No fix for ${(now - lastFixElapsedMs) / 1000}s — falling back")
+            startLegacyLocationUpdates(currentGpsIntervalMs())
+            lastFixElapsedMs = now
+        }
 
         // Daylight gating removed: tracking runs at any hour now. It used to end the active trip
         // and pause until sunrise, so a night shift produced no data at all — and the resulting
@@ -702,20 +1008,23 @@ class TrackingService : Service() {
         val tripId = TrackingConfig.currentTripId(this)
 
         if (tripId == null) {
+            // Surface what the sensors think while waiting. Two jobs: it is the only way to see
+            // the classifier's verdict in the field without a debug build, and calling it here
+            // keeps the score evaluating on the ticker even on a phone with no accelerometer,
+            // where nothing else would drive it between GPS fixes.
+            updateNotification("Waiting for movement… • " + motion.describe(now))
+
             // Idle — check timeout so the service stops if nobody drives.
-            val idleSince = TrackingConfig.idleSince(this)
-            if (idleSince > 0L && now - idleSince >= IDLE_TIMEOUT_MS) {
-                emitState("idle_timeout")
-                stopSelf()
+            if (idleStartedElapsedMs > 0L && now - idleStartedElapsedMs >= IDLE_TIMEOUT_MS) {
+                enterDormant(now)
             }
             return
         }
 
         // Hard cap: a "trip" running past TRIP_MAX_DURATION_MS is a forgotten session. End it
         // now — the server snaps it, and the next movement starts a fresh trip cleanly.
-        val tripStartedAt = TrackingConfig.tripStartedAt(this)
-        if (tripStartedAt > 0L && now - tripStartedAt >= TRIP_MAX_DURATION_MS) {
-            endTrip(tripId, now)
+        if (tripStartedElapsedMs > 0L && now - tripStartedElapsedMs >= TRIP_MAX_DURATION_MS) {
+            endTrip(tripId, now, wallNow)
             return
         }
 
@@ -724,7 +1033,7 @@ class TrackingService : Service() {
         if (lastMovedMs > 0L && now - lastMovedMs >= TRIP_END_NO_MOVE_MS) {
             // The full grace passed at a dead stop → the vehicle is genuinely parked. Any real
             // movement inside the grace resets the clock and the trip simply continues.
-            endTrip(tripId, now)
+            endTrip(tripId, now, wallNow)
             return
         }
 
@@ -740,7 +1049,7 @@ class TrackingService : Service() {
                 "speedKmh"   to 0.0,
                 "tripId"     to tripId,
                 "tripStatus" to "active",
-                "recordedAt" to iso(now)
+                "recordedAt" to iso(wallNow)
             ))
             val stoppedMin = ((now - lastMovedMs) / 60_000L).toInt()
             updateNotification(if (stoppedMin > 0) "Stopped • $stoppedMin min" else "Stopped")
@@ -749,27 +1058,35 @@ class TrackingService : Service() {
 
     // ── Trip end ──────────────────────────────────────────────────────────────
 
-    private fun endTrip(tripId: String, now: Long) {
+    private fun endTrip(tripId: String, now: Long, wallNow: Long = System.currentTimeMillis()) {
         // The end marker rides the last recorded coordinates — which, after a START_STICKY
         // restart that never saw a fix, are still (0.0, 0.0). Null island is inside the server's
         // coordinate range check, so it used to be accepted, become lastLocation/endLocation and
         // add a ~5,000 km phantom leg to the raw distance. With no trustworthy position there is
         // no end marker; the server's dead-trip watchdog closes the trip instead.
         if (hasLastRecorded) {
-            insertPoint(lastRecordedLat, lastRecordedLon, 0.0, tripId, "ended", now)
+            insertPoint(lastRecordedLat, lastRecordedLon, 0.0, tripId, "ended", wallNow)
         }
         TrackingConfig.setCurrentTripId(this, null)
         TrackingConfig.setTripStartedAt(this, 0L)
-        TrackingConfig.setIdleSince(this, now)
+        TrackingConfig.setIdleSince(this, wallNow)
+        idleStartedElapsedMs = now
+        tripStartedElapsedMs = 0L
+        dormant = false
+        motion.setLowPower(false)
+        releaseWakeLock()
         hasLastRecorded = false
         lastMovedMs     = 0L
         lastHeartbeatMs = 0L
+        groundRefLoc    = null
+        groundRefMs     = 0L
+        lastGroundKmh   = null
         startWatchPos   = null
         startWatchTime  = 0L
         recentSpeeds.clear()
         preStartBuffer.clear()
         triggerUpload()
-        TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(now)))
+        TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(wallNow)))
         emitState("idle")
         updateNotification("Waiting for movement…")
     }
@@ -831,6 +1148,43 @@ class TrackingService : Service() {
         return gps ?: derived ?: 0.0
     }
 
+    /**
+     * Speed measured over a SLIDING 8-30 s baseline, for MotionClassifier only.
+     *
+     * computeSpeedKmh above prefers the fix's own Doppler reading, which is the right choice for
+     * the recorded route but useless to the classifier at the speeds that matter here: below
+     * roughly 2 km/h most chipsets simply report zero, which is exactly what a creeping vehicle
+     * looks like and exactly the case the vehicle gate exists to catch. Displacement over tens
+     * of seconds does not have that floor.
+     *
+     * The reference point slides rather than being fixed, because a stale one is just as wrong
+     * in the other direction: anchoring at the start of a twenty-minute park would average a
+     * pull-away down to nothing. The last computed value is reused between recomputations so
+     * every fix carries the current estimate instead of dropping back to a zero Doppler reading
+     * and dragging the classifier's percentile down with it.
+     */
+    private fun groundSpeedKmh(location: Location, now: Long): Double? {
+        val ref = groundRefLoc
+        if (ref == null || groundRefMs == 0L) {
+            groundRefLoc = location
+            groundRefMs  = now
+            return null
+        }
+        val elapsedMs = now - groundRefMs
+        if (elapsedMs < GROUND_REF_MIN_MS) {
+            // Baseline too short to beat jitter — reuse the last good estimate while it is fresh.
+            return if (now - lastGroundAtMs <= GROUND_REF_MAX_MS * 2) lastGroundKmh else null
+        }
+        val kmh = (ref.distanceTo(location) / (elapsedMs / 1000.0)) * 3.6
+        lastGroundKmh  = kmh
+        lastGroundAtMs = now
+        if (elapsedMs >= GROUND_REF_MAX_MS) {
+            groundRefLoc = location
+            groundRefMs  = now
+        }
+        return kmh
+    }
+
     private fun batteryLevel(): Double? {
         val bm = getSystemService(Context.BATTERY_SERVICE) as? BatteryManager ?: return null
         val lvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
@@ -838,13 +1192,37 @@ class TrackingService : Service() {
     }
 
     private fun triggerUpload() {
-        Thread { Uploader.flush(applicationContext) }.start()
+        Uploader.schedule(applicationContext)
+    }
+
+    /**
+     * Keep a cheap motion watch instead of stopping completely. A hard stop made a 1 km/h
+     * background departure impossible to observe when Play Services called it STILL/UNKNOWN.
+     */
+    private fun enterDormant(now: Long) {
+        if (TrackingConfig.currentTripId(this) != null || dormant) return
+        dormant = true
+        TrackingConfig.setIdleSince(this, System.currentTimeMillis())
+        idleStartedElapsedMs = now
+        releaseWakeLock()
+        // Keep watching for a departure, just far more cheaply — see MotionClassifier.setLowPower.
+        motion.setLowPower(true)
+        emitState("dormant")
+        updateNotification("Low-power vehicle watch")
+        applyCadence(now)
     }
 
     // ── Location + activity registration ─────────────────────────────────────
 
-    private fun startLocationUpdates(intervalMs: Long = LOCATION_INTERVAL_MS) {
-        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
+    private fun startLocationUpdates(
+        intervalMs: Long = LOCATION_INTERVAL_MS,
+        priority: Int = Priority.PRIORITY_HIGH_ACCURACY,
+    ) {
+        if (legacyProviderActive) {
+            startLegacyLocationUpdates(intervalMs)
+            return
+        }
+        val req = LocationRequest.Builder(priority, intervalMs)
             // Never faster than FASTEST_MS even if another app is requesting rapid fixes; at the
             // stationary rate, do not accept a fix more than twice as often as asked for.
             .setMinUpdateIntervalMillis(maxOf(FASTEST_MS, intervalMs / 2))
@@ -852,7 +1230,64 @@ class TrackingService : Service() {
             .build()
         try {
             fused.requestLocationUpdates(req, locationCallback, Looper.getMainLooper())
-        } catch (_: SecurityException) { stopSelf() }
+                // Play Services present but refusing (missing, disabled, out of date). The Task
+                // is the only place this is reported — nothing throws.
+                .addOnFailureListener { e ->
+                    Log.w("JSANTracking", "Fused provider unavailable: ${e.message}")
+                    startLegacyLocationUpdates(intervalMs)
+                }
+        } catch (_: SecurityException) {
+            // The location permission was revoked while running. Do NOT stopSelf: the service
+            // dying here is invisible to the driver and there is no path back until they happen
+            // to reopen the app. Stay up, say so, and resume when the grant returns.
+            emitState("permission_required")
+            updateNotification("Location permission needed — open the app")
+        } catch (e: Exception) {
+            Log.w("JSANTracking", "Fused request threw: ${e.message}")
+            startLegacyLocationUpdates(intervalMs)
+        }
+    }
+
+    /**
+     * The provider of last resort: android.location.LocationManager, which every Android device
+     * has whether or not Google's are installed.
+     *
+     * It has no fused sensor blending and no batching, so it is a genuine downgrade in both
+     * accuracy and battery — which is why it is never the first choice. It is still the
+     * difference between a handset that records a shift and one that records nothing.
+     */
+    private fun startLegacyLocationUpdates(intervalMs: Long) {
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+            try { fused.removeLocationUpdates(locationCallback) } catch (_: Exception) {}
+            lm.removeUpdates(legacyListener)
+            val provider = when {
+                lm.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+                else -> {
+                    updateNotification("Turn on Location to record trips")
+                    return
+                }
+            }
+            lm.requestLocationUpdates(provider, intervalMs, 0f, legacyListener, Looper.getMainLooper())
+            if (!legacyProviderActive) {
+                legacyProviderActive = true
+                Log.i("JSANTracking", "Switched to platform LocationManager ($provider)")
+                emitState("fallback_provider")
+            }
+        } catch (_: SecurityException) {
+            emitState("permission_required")
+            updateNotification("Location permission needed — open the app")
+        } catch (e: Exception) {
+            Log.w("JSANTracking", "Legacy provider failed: ${e.message}")
+        }
+    }
+
+    private fun stopLegacyLocationUpdates() {
+        try {
+            (getSystemService(Context.LOCATION_SERVICE) as? LocationManager)
+                ?.removeUpdates(legacyListener)
+        } catch (_: Exception) {}
     }
 
     // ── Adaptive cadence ──────────────────────────────────────────────────────
@@ -863,7 +1298,7 @@ class TrackingService : Service() {
      * mode actually changes — re-registering a LocationRequest is not free, and doing it per fix
      * would cost more than it saves.
      */
-    private enum class Cadence { MOVING, STATIONARY }
+    private enum class Cadence { MOVING, STATIONARY, DORMANT }
 
     private var cadence: Cadence? = null
 
@@ -878,17 +1313,46 @@ class TrackingService : Service() {
     private fun uploadIntervalMs(): Long =
         if (cadence == Cadence.MOVING) UPLOAD_INTERVAL_MOVING_MS else UPLOAD_INTERVAL_STATIONARY_MS
 
+    /**
+     * Health-heartbeat cadence. Frequent while a trip is live, because that is when the panel
+     * needs to know the app is alive; rare otherwise, because nothing it reports changes while a
+     * phone sits in a parked vehicle overnight.
+     */
+    /** The GPS interval the current cadence calls for — used when re-registering a provider. */
+    private fun currentGpsIntervalMs(): Long = when (cadence) {
+        Cadence.MOVING -> LOCATION_INTERVAL_MS
+        Cadence.DORMANT -> LOCATION_INTERVAL_DORMANT_MS
+        else -> LOCATION_INTERVAL_STATIONARY_MS
+    }
+
+    private fun heartbeatIntervalMs(): Long = when {
+        TrackingConfig.currentTripId(this) != null -> HEARTBEAT_ACTIVE_MS
+        dormant -> HEARTBEAT_DORMANT_MS
+        else -> HEARTBEAT_IDLE_MS
+    }
+
     /** Moving = a trip is open AND something moved within STATIONARY_AFTER_MS. */
     private fun applyCadence(now: Long) {
         val tripOpen = TrackingConfig.currentTripId(this) != null
         val movedRecently = lastMovedMs > 0L && now - lastMovedMs < STATIONARY_AFTER_MS
-        val wanted = if (tripOpen && movedRecently) Cadence.MOVING else Cadence.STATIONARY
+        val wanted = when {
+            tripOpen && movedRecently -> Cadence.MOVING
+            !tripOpen && dormant -> Cadence.DORMANT
+            else -> Cadence.STATIONARY
+        }
         if (wanted == cadence) return
 
         cadence = wanted
-        val gpsMs = if (wanted == Cadence.MOVING) LOCATION_INTERVAL_MS else LOCATION_INTERVAL_STATIONARY_MS
+        val gpsMs = when (wanted) {
+            Cadence.MOVING -> LOCATION_INTERVAL_MS
+            Cadence.STATIONARY -> LOCATION_INTERVAL_STATIONARY_MS
+            Cadence.DORMANT -> LOCATION_INTERVAL_DORMANT_MS
+        }
+        val priority = if (wanted == Cadence.DORMANT)
+            Priority.PRIORITY_BALANCED_POWER_ACCURACY
+        else Priority.PRIORITY_HIGH_ACCURACY
         try { fused.removeLocationUpdates(locationCallback) } catch (_: Exception) {}
-        startLocationUpdates(gpsMs)
+        startLocationUpdates(gpsMs, priority)
 
         // Restart the upload ticker on the new interval rather than waiting out the old one, so
         // pulling away from a stop does not sit on a 30 s upload gap.
@@ -934,6 +1398,28 @@ class TrackingService : Service() {
         } catch (_: Exception) {}
     }
 
+    /**
+     * Continuous activity sampling — the confidence-bearing counterpart to the transition
+     * registration above. Transitions wake the service; these feed MotionClassifier while it
+     * runs, and are released in onDestroy because nothing consumes them once it stops.
+     *
+     * A distinct request code (101) from the transition PendingIntent (100): sharing one would
+     * make the second registration overwrite the first.
+     */
+    private fun registerActivityUpdates() {
+        try {
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            else PendingIntent.FLAG_UPDATE_CURRENT
+            val pi = PendingIntent.getBroadcast(
+                this, 101, Intent(this, ActivityUpdatesReceiver::class.java), flags
+            )
+            activityUpdatesPi = pi
+            ActivityRecognition.getClient(this)
+                .requestActivityUpdates(ACTIVITY_UPDATE_INTERVAL_MS, pi)
+        } catch (_: Exception) {}
+    }
+
     // ── Notification ──────────────────────────────────────────────────────────
 
     private fun startForegroundCompat(notif: Notification) {
@@ -944,9 +1430,13 @@ class TrackingService : Service() {
     }
 
     private fun notification(text: String): Notification {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // Created once per process. It used to be recreated on every single update — which, with
+        // the idle ticker refreshing the text every 20 s, meant a channel write and a
+        // PackageManager query three times a minute for the entire life of the service.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !notificationChannelReady) {
             val ch = NotificationChannel(CHANNEL_ID, "Trip tracking", NotificationManager.IMPORTANCE_LOW)
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
+            notificationChannelReady = true
         }
         val launch   = packageManager.getLaunchIntentForPackage(packageName)
         val contentPi = launch?.let {
@@ -965,6 +1455,10 @@ class TrackingService : Service() {
     }
 
     private fun updateNotification(text: String) {
+        // Posting the same text again costs a binder round trip and a system-server notification
+        // rebuild, and shows the driver nothing new.
+        if (text == lastNotificationText) return
+        lastNotificationText = text
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
             .notify(NOTIF_ID, notification(text))
     }

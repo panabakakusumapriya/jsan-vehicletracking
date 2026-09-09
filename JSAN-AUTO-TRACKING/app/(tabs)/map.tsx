@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Modal,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Linking } from 'react-native';
 import { useAuth } from '@/src/lib/auth';
 import {
   BASEMAPS,
@@ -27,7 +27,7 @@ import {
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
 } from '@/src/lib/api';
 import { enqueueMarker, flushMarkerQueue, newClientId } from '@/src/lib/markerQueue';
-import { buildRoadIndex, hitLinkIds, loadLiveCovered, saveLiveCovered } from '@/src/lib/liveCover';
+import { buildRoadIndexAsync, hitLinkIds, loadLiveCovered, saveLiveCovered, type RoadIndex } from '@/src/lib/liveCover';
 import * as Location from 'expo-location';
 import { decodeRouteShapeLines } from '@/src/lib/polyline';
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
@@ -204,9 +204,18 @@ export default function MapScreen() {
   );
   const liveCoveredRef = useRef(liveCovered);
   liveCoveredRef.current = liveCovered;
-  const roadIndex = useMemo(() => (roads.length ? buildRoadIndex(roads) : null), [roads]);
-  const roadIndexRef = useRef(roadIndex);
-  roadIndexRef.current = roadIndex;
+  const liveCoveredSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const roadIndexRef = useRef<RoadIndex | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    roadIndexRef.current = null;
+    if (roads.length) {
+      buildRoadIndexAsync(roads, () => cancelled).then((index) => {
+        if (!cancelled) roadIndexRef.current = index;
+      });
+    }
+    return () => { cancelled = true; };
+  }, [roads]);
 
   /**
    * Route history: every closed trip in the chosen window, drawn grey under the current route.
@@ -672,13 +681,19 @@ export default function MapScreen() {
             const hits = hitLinkIds(idx, e.lon, e.lat);
             if (hits.length) {
               const cur = liveCoveredRef.current;
+              const nextIds = new Set(cur.ids);
               let changed = false;
               for (const id of hits) {
-                if (!cur.ids.has(id)) { cur.ids.add(id); changed = true; }
+                if (!nextIds.has(id)) { nextIds.add(id); changed = true; }
               }
               if (changed) {
-                setLiveCovered({ version: Date.now(), ids: cur.ids });
-                saveLiveCovered(roadsKeyRef.current ?? '', cur.ids);
+                setLiveCovered({ version: Date.now(), ids: nextIds });
+                if (!liveCoveredSaveTimerRef.current) {
+                  liveCoveredSaveTimerRef.current = setTimeout(() => {
+                    liveCoveredSaveTimerRef.current = null;
+                    saveLiveCovered(roadsKeyRef.current ?? '', liveCoveredRef.current.ids);
+                  }, 15_000);
+                }
               }
             }
           }
@@ -703,6 +718,9 @@ export default function MapScreen() {
       // Trip over: the breadcrumb's job is done — the server trace (and soon the snapped
       // route) owns the drawing from here.
       VehicleTracker.addTripEndListener(() => {
+        if (liveCoveredSaveTimerRef.current) clearTimeout(liveCoveredSaveTimerRef.current);
+        liveCoveredSaveTimerRef.current = null;
+        saveLiveCovered(roadsKeyRef.current ?? '', liveCoveredRef.current.ids);
         trailTripRef.current = null;
         trailLineRef.current = [];
         setTrail({ version: Date.now(), line: [] });
@@ -710,7 +728,11 @@ export default function MapScreen() {
       // Upload failures were only ever shown on the home screen; drivers live on this one.
       VehicleTracker.addUploadErrorListener((e) => setUploadErr({ msg: e.message, at: Date.now() })),
     ].filter(Boolean);
-    return () => subs.forEach((s) => s?.remove());
+    return () => {
+      subs.forEach((s) => s?.remove());
+      if (liveCoveredSaveTimerRef.current) clearTimeout(liveCoveredSaveTimerRef.current);
+      liveCoveredSaveTimerRef.current = null;
+    };
   }, []);
 
   // The notice owns its own lifetime. Failures re-fire on every failed flush (~10-30 s), each

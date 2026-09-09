@@ -13,6 +13,8 @@ import okio.buffer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Drains the SQLite queue to POST /api/tracking/ingest. Idempotent by design:
@@ -30,6 +32,18 @@ object Uploader {
     private const val BATCH = 200
     private const val JSON_MT = "application/json; charset=utf-8"
     private const val MAX_RETRIES = 3
+    private val executor = Executors.newSingleThreadExecutor()
+    private val scheduled = AtomicBoolean(false)
+
+    /** Coalesce service, UI and connectivity triggers into one process-wide worker. */
+    fun schedule(ctx: Context) {
+        if (!scheduled.compareAndSet(false, true)) return
+        val appCtx = ctx.applicationContext
+        executor.execute {
+            try { flush(appCtx) }
+            finally { scheduled.set(false) }
+        }
+    }
 
     /**
      * gzip the request body.
@@ -74,6 +88,25 @@ object Uploader {
     private var backoffMs = 0L
     private const val BACKOFF_BASE_MS = 15_000L
     private const val BACKOFF_MAX_MS  = 5 * 60 * 1000L
+
+    /**
+     * A queue head the server keeps accepting-but-not-storing is a queue that never drains.
+     *
+     * When the server answers 200 with an empty acceptedClientIds, nothing is deleted, so the
+     * next flush sends the same 200 points, and the next, forever — the rows can never leave and
+     * every point recorded behind them is stuck behind them too. Silent, permanent, and it bills
+     * the driver's data plan for the same bytes every backoff cycle until the app is reinstalled.
+     *
+     * After this many consecutive refusals of the SAME batch head, the batch is dropped. The
+     * server has had several chances to store these rows and has declined each time, so they are
+     * either invalid or already held; either way keeping them only blocks everything behind them.
+     */
+    private const val MAX_ZERO_ACK_BEFORE_DROP = 3
+
+    @Volatile
+    private var zeroAckHeadId: String? = null
+    @Volatile
+    private var zeroAckCount = 0
 
     /**
      * Clear any standing backoff. Called when connectivity returns: whatever the server was doing
@@ -150,14 +183,29 @@ object Uploader {
                                     val acked = json.optJSONArray("acceptedClientIds") ?: JSONArray()
                                     val ids = (0 until acked.length()).map { acked.getString(it) }
                                     if (ids.isEmpty()) {
-                                        // Server acked 0 — avoid tight loop, stop this batch
-                                        Log.w(TAG, "Server acked 0 points in batch of ${batch.size}")
+                                        // Server took the request but stored nothing. Count how
+                                        // often this exact batch has been refused; drop it once
+                                        // it is clear the queue cannot move past it.
+                                        val headId = batch.first().clientId
+                                        if (headId == zeroAckHeadId) zeroAckCount++
+                                        else { zeroAckHeadId = headId; zeroAckCount = 1 }
+                                        Log.w(TAG, "Server acked 0 of ${batch.size} points " +
+                                                   "(refusal $zeroAckCount/$MAX_ZERO_ACK_BEFORE_DROP)")
+                                        if (zeroAckCount >= MAX_ZERO_ACK_BEFORE_DROP) {
+                                            Log.e(TAG, "Dropping ${batch.size} points the server " +
+                                                       "will not store — they were blocking the queue")
+                                            db.deleteIds(batch.map { it.clientId })
+                                            zeroAckHeadId = null
+                                            zeroAckCount = 0
+                                        }
                                         success = true
                                         return uploaded
                                     }
                                     db.deleteIds(ids)
                                     uploaded += ids.size
                                     success = true
+                                    zeroAckHeadId = null
+                                    zeroAckCount = 0
                                     Log.d(TAG, "Uploaded ${ids.size} points (total=$uploaded)")
                                 }
                                 resp.code == 401 || resp.code == 403 -> {
@@ -182,8 +230,12 @@ object Uploader {
                     }
 
                     if (attempt < MAX_RETRIES) {
-                        // Exponential backoff: 5s, 15s, 45s
-                        Thread.sleep(5_000L * attempt)
+                        // Short, because this is the INNER retry and there is already an outer
+                        // backoff (BACKOFF_BASE_MS, doubling to five minutes) covering the case
+                        // where the server is genuinely down. The old 5s/10s pair held the
+                        // Uploader's single worker — and its lock — for 15 s per failing batch,
+                        // which also stalled the flush that connectivity-restored triggers.
+                        Thread.sleep(2_000L * attempt)
                     }
                 }
 

@@ -38,8 +38,10 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
                     TrackingConfig.setStill(context, false)
                 }
 
-                // Movement transitions: clear STILL flag, remember WHAT kind of movement (the
-                // slow trip-start gate only opens for vehicle movement), and wake the service.
+                // Movement transitions: clear STILL and remember the classification. Only a
+                // vehicle-like transition wakes the full foreground tracker. Waking GPS, two
+                // raw sensors and the uploader for ordinary walking was a major heat/battery
+                // cost and could never legitimately open the low-speed vehicle gate anyway.
                 event.transitionType == ActivityTransition.ACTIVITY_TRANSITION_ENTER &&
                 event.activityType in listOf(
                     DetectedActivity.IN_VEHICLE,
@@ -49,16 +51,16 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
                     DetectedActivity.RUNNING,
                 ) -> {
                     TrackingConfig.setStill(context, false)
+                    val vehicleLike = event.activityType == DetectedActivity.IN_VEHICLE ||
+                        event.activityType == DetectedActivity.ON_BICYCLE
                     TrackingConfig.setLastActivity(
                         context,
-                        when (event.activityType) {
-                            DetectedActivity.IN_VEHICLE,
-                            DetectedActivity.ON_BICYCLE -> TrackingConfig.ACTIVITY_VEHICLE
-                            else -> TrackingConfig.ACTIVITY_FOOT
-                        }
+                        if (vehicleLike) TrackingConfig.ACTIVITY_VEHICLE else TrackingConfig.ACTIVITY_FOOT
                     )
-                    TrackingService.start(context)
-                    return
+                    if (vehicleLike) {
+                        TrackingService.start(context, activityWake = true)
+                        return
+                    }
                 }
             }
         }

@@ -45,6 +45,19 @@
       android:enabled="true"
       android:exported="true" />
 
+    <!-- Continuous activity sampling with confidences (MotionClassifier's 5th witness).
+         Not exported to other apps, but Play Services delivers to it via PendingIntent. -->
+    <receiver
+      android:name=".ActivityUpdatesReceiver"
+      android:enabled="true"
+      android:exported="false" />
+
+    <!-- Restarts the service after an OEM power manager or the system kills it. -->
+    <receiver
+      android:name=".WatchdogReceiver"
+      android:enabled="true"
+      android:exported="false" />
+
     <receiver
       android:name=".ConnectivityReceiver"
       android:enabled="true"

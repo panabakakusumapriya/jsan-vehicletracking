@@ -40,7 +40,7 @@ class VehicleTrackerModule : Module() {
         }
 
         AsyncFunction("flushNow") {
-            Thread { Uploader.flush(context.applicationContext) }.start()
+            Uploader.schedule(context.applicationContext)
         }
 
         AsyncFunction("getStatus") {

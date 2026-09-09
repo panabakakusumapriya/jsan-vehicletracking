@@ -11,9 +11,9 @@ because when the app is killed the JS runtime dies, so buffering + upload must b
 
 | Rule                                   | Where |
 |----------------------------------------|-------|
-| Auto-**start** a trip at **≥ 5 km/h**  | `TrackingService` state machine |
-| Auto-**stop** at speed ~0 (60s grace)  | `TrackingService` (`STOP_GRACE_MS`) |
-| **20-min** no-movement → back off; restart on next movement | idle timeout + `ActivityTransitionReceiver` |
+| Auto-start from fused vehicle motion (including a **1 km/h crawl**) | `MotionClassifier` + `TrackingService` state machine |
+| Auto-stop after **10 min without recorded movement** | `TrackingService` (`TRIP_END_NO_MOVE_MS`) |
+| **10-min** idle → sparse low-power watch; promote on vehicle evidence | dormant cadence + motion fusion |
 | Survive app kill / swipe-away          | `START_STICKY` foreground service |
 | Survive reboot                         | `BootReceiver` (`BOOT_COMPLETED`) |
 | Offline → buffer, online → upload → delete local | native SQLite (`LocationDatabase`) + `Uploader` (OkHttp) |
@@ -61,8 +61,12 @@ npx expo run:android        # prebuilds native project, compiles the Kotlin modu
 1. Log in as the driver (`driver@jsan.local` / `Driver@12345` after `npm run seed` in backend).
 2. Grant **Location → "Allow all the time"**, Activity recognition, and Notifications when asked.
 3. Home shows **"Ready — auto-tracking on"**. Now just move:
-   - Drive/ride above 5 km/h → a trip starts automatically (notification: "Trip started").
-   - Stop for ~1 min → the trip ends automatically.
+   - Drive or ride normally → the speed gate starts a trip automatically.
+   - Creep at about 1 km/h → accelerometer cadence, gyroscope, GPS displacement, and Android
+     Activity Recognition distinguish a vehicle from walking before the low-speed gate starts it.
+   - The buffered GPS approach is saved with its original timestamps, so the displayed route
+     begins where the vehicle started moving rather than where confirmation completed.
+   - Stop for 10 min → the trip ends automatically; shorter traffic stops keep the same trip.
    - Turn off Wi-Fi/data → points buffer locally ("Queued offline" climbs); turn it back on →
      they upload and the counter drops to 0.
 4. Watch them arrive live in the admin panel (Pass 3) or via `GET /api/tracking/live`.

@@ -97,9 +97,9 @@ export async function ensurePermissions(): Promise<PermissionResult> {
       message: 'Please set location access to "Allow all the time" so trips are tracked in the background.',
     };
   }
-  // Without this, the idle-timeout stop is PERMANENT: the service saves battery by stopping
-  // after 10 quiet minutes, and the activity-recognition transition is the only thing that
-  // legally restarts it from the background when driving resumes.
+  // Activity Recognition promotes the low-power dormant watcher to full GPS immediately when
+  // Android recognises a vehicle. The watcher also has a sensor-fusion fallback for slow
+  // departures that Android labels STILL/UNKNOWN.
   if (health.activityRecognition === 'denied' || health.activityRecognition === 'blocked') {
     return {
       ok: false,

@@ -15,7 +15,7 @@ class ConnectivityReceiver : BroadcastReceiver() {
             // Drop any backoff first — it was earned while the network was down or the server was
             // unreachable, and neither is necessarily still true now that we have signal.
             Uploader.resetBackoff()
-            Thread { Uploader.flush(context) }.start()
+            Uploader.schedule(context)
         }
     }
 }

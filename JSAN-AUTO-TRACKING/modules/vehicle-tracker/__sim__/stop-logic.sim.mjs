@@ -15,6 +15,9 @@ const TRIP_START_DISTANCE_M = 30;
 const TRIP_START_MIN_SPEED_KMH = 10.0;
 const TRIP_START_SLOW_DISTANCE_M = 100;
 const TRIP_START_SLOW_MIN_SPEED_KMH = 2.0;
+const TRIP_START_VEHICLE_DISTANCE_M = 20;
+const TRIP_START_VEHICLE_MIN_SPEED_KMH = 0.8;
+const TRIP_START_VEHICLE_MAX_ACCURACY_M = 25;
 const TRIP_START_MAX_ACCURACY_M = 50;
 const FOOT_VETO_MS = 10 * 60 * 1000;
 const PRE_START_BUFFER_MS = 5 * 60 * 1000;
@@ -83,7 +86,10 @@ function makeEngine() {
   }
 
   /** One GPS fix. `still` = AR's STILL flag; `activity` = 'vehicle' | 'foot' | null. */
-  function processFix(now, { pos, accuracy, speedKmh, still, activity }) {
+  function processFix(now, {
+    pos, accuracy, speedKmh, still, activity, vehicleConfirmed = false,
+    gaitUsable = true, runningOnFoot = false,
+  }) {
     // Transition semantics: the receiver writes lastActivity when a movement verdict LANDS,
     // i.e. when it changes to a non-null kind.
     if (activity && activity !== prevSeenActivity) {
@@ -111,17 +117,33 @@ function makeEngine() {
         return;
       }
       const distFromWatch = Math.abs(pos - startWatchPos);
-      if (distFromWatch >= Math.max(TRIP_START_DISTANCE_M, accuracy * 1.5)) {
+      const speedGateReach = distFromWatch >= Math.max(TRIP_START_DISTANCE_M, accuracy * 1.5);
+      const vehicleGateReach = distFromWatch >= Math.max(TRIP_START_VEHICLE_DISTANCE_M, accuracy * 2);
+      if (speedGateReach || vehicleGateReach) {
         const elapsedSec = Math.max(0.1, (now - startWatchTime) / 1000);
         const avgSpeedKmh = (distFromWatch / elapsedSec) * 3.6;
-        const fastStart = avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH;
+        const fastStart = speedGateReach &&
+          avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
+          (vehicleConfirmed || speedKmh >= 20 || (gaitUsable && !runningOnFoot));
         const footRecently = lastActivity === 'foot' && now - lastActivityAt < FOOT_VETO_MS;
+        const vehicleRecently = lastActivity === 'vehicle' && now - lastActivityAt < FOOT_VETO_MS;
         const slowStart =
+          speedGateReach &&
           avgSpeedKmh >= TRIP_START_SLOW_MIN_SPEED_KMH &&
           distFromWatch >= TRIP_START_SLOW_DISTANCE_M &&
-          !footRecently;
-        if (fastStart || slowStart) startTrip(now, pos, fastStart ? 'fast' : 'slow');
-        else if (avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH) {
+          !footRecently && (vehicleConfirmed || vehicleRecently);
+        const vehicleStart =
+          vehicleConfirmed &&
+          vehicleGateReach &&
+          accuracy <= TRIP_START_VEHICLE_MAX_ACCURACY_M &&
+          speedKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH;
+        if (fastStart || slowStart || vehicleStart) {
+          startTrip(now, pos, fastStart ? 'fast' : slowStart ? 'slow' : 'vehicle');
+        } else if (
+          speedGateReach &&
+          avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH &&
+          !(vehicleConfirmed && speedKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH)
+        ) {
           startWatchPos = pos;
           startWatchTime = now;
         }
@@ -140,7 +162,14 @@ function makeEngine() {
 
     const distFromLast = Math.abs(pos - lastRecordedPos);
     const displacementMoving = distFromLast >= Math.max(POINT_DISTANCE_M, accuracy * 1.5);
-    const moving = displacementMoving || !still || speedKmh >= RECORD_MOVING_SPEED_KMH;
+    // Fourth witness — see the record gate in TrackingService.kt. Below ~2 km/h with AR
+    // reporting STILL, this is the only thing keeping recorded points close enough together to
+    // survive the server's 45 s map-match split.
+    const moving =
+      displacementMoving ||
+      !still ||
+      speedKmh >= RECORD_MOVING_SPEED_KMH ||
+      (vehicleConfirmed && speedKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH);
     const dtMs = lastRecordedAtMs > 0 ? now - lastRecordedAtMs : Number.MAX_SAFE_INTEGER;
     const distTrigger = distFromLast >= POINT_DISTANCE_M;
     const timeTrigger =
@@ -199,6 +228,9 @@ function run(name, { phases, durationMs, gpsSilentAfter = Infinity, setup, asser
         speedKmh: speed + speedNoise,
         still: phase.still ?? false,
         activity: phase.activity ?? null,
+        vehicleConfirmed: phase.vehicleConfirmed ?? false,
+        gaitUsable: phase.gaitUsable ?? true,
+        runningOnFoot: phase.runningOnFoot ?? false,
       });
     }
     if (now % TICK_INTERVAL_MS === 0) e.tick(now);
@@ -287,13 +319,10 @@ all &= run('8. Restart mid-trip, GPS never returns — trip ends WITHOUT a (0,0)
   assertFn: (e) => ends(e) === 1 && e.endPoint === null,
 });
 
-all &= run('9. Slow start with NO activity verdict at all (no Play Services) — gate opens anyway', {
+all &= run('9. Slow movement with NO vehicle evidence — must not start', {
   durationMs: 5 * 60 * 1000,
   phases: [{ from: 0, to: 5 * 60_000, speedKmh: 4, still: false, activity: null }],
-  assertFn: (e) => {
-    const start = e.events.find((x) => x.includes('START'));
-    return !!start && start.includes('slow') && starts(e) === 1;
-  },
+  assertFn: (e) => starts(e) === 0,
 });
 
 all &= run('10. PRE-START CAPTURE: 3 km/h creep — the approach before the gate fires is recovered', {
@@ -314,14 +343,72 @@ all &= run('11. STALE foot verdict: brief walk, 12 min parked, then 4 km/h creep
   durationMs: 18 * 60 * 1000,
   phases: [{ from: 0, to: 60_000, speedKmh: 4.5, still: false, activity: 'foot' },
            { from: 60_000, to: 13 * 60_000, speedKmh: 0, still: true, activity: null },
-           { from: 13 * 60_000, to: 18 * 60_000, speedKmh: 4, still: false, activity: null }],
+           { from: 13 * 60_000, to: 18 * 60_000, speedKmh: 4, still: false, activity: null,
+             vehicleConfirmed: true }],
   assertFn: (e) => {
     const start = e.events.find((x) => x.includes('START'));
     // The foot verdict is 13+ minutes old by the time the creep accumulates 100 m — stale, so
     // the veto has expired and the slow gate opens.
-    return starts(e) === 1 && !!start && start.includes('slow');
+    return starts(e) === 1 && !!start && (start.includes('slow') || start.includes('vehicle'));
   },
 });
 
-console.log(`\n${all ? 'ALL SCENARIOS PASS ✅' : 'SOME FAILED ❌'}`);
+all &= run('12. Sensor-confirmed vehicle creeping at 1 km/h - starts and backfills route', {
+  durationMs: 4 * 60_000,
+  phases: [{
+    from: 0, to: 4 * 60_000, speedKmh: 1, accuracy: 8,
+    activity: 'vehicle', vehicleConfirmed: true,
+  }],
+  assertFn: (e) => starts(e) === 1 && e.tripId !== null && e.points.length >= 4,
+});
+
+all &= run('13. One km/h movement without vehicle confirmation - vehicle gate stays closed', {
+  durationMs: 4 * 60_000,
+  phases: [{
+    from: 0, to: 4 * 60_000, speedKmh: 1, accuracy: 8,
+    activity: 'foot', vehicleConfirmed: false,
+  }],
+  assertFn: (e) => starts(e) === 0 && e.tripId === null,
+});
+
+all &= run('14. Runner at 11 km/h with gait evidence - fast gate stays closed', {
+  durationMs: 90_000,
+  phases: [{
+    from: 0, to: 90_000, speedKmh: 11, accuracy: 8,
+    activity: 'foot', gaitUsable: true, runningOnFoot: true,
+  }],
+  assertFn: (e) => starts(e) === 0,
+});
+
+all &= run('15. Ambiguous 11 km/h with no gait sensor or vehicle evidence - stays closed', {
+  durationMs: 90_000,
+  phases: [{
+    from: 0, to: 90_000, speedKmh: 11, accuracy: 8,
+    activity: null, gaitUsable: false, vehicleConfirmed: false,
+  }],
+  assertFn: (e) => starts(e) === 0,
+});
+
+all &= run('16. DENSITY: 1 km/h crawl for 8 min, AR says STILL — every gap must survive the 45 s map-match split', {
+  durationMs: 8 * 60_000,
+  phases: [{
+    from: 0, to: 8 * 60_000, speedKmh: 1, accuracy: 12, still: true,
+    activity: null, vehicleConfirmed: true,
+  }],
+  assertFn: (e) => {
+    if (starts(e) !== 1) return false;
+    // MAP_MATCH_SPLIT_GAP_SECONDS: the backend splits the trace at any gap longer than this and
+    // throws away runs left with fewer than two points. A crawl recorded more sparsely than this
+    // reaches the server and is then silently dropped by the matcher.
+    const SPLIT_MS = 45_000;
+    let worst = 0;
+    for (let i = 1; i < e.points.length; i++) {
+      worst = Math.max(worst, e.points[i].now - e.points[i - 1].now);
+    }
+    console.log(`  widest gap between recorded points: ${(worst / 1000).toFixed(0)}s (limit ${SPLIT_MS / 1000}s)`);
+    return e.points.length >= 8 && worst < SPLIT_MS;
+  },
+});
+
+console.log(`\n${all ? 'ALL VEHICLE-GATE SCENARIOS PASS' : 'SOME VEHICLE-GATE SCENARIOS FAILED'}`);
 process.exit(all ? 0 : 1);

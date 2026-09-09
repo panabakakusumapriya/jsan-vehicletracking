@@ -13,6 +13,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Sends a lightweight heartbeat to POST /api/app-activity/heartbeat every ~30s.
@@ -22,7 +24,7 @@ import java.util.concurrent.TimeUnit
 object HeartbeatSender {
     private const val TAG = "JSANHeartbeat"
 
-    /** Minimum interval between heartbeat calls (ms). */
+    /** Fallback interval when the caller does not specify one (ms). */
     private const val MIN_INTERVAL_MS = 30_000L
 
     @Volatile
@@ -37,15 +39,17 @@ object HeartbeatSender {
         .writeTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
+    private val executor = Executors.newSingleThreadExecutor()
+    private val inFlight = AtomicBoolean(false)
 
     /**
      * Send a heartbeat if enough time has passed since the last one.
      * Called from the TrackingService ticker (every 20s). Skips silently
      * if called too soon or if config is missing.
      */
-    fun sendIfDue(ctx: Context) {
+    fun sendIfDue(ctx: Context, minIntervalMs: Long = MIN_INTERVAL_MS) {
         val now = System.currentTimeMillis()
-        if (now - lastSentMs < MIN_INTERVAL_MS) return
+        if (now - lastSentMs < minIntervalMs) return
 
         val base = TrackingConfig.apiBaseUrl(ctx) ?: return
         val token = TrackingConfig.token(ctx) ?: return
@@ -63,8 +67,9 @@ object HeartbeatSender {
             wasNetworkOff = false
         }
 
-        // Fire-and-forget on a background thread
-        Thread {
+        // Fire-and-forget on one coalesced background worker.
+        if (!inFlight.compareAndSet(false, true)) return
+        executor.execute {
             try {
                 val body = status.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
                 val req = Request.Builder()
@@ -82,8 +87,10 @@ object HeartbeatSender {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Heartbeat error: ${e.message}")
+            } finally {
+                inFlight.set(false)
             }
-        }.start()
+        }
     }
 
     private fun collectStatus(ctx: Context): JSONObject {

@@ -33,6 +33,27 @@ import { TrackingGuard } from '@/src/components/TrackingGuard';
 
 /** Always in sync with app.json — never hardcode this manually. */
 const APP_VERSION = Constants.expoConfig?.version ?? '1.0.0';
+const STARTUP_TIMEOUT_MS = 8_000;
+
+function withTimeout<T>(promise: Promise<T>, ms = STARTUP_TIMEOUT_MS): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Startup check timed out')), ms);
+    promise.then(
+      value => { clearTimeout(timer); resolve(value); },
+      error => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit = {}, ms = STARTUP_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const C = {
   brand:      '#7c3aed',
@@ -396,7 +417,7 @@ export default function RootLayout() {
       // 1. OTA update check (JS bundle — no APK needed)
       if (!__DEV__ && Updates.isEnabled) {
         try {
-          const result = await Updates.checkForUpdateAsync();
+          const result = await withTimeout(Updates.checkForUpdateAsync());
           if (result.isAvailable) {
             setAppState('ota-downloading');
             await Updates.fetchUpdateAsync();
@@ -407,7 +428,7 @@ export default function RootLayout() {
       }
 
       // 2. Report this build's version to the admin portal
-      fetch(`${API_BASE_URL}/api/app/report-version`, {
+      fetchWithTimeout(`${API_BASE_URL}/api/app/report-version`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ version: APP_VERSION, platform: Platform.OS }),
@@ -415,7 +436,7 @@ export default function RootLayout() {
 
       // 3. Check if a mandatory native-version update is required
       try {
-        const res = await fetch(`${API_BASE_URL}/api/app/current?platform=${Platform.OS}`);
+        const res = await fetchWithTimeout(`${API_BASE_URL}/api/app/current?platform=${Platform.OS}`);
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const data: { version: string | null; downloadUrl?: string; releaseNotes?: string } = await res.json();
         if (data.version && typeof data.version === 'string' && semverLt(APP_VERSION, data.version)) {
@@ -431,10 +452,15 @@ export default function RootLayout() {
 
       // 4. Check permission health (Android only — skip gate on web/iOS)
       if (Platform.OS === 'android') {
-        const h = await getFullTrackingHealth();
-        setHealth(h);
+        try {
+          const h = await withTimeout(getFullTrackingHealth(), 5_000);
+          setHealth(h);
         // The gate opens ONLY on a full six-for-six — see PermissionHealthScreen.
-        setAppState(isAllTrackingHealthOk(h) ? 'ready' : 'permission-check');
+          setAppState(isAllTrackingHealthOk(h) ? 'ready' : 'permission-check');
+        } catch {
+          // An OEM permission API must not leave the app on "Starting up" forever.
+          setAppState('permission-check');
+        }
       } else {
         setAppState('ready');
       }
@@ -444,7 +470,7 @@ export default function RootLayout() {
   /** Re-fetch /api/app/current — lets user unblock if admin deactivated the requirement. */
   const handleRecheck = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/app/current?platform=${Platform.OS}`);
+      const res = await fetchWithTimeout(`${API_BASE_URL}/api/app/current?platform=${Platform.OS}`);
       if (!res.ok) return; // keep showing screen, couldn't verify
       const data: { version: string | null } = await res.json();
       // If no active required version, or we now meet it — proceed
