@@ -38,7 +38,8 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
                     TrackingConfig.setStill(context, false)
                 }
 
-                // Movement transitions: clear STILL flag and wake service
+                // Movement transitions: clear STILL flag, remember WHAT kind of movement (the
+                // slow trip-start gate only opens for vehicle movement), and wake the service.
                 event.transitionType == ActivityTransition.ACTIVITY_TRANSITION_ENTER &&
                 event.activityType in listOf(
                     DetectedActivity.IN_VEHICLE,
@@ -48,6 +49,14 @@ class ActivityTransitionReceiver : BroadcastReceiver() {
                     DetectedActivity.RUNNING,
                 ) -> {
                     TrackingConfig.setStill(context, false)
+                    TrackingConfig.setLastActivity(
+                        context,
+                        when (event.activityType) {
+                            DetectedActivity.IN_VEHICLE,
+                            DetectedActivity.ON_BICYCLE -> TrackingConfig.ACTIVITY_VEHICLE
+                            else -> TrackingConfig.ACTIVITY_FOOT
+                        }
+                    )
                     TrackingService.start(context)
                     return
                 }

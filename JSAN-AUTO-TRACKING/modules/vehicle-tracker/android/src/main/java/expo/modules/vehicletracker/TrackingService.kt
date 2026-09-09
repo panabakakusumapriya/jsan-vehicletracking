@@ -43,16 +43,23 @@ import kotlin.math.roundToInt
  *   fix → accuracy gate → distance check → trip state machine → SQLite → upload
  *
  * Trip lifecycle:
- *   IDLE:     watch for 50 m of movement at avg speed ≥ 10 km/h → START trip
- *             (30 m rejects GPS drift; the avg-speed check prevents walking
- *             from starting a trip.)
+ *   IDLE:     watch for movement to start a trip, by either gate:
+ *               fast — 30 m (or 1.5× the fix accuracy) at avg ≥ 10 km/h, the normal pull-away;
+ *               slow — 100 m at avg ≥ 2 km/h with the activity model's last verdict "in a
+ *                      vehicle": congestion never reaches 10 km/h, and before this gate those
+ *                      trips only began once traffic freed up, losing everything before that.
+ *             (The distance floor rejects GPS drift; the speed/activity checks prevent
+ *             walking from starting a trip.)
  *
- *   TRACKING: record a point every 10 m moved from the last recorded point.
- *             High resolution for accurate road-following traces.
+ *   TRACKING: record a point every 10 m moved from the last recorded point, with a time
+ *             trigger for slow traffic. Movement has three witnesses (activity model, GPS
+ *             speed, raw displacement past the error radius) — any one is enough, because in
+ *             dense traffic the first two both read a crawl as "parked".
  *
- *   END:      no 10 m movement for TRIP_END_NO_MOVE_MS (10 min) → end trip.
+ *   END:      no recorded movement for TRIP_END_NO_MOVE_MS (10 min) → end trip.
  *             Checked by the GPS-independent ticker so it fires even when GPS goes
- *             quiet on a parked vehicle.
+ *             quiet on a parked vehicle. A stop shorter than that grace — however complete —
+ *             keeps the trip: pulling away again simply resumes recording.
  *
  * Why distance instead of speed:
  *   Speed from a single GPS fix is noisy. A parked car can report 2–5 km/h from
@@ -77,6 +84,42 @@ class TrackingService : Service() {
          * vehicle trip (not walking/jogging).
          */
         const val TRIP_START_MIN_SPEED_KMH  = 10.0
+
+        /**
+         * The congestion path into a trip. A queue crawling out of a gate never reaches
+         * 10 km/h over any 30 m stretch, so a watch that has accumulated this much ground at
+         * at least TRIP_START_SLOW_MIN_SPEED_KMH also starts a trip — but only while the
+         * activity model's last word was "in a vehicle", because 100 m at 3 km/h is also just
+         * a pedestrian. With no verdict stored (no Play Services), the slow gate stays closed
+         * and behaviour is exactly the old fast-gate-only one.
+         */
+        const val TRIP_START_SLOW_DISTANCE_M    = 100f
+        const val TRIP_START_SLOW_MIN_SPEED_KMH = 2.0
+
+        /**
+         * The slow gate is VETOED by a fresh on-foot verdict rather than REQUIRING a fresh
+         * vehicle one. Requiring the positive verdict was the wrong default for this fleet:
+         * Activity Recognition classifies a survey crawl poorly (slow driving often never earns
+         * IN_VEHICLE at all), the verdict lingers on "foot" after the driver walks around the
+         * car, and there is none right after boot — each of those held the gate shut and lost
+         * billable slow driving (measured: 33 km recorded against a reference app's 43 for one
+         * session). Walking still cannot start a trip while its verdict is this fresh, and a
+         * walk long enough to outlive the veto keeps re-firing WALKING transitions anyway.
+         */
+        const val FOOT_VETO_MS = 10 * 60 * 1000L
+
+        /**
+         * The pre-start buffer. Everything driven BEFORE the start gate passes used to be lost:
+         * the gate decides that a trip exists, but it also decided where the trip began, and a
+         * slow departure could creep for minutes (and hundreds of metres) before it fired. While
+         * idle, good fixes are remembered here and flushed into the trip retroactively the
+         * moment it starts — the trip then begins where the movement began, whichever gate
+         * eventually recognised it. Spacing keeps a parked phone from filling it with jitter;
+         * the age window bounds it to the approach that actually led to this trip.
+         */
+        const val PRE_START_BUFFER_MS        = 5 * 60 * 1000L
+        const val PRE_START_BUFFER_MAX       = 240
+        const val PRE_START_BUFFER_SPACING_M = 5f
 
         /** Distance from the last recorded point that triggers saving a new point. */
         const val POINT_DISTANCE_M          = 10f
@@ -106,8 +149,10 @@ class TrackingService : Service() {
         // this is what keeps a 5 km/h jam crawl dense enough for the matcher.
         const val RECORD_MIN_INTERVAL_MS    = 8_000L
         // The time trigger still needs SOME real displacement, so a dead-stop does not mint a
-        // point every 8 s of pure GPS jitter.
-        const val RECORD_MIN_MOVE_M         = 6f
+        // point every 8 s of pure GPS jitter. 3 m in 8 s is ~1.4 km/h — slower than that is a
+        // stop, not a crawl. The record gate scales this floor up with the fix's own error
+        // radius, so a noisy parked fix cannot fake 3 m.
+        const val RECORD_MIN_MOVE_M         = 3f
         // Above this GPS speed the vehicle is moving even if the activity model still says STILL
         // (a slow crawl reads as still to the detector) — so crawling traffic is never suppressed.
         const val RECORD_MOVING_SPEED_KMH   = 3.0
@@ -138,8 +183,8 @@ class TrackingService : Service() {
         /**
          * GPS fix interval while the vehicle is actually moving.
          *
-         * Kept at 3 s: the route drawn on the map is only as good as its densest sampling, and at
-         * 60 km/h a 3 s gap is already 50 m of straight-lined corner.
+         * Kept at 2 s: the route drawn on the map is only as good as its densest sampling, and at
+         * 60 km/h a 2 s gap is already 33 m of straight-lined corner.
          */
         const val LOCATION_INTERVAL_MS      = 2_000L
         const val FASTEST_MS                = 1_000L
@@ -225,7 +270,7 @@ class TrackingService : Service() {
     private var lastRecordedLat: Double = 0.0
     private var lastRecordedLon: Double = 0.0
     private var hasLastRecorded: Boolean = false
-    /** Wall-clock time of the last point written (resets every 50 m). */
+    /** Wall-clock time of the last point written (refreshed on every recorded point). */
     private var lastMovedMs: Long = 0L
     /** Throttles the server keep-alive heartbeat while parked. */
     private var lastHeartbeatMs: Long = 0L
@@ -234,6 +279,14 @@ class TrackingService : Service() {
     private var lastLocation: Location? = null   // for speed derivation
     private var lastIdleEmitMs = 0L              // throttles idle fixes emitted to JS
     private var lastRecordedAtMs = 0L            // when the last route point was minted (teleport gate)
+
+    /** One remembered idle fix — see PRE_START_BUFFER_MS. */
+    private data class BufferedFix(
+        val lat: Double, val lon: Double, val speedKmh: Double,
+        val heading: Double?, val accuracy: Double?, val altitude: Double?,
+        val timeMs: Long,
+    )
+    private val preStartBuffer = ArrayDeque<BufferedFix>()
 
     /** Reject fixes with accuracy worse than this — underground, urban canyon reflections. */
     private val MAX_ACCURACY_M = 100f
@@ -429,6 +482,28 @@ class TrackingService : Service() {
                 return
             }
 
+            // Remember the idle path (good fixes only — the accuracy gate above already ran).
+            // Flushed into the trip retroactively on start, so nothing driven before the gate
+            // fires is lost. Spacing-gated: a parked phone appends nothing, and occasional 5 m
+            // jitter costs a stray point near the anchor, not a stream of them.
+            val fixTimeMs = if (location.time > 0) location.time else now
+            val lastBuffered = preStartBuffer.lastOrNull()
+            if (lastBuffered == null ||
+                haversineMeters(lastBuffered.lat, lastBuffered.lon, rawLat, rawLon) >= PRE_START_BUFFER_SPACING_M
+            ) {
+                preStartBuffer.addLast(BufferedFix(
+                    lat = rawLat, lon = rawLon, speedKmh = speedKmh,
+                    heading = if (location.hasBearing()) location.bearing.toDouble() else null,
+                    accuracy = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
+                    altitude = if (location.hasAltitude()) location.altitude else null,
+                    timeMs = fixTimeMs,
+                ))
+                while (preStartBuffer.size > PRE_START_BUFFER_MAX) preStartBuffer.removeFirst()
+                while (preStartBuffer.isNotEmpty() && now - preStartBuffer.first().timeMs > PRE_START_BUFFER_MS) {
+                    preStartBuffer.removeFirst()
+                }
+            }
+
             // ── IDLE: watch for a vehicle-speed movement to start a trip ────
             if (startWatchPos == null) {
                 startWatchPos  = location
@@ -444,7 +519,21 @@ class TrackingService : Service() {
                 val elapsedSec    = ((now - startWatchTime) / 1000.0).coerceAtLeast(0.1)
                 val avgSpeedKmh   = (distFromWatch / elapsedSec) * 3.6
 
-                if (avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH) {
+                // Two gates in. Fast is the original: a normal pull-away clears 10 km/h within
+                // the first 30 m. Slow is for congestion, where no stretch ever reaches 10 km/h:
+                // enough accumulated ground at a crawl also counts — but only on the activity
+                // model's word that this is a vehicle, because the same 100 m at 3 km/h is
+                // exactly what walking looks like.
+                val fastStart = avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH
+                // Veto, not requirement — see FOOT_VETO_MS for why a positive "vehicle" verdict
+                // must not be the price of admission.
+                val footRecently = TrackingConfig.lastActivity(this) == TrackingConfig.ACTIVITY_FOOT &&
+                    now - TrackingConfig.lastActivityAt(this) < FOOT_VETO_MS
+                val slowStart = avgSpeedKmh >= TRIP_START_SLOW_MIN_SPEED_KMH &&
+                    distFromWatch >= TRIP_START_SLOW_DISTANCE_M &&
+                    !footRecently
+
+                if (fastStart || slowStart) {
                     // ── START TRIP ───────────────────────────────────────────
                     val newId = UUID.randomUUID().toString()
                     TrackingConfig.setCurrentTripId(this, newId)
@@ -460,6 +549,29 @@ class TrackingService : Service() {
                     startWatchPos    = null
                     recentSpeeds.clear()
 
+                    // Flush the buffered approach BEFORE the start point: every good fix since
+                    // the watch anchored becomes part of the trip, with its original timestamp,
+                    // so the server's startedAt (the earliest point in the batch) is when the
+                    // movement began — not when the gate finally recognised it.
+                    for (b in preStartBuffer) {
+                        if (b.timeMs < startWatchTime || b.timeMs >= fixTimeMs) continue
+                        db.insert(QueuedPoint(
+                            clientId     = UUID.randomUUID().toString(),
+                            clientTripId = newId,
+                            lat          = b.lat,
+                            lon          = b.lon,
+                            speedKmh     = b.speedKmh,
+                            heading      = b.heading,
+                            accuracy     = b.accuracy,
+                            altitude     = b.altitude,
+                            batteryLevel = batteryLevel(),
+                            isMoving     = b.speedKmh > 1.0,
+                            recordedAt   = iso(b.timeMs),
+                            tripStatus   = "active",
+                        ))
+                    }
+                    preStartBuffer.clear()
+
                     savePoint(rawLat, rawLon, location, speedKmh, newId, "active", now)
                     TrackerEvents.emit("onTripStart", mapOf("tripId" to newId, "recordedAt" to iso(location.time)))
                     TrackerEvents.emit("onLocation",  locMap(rawLat, rawLon, speedKmh, newId, "active", location.time))
@@ -467,10 +579,16 @@ class TrackingService : Service() {
                     updateNotification("Trip started • ${speedKmh.roundToInt()} km/h")
                     applyCadence(now)
                     triggerUpload()
-                } else {
+                } else if (avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH) {
+                    // Slower than any crawl worth calling driving — drift, not a trip. Re-anchor
+                    // so the watch measures fresh.
                     startWatchPos  = location
                     startWatchTime = now
                 }
+                // Between the gates: a genuine crawl. Deliberately NOT re-anchored — the old
+                // reset here is why a jammed street never started a trip: every 30 m the average
+                // came in under 10 km/h and the accumulated distance was thrown away. Keeping the
+                // anchor lets the crawl keep building toward the slow gate.
             } else {
                 val idleSince = TrackingConfig.idleSince(this)
                 if (idleSince > 0L && now - idleSince >= IDLE_TIMEOUT_MS) {
@@ -494,15 +612,28 @@ class TrackingService : Service() {
                 lastRecordedLat, lastRecordedLon, rawLat, rawLon
             )
 
-            // Recording is decided by MOVEMENT STATE, not by accuracy (accuracy is only the
-            // 100 m hard reject above and the trip-start gate). "Moving" = the activity model is
-            // not STILL, OR GPS shows a real crawl — either way a jam is driving, not drift.
-            val moving = !TrackingConfig.isStill(this) || speedKmh >= RECORD_MOVING_SPEED_KMH
+            // Recording is decided by MOVEMENT, and movement has three witnesses, any one of
+            // which is enough: the activity model says not-STILL; GPS speed shows a real crawl;
+            // or the position itself has displaced past the fix's own error radius. The third is
+            // the load-bearing one in dense traffic — a dead-slow crawl reads as STILL to the
+            // activity model AND as ~0 km/h to Doppler at the same time (madhav, 2026-09-07:
+            // 33 min at 14 km/h avg produced 19 points because both said "parked"), and points
+            // not being recorded also meant lastMovedMs never advanced, so the 10-minute
+            // no-move timer could end a trip that was inching forward the whole time. Ten real
+            // metres of displacement is something neither model can veto.
+            val displacementMoving = distFromLast >= maxOf(POINT_DISTANCE_M, accuracy * 1.5f)
+            val moving = displacementMoving ||
+                !TrackingConfig.isStill(this) ||
+                speedKmh >= RECORD_MOVING_SPEED_KMH
             val dtMs = if (lastRecordedAtMs > 0L) now - lastRecordedAtMs else Long.MAX_VALUE
             // Distance OR time trigger. Distance stops fast roads over-sampling; the time trigger
             // keeps slow/congested roads dense so the matcher can snap them to the street grid.
+            // Its displacement floor scales with the fix's error radius: a parked phone with
+            // noisy fixes must not mint a jitter point every 8 s — each one would also reset the
+            // 10-minute stop timer and keep a parked trip alive forever.
             val distTrigger = distFromLast >= POINT_DISTANCE_M
-            val timeTrigger = dtMs >= RECORD_MIN_INTERVAL_MS && distFromLast >= RECORD_MIN_MOVE_M
+            val timeTrigger = dtMs >= RECORD_MIN_INTERVAL_MS &&
+                distFromLast >= maxOf(RECORD_MIN_MOVE_M, accuracy * 0.5f)
             if (moving && (distTrigger || timeTrigger)) {
                 // Teleport guard: a jump implying an impossible speed is multipath, not a road.
                 if (lastRecordedAtMs > 0L) {
@@ -588,9 +719,11 @@ class TrackingService : Service() {
             return
         }
 
-        // Active trip — has the vehicle moved 50 m recently?
+        // Active trip — has anything been recorded recently? Every recorded point refreshes
+        // lastMovedMs, so this is "10 minutes without a single recordable metre of movement".
         if (lastMovedMs > 0L && now - lastMovedMs >= TRIP_END_NO_MOVE_MS) {
-            // 10 minutes without 50 m of movement → vehicle is genuinely parked.
+            // The full grace passed at a dead stop → the vehicle is genuinely parked. Any real
+            // movement inside the grace resets the clock and the trip simply continues.
             endTrip(tripId, now)
             return
         }
@@ -617,9 +750,14 @@ class TrackingService : Service() {
     // ── Trip end ──────────────────────────────────────────────────────────────
 
     private fun endTrip(tripId: String, now: Long) {
-        val endLat = lastRecordedLat
-        val endLon = lastRecordedLon
-        insertPoint(endLat, endLon, 0.0, tripId, "ended", now)
+        // The end marker rides the last recorded coordinates — which, after a START_STICKY
+        // restart that never saw a fix, are still (0.0, 0.0). Null island is inside the server's
+        // coordinate range check, so it used to be accepted, become lastLocation/endLocation and
+        // add a ~5,000 km phantom leg to the raw distance. With no trustworthy position there is
+        // no end marker; the server's dead-trip watchdog closes the trip instead.
+        if (hasLastRecorded) {
+            insertPoint(lastRecordedLat, lastRecordedLon, 0.0, tripId, "ended", now)
+        }
         TrackingConfig.setCurrentTripId(this, null)
         TrackingConfig.setTripStartedAt(this, 0L)
         TrackingConfig.setIdleSince(this, now)
@@ -629,6 +767,7 @@ class TrackingService : Service() {
         startWatchPos   = null
         startWatchTime  = 0L
         recentSpeeds.clear()
+        preStartBuffer.clear()
         triggerUpload()
         TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(now)))
         emitState("idle")

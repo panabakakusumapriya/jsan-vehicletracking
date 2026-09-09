@@ -55,6 +55,24 @@ object TrackingConfig {
     fun setStill(ctx: Context, still: Boolean) =
         prefs(ctx).edit().putBoolean("activityStill", still).apply()
 
+    /**
+     * What the activity model last said the device was doing, coarsely: in a vehicle (car or
+     * bicycle) or on foot. Written by ActivityTransitionReceiver, read by the slow trip-start
+     * gate — 100 m of creep is a traffic jam in a vehicle and a stroll on foot, and only this
+     * signal tells them apart. Null until Play Services delivers a first verdict; the slow gate
+     * stays closed while it is.
+     */
+    const val ACTIVITY_VEHICLE = "vehicle"
+    const val ACTIVITY_FOOT = "foot"
+    fun lastActivity(ctx: Context): String? = prefs(ctx).getString("lastActivity", null)
+    /** When that verdict landed — the slow gate's on-foot veto expires (FOOT_VETO_MS). */
+    fun lastActivityAt(ctx: Context): Long = prefs(ctx).getLong("lastActivityAt", 0L)
+    fun setLastActivity(ctx: Context, kind: String) =
+        prefs(ctx).edit()
+            .putString("lastActivity", kind)
+            .putLong("lastActivityAt", System.currentTimeMillis())
+            .apply()
+
     // ---- Timezone / daylight tracking ----
 
     /** IANA timezone ID auto-detected from the device (e.g. "Asia/Kolkata"). */
