@@ -47,9 +47,12 @@ async function processTrip(tripId) {
       return 'skipped';
     }
 
+    // `accuracy` is what tells Valhalla how far each fix is allowed to be wrong. Without it
+    // every point was presented as equally trustworthy and the matcher snapped 40 m-error fixes
+    // to whatever road happened to be nearest them — see traceRoute() in services/valhalla.js.
     const points = await LocationPoint.find({ tripId: trip._id })
       .sort({ recordedAt: 1 })
-      .select('lat lon recordedAt');
+      .select('lat lon recordedAt accuracy');
 
     if (points.length < 2) {
       await Trip.updateOne({ _id: trip._id }, { $set: { mapMatchStatus: 'skipped' } });

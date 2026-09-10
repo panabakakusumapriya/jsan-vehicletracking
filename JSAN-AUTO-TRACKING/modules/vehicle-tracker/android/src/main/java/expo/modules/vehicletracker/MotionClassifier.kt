@@ -156,6 +156,34 @@ class MotionClassifier(private val ctx: Context) : SensorEventListener {
         /** No two footfalls are 220 ms apart — anything faster is one impact ringing. */
         private const val PEAK_REFRACTORY_MS = 220L
 
+        /**
+         * The two signatures of a phone that is RIDING rather than being carried.
+         *
+         * These replace what used to be the slow-driving rule's only condition: "moving, and no
+         * gait was detected". That was an unsafe inference and it failed in the field — walking
+         * at 2-3 km/h started trips. The flaw is that a gait detector MISSES sometimes (a slow
+         * amble, a phone flat in a bag, a hand held steady), and the old rule read every miss as
+         * positive evidence of a vehicle. Absence of a detected gait is not evidence of a
+         * vehicle; it is evidence of nothing. So the test is now positive, and there are two
+         * ways to pass it:
+         *
+         *  QUIET — almost no energy in the gait band at all. A phone in a cradle, a cupholder or
+         *  on a seat sits far below what a human body imparts even at a stroll, so this is the
+         *  ordinary case for a smooth slow crawl.
+         *
+         *  VIBRATING BUT NOT IN THE GAIT BAND — a rough site road or an idling engine shakes the
+         *  phone hard, well past QUIET, but it puts that energy ABOVE the gait band. Walking
+         *  cannot: a footfall is a low-frequency event by construction. So high total energy with
+         *  a low band ratio is a positive vehicle signature, and it is what keeps a bumpy crawl
+         *  recognisable when the quiet test cannot apply.
+         *
+         * A slow walk passes neither: too much energy for QUIET, and its energy is squarely
+         * inside the gait band, so the ratio test rejects it too.
+         */
+        private const val VEHICLE_QUIET_STD = 0.25f
+        private const val VEHICLE_BAND_RATIO_MAX = 0.30f
+        private const val VIBRATION_MIN_STD = 0.25f
+
         // ── Speed evidence ────────────────────────────────────────────────────
         /** No one walks or runs this fast for six seconds. Decides on its own. */
         private const val SPEED_CERTAIN_VEHICLE_KMH = 20.0
@@ -232,6 +260,9 @@ class MotionClassifier(private val ctx: Context) : SensorEventListener {
     private var verdict = Verdict.UNKNOWN
     private var gait = Gait.NONE
     private var accelStd = 0f
+    /** Total (unfiltered) vibration in the window, and the share of it inside the gait band. */
+    private var rawStd = 0f
+    private var bandRatio = 0f
     private var cadenceHz = 0.0
     private var lastEvalMs = 0L
 
@@ -468,13 +499,21 @@ class MotionClassifier(private val ctx: Context) : SensorEventListener {
         // 2. A gait under the phone. Walking and running weigh the same here: neither is driving.
         if (gait != Gait.NONE) evidence -= 3.0
 
-        // 3. Ground covered with no gait beneath it — the slow-driving rule. A person cannot
-        //    translate over the ground without a gait, so movement plus no gait is a ride. This
-        //    is what starts a trip at 1 km/h, where both the speed thresholds and Google's model
-        //    report "parked".
-        if (haveAccel && gait == Gait.NONE && speed >= CREEP_MIN_KMH && accelStd <= GAIT_MAX_STD) {
-            evidence += 2.0
-        }
+        // 3. Ground covered, and the accelerometer positively says the phone is RIDING rather
+        //    than being carried — see VEHICLE_QUIET_STD. This is the rule that starts a trip at
+        //    1 km/h, where both the speed thresholds and Google's model report "parked".
+        //
+        //    It used to ask only whether a gait had been detected, and read "no" as a yes. That
+        //    is what let a 2-3 km/h walk start trips: every miss by the gait detector became
+        //    positive evidence of a vehicle. Now the phone has to look like it is riding, and a
+        //    gait must also not have been detected — a miss simply yields no evidence either way,
+        //    which leaves the verdict UNKNOWN and every gate shut. That is the correct failure
+        //    direction: a missed trip start is recoverable, a trip logged for a walk is not.
+        val riding = haveAccel && gait == Gait.NONE && (
+            accelStd <= VEHICLE_QUIET_STD ||
+            (bandRatio <= VEHICLE_BAND_RATIO_MAX && rawStd >= VIBRATION_MIN_STD)
+        )
+        if (riding && speed >= CREEP_MIN_KMH) evidence += 2.0
 
         // 4. Google's on-device model, with its confidence, when it has spoken recently.
         val arAge = System.currentTimeMillis() - TrackingConfig.activityConfidenceAt(ctx)
@@ -483,9 +522,11 @@ class MotionClassifier(private val ctx: Context) : SensorEventListener {
             if (TrackingConfig.activityFootConfidence(ctx) >= AR_MIN_CONFIDENCE) evidence -= 3.0
         }
 
-        // 5. Gyroscope, both ways. Ground covered with the phone held steady is a ride;
-        //    sustained rotation is a phone being carried, whatever the cadence test concluded.
-        if (sawGyro && gait == Gait.NONE && speed >= CREEP_MIN_KMH && gyroRms < GYRO_QUIET_RPS) {
+        // 5. Gyroscope, both ways. It CORROBORATES rule 3 rather than voting on its own: a
+        //    phone lying still on a table while a fix wanders would otherwise accumulate a
+        //    vehicle verdict out of pure stillness. Rotation, on the other hand, is evidence all
+        //    by itself — a carried phone swings, a cradled one does not.
+        if (sawGyro && riding && speed >= CREEP_MIN_KMH && gyroRms < GYRO_QUIET_RPS) {
             evidence += 1.0
         }
         if (sawGyro && gyroRms >= GYRO_CARRIED_RPS) evidence -= 2.0
@@ -511,7 +552,9 @@ class MotionClassifier(private val ctx: Context) : SensorEventListener {
      * footfalls whether the phone is loose in a jacket or gripped in a hand.
      */
     private fun analyseAccelerometer(now: Long) {
-        if (bufCount == 0) { gait = Gait.NONE; accelStd = 0f; cadenceHz = 0.0; return }
+        if (bufCount == 0) {
+            gait = Gait.NONE; accelStd = 0f; rawStd = 0f; bandRatio = 0f; cadenceHz = 0.0; return
+        }
 
         val start = (bufHead - bufCount + MAX_SAMPLES) % MAX_SAMPLES
         var sum = 0.0
@@ -526,7 +569,9 @@ class MotionClassifier(private val ctx: Context) : SensorEventListener {
             if (timeBuf[i] < oldest) oldest = timeBuf[i]
             if (timeBuf[i] > newest) newest = timeBuf[i]
         }
-        if (n < GAIT_MIN_STEPS * 2) { gait = Gait.NONE; accelStd = 0f; cadenceHz = 0.0; return }
+        if (n < GAIT_MIN_STEPS * 2) {
+            gait = Gait.NONE; accelStd = 0f; rawStd = 0f; bandRatio = 0f; cadenceHz = 0.0; return
+        }
 
         val mean = sum / n
         val rawMean = rawSum / n
@@ -541,11 +586,11 @@ class MotionClassifier(private val ctx: Context) : SensorEventListener {
             rawSq += rd * rd
         }
         val std = sqrt(sq / n).toFloat()
-        val rawStd = sqrt(rawSq / n).toFloat()
         accelStd = std
+        rawStd = sqrt(rawSq / n).toFloat()
         // Share of the shaking that is slow enough to be a footfall. A road puts its energy
         // above the cutoff, a gait below it.
-        val bandRatio = if (rawStd > 0.01f) std / rawStd else 0f
+        bandRatio = if (rawStd > 0.01f) std / rawStd else 0f
 
         val threshold = maxOf(0.45f, std * 0.5f)
         var peaks = 0

@@ -38,6 +38,9 @@ const CREEP_MIN_KMH = 0.7;
 const SPEED_WINDOW_MAX = 8;
 
 const GYRO_QUIET_RPS = 0.25;
+const VEHICLE_QUIET_STD = 0.25;
+const VEHICLE_BAND_RATIO_MAX = 0.30;
+const VIBRATION_MIN_STD = 0.25;
 const GYRO_CARRIED_RPS = 0.6;
 
 const AR_MIN_CONFIDENCE = 50;
@@ -59,6 +62,8 @@ function makeClassifier() {
   let verdict = 'UNKNOWN';
   let gait = 'NONE';
   let accelStd = 0;
+  let rawStdOut = 0;
+  let bandRatioOut = 0;
   let cadenceHz = 0;
   let lastEvalMs = -Infinity;
 
@@ -112,6 +117,8 @@ function makeClassifier() {
     const rawStd = Math.sqrt(win.reduce((a, s) => a + (s.mag - rawMean) ** 2, 0) / win.length);
     const bandRatio = rawStd > 0.01 ? std / rawStd : 0;
     accelStd = std;
+    rawStdOut = rawStd;
+    bandRatioOut = bandRatio;
 
     const threshold = Math.max(0.45, std * 0.5);
     const peaks = [];
@@ -173,9 +180,13 @@ function makeClassifier() {
 
     if (gait !== 'NONE') evidence -= 3;
 
-    if (haveAccel && gait === 'NONE' && speed >= CREEP_MIN_KMH && accelStd <= GAIT_MAX_STD) {
-      evidence += 2;
-    }
+    // Positive "this phone is riding" test — see VEHICLE_QUIET_STD in MotionClassifier.kt.
+    const riding =
+      haveAccel &&
+      gait === 'NONE' &&
+      (accelStd <= VEHICLE_QUIET_STD ||
+        (bandRatioOut <= VEHICLE_BAND_RATIO_MAX && rawStdOut >= VIBRATION_MIN_STD));
+    if (riding && speed >= CREEP_MIN_KMH) evidence += 2;
 
     const arAge = now - arAt;
     if (arAge >= 0 && arAge <= AR_FRESH_MS) {
@@ -183,7 +194,7 @@ function makeClassifier() {
       if (arFoot >= AR_MIN_CONFIDENCE) evidence -= 3;
     }
 
-    if (sawGyro && gait === 'NONE' && speed >= CREEP_MIN_KMH && gyroRms < GYRO_QUIET_RPS) {
+    if (sawGyro && riding && speed >= CREEP_MIN_KMH && gyroRms < GYRO_QUIET_RPS) {
       evidence += 1;
     }
     if (sawGyro && gyroRms >= GYRO_CARRIED_RPS) evidence -= 2;
@@ -344,6 +355,33 @@ all &= run('8. Walk 20 s, then get in and creep at 1.5 km/h — verdict flips to
   gyroRps: (t) => (t < 20 ? 0.9 : 0.05),
   speedKmh: (t) => (t < 20 ? 4.5 : 0),
   groundKmh: (t) => (t < 20 ? 4.5 : 1.5),
+  assertFn: (c) => c.verdict === 'VEHICLE',
+});
+
+all &= run('9. FIELD BUG: slow 2.5 km/h amble, phone too steady for the gait detector to fire', {
+  durationMs: 90_000,
+  // Amplitude deliberately below GAIT_MIN_STD so the cadence test MISSES. The old rule read
+  // that miss as positive evidence of a vehicle and started a trip; nothing may now.
+  accel: gaitTrace(1.5, 0.6),
+  gyroRps: 0.2,
+  speedKmh: 2.5,
+  assertFn: (c) => c.verdict !== 'VEHICLE',
+});
+
+all &= run('10. Slow amble, gait missed AND phone barely rotating (in a bag) — still not a vehicle', {
+  durationMs: 90_000,
+  accel: gaitTrace(1.7, 0.7),
+  gyroRps: 0.05,
+  speedKmh: 3,
+  assertFn: (c) => c.verdict !== 'VEHICLE',
+});
+
+all &= run('11. Bumpy site road at 2 km/h — vibration above the gait band still reads as a vehicle', {
+  durationMs: 90_000,
+  accel: roadTrace(1.2),
+  gyroRps: 0.1,
+  speedKmh: 0,
+  groundKmh: 2,
   assertFn: (c) => c.verdict === 'VEHICLE',
 });
 

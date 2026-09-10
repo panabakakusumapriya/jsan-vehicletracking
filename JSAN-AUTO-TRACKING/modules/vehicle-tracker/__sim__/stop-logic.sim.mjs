@@ -20,6 +20,7 @@ const TRIP_START_VEHICLE_MIN_SPEED_KMH = 0.8;
 const TRIP_START_VEHICLE_MAX_ACCURACY_M = 25;
 const TRIP_START_MAX_ACCURACY_M = 50;
 const FOOT_VETO_MS = 10 * 60 * 1000;
+const ACTIVITY_FRESH_MS = 90_000;
 const PRE_START_BUFFER_MS = 5 * 60 * 1000;
 const PRE_START_BUFFER_MAX = 240;
 const PRE_START_BUFFER_SPACING_M = 5;
@@ -45,6 +46,8 @@ function makeEngine() {
   // Activity Recognition state: verdicts land on transitions, with a timestamp.
   let lastActivity = null;
   let lastActivityAt = -Infinity;
+  /** When the continuous activity feed last reported a vehicle with confidence. */
+  let arSaysVehicleAt = null;
   let prevSeenActivity = null;
   // Pre-start buffer of idle fixes: { now, pos }.
   let buffer = [];
@@ -88,8 +91,9 @@ function makeEngine() {
   /** One GPS fix. `still` = AR's STILL flag; `activity` = 'vehicle' | 'foot' | null. */
   function processFix(now, {
     pos, accuracy, speedKmh, still, activity, vehicleConfirmed = false,
-    gaitUsable = true, runningOnFoot = false,
+    gaitUsable = true, runningOnFoot = false, arSaysVehicle = false,
   }) {
+    if (arSaysVehicle) arSaysVehicleAt = now;
     // Transition semantics: the receiver writes lastActivity when a movement verdict LANDS,
     // i.e. when it changes to a non-null kind.
     if (activity && activity !== prevSeenActivity) {
@@ -126,12 +130,15 @@ function makeEngine() {
           avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
           (vehicleConfirmed || speedKmh >= 20 || (gaitUsable && !runningOnFoot));
         const footRecently = lastActivity === 'foot' && now - lastActivityAt < FOOT_VETO_MS;
-        const vehicleRecently = lastActivity === 'vehicle' && now - lastActivityAt < FOOT_VETO_MS;
+        // Live confidence from the continuous activity feed, NOT a transition edge that could be
+        // ten minutes old. See ACTIVITY_FRESH_MS in TrackingService.kt: the stale form let a
+        // driver who had just parked and walked off open the slow gate on foot.
+        const activitySaysVehicle = arSaysVehicleAt !== null && now - arSaysVehicleAt <= ACTIVITY_FRESH_MS;
         const slowStart =
           speedGateReach &&
           avgSpeedKmh >= TRIP_START_SLOW_MIN_SPEED_KMH &&
           distFromWatch >= TRIP_START_SLOW_DISTANCE_M &&
-          !footRecently && (vehicleConfirmed || vehicleRecently);
+          !footRecently && (vehicleConfirmed || activitySaysVehicle);
         const vehicleStart =
           vehicleConfirmed &&
           vehicleGateReach &&
@@ -229,6 +236,7 @@ function run(name, { phases, durationMs, gpsSilentAfter = Infinity, setup, asser
         still: phase.still ?? false,
         activity: phase.activity ?? null,
         vehicleConfirmed: phase.vehicleConfirmed ?? false,
+        arSaysVehicle: phase.arSaysVehicle ?? false,
         gaitUsable: phase.gaitUsable ?? true,
         runningOnFoot: phase.runningOnFoot ?? false,
       });
@@ -285,9 +293,15 @@ all &= run('4. Jam crawl 2 km/h for 20 min, AR says STILL and Doppler ~0 — den
   },
 });
 
+// `arSaysVehicle` is what a REAL creeping vehicle produces: Play Services' continuous feed
+// reporting IN_VEHICLE right now. It used to be enough for these scenarios to carry only a
+// transition edge (`activity: 'vehicle'`), but that verdict survives ten minutes past the driver
+// parking and walking away — which is how a 2-3 km/h walk was opening the slow gate in the
+// field. Scenario 17 now holds that negative case; these two keep testing the slow gate itself.
 all &= run('5. Slow start: creep from rest at 4 km/h in vehicle context — trip starts by ~100 m', {
   durationMs: 5 * 60 * 1000,
-  phases: [{ from: 0, to: 5 * 60_000, speedKmh: 4, still: false, activity: 'vehicle' }],
+  phases: [{ from: 0, to: 5 * 60_000, speedKmh: 4, still: false, activity: 'vehicle',
+             arSaysVehicle: true }],
   assertFn: (e) => {
     const start = e.events.find((x) => x.includes('START'));
     return !!start && start.includes('slow') && starts(e) === 1 && e.points.length > 5;
@@ -327,7 +341,8 @@ all &= run('9. Slow movement with NO vehicle evidence — must not start', {
 
 all &= run('10. PRE-START CAPTURE: 3 km/h creep — the approach before the gate fires is recovered', {
   durationMs: 6 * 60 * 1000,
-  phases: [{ from: 0, to: 6 * 60_000, speedKmh: 3, still: false, activity: 'vehicle' }],
+  phases: [{ from: 0, to: 6 * 60_000, speedKmh: 3, still: false, activity: 'vehicle',
+             arSaysVehicle: true }],
   assertFn: (e) => {
     if (starts(e) !== 1) return false;
     // 100 m at 3 km/h = 2 min before the gate fires. The flushed buffer must reach back to
@@ -408,6 +423,26 @@ all &= run('16. DENSITY: 1 km/h crawl for 8 min, AR says STILL — every gap mus
     console.log(`  widest gap between recorded points: ${(worst / 1000).toFixed(0)}s (limit ${SPLIT_MS / 1000}s)`);
     return e.points.length >= 8 && worst < SPLIT_MS;
   },
+});
+
+all &= run('17. FIELD BUG: park, get out, walk 2.5 km/h — the stale vehicle verdict must not open the slow gate', {
+  durationMs: 10 * 60_000,
+  phases: [
+    // Still in the vehicle: Play Services is calling it IN_VEHICLE.
+    { from: 0, to: 30_000, speedKmh: 0, still: true, activity: 'vehicle', arSaysVehicle: true },
+    // Parked and walking away. The transition verdict says "vehicle" for another ten minutes,
+    // but the live feed has stopped saying so and the sensors do not confirm one.
+    { from: 30_000, to: 10 * 60_000, speedKmh: 2.5, still: false, activity: null,
+      vehicleConfirmed: false, arSaysVehicle: false },
+  ],
+  assertFn: (e) => starts(e) === 0 && e.tripId === null,
+});
+
+all &= run('18. Walking 3 km/h for 10 min with no vehicle evidence of any kind — no trip, ever', {
+  durationMs: 10 * 60_000,
+  phases: [{ from: 0, to: 10 * 60_000, speedKmh: 3, still: false, activity: null,
+             vehicleConfirmed: false, gaitUsable: true }],
+  assertFn: (e) => starts(e) === 0 && e.tripId === null,
 });
 
 console.log(`\n${all ? 'ALL VEHICLE-GATE SCENARIOS PASS' : 'SOME VEHICLE-GATE SCENARIOS FAILED'}`);

@@ -20,6 +20,8 @@ import android.util.Log
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.Manifest
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -328,6 +330,22 @@ class TrackingService : Service() {
          */
         const val NO_FIX_FALLBACK_MS = 90_000L
 
+        /**
+         * How fresh Play Services' verdict has to be for a gate to lean on it.
+         *
+         * The slow gate used to accept a vehicle verdict up to FOOT_VETO_MS (ten minutes) old,
+         * taken from the TRANSITION receiver — which fires only on a change, so "the last thing
+         * that happened was a vehicle" stayed true for ten minutes after the driver had parked,
+         * got out and walked off. Walking 100 m at 2-3 km/h then opened the slow gate, which is
+         * one of the two ways a walk was starting trips in the field.
+         *
+         * Ninety seconds cannot be reached that way: 100 m on foot takes over two minutes even at
+         * 3 km/h, so the verdict is always stale by the time the distance is there. And it is
+         * read from the CONTINUOUS confidence feed rather than the transition edges, so a real
+         * drive keeps it fresh the whole way.
+         */
+        const val ACTIVITY_FRESH_MS = 90_000L
+
         /** App-health heartbeat cadence, by how much is actually going on. */
         const val HEARTBEAT_ACTIVE_MS  = 30_000L
         const val HEARTBEAT_IDLE_MS    = 2 * 60 * 1000L
@@ -492,7 +510,26 @@ class TrackingService : Service() {
             return START_STICKY
         }
         runtimeStarted = true
-        startForegroundCompat(notification("Waiting for movement…"))
+
+        // Nothing below can work without a location grant, and on Android 14+ even ENTERING the
+        // foreground with a location service type throws without one. Fail here, deliberately
+        // and quietly, rather than crashing three lines later.
+        if (!hasLocationPermission()) {
+            emitState("permission_required")
+            startForegroundCompat(notification("Location permission needed — open the app"))
+            runtimeStarted = false
+            stopSelf()
+            // NOT sticky: the system re-running this every few minutes would only reproduce the
+            // same refusal. The way back in is the driver granting the permission, which the app
+            // notices on its next foreground, or the watchdog's next pass.
+            return START_NOT_STICKY
+        }
+
+        if (!startForegroundCompat(notification("Waiting for movement…"))) {
+            runtimeStarted = false
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         val now = SystemClock.elapsedRealtime()
         val wallNow = System.currentTimeMillis()
@@ -771,12 +808,10 @@ class TrackingService : Service() {
                 // deliberately short-lived.
                 val footRecently = TrackingConfig.lastActivity(this) == TrackingConfig.ACTIVITY_FOOT &&
                     wallNow - TrackingConfig.lastActivityAt(this) < FOOT_VETO_MS
-                val vehicleRecently = TrackingConfig.lastActivity(this) == TrackingConfig.ACTIVITY_VEHICLE &&
-                    wallNow - TrackingConfig.lastActivityAt(this) < FOOT_VETO_MS
                 val slowStart = speedGateReach &&
                     avgSpeedKmh >= TRIP_START_SLOW_MIN_SPEED_KMH &&
                     distFromWatch >= TRIP_START_SLOW_DISTANCE_M &&
-                    !footRecently && (vehicleConfirmed || vehicleRecently)
+                    !footRecently && (vehicleConfirmed || activitySaysVehicle(wallNow))
 
                 val vehicleStart = vehicleConfirmed &&
                     vehicleGateReach &&
@@ -914,8 +949,14 @@ class TrackingService : Service() {
             // baseline, which is the same evidence the trip-start gate already trusts, and the
             // time trigger still enforces its own accuracy-scaled displacement floor underneath.
             val displacementMoving = distFromLast >= maxOf(POINT_DISTANCE_M, accuracy * 1.5f)
+            // Every witness here is now POSITIVE evidence of movement. `!isStill` used to be one
+            // of them and has been removed: the STILL flag is only ever set by an explicit ENTER
+            // STILL transition, so it reads false on a parked vehicle that Play Services has not
+            // got round to classifying — which made "not known to be still" mean "moving". Paired
+            // with the time trigger, that minted a point every 8 s out of pure GPS jitter while
+            // stopped, and those points are what made the replayed vehicle icon jump around at
+            // every halt. They also refreshed lastMovedMs, which could hold a parked trip open.
             val moving = displacementMoving ||
-                !TrackingConfig.isStill(this) ||
                 speedKmh >= RECORD_MOVING_SPEED_KMH ||
                 (motion.isVehicle(now) && recentKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH)
             val dtMs = if (lastRecordedAtMs > 0L) now - lastRecordedAtMs else Long.MAX_VALUE
@@ -1318,6 +1359,17 @@ class TrackingService : Service() {
      * needs to know the app is alive; rare otherwise, because nothing it reports changes while a
      * phone sits in a parked vehicle overnight.
      */
+    /**
+     * Whether Play Services is CURRENTLY calling this a vehicle — live confidence, not a
+     * transition edge that happened at some point in the last ten minutes. See ACTIVITY_FRESH_MS.
+     */
+    private fun activitySaysVehicle(wallNow: Long): Boolean {
+        val age = wallNow - TrackingConfig.activityConfidenceAt(this)
+        return age in 0..ACTIVITY_FRESH_MS &&
+            TrackingConfig.activityVehicleConfidence(this) >= 50 &&
+            TrackingConfig.activityFootConfidence(this) < 50
+    }
+
     /** The GPS interval the current cadence calls for — used when re-registering a provider. */
     private fun currentGpsIntervalMs(): Long = when (cadence) {
         Cadence.MOVING -> LOCATION_INTERVAL_MS
@@ -1422,11 +1474,40 @@ class TrackingService : Service() {
 
     // ── Notification ──────────────────────────────────────────────────────────
 
-    private fun startForegroundCompat(notif: Notification) {
+    /** Whether the location grant needed to run a location-type foreground service is held. */
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Enter the foreground, and report whether it worked instead of taking the process down.
+     *
+     * On Android 14 and above, startForeground with FOREGROUND_SERVICE_TYPE_LOCATION throws
+     * SecurityException outright when the app does not hold a location grant AT THAT MOMENT. It
+     * is not a silent degrade, and it is not recoverable after the fact — the service dies where
+     * it stands.
+     *
+     * That is a live crash on this codebase, not a theoretical one: TrackingBootstrap calls
+     * start() the instant a driver signs in, while the permission prompts still live in the Home
+     * screen's startup. On Android 13 and below the service simply came up and found no fixes;
+     * from Android 14 the same sequence kills it on the first line. Handsets shipping Android 14
+     * out of the box — the Realme 12 Pro+ among them — therefore failed on the very first launch
+     * after login, before the driver had any chance to grant anything.
+     *
+     * Returning false lets the caller stop cleanly and wait to be asked again, which the watchdog
+     * alarm and the app's own foreground listener both do.
+     */
+    private fun startForegroundCompat(notif: Notification): Boolean = try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
         else
             startForeground(NOTIF_ID, notif)
+        true
+    } catch (e: Exception) {
+        Log.e("JSANTracking", "startForeground refused: ${e.message}")
+        false
     }
 
     private fun notification(text: String): Notification {

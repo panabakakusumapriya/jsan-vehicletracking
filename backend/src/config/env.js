@@ -245,6 +245,14 @@ module.exports = {
   // routine traffic stops while still cutting genuine dropouts.
   MAP_MATCH_SPLIT_GAP_SECONDS: parseInt(process.env.MAP_MATCH_SPLIT_GAP_SECONDS || '45', 10),
 
+  // Send each fix's OWN accuracy to Valhalla as a per-point search radius, instead of pretending
+  // every point in a trace is accurate to MAP_MATCH_GPS_ACCURACY. See pointRadius() in
+  // services/valhalla.js for why a single global figure produces wrong-street matches. Set to
+  // 'false' to fall back to the old uniform behaviour.
+  MAP_MATCH_PER_POINT_RADIUS: (process.env.MAP_MATCH_PER_POINT_RADIUS || 'true').toLowerCase() !== 'false',
+  MAP_MATCH_RADIUS_MIN: parseInt(process.env.MAP_MATCH_RADIUS_MIN || '8', 10),
+  MAP_MATCH_RADIUS_MAX: parseInt(process.env.MAP_MATCH_RADIUS_MAX || '50', 10),
+
   // ---- Global UKM: the coverage-programme rules, deliberately not magic constants ----
   // These five values ARE the business contract (see the "Freeze the business rules" phase of
   // README_GLOBAL_UKM_END_GOAL_AND_IMPLEMENTATION.md). Changing any of them changes what a
