@@ -3,6 +3,26 @@ import { AppState } from 'react-native';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { useAuth } from '@/src/lib/auth';
 import { API_BASE_URL } from '@/src/lib/config';
+import { getPermissionHealth } from '@/src/lib/permissions';
+
+/**
+ * Starting the engine without a location grant is not merely useless, it is fatal on Android 14+:
+ * entering the foreground with a location service type throws SecurityException when the grant is
+ * missing, which killed the service on the first launch after login on any handset shipping
+ * Android 14 (Realme 12 Pro+, and every other 2024 device). The native side now refuses that start
+ * cleanly, and this stops it being asked for in the first place.
+ *
+ * Requesting the permission stays with the Home screen, which owns the explanatory UI — asking
+ * from here as well would put two system dialogs in flight at once, and Android answers the
+ * second with an automatic denial.
+ */
+async function locationGranted(): Promise<boolean> {
+  try {
+    return (await getPermissionHealth()).fineLocation === 'granted';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Starts the tracking engine for every signed-in DRIVER, no matter which screens a project
@@ -33,7 +53,10 @@ export function TrackingBootstrap() {
         const tz = user.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
         if (tz) await VehicleTracker.setTimezone(tz);
         await VehicleTracker.configure(API_BASE_URL, token, user._id);
-        await VehicleTracker.start();
+        // configure() is always safe and must persist regardless; only the START waits for the
+        // grant. The AppState listener below picks it up the moment the driver comes back from
+        // the permission prompt.
+        if (await locationGranted()) await VehicleTracker.start();
       } catch {
         /* the permission gate + home's startup surface failures; this must never crash the tree */
       }
@@ -46,7 +69,12 @@ export function TrackingBootstrap() {
   useEffect(() => {
     if (!user || user.role !== 'user' || !token || !VehicleTracker.isSupported) return;
     const sub = AppState.addEventListener('change', (st) => {
-      if (st === 'active') VehicleTracker.start().catch(() => {});
+      if (st !== 'active') return;
+      // Also the recovery path after the driver grants location in Settings: returning to the
+      // app is exactly when a previously refused start becomes possible.
+      void (async () => {
+        if (await locationGranted()) await VehicleTracker.start().catch(() => {});
+      })();
     });
     return () => sub.remove();
   }, [user, token]);

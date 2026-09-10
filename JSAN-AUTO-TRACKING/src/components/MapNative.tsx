@@ -134,21 +134,29 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
 
   /* ── derived GeoJSON (memoised — the library diffs on identity) ── */
 
-  const { coveredFC, uncoveredFC } = useMemo(() => {
-    const liveIds = liveCovered?.ids;
+  const { coveredFC, uncoveredFC, roadLinesById } = useMemo(() => {
     const covered: [number, number][][] = [];
     const uncovered: [number, number][][] = [];
+    const byId = new Map<string, [number, number][]>();
     for (const r of roads) {
       const coords = r[3];
       if (!coords || coords.length < 2) continue;
+      byId.set(r[0], coords);
       // Server-confirmed OR seen driven by THIS phone just now — blue either way. The
       // server's post-trip attribution later replaces the live guess with the audited truth.
-      if (r[2] || (liveIds && liveIds.has(r[0]))) covered.push(coords);
+      if (r[2]) covered.push(coords);
       else uncovered.push(coords);
     }
-    return { coveredFC: multiLineFC(covered), uncoveredFC: multiLineFC(uncovered) };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roads, liveCovered?.version]);
+    return { coveredFC: multiLineFC(covered), uncoveredFC: multiLineFC(uncovered), roadLinesById: byId };
+  }, [roads]);
+  const liveCoveredFC = useMemo(() => {
+    const lines: [number, number][][] = [];
+    for (const id of liveCovered?.ids ?? []) {
+      const line = roadLinesById.get(id);
+      if (line) lines.push(line);
+    }
+    return multiLineFC(lines);
+  }, [roadLinesById, liveCovered?.ids]);
 
   const areasData = useMemo(() => areasFC(areas), [areas]);
   const historyFC = useMemo(() => multiLineFC(history?.lines ?? []), [history]);
@@ -280,6 +288,14 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
           <Layer
             type="line" id="roads-uncovered"
             paint={{ 'line-color': COLOR_UNCOVERED, 'line-width': lineWidthByZoom(0.7, 1.6, 3.4, 6), 'line-opacity': 0.95 }}
+            layout={{ 'line-cap': 'round', 'line-join': 'round', visibility: showRoads ? 'visible' : 'none' }}
+          />
+        </GeoJSONSource>
+        {/* Small local overlay: changing one link never rebuilds the complete road network. */}
+        <GeoJSONSource id="roads-live-covered" data={liveCoveredFC}>
+          <Layer
+            type="line" id="roads-live-covered"
+            paint={{ 'line-color': COLOR_COVERED, 'line-width': lineWidthByZoom(0.8, 1.8, 3.7, 6.4), 'line-opacity': 1 }}
             layout={{ 'line-cap': 'round', 'line-join': 'round', visibility: showRoads ? 'visible' : 'none' }}
           />
         </GeoJSONSource>

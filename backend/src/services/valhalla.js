@@ -111,6 +111,33 @@ function traceOptions() {
   };
 }
 
+/**
+ * Per-point search radius, from the fix's own reported accuracy.
+ *
+ * `gps_accuracy` in traceOptions is ONE number for the whole trace, and the device's fixes are
+ * nothing like uniform: a phone in a cradle with sky view reports 5-8 m, the same phone in a
+ * pocket between buildings reports 40-60 m. Feeding both to the matcher as though they were
+ * accurate to MAP_MATCH_GPS_ACCURACY (15 m) tells it to take a 50 m-error fix seriously, and it
+ * duly snaps to whichever road is nearest that wrong position — the noisy, wrong-street result
+ * drivers were reporting even on stretches that map-matched "successfully".
+ *
+ * Valhalla's per-shape-point `radius` is the correct lever: it widens the candidate search for a
+ * fuzzy point so the matcher can keep it on the road the confident points either side establish,
+ * instead of dragging the line off to meet it. Points with no recorded accuracy fall through to
+ * the global setting exactly as before.
+ *
+ * Clamped at both ends: below the floor a slightly-optimistic fix would over-constrain the match,
+ * and above the ceiling the candidate set grows large enough to slow the matcher down without
+ * adding useful choices.
+ */
+function pointRadius(p) {
+  if (!env.MAP_MATCH_PER_POINT_RADIUS) return {};
+  const a = Number(p.accuracy);
+  if (!Number.isFinite(a) || a <= 0) return {};
+  const clamped = Math.min(env.MAP_MATCH_RADIUS_MAX, Math.max(env.MAP_MATCH_RADIUS_MIN, Math.round(a)));
+  return { radius: clamped };
+}
+
 /** Straight-line length of a raw trace, used as the yardstick a match is judged against. */
 function traceLength(points) {
   let total = 0;
@@ -251,6 +278,7 @@ async function traceRoute(points) {
     ...(env.MAP_MATCH_SEND_TIMESTAMPS
       ? { time: Math.round((new Date(p.recordedAt).getTime() - t0) / 1000) }
       : {}),
+    ...pointRadius(p),
   }));
 
   const json = await postValhalla('/trace_route', {

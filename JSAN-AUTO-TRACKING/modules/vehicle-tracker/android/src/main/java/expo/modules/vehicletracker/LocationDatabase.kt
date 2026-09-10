@@ -29,7 +29,9 @@ class LocationDatabase(context: Context) :
 
     companion object {
         private const val DB_NAME = "jsan_tracker.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
+        private const val MAX_QUEUE_POINTS = 250_000
+        private const val PRUNE_CHECK_EVERY = 500
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -43,6 +45,7 @@ class LocationDatabase(context: Context) :
                 recordedAt TEXT, tripStatus TEXT
             )"""
         )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_points_recorded_at ON points(recordedAt)")
     }
 
     /**
@@ -59,7 +62,8 @@ class LocationDatabase(context: Context) :
      * one — never the other way round.
      */
     override fun onUpgrade(db: SQLiteDatabase, oldV: Int, newV: Int) {
-        // v1 is the only schema so far. Future versions add their columns here, e.g.
+        if (oldV < 2) db.execSQL("CREATE INDEX IF NOT EXISTS idx_points_recorded_at ON points(recordedAt)")
+        // Future versions add their columns here, e.g.
         //   if (oldV < 2) addColumnIfMissing(db, "attempts", "INTEGER NOT NULL DEFAULT 0")
     }
 
@@ -82,6 +86,8 @@ class LocationDatabase(context: Context) :
         if (!exists) db.execSQL("ALTER TABLE points ADD COLUMN $name $declaration")
     }
 
+    private var insertsSincePruneCheck = 0
+
     @Synchronized
     fun insert(p: QueuedPoint) {
         val v = ContentValues().apply {
@@ -92,7 +98,24 @@ class LocationDatabase(context: Context) :
             put("batteryLevel", p.batteryLevel); put("isMoving", if (p.isMoving) 1 else 0)
             put("recordedAt", p.recordedAt); put("tripStatus", p.tripStatus)
         }
-        writableDatabase.insertWithOnConflict("points", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+        val db = writableDatabase
+        val inserted = db.insertWithOnConflict("points", null, v, SQLiteDatabase.CONFLICT_IGNORE)
+        if (inserted != -1L && ++insertsSincePruneCheck >= PRUNE_CHECK_EVERY) {
+            insertsSincePruneCheck = 0
+            val count = db.rawQuery("SELECT COUNT(*) FROM points", null).use { c ->
+                if (c.moveToFirst()) c.getInt(0) else 0
+            }
+            val excess = count - MAX_QUEUE_POINTS
+            if (excess > 0) {
+                // A month-scale safety valve: an invalid token must not fill the entire device.
+                // Oldest unsent samples are sacrificed only after the very large hard ceiling.
+                db.execSQL(
+                    "DELETE FROM points WHERE clientId IN " +
+                        "(SELECT clientId FROM points ORDER BY recordedAt ASC LIMIT ?)",
+                    arrayOf(excess),
+                )
+            }
+        }
     }
 
     @Synchronized

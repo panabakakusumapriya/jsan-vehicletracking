@@ -56,6 +56,44 @@ export function buildRoadIndex(roads: RoadTuple[]): RoadIndex {
   return { cells, segs };
 }
 
+/** Cooperative variant for large assignments; yields between batches to keep first paint fluid. */
+export async function buildRoadIndexAsync(
+  roads: RoadTuple[],
+  isCancelled: () => boolean = () => false,
+): Promise<RoadIndex | null> {
+  const segs: Seg[] = [];
+  const cells = new Map<string, number[]>();
+  const batchRoads = 250;
+  for (let start = 0; start < roads.length; start += batchRoads) {
+    if (isCancelled()) return null;
+    const end = Math.min(roads.length, start + batchRoads);
+    for (let rIndex = start; rIndex < end; rIndex++) {
+      const r = roads[rIndex];
+      if (r[2] === 1) continue;
+      const coords = r[3];
+      if (!coords) continue;
+      for (let i = 0; i + 1 < coords.length; i++) {
+        const [ax, ay] = coords[i];
+        const [bx, by] = coords[i + 1];
+        if (![ax, ay, bx, by].every(Number.isFinite)) continue;
+        const idx = segs.length;
+        segs.push({ id: r[0], ax, ay, bx, by });
+        const minX = Math.floor(Math.min(ax, bx) / CELL);
+        const maxX = Math.floor(Math.max(ax, bx) / CELL);
+        const minY = Math.floor(Math.min(ay, by) / CELL);
+        const maxY = Math.floor(Math.max(ay, by) / CELL);
+        for (let cx = minX; cx <= maxX; cx++) for (let cy = minY; cy <= maxY; cy++) {
+          const key = `${cx}:${cy}`;
+          const bucket = cells.get(key);
+          if (bucket) bucket.push(idx); else cells.set(key, [idx]);
+        }
+      }
+    }
+    if (end < roads.length) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  return { cells, segs };
+}
+
 function segDistM(px: number, py: number, s: Seg, mx: number, my: number): number {
   const ax = (s.ax - px) * mx, ay = (s.ay - py) * my;
   const bx = (s.bx - px) * mx, by = (s.by - py) * my;

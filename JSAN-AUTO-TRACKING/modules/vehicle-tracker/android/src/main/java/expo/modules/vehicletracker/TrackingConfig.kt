@@ -73,6 +73,24 @@ object TrackingConfig {
             .putLong("lastActivityAt", System.currentTimeMillis())
             .apply()
 
+    /**
+     * Continuous activity-recognition confidences (0-100), written by ActivityUpdatesReceiver
+     * every ACTIVITY_UPDATE_INTERVAL_MS. Distinct from lastActivity above, which only records
+     * transition EDGES and carries no confidence: MotionClassifier needs to know how sure the
+     * model is and how long ago it said so, because a 40% guess and a 90% call are not the same
+     * evidence, and a verdict from ten minutes ago is not evidence at all.
+     */
+    fun setActivityConfidence(ctx: Context, vehicle: Int, foot: Int) =
+        prefs(ctx).edit()
+            .putInt("arVehicleConfidence", vehicle)
+            .putInt("arFootConfidence", foot)
+            .putLong("arConfidenceAt", System.currentTimeMillis())
+            .apply()
+
+    fun activityVehicleConfidence(ctx: Context): Int = prefs(ctx).getInt("arVehicleConfidence", 0)
+    fun activityFootConfidence(ctx: Context): Int = prefs(ctx).getInt("arFootConfidence", 0)
+    fun activityConfidenceAt(ctx: Context): Long = prefs(ctx).getLong("arConfidenceAt", 0L)
+
     // ---- Timezone / daylight tracking ----
 
     /** IANA timezone ID auto-detected from the device (e.g. "Asia/Kolkata"). */
