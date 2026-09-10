@@ -63,6 +63,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Holds the current syncTimezone so the once-registered listener always calls the live one.
   const syncTimezoneRef = useRef<() => Promise<void>>(async () => {});
+  const refreshUserRef = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
     (async () => {
@@ -98,7 +99,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // without anyone having to open a settings screen.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
-      if (next === 'active') void syncTimezoneRef.current();
+      if (next !== 'active') return;
+      void syncTimezoneRef.current();
+      // Project-level mobile permissions — which tabs are visible, and whether the sign-out
+      // button exists — live on the account and only ever arrived at COLD START, because the
+      // sole other caller of apiMe was the timezone screen. An admin changing a project's
+      // permissions therefore had no effect until the driver fully restarted the app, which
+      // reads as "the setting does not work" to anyone testing it. Re-reading on foreground
+      // costs one small request per app switch and makes the change land when they look.
+      void refreshUserRef.current();
     });
     return () => sub.remove();
   }, []);
@@ -127,13 +136,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   syncTimezoneRef.current = syncTimezone;
 
   const refreshUser = async () => {
-    if (!state.token) return;
+    // stateRef, not state: the foreground listener below is registered once and would otherwise
+    // capture the first render's (signed-out) token forever.
+    const token = stateRef.current.token;
+    if (!token) return;
     try {
-      const { user } = await apiMe(state.token);
+      const { user } = await apiMe(token);
       await SecureStore.setItemAsync(USER_KEY, JSON.stringify(user));
       setState((prev) => ({ ...prev, user }));
     } catch { /* offline — keep local copy */ }
   };
+  refreshUserRef.current = refreshUser;
 
   const signOut = async () => {
     try {
