@@ -61,6 +61,8 @@ export interface Project {
   // Optional uniqueness reset inside a scope, for a deliberately repeated capture campaign.
   coverageCycleId?: string | null;
   enabledModules?: string[];
+  /** Undefined on projects saved before the setting existed, and that means "show it". */
+  showLogout?: boolean;
   createdAt?: string;
 }
 

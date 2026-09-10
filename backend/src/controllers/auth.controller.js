@@ -11,14 +11,18 @@ const asyncHandler = require('../utils/asyncHandler');
 // location every ~10s, so an active session stays well within this window.
 const SESSION_IDLE_MS = 2 * 60 * 1000;
 
-// Attach enabledModules from the driver's project to the user object
+// Attach the driver's project-level mobile app permissions to the user object
 async function attachEnabledModules(userData) {
   if (userData.role === 'user' && userData.projectIds?.length) {
     const Project = require('../models/Project');
     const pid = userData.projectIds[0]?._id || userData.projectIds[0];
-    const project = await Project.findById(pid).select('enabledModules').lean();
+    const project = await Project.findById(pid).select('enabledModules showLogout').lean();
     if (project) {
       userData.enabledModules = project.enabledModules || ['dashboard', 'map'];
+      // `!== false`, not a truthiness test: .lean() skips Mongoose defaults, so a project saved
+      // before showLogout existed comes back undefined here. Undefined has to mean "show it" or
+      // every project predating this feature would lose its sign-out button on deploy.
+      userData.showLogout = project.showLogout !== false;
     }
   }
   return userData;

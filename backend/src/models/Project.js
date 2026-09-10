@@ -18,6 +18,23 @@ const projectSchema = new mongoose.Schema(
       default: ['dashboard', 'map'],
     },
 
+    /**
+     * Whether the driver may sign themselves out of the mobile app.
+     *
+     * Deliberately a boolean of its own rather than another member of `enabledModules`, even
+     * though the admin UI presents them side by side. `enabledModules` is a list where presence
+     * means enabled, and every project row already in the database literally holds
+     * ['dashboard', 'map'] — so shipping 'logout' as a list member would silently remove the
+     * button from every existing project the moment this deployed, and would need a data
+     * migration to put back. A boolean defaulting to true keeps today's behaviour for every
+     * project that has never been asked the question.
+     *
+     * NOTE for readers: because auth.controller reads this with .lean(), which does NOT apply
+     * Mongoose defaults, it must be interpreted as `!== false` rather than truthiness — a
+     * document saved before this field existed returns undefined, and undefined means "show it".
+     */
+    showLogout: { type: Boolean, default: true },
+
     // Which dedup universe this project's coverage belongs to. Projects sharing a scope share one
     // history: a road first driven under Project A is not new road again under Project B. That is
     // the whole point — the customer is not billed twice because the street sat on a boundary

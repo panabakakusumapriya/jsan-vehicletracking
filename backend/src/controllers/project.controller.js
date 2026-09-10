@@ -14,7 +14,8 @@ exports.list = asyncHandler(async (req, res) => {
 
 // POST /api/projects  (admin only)
 exports.create = asyncHandler(async (req, res) => {
-  const { name, code, country, coverageScopeId, coverageCycleId, enabledModules } = req.body || {};
+  const { name, code, country, coverageScopeId, coverageCycleId, enabledModules, showLogout } =
+    req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Project name is required' });
 
   try {
@@ -26,6 +27,7 @@ exports.create = asyncHandler(async (req, res) => {
       coverageCycleId: coverageCycleId?.trim() || null,
     };
     if (Array.isArray(enabledModules)) doc.enabledModules = enabledModules;
+    if (typeof showLogout === 'boolean') doc.showLogout = showLogout;
     const project = await Project.create(doc);
     res.status(201).json({ project });
   } catch (err) {
@@ -39,7 +41,8 @@ exports.update = asyncHandler(async (req, res) => {
   const project = await Project.findById(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
-  const { name, code, country, active, coverageScopeId, coverageCycleId, enabledModules } = req.body || {};
+  const { name, code, country, active, coverageScopeId, coverageCycleId, enabledModules, showLogout } =
+    req.body || {};
   if (name !== undefined) project.name = name;
   if (code !== undefined) project.code = code || null;
   if (country !== undefined) project.country = country || null;
@@ -48,6 +51,9 @@ exports.update = asyncHandler(async (req, res) => {
     project.enabledModules = enabledModules;
     project.markModified('enabledModules');
   }
+  // Only a real boolean counts: an absent field must leave the setting alone, or any caller
+  // patching just the name would reset it.
+  if (typeof showLogout === 'boolean') project.showLogout = showLogout;
 
   // Changing the scope changes which history FUTURE trips are deduplicated against. It does not
   // rewrite the past: every trip carries the scope it was stamped with at start, so roads already

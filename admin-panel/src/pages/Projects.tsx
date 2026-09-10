@@ -111,6 +111,8 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
     coverageCycleId: project?.coverageCycleId || '',
     active: project?.active ?? true,
     enabledModules: Array.isArray(project?.enabledModules) ? project.enabledModules : ['dashboard', 'map'],
+    // Undefined means a project that predates the setting — those keep their sign-out button.
+    showLogout: project?.showLogout !== false,
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -128,6 +130,7 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
         coverageCycleId: form.coverageCycleId.trim() || null,
         active: form.active,
         enabledModules: form.enabledModules,
+        showLogout: form.showLogout,
       };
       if (project) await api.patch(`/api/projects/${project._id}`, body);
       else await api.post('/api/projects', body);
@@ -199,6 +202,21 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
             </label>
           ))}
         </div>
+
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', margin: '12px 0 8px', lineHeight: 1.5 }}>
+          Sign-out is shown on the Dashboard tab. Turning it off keeps a driver signed in on a
+          handset that stays with the vehicle — they cannot end the session themselves, so
+          tracking is not left switched off between shifts. An admin can still deactivate the
+          user, which signs them out on their next request.
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={form.showLogout}
+            onChange={(e) => setForm((f) => ({ ...f, showLogout: e.target.checked }))}
+          />
+          Sign out button
+        </label>
       </div>
 
       {project && (
