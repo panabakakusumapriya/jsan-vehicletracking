@@ -231,9 +231,15 @@ export default function Home() {
             <Text style={s.email}>{user?.email}</Text>
           </View>
         </View>
-        <TouchableOpacity style={s.signOutBtn} onPress={async () => { await signOut(); router.replace('/login'); }}>
-          <Text style={s.signOutText}>Sign out</Text>
-        </TouchableOpacity>
+        {/* Project-level permission. `!== false` on purpose: a driver whose project predates
+            the setting, or whose session was restored from storage before the server answered,
+            must keep the button. Hiding it on a missing value would strand drivers signed in on
+            a shared handset with no way to hand it over. */}
+        {user?.showLogout !== false && (
+          <TouchableOpacity style={s.signOutBtn} onPress={async () => { await signOut(); router.replace('/login'); }}>
+            <Text style={s.signOutText}>Sign out</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* ── Upload error banner ── */}

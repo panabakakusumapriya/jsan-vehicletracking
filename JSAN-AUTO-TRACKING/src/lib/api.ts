@@ -32,6 +32,12 @@ export type AuthUser = {
   timezone?: string | null;
   country?: string | null;
   enabledModules?: string[];
+  /**
+   * Whether this driver's project lets them sign out. Absent for a project saved before the
+   * setting existed, and absent must mean SHOWN — never hide the button just because the server
+   * said nothing about it.
+   */
+  showLogout?: boolean;
 };
 
 async function request(path: string, options: RequestInit = {}, token?: string | null) {
