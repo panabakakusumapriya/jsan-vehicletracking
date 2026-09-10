@@ -62,23 +62,43 @@ export async function getPermissionHealth(): Promise<PermissionHealth> {
   };
 }
 
-/** Request all missing permissions in the correct order. Returns updated health. */
+/**
+ * Request every missing permission, in an order that actually lets the user answer them.
+ *
+ * ORDER IS LOAD-BEARING, and getting it wrong is silent. Background location is the only one of
+ * these that can take the user OUT of the app: from Android 11 the system refuses to grant
+ * "Allow all the time" from an in-app dialog and sends them to the Settings page instead. Any
+ * permission requested after that call fires while the app is in the background, where Android
+ * discards the request without ever showing a dialog.
+ *
+ * That is why drivers were reporting every permission granted EXCEPT physical activity, with no
+ * idea where to grant it: the prompt was issued while they were away in Settings and was thrown
+ * on the floor. Nothing surfaced an error — the checklist simply kept showing a red row for a
+ * dialog they had never been offered.
+ *
+ * So the in-app dialogs go first and background location goes last. Foreground still has to
+ * precede background (Android rejects the background request otherwise), but activity
+ * recognition and notifications no longer sit behind the trip to Settings.
+ */
 export async function requestAllPermissions(): Promise<PermissionHealth> {
   if (Platform.OS !== 'android') return getPermissionHealth();
 
   const version = typeof Platform.Version === 'number' ? Platform.Version : parseInt(String(Platform.Version), 10);
 
-  // Must request foreground first, then background
+  // 1. Foreground location — an ordinary in-app dialog, and the prerequisite for background.
   const fg = await Location.requestForegroundPermissionsAsync();
-  if (fg.status === 'granted') {
-    await Location.requestBackgroundPermissionsAsync();
-  }
 
+  // 2 & 3. The other in-app dialogs, while the app is still in the foreground to show them.
   if (version >= 29) {
     await PermissionsAndroid.request('android.permission.ACTIVITY_RECOGNITION' as any);
   }
   if (version >= 33) {
     await PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS' as any);
+  }
+
+  // 4. Background location LAST — this is the one that may leave the app for Settings.
+  if (fg.status === 'granted') {
+    await Location.requestBackgroundPermissionsAsync();
   }
 
   return getPermissionHealth();
