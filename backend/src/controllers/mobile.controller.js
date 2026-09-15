@@ -8,10 +8,14 @@ function scopeFilter() {
 }
 
 function assertCanTouch(req, device) {
-  if (['manager', 'team_lead'].includes(req.user.role) && String(device.managerId) !== String(req.user._id)) {
-    const err = new Error('Forbidden');
-    err.status = 403;
-    throw err;
+  if (['manager', 'team_lead'].includes(req.user.role)) {
+    // A manager/team_lead can touch devices they created (managerId matches)
+    // OR devices with no managerId (legacy/unassigned inventory).
+    if (device.managerId && String(device.managerId) !== String(req.user._id)) {
+      const err = new Error('Forbidden');
+      err.status = 403;
+      throw err;
+    }
   }
 }
 

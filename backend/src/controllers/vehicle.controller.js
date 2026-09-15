@@ -89,7 +89,7 @@ exports.update = asyncHandler(async (req, res) => {
 exports.remove = asyncHandler(async (req, res) => {
   const vehicle = await Vehicle.findById(req.params.id);
   if (!vehicle) return res.status(404).json({ error: 'Vehicle not found' });
-  if (['manager', 'team_lead'].includes(req.user.role) && String(vehicle.managerId) !== String(req.user._id)) {
+  if (['manager', 'team_lead'].includes(req.user.role) && vehicle.managerId && String(vehicle.managerId) !== String(req.user._id)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   await vehicle.deleteOne();

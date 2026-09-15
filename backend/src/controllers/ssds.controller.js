@@ -610,7 +610,10 @@ function resolveProjectIdForCreate(req) {
 /** Whether the requester can see/edit this record based on its projectId. */
 function canAccessRecord(req, record) {
   if (req.user.role === 'admin') return true;
-  if (!record.projectId) return false; // unassigned records: admin only
+  if (!record.projectId) {
+    // Unassigned records: allow if the manager/team_lead created it, otherwise deny.
+    return record.createdBy && record.createdBy === req.user._id.toString();
+  }
   const own = (req.user.projectIds || []).map(String);
   return own.includes(record.projectId);
 }
