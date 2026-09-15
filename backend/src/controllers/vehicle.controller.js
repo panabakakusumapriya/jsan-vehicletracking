@@ -70,10 +70,6 @@ exports.create = asyncHandler(async (req, res) => {
 exports.update = asyncHandler(async (req, res) => {
   const vehicle = await Vehicle.findById(req.params.id);
   if (!vehicle) return res.status(404).json({ error: 'Vehicle not found' });
-  if (['manager', 'team_lead'].includes(req.user.role) && String(vehicle.managerId) !== String(req.user._id)) {
-    return res.status(403).json({ error: 'Forbidden' });
-  }
-
   const { plateNumber, vid, model, country, active, assignedDriverId, comments } = req.body || {};
   if (plateNumber !== undefined) vehicle.plateNumber = plateNumber;
   if (vid !== undefined) vehicle.vid = vid;
