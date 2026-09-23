@@ -85,6 +85,19 @@ class VehicleTrackerModule : Module() {
             TrackingConfig.setTimezoneId(context, timezoneId)
         }
 
+        /**
+         * The driver's project-level stop timeout, in minutes; 0 or null clears the override and
+         * returns the handset to TrackingService.TRIP_END_NO_MOVE_MS.
+         *
+         * The heartbeat response is the main delivery path — it reaches the service while it is
+         * running in the background. This one exists for the moment the heartbeat cannot cover:
+         * a freshly installed or freshly signed-in app, where /me has the answer before the
+         * service has sent anything.
+         */
+        AsyncFunction("setTripEndAfterMinutes") { minutes: Int ->
+            TrackingConfig.setTripEndAfterMinutes(context, minutes)
+        }
+
         // ── Battery optimisation: the #1 silent background-tracking killer ───
         AsyncFunction("isIgnoringBatteryOptimizations") {
             val pm = context.getSystemService(android.content.Context.POWER_SERVICE)

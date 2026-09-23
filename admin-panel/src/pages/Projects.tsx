@@ -59,6 +59,7 @@ export function Projects() {
               <th>Code</th>
               <th>Country</th>
               <th title="Projects sharing a coverage scope deduplicate UKM against each other">Coverage scope</th>
+              <th title="How long a vehicle must sit still before its trip is ended">Stop after</th>
               <th>Status</th>
               <th></th>
             </tr>
@@ -77,6 +78,11 @@ export function Projects() {
                     <span style={{ color: 'var(--muted)', fontFamily: 'monospace' }}> · {p.coverageCycleId}</span>
                   )}
                 </td>
+                <td style={{ fontSize: 12 }}>
+                  {typeof p.tripEndAfterMinutes === 'number'
+                    ? <span>{p.tripEndAfterMinutes} min</span>
+                    : <span style={{ color: 'var(--muted)' }} title="Uses the app default">10 min · default</span>}
+                </td>
                 <td><span className={`badge ${p.active ? 'green' : 'gray'}`}>{p.active ? 'Active' : 'Inactive'}</span></td>
                 <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
                   <button className="btn-ghost" style={{ fontSize: 12, padding: '4px 10px' }} onClick={() => setEditing(p)}>Edit</button>
@@ -85,7 +91,7 @@ export function Projects() {
               </tr>
             ))}
             {projects.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No projects yet — add one to get started.</td></tr>
+              <tr><td colSpan={7} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No projects yet — add one to get started.</td></tr>
             )}
           </tbody>
         </table>
@@ -113,6 +119,11 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
     enabledModules: Array.isArray(project?.enabledModules) ? project.enabledModules : ['dashboard', 'map'],
     // Undefined means a project that predates the setting — those keep their sign-out button.
     showLogout: project?.showLogout !== false,
+    // Kept as a string so the box can be genuinely EMPTY, which is how an admin says "use the
+    // app default" — a number state would have to pick some sentinel and 0 means "end the trip
+    // the instant it stops".
+    tripEndAfterMinutes:
+      typeof project?.tripEndAfterMinutes === 'number' ? String(project.tripEndAfterMinutes) : '',
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -120,6 +131,12 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
 
   const save = async () => {
     if (!form.name.trim()) { setError('Project name is required'); return; }
+    const stopRaw = form.tripEndAfterMinutes.trim();
+    const stopMinutes = stopRaw === '' ? null : Number(stopRaw);
+    if (stopMinutes !== null && (!Number.isFinite(stopMinutes) || stopMinutes < 2 || stopMinutes > 30)) {
+      setError('Stop timeout must be between 2 and 30 minutes, or empty to use the default');
+      return;
+    }
     setError(null); setBusy(true);
     try {
       const body = {
@@ -131,6 +148,7 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
         active: form.active,
         enabledModules: form.enabledModules,
         showLogout: form.showLogout,
+        tripEndAfterMinutes: stopMinutes,
       };
       if (project) await api.patch(`/api/projects/${project._id}`, body);
       else await api.post('/api/projects', body);
@@ -217,6 +235,31 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
           />
           Sign out button
         </label>
+      </div>
+
+      <div className="field">
+        <label>Stop timeout (optional)</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            className="input"
+            type="number"
+            min={2}
+            max={30}
+            step={1}
+            style={{ width: 110 }}
+            value={form.tripEndAfterMinutes}
+            onChange={(e) => set('tripEndAfterMinutes', e.target.value)}
+            placeholder="10"
+          />
+          <span style={{ fontSize: 13, color: 'var(--muted)' }}>minutes</span>
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, lineHeight: 1.5 }}>
+          How long a vehicle must sit still before its trip is ended and the driver goes idle.
+          Leave empty for the app default of <b>10 minutes</b>, which is sized to survive traffic
+          signals. Set <b>3</b> for a project whose crews park at each site and want the trip
+          closed promptly — but note that any genuine halt longer than this splits one drive into
+          two trips. Changes reach handsets within about two minutes; no app update needed.
+        </div>
       </div>
 
       {project && (

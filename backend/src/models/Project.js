@@ -35,6 +35,23 @@ const projectSchema = new mongoose.Schema(
      */
     showLogout: { type: Boolean, default: true },
 
+    /**
+     * How long a vehicle may sit still before the handset ends the trip, in minutes.
+     *
+     * Null means "use the app's own default" (TrackingService.TRIP_END_NO_MOVE_MS, 10 min), and
+     * that is what every project predating this field reads as — the same `.lean()` trap
+     * documented on showLogout above applies, so readers must test `typeof x === 'number'`
+     * rather than `x || DEFAULT`, or a project that deliberately set 3 would be indistinguishable
+     * from one that never set anything.
+     *
+     * Per project because the right answer is the work, not the software: a survey crew that
+     * parks at every site wants the trip closed three minutes after they stop, while a delivery
+     * round crawling through signals wants the long buffer that keeps one drive as one trip.
+     * Bounds are enforced in the controller AND clamped again on the device, so a bad value
+     * cannot strand a handset in a state where trips never end.
+     */
+    tripEndAfterMinutes: { type: Number, default: null, min: 2, max: 30 },
+
     // Which dedup universe this project's coverage belongs to. Projects sharing a scope share one
     // history: a road first driven under Project A is not new road again under Project B. That is
     // the whole point — the customer is not billed twice because the street sat on a boundary

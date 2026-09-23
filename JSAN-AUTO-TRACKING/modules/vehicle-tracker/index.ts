@@ -119,6 +119,14 @@ export async function setTimezone(timezoneId: string): Promise<void> {
   if (native) await native.setTimezone(timezoneId);
 }
 
+/**
+ * The driver's project stop timeout, in minutes — how long a stationary vehicle stays on trip.
+ * Pass null (the project set nothing) to clear the override and use the engine's own default.
+ */
+export async function setTripEndAfterMinutes(minutes: number | null): Promise<void> {
+  if (native) await native.setTripEndAfterMinutes(minutes ?? 0);
+}
+
 /** Whether the app is exempt from battery optimisation — the #1 background-tracking killer. */
 export async function isIgnoringBatteryOptimizations(): Promise<boolean> {
   if (native) return native.isIgnoringBatteryOptimizations();
@@ -156,6 +164,7 @@ export default {
   getDaylightInfo,
   setDaylightOnly,
   setTimezone,
+  setTripEndAfterMinutes,
   isIgnoringBatteryOptimizations,
   requestIgnoreBatteryOptimizations,
   addLocationListener,

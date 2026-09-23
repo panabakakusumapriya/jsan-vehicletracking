@@ -1,0 +1,50 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+  <!-- Activity Recognition: detect IN_VEHICLE transitions so "auto mode" can start a trip even
+       when the app is swiped from recents / killed (delivered to AutoStartReceiver). -->
+  <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+  <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" />
+
+  <application>
+    <!-- stopWithTask=false: keep recording when the app is swiped from recents / force-closed.
+         Paired with onTaskRemoved() in the service, which also schedules an immediate relaunch
+         alarm in case an aggressive OEM kills the process anyway. -->
+    <service
+      android:name="expo.modules.vtstracker.TrackingService"
+      android:enabled="true"
+      android:exported="false"
+      android:stopWithTask="false"
+      android:foregroundServiceType="location" />
+
+    <receiver
+      android:name="expo.modules.vtstracker.BootReceiver"
+      android:enabled="true"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+        <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+        <!-- Resume an in-progress trip after the app is updated from the Play Store (the OS kills
+             the service on update). Without this there's a silent mid-shift gap until the driver
+             reopens the app. -->
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+    </receiver>
+
+    <!-- Self-heal watchdog: an alarm relaunches the service if an OEM kills it. -->
+    <receiver
+      android:name="expo.modules.vtstracker.WatchdogReceiver"
+      android:enabled="true"
+      android:exported="false" />
+
+    <!-- Auto mode: receives Activity-Recognition IN_VEHICLE enter/exit transitions (via a
+         PendingIntent) and starts/stops a trip — works even when the app is killed. -->
+    <receiver
+      android:name="expo.modules.vtstracker.AutoStartReceiver"
+      android:enabled="true"
+      android:exported="false" />
+  </application>
+</manifest>

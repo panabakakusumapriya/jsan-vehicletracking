@@ -29,12 +29,16 @@ const RECORD_MIN_INTERVAL_MS = 8_000;
 const RECORD_MIN_MOVE_M = 3;
 const RECORD_MOVING_SPEED_KMH = 3.0;
 const MAX_PLAUSIBLE_SPEED_KMH = 180.0;
+// The DEFAULT stop timeout. A project can override it from the admin panel (2-30 min); the
+// engine below takes it as an argument exactly like the service reads TrackingConfig on each tick.
 const TRIP_END_NO_MOVE_MS = 10 * 60 * 1000;
 const TICK_INTERVAL_MS = 20_000;
 const MAX_ACCURACY_M = 100;
+const TRIP_ACTIVE_MAX_ACCURACY_M = 50;
+const STOP_CLOCK_MOVE_M = 30;
 const FIX_INTERVAL_MS = 2_000;
 
-function makeEngine() {
+function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
   let tripId = null;
   let startWatchPos = null;
   let startWatchTime = 0;
@@ -42,6 +46,10 @@ function makeEngine() {
   let lastRecordedAtMs = 0;
   let hasLastRecorded = false;
   let lastMovedMs = 0;
+  // The stop clock's anchor: where the vehicle stood when it was last judged to be travelling.
+  // Drift orbits its anchor and never accumulates; a crawl walks away from it.
+  let stopAnchorPos = 0;
+  let hasStopAnchor = false;
   let endPoint = null; // position of the last "ended" marker, null if none was written
   // Activity Recognition state: verdicts land on transitions, with a timestamp.
   let lastActivity = null;
@@ -72,6 +80,8 @@ function makeEngine() {
     lastRecordedAtMs = now;
     hasLastRecorded = true;
     lastMovedMs = now;
+    stopAnchorPos = pos;
+    hasStopAnchor = true;
     startWatchPos = null;
     points.push({ now, pos });
     events.push(`${fmt(now)} START (${gate}, ${flushed} pre-start points flushed)`);
@@ -84,6 +94,7 @@ function makeEngine() {
     tripId = null;
     hasLastRecorded = false;
     lastMovedMs = 0;
+    hasStopAnchor = false;
     startWatchPos = null;
     buffer = [];
   }
@@ -102,7 +113,10 @@ function makeEngine() {
     }
     prevSeenActivity = activity;
 
-    if (accuracy > MAX_ACCURACY_M) return;
+    // Inside a trip the accuracy bar is tighter: a fix that could be anywhere in a 96 m circle
+    // is not fit to be the anchor the NEXT fix's movement is measured from. See
+    // TRIP_ACTIVE_MAX_ACCURACY_M — this is what stopped one bad fix inventing 72 m of travel.
+    if (accuracy > (tripId === null ? MAX_ACCURACY_M : TRIP_ACTIVE_MAX_ACCURACY_M)) return;
 
     if (tripId === null) {
       if (accuracy > TRIP_START_MAX_ACCURACY_M) return;
@@ -164,7 +178,24 @@ function makeEngine() {
       lastRecordedAtMs = now;
       hasLastRecorded = true;
       lastMovedMs = now;
+      stopAnchorPos = pos;
+      hasStopAnchor = true;
       return;
+    }
+
+    // ── Stop clock ──────────────────────────────────────────────────────────────────────
+    // What keeps a trip alive is TRAVEL, not points: recorded points used to refresh
+    // lastMovedMs, so a parked phone whose fixes wobbled past the record threshold restarted
+    // the end timer indefinitely. Net displacement from a FIXED anchor separates bounded drift
+    // from unbounded creep. Doppler speed counts only when the position agrees — a stationary
+    // receiver does invent a few km/h out of nothing.
+    const netFromStopAnchor = hasStopAnchor ? Math.abs(pos - stopAnchorPos) : Infinity;
+    const travelled = netFromStopAnchor >= Math.max(STOP_CLOCK_MOVE_M, accuracy * 2);
+    const corroboratedSpeed = speedKmh >= RECORD_MOVING_SPEED_KMH && netFromStopAnchor >= accuracy;
+    if (travelled || corroboratedSpeed) {
+      lastMovedMs = now;
+      stopAnchorPos = pos;
+      hasStopAnchor = true;
     }
 
     const distFromLast = Math.abs(pos - lastRecordedPos);
@@ -186,14 +217,15 @@ function makeEngine() {
       if ((distFromLast / dtSec) * 3.6 > MAX_PLAUSIBLE_SPEED_KMH) return;
       lastRecordedPos = pos;
       lastRecordedAtMs = now;
-      lastMovedMs = now;
+      // No lastMovedMs here: the stop clock above owns it, and it wants evidence of travel
+      // rather than evidence that a point was written.
       points.push({ now, pos });
     }
   }
 
   function tick(now) {
     if (tripId === null) return;
-    if (lastMovedMs > 0 && now - lastMovedMs >= TRIP_END_NO_MOVE_MS) endTrip(now);
+    if (lastMovedMs > 0 && now - lastMovedMs >= tripEndAfterMs) endTrip(now);
   }
 
   return {
@@ -217,8 +249,8 @@ const drift = (i, amp) => amp * Math.sin(i * 1.7) * Math.cos(i * 0.9);
  * Phases: { from, to, speedKmh, still, activity, accuracy, driftAmpM, speedNoise }.
  * Position integrates speedKmh over time; parked phases hold position and add drift jitter.
  */
-function run(name, { phases, durationMs, gpsSilentAfter = Infinity, setup, assertFn }) {
-  const e = makeEngine();
+function run(name, { phases, durationMs, gpsSilentAfter = Infinity, setup, assertFn, tripEndAfterMs }) {
+  const e = makeEngine(tripEndAfterMs ?? TRIP_END_NO_MOVE_MS);
   if (setup) setup(e);
   let pos = 0;
   let i = 0;
@@ -253,6 +285,13 @@ function run(name, { phases, durationMs, gpsSilentAfter = Infinity, setup, asser
 
 const starts = (e) => e.events.filter((x) => x.includes('START')).length;
 const ends = (e) => e.events.filter((x) => x.includes('END')).length;
+/** Wall time of the END event, in ms — the number the driver compares against their own watch. */
+const endAtMs = (e) => {
+  const ev = e.events.find((x) => x.includes('END'));
+  if (!ev) return null;
+  const [m, s] = ev.slice(0, 5).split(':').map(Number);
+  return (m * 60 + s) * 1000;
+};
 
 let all = true;
 
@@ -443,6 +482,68 @@ all &= run('18. Walking 3 km/h for 10 min with no vehicle evidence of any kind �
   phases: [{ from: 0, to: 10 * 60_000, speedKmh: 3, still: false, activity: null,
              vehicleConfirmed: false, gaitUsable: true }],
   assertFn: (e) => starts(e) === 0 && e.tripId === null,
+});
+
+// ── Stop clock: the 2026-09-21 field case, and the per-project timeout ───────────────────────
+
+all &= run('19. FIELD BUG (trip 6ab0cc5b): park at 3:00, ±12 m drift for 15 min — ends 10 min after the REAL stop, not 20', {
+  durationMs: 18 * 60 * 1000,
+  phases: [{ from: 0, to: 3 * 60_000, speedKmh: 30, activity: 'vehicle' },
+           // Exactly what the handset saw: parked, 0 km/h, good-looking 9 m fixes wandering by
+           // 10-12 m. Every one of those wobbles used to be a recorded point, and every recorded
+           // point used to restart the 10-minute clock.
+           { from: 3 * 60_000, to: 18 * 60_000, speedKmh: 0, still: false, activity: 'vehicle',
+             accuracy: 9, driftAmpM: 12 }],
+  assertFn: (e) => {
+    const end = e.events.find((x) => x.includes('END'));
+    const at = endAtMs(e);
+    console.log(`  ended at ${at !== null ? (at / 60000).toFixed(1) : '—'} min (stop was at 3.0 min)`);
+    return ends(e) === 1 && !!end && /10\.\dm/.test(end) && at >= 12.8 * 60_000 && at <= 13.4 * 60_000;
+  },
+});
+
+all &= run('20. PROJECT OVERRIDE 3 min: same park — trip ends 3 min after stopping', {
+  durationMs: 12 * 60 * 1000,
+  tripEndAfterMs: 3 * 60 * 1000,
+  phases: [{ from: 0, to: 3 * 60_000, speedKmh: 30, activity: 'vehicle' },
+           { from: 3 * 60_000, to: 12 * 60_000, speedKmh: 0, still: false, activity: 'vehicle',
+             accuracy: 9, driftAmpM: 12 }],
+  assertFn: (e) => {
+    const end = e.events.find((x) => x.includes('END'));
+    const at = endAtMs(e);
+    console.log(`  ended at ${at !== null ? (at / 60000).toFixed(1) : '—'} min (stop was at 3.0 min)`);
+    return ends(e) === 1 && !!end && /3\.\dm/.test(end) && at >= 5.8 * 60_000 && at <= 6.4 * 60_000;
+  },
+});
+
+all &= run('21. PROJECT OVERRIDE 3 min: 2.5 min traffic signal mid-drive — trip must still NOT split', {
+  durationMs: 10 * 60 * 1000,
+  tripEndAfterMs: 3 * 60 * 1000,
+  phases: [{ from: 0, to: 2 * 60_000, speedKmh: 40, activity: 'vehicle' },
+           { from: 2 * 60_000, to: 4.5 * 60_000, speedKmh: 0, still: true, activity: 'vehicle' },
+           { from: 4.5 * 60_000, to: 10 * 60_000, speedKmh: 40, activity: 'vehicle' }],
+  assertFn: (e) => starts(e) === 1 && ends(e) === 0 && e.tripId !== null,
+});
+
+all &= run('22. The 96 m fix: one junk fix 72 m off a parked car must not invent travel', {
+  durationMs: 16 * 60 * 1000,
+  // Ordered deliberately: `phases.find` takes the FIRST match, so the junk window overrides the
+  // parked phase it sits inside.
+  phases: [{ from: 4 * 60_000, to: 4 * 60_000 + 10_000, speedKmh: 0, still: false,
+             activity: 'vehicle', accuracy: 96, driftAmpM: 72 },
+           { from: 0, to: 2 * 60_000, speedKmh: 30, activity: 'vehicle' },
+           { from: 2 * 60_000, to: 16 * 60_000, speedKmh: 0, still: false, activity: 'vehicle',
+             accuracy: 9, driftAmpM: 12 }],
+  assertFn: (e) => {
+    const parkedPos = (30 / 3.6) * 120; // where the car actually stopped, in metres
+    const worst = e.points
+      .filter((p) => p.now >= 2 * 60_000)
+      .reduce((m, p) => Math.max(m, Math.abs(p.pos - parkedPos)), 0);
+    const at = endAtMs(e);
+    console.log(`  furthest parked point from the real position: ${worst.toFixed(0)} m`);
+    console.log(`  ended at ${at !== null ? (at / 60000).toFixed(1) : '—'} min (stop was at 2.0 min)`);
+    return ends(e) === 1 && worst <= 30 && at >= 11.8 * 60_000 && at <= 12.4 * 60_000;
+  },
 });
 
 console.log(`\n${all ? 'ALL VEHICLE-GATE SCENARIOS PASS' : 'SOME VEHICLE-GATE SCENARIOS FAILED'}`);

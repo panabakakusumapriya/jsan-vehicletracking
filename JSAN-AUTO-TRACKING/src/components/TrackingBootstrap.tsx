@@ -63,6 +63,23 @@ export function TrackingBootstrap() {
     })();
   }, [user, token]);
 
+  // The project's stop timeout, pushed on its own because it changes on its own schedule: an
+  // admin edits it, /me picks it up on the next foreground, and the token and driver id that
+  // gate the effect above are unchanged the whole time — so folding it in there would leave the
+  // handset on the old value until the next sign-in. The native service also learns this from
+  // the heartbeat response, which is the path that works while the app is closed; this one is
+  // what makes a freshly installed or freshly signed-in app right before any heartbeat goes out.
+  const stopTimeoutRef = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    if (!user || user.role !== 'user' || !VehicleTracker.isSupported) return;
+    // Null, never 0: absent means "this project has no override", and 0 would read as "end the
+    // trip the instant it stops".
+    const minutes = typeof user.tripEndAfterMinutes === 'number' ? user.tripEndAfterMinutes : null;
+    if (stopTimeoutRef.current === minutes) return;
+    stopTimeoutRef.current = minutes;
+    void VehicleTracker.setTripEndAfterMinutes(minutes).catch(() => {});
+  }, [user]);
+
   // A napping service (10-minute idle stop) must revive the moment the driver RETURNS to
   // the app — not only when Activity Recognition notices a drive. start() is idempotent and
   // a foreground start is always legal, so this is free insurance: open app = tracker up.

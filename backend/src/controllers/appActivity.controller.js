@@ -104,6 +104,43 @@ exports.list = asyncHandler(async (req, res) => {
 const HEARTBEAT_DB_INTERVAL_MS = 5 * 60 * 1000;
 const lastDbWrite = new Map(); // driverId -> last DB write timestamp
 
+/**
+ * Per-project tracking settings ride back on the heartbeat RESPONSE.
+ *
+ * The tracking engine is a foreground service that runs for a whole shift without anyone
+ * opening the app, so a setting delivered only through /me — which the app re-reads on
+ * foreground — could sit unapplied until the driver next looked at their phone. The service
+ * already calls this endpoint every ~30 s, so an admin's change reaches the handset within
+ * about two minutes with no driver interaction at all. /me still carries it too: that is the
+ * path that survives a service restart before the first heartbeat goes out.
+ *
+ * Memoised because this runs once per heartbeat per driver. Without the cache a 50-handset
+ * fleet would add ~100 project reads a minute to fetch a field that changes once a month.
+ */
+const PROJECT_SETTINGS_TTL_MS = 60 * 1000;
+const projectSettingsCache = new Map(); // projectId -> { at, settings }
+
+async function projectTrackingSettings(user) {
+  const pid = user.projectIds?.[0];
+  if (!pid) return {};
+
+  const key = String(pid);
+  const hit = projectSettingsCache.get(key);
+  if (hit && Date.now() - hit.at < PROJECT_SETTINGS_TTL_MS) return hit.settings;
+
+  const Project = require('../models/Project');
+  const project = await Project.findById(pid).select('tripEndAfterMinutes').lean();
+  // `.lean()` does not apply schema defaults, so a project saved before this field existed
+  // reads undefined. Undefined has to mean "use the app's own default" — sending 0 or null as
+  // a number would tell the handset to end trips instantly.
+  const settings =
+    typeof project?.tripEndAfterMinutes === 'number'
+      ? { tripEndAfterMinutes: project.tripEndAfterMinutes }
+      : {};
+  projectSettingsCache.set(key, { at: Date.now(), settings });
+  return settings;
+}
+
 exports.heartbeat = asyncHandler(async (req, res) => {
   const user = req.user;
   const now = new Date();
@@ -129,7 +166,16 @@ exports.heartbeat = asyncHandler(async (req, res) => {
     }).catch(() => {});
   }
 
-  res.json({ ok: true });
+  // Config delivery must never be able to break liveness reporting: if the project lookup
+  // fails, the heartbeat still answers ok and the handset simply keeps the setting it has.
+  let settings = {};
+  try {
+    settings = await projectTrackingSettings(user);
+  } catch {
+    /* fall through with no settings */
+  }
+
+  res.json({ ok: true, ...settings });
 });
 
 // No auto sign-out watchdog. A driver losing internet while driving would

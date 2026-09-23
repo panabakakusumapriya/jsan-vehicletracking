@@ -67,7 +67,9 @@ object HeartbeatSender {
             wasNetworkOff = false
         }
 
-        // Fire-and-forget on one coalesced background worker.
+        // Fire-and-forget on one coalesced background worker. The application context, not the
+        // service's: this outlives the call that started it.
+        val appCtx = ctx.applicationContext
         if (!inFlight.compareAndSet(false, true)) return
         executor.execute {
             try {
@@ -81,6 +83,7 @@ object HeartbeatSender {
                 client.newCall(req).execute().use { resp ->
                     if (resp.isSuccessful) {
                         Log.d(TAG, "Heartbeat sent")
+                        applySettings(appCtx, resp.body?.string())
                     } else {
                         Log.w(TAG, "Heartbeat failed: HTTP ${resp.code}")
                     }
@@ -90,6 +93,34 @@ object HeartbeatSender {
             } finally {
                 inFlight.set(false)
             }
+        }
+    }
+
+    /**
+     * The heartbeat RESPONSE carries the driver's project-level tracking settings.
+     *
+     * This is the only channel that reaches the engine while it is doing its job: the service
+     * runs for a whole shift in the background, and a setting delivered only through the JS
+     * layer's /me call would wait for the driver to open the app — which, on a handset that
+     * lives in a cradle, may be never. Here it lands within one heartbeat of an admin saving it.
+     *
+     * An ABSENT field is meaningful and means "this project has no override, use the built-in
+     * default" — that is how clearing the box in the admin panel reaches the handset, and it is
+     * also what an older server (or any server that has not deployed this yet) says.
+     */
+    private fun applySettings(ctx: Context, body: String?) {
+        if (body.isNullOrBlank()) return
+        try {
+            val json = JSONObject(body)
+            val minutes =
+                if (json.has("tripEndAfterMinutes") && !json.isNull("tripEndAfterMinutes")) {
+                    json.optInt("tripEndAfterMinutes", 0)
+                } else 0
+            TrackingConfig.setTripEndAfterMinutes(ctx, minutes)
+        } catch (e: Exception) {
+            // A malformed body must never cost us the heartbeat itself — liveness is this
+            // request's actual job, config delivery is a passenger.
+            Log.w(TAG, "Heartbeat settings ignored: ${e.message}")
         }
     }
 

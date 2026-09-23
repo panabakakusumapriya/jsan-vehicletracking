@@ -38,6 +38,12 @@ export type AuthUser = {
    * said nothing about it.
    */
   showLogout?: boolean;
+  /**
+   * Minutes a stopped vehicle stays "on trip" before the engine ends it, set per project in the
+   * admin panel. Null/absent means the project never set one and the tracking engine keeps its
+   * own default — do NOT coerce that to 0, which would tell the engine to end trips instantly.
+   */
+  tripEndAfterMinutes?: number | null;
 };
 
 async function request(path: string, options: RequestInit = {}, token?: string | null) {

@@ -28,6 +28,36 @@ object TrackingConfig {
     fun token(ctx: Context): String? = prefs(ctx).getString("token", null)
     fun driverId(ctx: Context): String? = prefs(ctx).getString("driverId", null)
 
+    // ---- Per-project tracking settings (pushed from the server) ----
+
+    /**
+     * Bounds for the stop timeout below. Mirrored in the backend's project controller so the
+     * admin form cannot ask for a value the handset will quietly refuse — but clamped here as
+     * well, because this preference also survives a downgrade of the server and a hand-edited
+     * value must never be able to leave a handset unable to end a trip at all.
+     */
+    const val TRIP_END_MIN_MINUTES = 2
+    const val TRIP_END_MAX_MINUTES = 30
+
+    /**
+     * How long a trip may go without recorded movement before it ends, in ms.
+     *
+     * 0 means the driver's project never set one, and TrackingService falls back to its own
+     * TRIP_END_NO_MOVE_MS. Written from two directions — the heartbeat response (so a change
+     * lands mid-shift without the driver touching the app) and the JS layer at sign-in (so it
+     * is right at cold start, before the first heartbeat) — and read by the service ticker on
+     * every tick, which means an edit applies to a trip ALREADY in progress.
+     */
+    fun tripEndNoMoveMs(ctx: Context): Long = prefs(ctx).getLong("tripEndNoMoveMs", 0L)
+
+    /** Pass a non-positive value (or null) to clear the override and return to the default. */
+    fun setTripEndAfterMinutes(ctx: Context, minutes: Int?) {
+        val ms =
+            if (minutes == null || minutes <= 0) 0L
+            else minutes.coerceIn(TRIP_END_MIN_MINUTES, TRIP_END_MAX_MINUTES) * 60_000L
+        prefs(ctx).edit().putLong("tripEndNoMoveMs", ms).apply()
+    }
+
     // ---- Trip state machine (persisted so a killed/restarted service resumes cleanly) ----
     fun currentTripId(ctx: Context): String? = prefs(ctx).getString("currentTripId", null)
     fun setCurrentTripId(ctx: Context, id: String?) =

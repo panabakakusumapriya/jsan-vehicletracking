@@ -3,6 +3,31 @@ const User = require('../models/User');
 const asyncHandler = require('../utils/asyncHandler');
 const { clearScopeCache } = require('../services/coverageScope');
 
+// Bounds for the per-project stop timeout, mirrored by the clamp in TrackingService.kt so the
+// admin form can never ask a handset for something it will silently refuse. Under 2 minutes a
+// long signal would split one drive into several trips; over 30 the parked tail stops being a
+// stop buffer and just inflates every trip's duration.
+const TRIP_END_MIN_MINUTES = 2;
+const TRIP_END_MAX_MINUTES = 30;
+
+/**
+ * Three outcomes, and they are genuinely different: the field was absent (leave the project
+ * alone — a PATCH of just the name must not reset tracking), it was explicitly cleared (fall
+ * back to the app default), or it carries a number to validate. Collapsing the first two is
+ * what makes "I only renamed it" quietly change how trips end.
+ */
+function parseTripEndAfterMinutes(raw) {
+  if (raw === undefined) return { skip: true };
+  if (raw === null || raw === '') return { value: null };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < TRIP_END_MIN_MINUTES || n > TRIP_END_MAX_MINUTES) {
+    return {
+      error: `Stop timeout must be a number between ${TRIP_END_MIN_MINUTES} and ${TRIP_END_MAX_MINUTES} minutes`,
+    };
+  }
+  return { value: Math.round(n) };
+}
+
 // GET /api/projects?all=true  — every authenticated role can list; dropdowns need it
 // everywhere (Managers, Drivers). ?all=true (admin's own Projects tab) also returns
 // deactivated ones; everyone else only sees the assignable (active) set.
@@ -14,9 +39,14 @@ exports.list = asyncHandler(async (req, res) => {
 
 // POST /api/projects  (admin only)
 exports.create = asyncHandler(async (req, res) => {
-  const { name, code, country, coverageScopeId, coverageCycleId, enabledModules, showLogout } =
-    req.body || {};
+  const {
+    name, code, country, coverageScopeId, coverageCycleId, enabledModules, showLogout,
+    tripEndAfterMinutes,
+  } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Project name is required' });
+
+  const tripEnd = parseTripEndAfterMinutes(tripEndAfterMinutes);
+  if (tripEnd.error) return res.status(400).json({ error: tripEnd.error });
 
   try {
     const doc = {
@@ -28,6 +58,7 @@ exports.create = asyncHandler(async (req, res) => {
     };
     if (Array.isArray(enabledModules)) doc.enabledModules = enabledModules;
     if (typeof showLogout === 'boolean') doc.showLogout = showLogout;
+    if (!tripEnd.skip) doc.tripEndAfterMinutes = tripEnd.value;
     const project = await Project.create(doc);
     res.status(201).json({ project });
   } catch (err) {
@@ -41,8 +72,15 @@ exports.update = asyncHandler(async (req, res) => {
   const project = await Project.findById(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
-  const { name, code, country, active, coverageScopeId, coverageCycleId, enabledModules, showLogout } =
-    req.body || {};
+  const {
+    name, code, country, active, coverageScopeId, coverageCycleId, enabledModules, showLogout,
+    tripEndAfterMinutes,
+  } = req.body || {};
+
+  const tripEnd = parseTripEndAfterMinutes(tripEndAfterMinutes);
+  if (tripEnd.error) return res.status(400).json({ error: tripEnd.error });
+  if (!tripEnd.skip) project.tripEndAfterMinutes = tripEnd.value;
+
   if (name !== undefined) project.name = name;
   if (code !== undefined) project.code = code || null;
   if (country !== undefined) project.country = country || null;

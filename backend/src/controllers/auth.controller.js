@@ -16,13 +16,21 @@ async function attachEnabledModules(userData) {
   if (userData.role === 'user' && userData.projectIds?.length) {
     const Project = require('../models/Project');
     const pid = userData.projectIds[0]?._id || userData.projectIds[0];
-    const project = await Project.findById(pid).select('enabledModules showLogout').lean();
+    const project = await Project.findById(pid)
+      .select('enabledModules showLogout tripEndAfterMinutes')
+      .lean();
     if (project) {
       userData.enabledModules = project.enabledModules || ['dashboard', 'map'];
       // `!== false`, not a truthiness test: .lean() skips Mongoose defaults, so a project saved
       // before showLogout existed comes back undefined here. Undefined has to mean "show it" or
       // every project predating this feature would lose its sign-out button on deploy.
       userData.showLogout = project.showLogout !== false;
+      // How long a stopped vehicle stays "on trip", in minutes. Null — the same .lean() gap as
+      // above — means the project never set one, and the app keeps its own default. The app
+      // also learns this from the heartbeat response; this path is what makes it right at cold
+      // start, before the service has sent a single heartbeat.
+      userData.tripEndAfterMinutes =
+        typeof project.tripEndAfterMinutes === 'number' ? project.tripEndAfterMinutes : null;
     }
   }
   return userData;

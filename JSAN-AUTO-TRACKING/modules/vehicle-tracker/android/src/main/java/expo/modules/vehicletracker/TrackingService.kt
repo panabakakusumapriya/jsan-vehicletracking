@@ -209,11 +209,41 @@ class TrackingService : Service() {
         const val RECORD_MOVING_SPEED_KMH   = 3.0
 
         /**
-         * If the vehicle has not moved POINT_DISTANCE_M for this long, the trip ends.
-         * 10 min comfortably covers all traffic signal waits (even HITEC City / KPHB
-         * junction which runs up to 150 s) without splitting trips.
+         * DEFAULT time without real movement before the trip ends. 10 min comfortably covers
+         * all traffic signal waits (even HITEC City / KPHB junction, which runs up to 150 s)
+         * without splitting one drive into several trips.
+         *
+         * A project can override this from the admin panel — see TrackingConfig.tripEndNoMoveMs,
+         * which the ticker prefers whenever it holds a value. This constant is what a driver
+         * whose project never set one gets, and the fallback whenever the override is absent.
          */
         const val TRIP_END_NO_MOVE_MS       = 10 * 60 * 1000L
+
+        /**
+         * Accuracy ceiling for a fix DURING a trip, tighter than the MAX_ACCURACY_M hard reject.
+         *
+         * A 96 m fix is not a position, it is a circle with a building in it, and taking one as
+         * the recording anchor is how a parked vehicle manufactures movement: on 2026-09-21 a
+         * single 96 m fix pulled the anchor 72 m off a parked car, the drift back read as 66 m
+         * of travel, and those phantom metres refreshed the stop timer — the trip ended 20
+         * minutes after the driver arrived instead of 10. Rejecting the fix costs one point;
+         * accepting it costs the end of the trip. Doppler speed is measured independently of
+         * horizontal accuracy, so the reject path still lets corroborated vehicle motion hold a
+         * trip open through a tunnel or an urban canyon.
+         */
+        const val TRIP_ACTIVE_MAX_ACCURACY_M = 50f
+
+        /**
+         * Net displacement from the stop anchor before the stop timer is refreshed.
+         *
+         * The stop timer must be fed by TRAVEL, not by points. A stationary phone wanders inside
+         * a bounded circle — 10-15 m steps that never add up to anything — while a vehicle
+         * creeping through a jam marches away from where it was and keeps going. Measuring
+         * against a fixed anchor rather than against the previous fix is what separates them:
+         * drift's net displacement stays small however many fixes it mints, and a crawl passes
+         * 30 m within a minute or two even at 1 km/h.
+         */
+        const val STOP_CLOCK_MOVE_M         = 30f
 
         /**
          * Hard cap on one trip's length. Anything past this is a forgotten session, not a
@@ -392,8 +422,20 @@ class TrackingService : Service() {
     private var lastRecordedLat: Double = 0.0
     private var lastRecordedLon: Double = 0.0
     private var hasLastRecorded: Boolean = false
-    /** Wall-clock time of the last point written (refreshed on every recorded point). */
+    /**
+     * Elapsed-clock time the vehicle was last judged to be really moving — the stop timer runs
+     * from this. Deliberately NOT refreshed by every recorded point any more: a parked phone's
+     * jitter mints points, and each one used to restart the timer and hold a finished trip open.
+     */
     private var lastMovedMs: Long = 0L
+    /**
+     * Where the vehicle stood when the stop timer was last refreshed. Movement is judged as net
+     * displacement from HERE (see STOP_CLOCK_MOVE_M), so bounded drift cannot accumulate into a
+     * refresh however many fixes it produces.
+     */
+    private var stopAnchorLat: Double = 0.0
+    private var stopAnchorLon: Double = 0.0
+    private var hasStopAnchor: Boolean = false
     /** Throttles the server keep-alive heartbeat while parked. */
     private var lastHeartbeatMs: Long = 0L
     private var tripStartedElapsedMs: Long = 0L
@@ -647,12 +689,17 @@ class TrackingService : Service() {
 
         // ── Hard reject: awful accuracy ─────────────────────────────────────
         val accuracy = if (location.hasAccuracy()) location.accuracy else 30f
-        if (accuracy > MAX_ACCURACY_M) {
+        // Inside a trip the bar is tighter: a fix good enough to prove the phone is somewhere in
+        // this neighbourhood is not good enough to be the anchor that the NEXT fix's movement is
+        // measured against. See TRIP_ACTIVE_MAX_ACCURACY_M.
+        val inTrip = TrackingConfig.currentTripId(this) != null
+        val accuracyCeiling = if (inTrip) TRIP_ACTIVE_MAX_ACCURACY_M else MAX_ACCURACY_M
+        if (accuracy > accuracyCeiling) {
             // Never record a bad coordinate. Doppler speed is independent of horizontal
             // accuracy, so corroborated vehicle motion may only refresh the stop timer.
             val dopplerKmh = if (location.hasSpeed() && location.speed >= 0f) location.speed * 3.6 else 0.0
             motion.onGpsFix(dopplerKmh, null)
-            if (TrackingConfig.currentTripId(this) != null &&
+            if (inTrip &&
                 dopplerKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH && motion.isVehicle(now)
             ) lastMovedMs = now
             return
@@ -832,6 +879,9 @@ class TrackingService : Service() {
                     lastRecordedAtMs = now
                     hasLastRecorded  = true
                     lastMovedMs      = now
+                    stopAnchorLat    = rawLat
+                    stopAnchorLon    = rawLon
+                    hasStopAnchor    = true
                     lastHeartbeatMs  = now
                     startWatchPos    = null
                     recentSpeeds.clear()
@@ -914,12 +964,44 @@ class TrackingService : Service() {
                 lastRecordedAtMs = now
                 hasLastRecorded = true
                 lastMovedMs     = now
+                stopAnchorLat   = rawLat
+                stopAnchorLon   = rawLon
+                hasStopAnchor   = true
                 return
             }
 
             val distFromLast = haversineMeters(
                 lastRecordedLat, lastRecordedLon, rawLat, rawLon
             )
+
+            // ── Stop clock ────────────────────────────────────────────────────────────────
+            // What keeps a trip alive is TRAVEL, not points. These used to be the same thing:
+            // every recorded point refreshed lastMovedMs, so a parked phone whose fixes wobbled
+            // past the 10 m record threshold kept restarting the end-of-trip timer — 12:33 real
+            // arrival, drift points until 12:42, trip ended 12:52 (trip 6ab0cc5b, 2026-09-21).
+            //
+            // Measuring against a FIXED anchor instead of the previous fix is what tells drift
+            // from creep: jitter orbits its anchor and its net displacement stays inside the
+            // error circle forever, while a vehicle inching through a jam walks away from the
+            // anchor and passes STOP_CLOCK_MOVE_M within a minute or two even at 1 km/h. Doppler
+            // speed is the other witness, and the faster one whenever the receiver has it.
+            val netFromStopAnchor =
+                if (hasStopAnchor) haversineMeters(stopAnchorLat, stopAnchorLon, rawLat, rawLon)
+                else Float.MAX_VALUE
+            // Travel, or speed that the position agrees with. A parked receiver does report
+            // phantom Doppler — a few km/h out of nothing — so speed alone cannot be allowed to
+            // hold a trip open; pairing it with "and the fix has left its own error circle" keeps
+            // the fast, obvious case instant while costing a genuine crawl only the seconds it
+            // takes to cover the displacement floor.
+            val travelled = netFromStopAnchor >= maxOf(STOP_CLOCK_MOVE_M, accuracy * 2f)
+            val corroboratedSpeed =
+                speedKmh >= RECORD_MOVING_SPEED_KMH && netFromStopAnchor >= accuracy
+            if (travelled || corroboratedSpeed) {
+                lastMovedMs   = now
+                stopAnchorLat = rawLat
+                stopAnchorLon = rawLon
+                hasStopAnchor = true
+            }
 
             // Recording is decided by MOVEMENT, and movement has three witnesses, any one of
             // which is enough: the activity model says not-STILL; GPS speed shows a real crawl;
@@ -978,7 +1060,8 @@ class TrackingService : Service() {
                 lastRecordedLat  = rawLat
                 lastRecordedLon  = rawLon
                 lastRecordedAtMs = now
-                lastMovedMs      = now
+                // No lastMovedMs refresh here on purpose — the stop clock above owns that, and
+                // it wants evidence of travel rather than evidence that a point was written.
                 lastHeartbeatMs  = now
 
                 savePoint(rawLat, rawLon, location, speedKmh, tripId, "active", wallNow)
@@ -1069,9 +1152,16 @@ class TrackingService : Service() {
             return
         }
 
-        // Active trip — has anything been recorded recently? Every recorded point refreshes
-        // lastMovedMs, so this is "10 minutes without a single recordable metre of movement".
-        if (lastMovedMs > 0L && now - lastMovedMs >= TRIP_END_NO_MOVE_MS) {
+        // Active trip — has the vehicle actually travelled recently? lastMovedMs is refreshed by
+        // the stop clock in processFix (real speed, or net displacement from the stop anchor),
+        // so this reads as "N minutes without the vehicle going anywhere".
+        //
+        // N is the driver's project setting when the admin panel has set one, and the built-in
+        // default otherwise. Read on every tick rather than cached at trip start, so an admin
+        // changing it takes effect on a trip that is already running.
+        val tripEndAfterMs =
+            TrackingConfig.tripEndNoMoveMs(this).let { if (it > 0L) it else TRIP_END_NO_MOVE_MS }
+        if (lastMovedMs > 0L && now - lastMovedMs >= tripEndAfterMs) {
             // The full grace passed at a dead stop → the vehicle is genuinely parked. Any real
             // movement inside the grace resets the clock and the trip simply continues.
             endTrip(tripId, now, wallNow)
@@ -1118,6 +1208,7 @@ class TrackingService : Service() {
         releaseWakeLock()
         hasLastRecorded = false
         lastMovedMs     = 0L
+        hasStopAnchor   = false
         lastHeartbeatMs = 0L
         groundRefLoc    = null
         groundRefMs     = 0L

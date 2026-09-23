@@ -63,6 +63,11 @@ export interface Project {
   enabledModules?: string[];
   /** Undefined on projects saved before the setting existed, and that means "show it". */
   showLogout?: boolean;
+  /**
+   * Minutes a vehicle may sit still before the handset ends the trip. null/undefined means the
+   * project never set one and the app uses its own default (10 min).
+   */
+  tripEndAfterMinutes?: number | null;
   createdAt?: string;
 }
 
