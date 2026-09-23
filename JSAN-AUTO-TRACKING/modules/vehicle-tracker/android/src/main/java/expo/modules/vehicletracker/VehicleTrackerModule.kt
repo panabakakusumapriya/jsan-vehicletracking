@@ -44,12 +44,21 @@ class VehicleTrackerModule : Module() {
         }
 
         AsyncFunction("getStatus") {
+            // The stop timeout the ticker would ACTUALLY use right now, resolved exactly the way
+            // it resolves it — the stored project override when there is one, else the built-in
+            // default. Reported so the driver's own screen can show the number, which is the only
+            // way anyone can confirm an admin's change reached this handset without waiting to
+            // park a vehicle and time it with a watch.
+            val override = TrackingConfig.tripEndNoMoveMs(context)
+            val effective = if (override > 0L) override else TrackingService.TRIP_END_NO_MOVE_MS
             mapOf(
                 "enabled" to TrackingConfig.isEnabled(context),
                 "queued" to LocationDatabase(context).count(),
                 "currentTripId" to TrackingConfig.currentTripId(context),
                 "driverId" to TrackingConfig.driverId(context),
-                "apiBaseUrl" to TrackingConfig.apiBaseUrl(context)
+                "apiBaseUrl" to TrackingConfig.apiBaseUrl(context),
+                "tripEndAfterMinutes" to (effective / 60_000L).toInt(),
+                "tripEndIsProjectSetting" to (override > 0L)
             )
         }
 

@@ -300,6 +300,29 @@ export default function Home() {
         </View>
       )}
 
+      {/* ── Trip settings ──
+             The stop timeout is set per project in the admin panel and pushed down; showing it
+             here is what lets anyone confirm a change actually reached THIS handset, instead of
+             parking a vehicle and timing the trip end with a watch. Hidden on an older native
+             build, which does not report the field at all. ── */}
+      {typeof status?.tripEndAfterMinutes === 'number' && (
+        <View style={s.daylightCard}>
+          <Text style={s.daylightTitle}>Trip settings</Text>
+          <View style={s.daylightRow}>
+            <Text style={s.daylightLabel}>Ends trip after</Text>
+            <Text style={s.daylightValue}>
+              {status.tripEndAfterMinutes} min stopped
+            </Text>
+          </View>
+          <View style={s.daylightRow}>
+            <Text style={s.daylightLabel}>Source</Text>
+            <Text style={s.daylightValue}>
+              {status.tripEndIsProjectSetting ? 'Project setting' : 'Default'}
+            </Text>
+          </View>
+        </View>
+      )}
+
       {/* ── Stats grid ── */}
       <View style={s.grid}>
         <StatTile label="Speed"   value={lastFix ? `${Math.round(lastFix.speedKmh)}` : '—'} unit="km/h"  color={C.brand}   />

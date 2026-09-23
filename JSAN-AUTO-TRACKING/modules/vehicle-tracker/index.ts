@@ -31,6 +31,14 @@ export type TrackerStatus = {
   currentTripId: string | null;
   driverId: string | null;
   apiBaseUrl: string | null;
+  /**
+   * The stop timeout the engine would use right now, in minutes — the project's setting when it
+   * has one, otherwise the engine's own default. Optional because an older native build does not
+   * report it.
+   */
+  tripEndAfterMinutes?: number;
+  /** True when that number came from the driver's project rather than the built-in default. */
+  tripEndIsProjectSetting?: boolean;
 };
 
 export type DaylightInfo = {
