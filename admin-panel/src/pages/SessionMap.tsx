@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link, useLocation } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -96,7 +97,7 @@ export function SessionMap() {
       {/* Header */}
       <div className="page-head">
         <div>
-          <h1 className="page-title">
+          <h1 className="page-title"><PageIcon name="map" />
             Session Map
             <span
               className={`badge ${trip.status === 'active' ? 'green' : trip.status === 'completed' ? 'gray' : 'amber'}`}

@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useRef, useState } from 'react';
 import { ssdsApi } from '../lib/ssdsApi';
 import { API_URL } from '../lib/api';
@@ -176,7 +177,7 @@ export function DriverMySsds() {
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">My SSDS</h1>
+        <h1 className="page-title"><PageIcon name="grid" />My SSDS</h1>
         <button className="btn" onClick={openAddForm} disabled={showAddForm}>+ Add SSD</button>
       </div>
 

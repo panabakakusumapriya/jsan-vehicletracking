@@ -1,20 +1,8 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-/**
- * Dev proxy target for /api + /socket.io (keeps the panel single-origin: no CORS, clean
- * websocket upgrades).
- *
- * This USED to default to the Railway backend, which meant "npm run dev" silently pointed
- * local work at production — and when that deploy is stale you get a 404 on /api/auth/login
- * that looks like a bug in the panel. So the default is now decided by what is actually
- * running, and the choice is printed at startup instead of being invisible.
- *
- * Order of precedence:
- *   1. BACKEND_URL=...      explicit wins, always
- *   2. --mode local | prod  explicit intent
- *   3. auto                 local backend if it answers /health, else the deployed one
- */
+// Local development uses the local API. Production is available only through an explicit
+// --mode prod or BACKEND_URL override, so startup timing cannot select an old deployed API.
 const LOCAL = 'http://localhost:4000';
 const RAILWAY = 'https://backend-jsan-vehicletracking-production.up.railway.app';
 
@@ -23,13 +11,7 @@ async function pickBackend(mode: string): Promise<{ url: string; why: string }> 
   if (mode === 'prod' || mode === 'railway') return { url: RAILWAY, why: '--mode prod' };
   if (mode === 'local') return { url: LOCAL, why: '--mode local' };
 
-  try {
-    const res = await fetch(`${LOCAL}/health`, { signal: AbortSignal.timeout(700) });
-    if (res.ok) return { url: LOCAL, why: 'local backend is running on :4000' };
-  } catch {
-    /* nothing listening locally — fall through to the deployed backend */
-  }
-  return { url: RAILWAY, why: 'no local backend on :4000' };
+  return { url: LOCAL, why: 'local development backend' };
 }
 
 export default defineConfig(async ({ mode }) => {

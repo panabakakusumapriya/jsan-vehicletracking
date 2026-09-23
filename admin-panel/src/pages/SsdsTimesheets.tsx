@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
@@ -155,7 +156,7 @@ export function SsdsTimesheets() {
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">Timesheets</h1>
+        <h1 className="page-title"><PageIcon name="clock" />Timesheets</h1>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {canEdit && <button className="btn" onClick={openAdd}>+ Add Timesheet</button>}
           <button className="btn" onClick={handleExport}>Export</button>

@@ -10,6 +10,7 @@ import { AuthProvider } from './lib/auth';
 import { registerServiceWorker } from './lib/pwa';
 import { SocketProvider } from './lib/socket';
 import './index.css';
+import './premium.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

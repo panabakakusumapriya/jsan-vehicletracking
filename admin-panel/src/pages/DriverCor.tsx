@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { ssdsApi } from '../lib/ssdsApi';
 
@@ -108,7 +109,7 @@ export function DriverCor() {
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">COR Compliance</h1>
+        <h1 className="page-title"><PageIcon name="shield" />COR Compliance</h1>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn" onClick={openNew}>+ New Declaration</button>
           <button className="btn-ghost" onClick={load}>Refresh</button>

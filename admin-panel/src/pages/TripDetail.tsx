@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { DistanceModeToggle, type DistanceMode } from '../components/DistanceModeToggle';
@@ -494,7 +495,7 @@ export function TripDetail() {
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">
+        <h1 className="page-title"><PageIcon name="route" />
           Trip · {driver} <span className={`badge ${statusBadge(trip.status)}`}>{trip.status}</span>
         </h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

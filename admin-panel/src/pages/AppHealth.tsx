@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import type { Project } from '../lib/types';
@@ -114,7 +115,7 @@ export function AppHealth() {
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
       <div className="page-head">
         <div>
-          <h1 className="page-title">App Health</h1>
+          <h1 className="page-title"><PageIcon name="health" />App Health</h1>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <select className="input" style={{ width: 120, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>

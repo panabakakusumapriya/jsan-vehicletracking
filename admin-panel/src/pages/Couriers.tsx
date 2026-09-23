@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { divIcon, type Marker as LeafletMarker, type LatLngBoundsExpression } from 'leaflet';
+import { latLng, type Marker as LeafletMarker, type LatLngBoundsExpression } from 'leaflet';
 import { Circle, MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import { api } from '../lib/api';
 import { MapAutoResize } from '../lib/MapAutoResize';
 import { dt } from '../lib/format';
+import { NearbyIcon, nearbyPlacePin, nearbyDriverPin } from '../lib/NearbyUI';
 
 /**
  * Courier drop-off points near a driver — modeled directly on the Hotels tab: a map first,
@@ -63,18 +64,6 @@ interface CourierResponse {
   message?: string;
 }
 
-const PackageIcon = () => (
-  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
-    <path d="m3.3 7 8.7 5 8.7-5M12 22V12"/>
-  </svg>
-);
-const FilterIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-  </svg>
-);
-
 const RADII = [5, 10, 15, 25, 50, 100];
 
 /**
@@ -112,32 +101,8 @@ function scoreTone(score: number | null) {
 // ── Map markers ──────────────────────────────────────────────────────────────
 
 /** The driver: a violet pulse, same as Hotels/Weather, so "where they are" reads instantly. */
-function driverPin() {
-  return divIcon({
-    className: 'courier-driver-pin',
-    html: `<div style="position:relative;width:26px;height:26px;">
-      <span style="position:absolute;inset:0;border-radius:50%;background:rgba(124,58,237,0.28);animation:hotelpulse 2s ease-out infinite;"></span>
-      <span style="position:absolute;inset:6px;border-radius:50%;background:#7c3aed;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></span>
-    </div>`,
-    iconSize: [26, 26], iconAnchor: [13, 13], popupAnchor: [0, -13],
-  });
-}
-
-function placePin(label: string, active: boolean) {
-  const base = '#0891b2';
-  const bg = active ? base : '#ffffff';
-  const fg = active ? '#ffffff' : base;
-  const scale = active ? 1.12 : 1;
-  return divIcon({
-    className: 'courier-place-pin',
-    html: `<div style="transform:scale(${scale});transform-origin:bottom center;">
-      <div style="background:${bg};color:${fg};border:1.5px solid ${base};border-radius:999px;
-        padding:2px 8px;font:700 11.5px/1.3 Inter,sans-serif;white-space:nowrap;
-        box-shadow:0 2px 6px rgba(0,0,0,${active ? 0.35 : 0.2});">📦 ${label}</div>
-    </div>`,
-    iconSize: [0, 0], iconAnchor: [0, 0], popupAnchor: [0, -10],
-  });
-}
+const driverPin = nearbyDriverPin;
+const placePin = (label: string, active: boolean) => nearbyPlacePin('courier', label, active);
 
 /** Fit the map to the driver + every place whenever the result set changes. */
 function FitToData({ bounds }: { bounds: LatLngBoundsExpression | null }) {
@@ -188,15 +153,18 @@ export function Couriers() {
     [places]
   );
 
-  const anchor: [number, number] | null =
-    selected && selected.lat != null && selected.lon != null ? [selected.lat, selected.lon] : null;
+  const anchor = useMemo<[number, number] | null>(() =>
+    selected && selected.lat != null && selected.lon != null ? [selected.lat, selected.lon] : null, [selected]);
 
   const bounds = useMemo<LatLngBoundsExpression | null>(() => {
+    if (anchor && mapped.length === 0 && data?.search) {
+      return latLng(anchor).toBounds(data.search.radiusKm * 2000);
+    }
     const pts: [number, number][] = [];
     if (anchor) pts.push(anchor);
     for (const p of mapped) pts.push([p.lat as number, p.lon as number]);
     return pts.length ? pts : null;
-  }, [anchor, mapped]);
+  }, [anchor, mapped, data?.search]);
 
   const focusPlace = (id: string) => {
     setFocusId(id);
@@ -205,35 +173,38 @@ export function Couriers() {
   };
 
   return (
-    <div>
+    <div className="nearby-page nearby-page--courier">
       <div className="page-head">
         <div>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <PackageIcon /> Couriers
+            <span className="nearby-logo"><NearbyIcon kind="courier" size={27} /></span> Couriers
           </h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             FedEx / DHL / UPS and other drop-off points near a driver&apos;s last reported position
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <FilterIcon />
+        <div className="nearby-controls">
+          <label className="nearby-field"><span><NearbyIcon kind="driver" size={13} /> Driver</span>
           <select className="input" style={{ width: 180, margin: 0 }} value={driverId} onChange={e => setDriverId(e.target.value)}>
             {located.length === 0 && <option value="">No located drivers</option>}
             {located.map(d => (
               <option key={d._id} value={d._id}>{d.name}{d.country ? ` · ${d.country}` : ''}</option>
             ))}
           </select>
+          </label>
+          <label className="nearby-field nearby-field--radius"><span><NearbyIcon kind="radius" size={13} /> Radius</span>
           <select className="input" style={{ width: 100, margin: 0 }} value={radiusKm} onChange={e => setRadiusKm(Number(e.target.value))}>
             {RADII.map(r => <option key={r} value={r}>{r} km</option>)}
           </select>
+          </label>
           <button className="btn" onClick={search} disabled={loading}>
-            {loading ? 'Searching…' : 'Search'}
+            <NearbyIcon kind="search" size={17} /> {loading ? 'Searching…' : 'Search'}
           </button>
         </div>
       </div>
 
       {/* Secondary status line */}
-      <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14, fontSize: 13 }}>
+      <div className="nearby-status">
         {selected && data?.search && (
           <span style={{ fontSize: 12.5, color: 'var(--text-2)' }}>
             <strong>{selected.name}</strong> · {mapped.length} within {data.search.radiusKm} km
@@ -258,9 +229,9 @@ export function Couriers() {
         </div>
       )}
 
-      {data?.message && !error && (
+      {data?.message && !error && !anchor && (
         <div className="card" style={{ textAlign: 'center', padding: '50px 24px', color: 'var(--muted)' }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>📍</div>
+          <span className="nearby-empty-icon"><NearbyIcon kind="courier" size={26} /></span>
           <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-2)', marginBottom: 6 }}>
             Nowhere to search yet
           </div>
@@ -273,9 +244,9 @@ export function Couriers() {
       )}
 
       {/* Map + synced list */}
-      {anchor && !error && !data?.message && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 340px', gap: 14, alignItems: 'stretch' }}>
-          <div className="map-wrap" style={{ height: 'calc(100vh - 230px)', minHeight: 460 }}>
+      {anchor && !error && (
+        <div className="nearby-results">
+          <div className="map-wrap" style={{ position: 'relative', isolation: 'isolate', height: 'calc(100vh - 230px)', minHeight: 460 }}>
             <MapContainer center={anchor} zoom={12} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
               <TileLayer
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -288,7 +259,7 @@ export function Couriers() {
                 <Circle
                   center={anchor}
                   radius={data.search.radiusKm * 1000}
-                  pathOptions={{ color: '#0891b2', weight: 1, fillColor: '#0891b2', fillOpacity: 0.05 }}
+                  pathOptions={{ color: '#0050a9', weight: 1, fillColor: '#0050a9', fillOpacity: 0.05 }}
                 />
               )}
 
@@ -332,7 +303,7 @@ export function Couriers() {
                           )}
                         </div>
                         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                          {p.phone && <span style={{ fontSize: 12 }}>📞 {p.phone}</span>}
+                          {p.phone && <span style={{ fontSize: 12 }}>Phone: {p.phone}</span>}
                           {p.website && (
                             <a href={p.website} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12 }}>
                               Website →
@@ -345,13 +316,18 @@ export function Couriers() {
                 );
               })}
             </MapContainer>
+            {!loading && mapped.length === 0 && data?.search && (
+              <div role="status" aria-live="polite" className="nearby-map-empty">
+                <span className="nearby-empty-icon"><NearbyIcon kind="courier" size={25} /></span>
+                <strong>No courier services found within {data.search.radiusKm} km.</strong>
+                <div style={{ marginTop: 4, fontSize: 13 }}>Please increase the distance and search again.</div>
+              </div>
+            )}
           </div>
 
           {/* Synced list — a scannable index into the map, not the main view. */}
-          <div className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 230px)', minHeight: 460 }}>
-            <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--line)', fontSize: 12.5, fontWeight: 700, color: 'var(--text-2)' }}>
-              {mapped.length} location{mapped.length === 1 ? '' : 's'} on map
-            </div>
+          <div className="card nearby-list" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 230px)', minHeight: 460 }}>
+            <div className="nearby-list-head"><NearbyIcon kind="courier" /> Nearby couriers <small>{mapped.length} found</small></div>
             <div style={{ overflowY: 'auto', flex: 1 }}>
               {mapped.map((p, i) => {
                 const id = `${p.id}-${i}`;
@@ -359,6 +335,8 @@ export function Couriers() {
                 return (
                   <button
                     key={id}
+                    className="nearby-result"
+                    aria-pressed={active}
                     onClick={() => focusPlace(id)}
                     style={{
                       display: 'flex', flexDirection: 'column', gap: 3, width: '100%', textAlign: 'left', cursor: 'pointer',
@@ -367,7 +345,7 @@ export function Couriers() {
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ background: '#ecfeff', color: '#0891b2', border: '1px solid #a5f3fc', borderRadius: 6, padding: '1px 6px', fontSize: 10.5, fontWeight: 700, flexShrink: 0 }}>
+                      <span style={{ background: '#e8f4fc', color: '#0050a9', border: '1px solid #7db8e8', borderRadius: 6, padding: '1px 6px', fontSize: 10.5, fontWeight: 700, flexShrink: 0 }}>
                         {shortLabel(p)}
                       </span>
                       <div style={{ fontWeight: 700, fontSize: 12.5, lineHeight: 1.25, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -386,6 +364,7 @@ export function Couriers() {
               })}
               {mapped.length === 0 && (
                 <div className="muted" style={{ padding: '30px 16px', textAlign: 'center', fontSize: 13 }}>
+                  <span className="nearby-empty-icon"><NearbyIcon kind="courier" size={26} /></span>
                   Nothing found within {data?.search?.radiusKm} km. Try a wider radius.
                 </div>
               )}
@@ -395,12 +374,12 @@ export function Couriers() {
       )}
 
       {(data?.unplaced?.length ?? 0) > 0 && (
-        <div className="card" style={{ marginTop: 14, padding: '12px 16px' }}>
-          <div style={{ fontWeight: 700, fontSize: 13 }}>No recent position ({data!.unplaced.length})</div>
+        <details className="card" style={{ marginTop: 14, padding: '12px 16px' }}>
+          <summary style={{ fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>No recent position ({data!.unplaced.length})</summary>
           <div className="muted" style={{ fontSize: 12.5, marginTop: 5 }}>
             {data!.unplaced.map(d => d.name).join(' · ')}
           </div>
-        </div>
+        </details>
       )}
     </div>
   );

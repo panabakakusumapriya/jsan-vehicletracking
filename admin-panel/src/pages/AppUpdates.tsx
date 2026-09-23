@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
@@ -143,7 +144,7 @@ export function AppUpdates() {
     <div>
       <div className="page-head">
         <div>
-          <h1 className="page-title">App Updates</h1>
+          <h1 className="page-title"><PageIcon name="upload" />App Updates</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             Manage mobile app versions — versions appear here automatically when the app launches
           </p>
@@ -187,7 +188,7 @@ export function AppUpdates() {
         <div className="card" style={{
           marginBottom: 16,
           background: 'var(--brand-light)',
-          border: '1.5px solid rgba(124,58,237,0.2)',
+          border: '1.5px solid rgba(0,80,169,0.2)',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <span className="badge green">Required version</span>

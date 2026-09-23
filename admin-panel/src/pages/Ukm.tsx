@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MapContainer, Polyline, TileLayer, useMap } from 'react-leaflet';
 import { api, downloadFile } from '../lib/api';
@@ -466,7 +467,7 @@ export function Ukm() {
     <div style={{ padding: '0 4px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <div>
-          <h1 className="page-title">Unique Kilometers (UKM)</h1>
+          <h1 className="page-title"><PageIcon name="coverage" />Unique Kilometers (UKM)</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
             Road counted once for the whole coverage programme. A street earns UKM for the driver
             who reached it first — any later pass, by any driver on any project in the same

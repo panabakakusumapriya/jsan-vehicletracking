@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { api, API_URL } from '../lib/api';
@@ -240,7 +241,7 @@ export function SsdsPortal() {
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">SSDS Portal</h1>
+        <h1 className="page-title"><PageIcon name="grid" />SSDS Portal</h1>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {canEdit && <button className="btn" onClick={openAdd}>+ Add SSD</button>}
           <button className="btn" onClick={handleExport}>Export</button>

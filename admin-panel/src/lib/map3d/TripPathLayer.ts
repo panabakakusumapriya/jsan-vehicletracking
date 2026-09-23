@@ -11,7 +11,7 @@ export interface TripPoint {
   recordedAt: string;
 }
 
-const TINT: [number, number, number] = [124, 58, 237];
+const TINT: [number, number, number] = [0, 80, 169];
 const SNAPPED_TINT: [number, number, number] = [13, 148, 136]; // teal — visually distinct from the raw trail
 // Road the driver had already covered on an earlier trip: kept visible but pushed back, so the
 // eye lands on the UKM stretches drawn over it. Slate rather than a lighter teal, because two

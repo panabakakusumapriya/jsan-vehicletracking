@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { divIcon } from 'leaflet';
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
@@ -245,7 +246,7 @@ export function LiveMap() {
         {/* Header */}
         <div style={{ marginBottom: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-            <h1 className="page-title">Live Map</h1>
+            <h1 className="page-title"><PageIcon name="map" />Live Map</h1>
             <span className={`badge ${connected ? 'green' : 'gray'}`}>
               {connected ? '● Live' : '○ Offline'}
             </span>
@@ -325,7 +326,7 @@ export function LiveMap() {
                   <div style={{
                     width: 34, height: 34, borderRadius: 10, flexShrink: 0,
                     background: driverState(d) === 'moving' ? 'var(--brand-light)' : 'var(--amber-bg)',
-                    border: `1px solid ${driverState(d) === 'moving' ? 'rgba(124,58,237,0.2)' : 'rgba(217,119,6,0.25)'}`,
+                    border: `1px solid ${driverState(d) === 'moving' ? 'rgba(0,80,169,0.2)' : 'rgba(217,119,6,0.25)'}`,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     color: driverState(d) === 'moving' ? 'var(--brand)' : 'var(--amber)',
                     fontSize: 11, fontWeight: 800,
@@ -452,7 +453,7 @@ export function LiveMap() {
                 <Popup>
                   <b>{d.driver.name}</b><br />
                   {d.vehicle?.plateNumber && <><span>{d.vehicle.plateNumber}</span><br /></>}
-                  {project && <><span style={{ color: '#6366f1' }}>{project}</span><br /></>}
+                  {project && <><span style={{ color: '#0050a9' }}>{project}</span><br /></>}
                   {country && <><span>{country}</span><br /></>}
                   <span className={`badge ${STATE_UI[driverState(d)].badge}`} style={{ fontSize: 11 }} title={STATE_UI[driverState(d)].hint}>
                     {STATE_UI[driverState(d)].label}
@@ -480,7 +481,7 @@ export function LiveMap() {
                 <Popup>
                   <b>{p.driver.name}</b><br />
                   {p.vehicle?.plateNumber && <><span>{p.vehicle.plateNumber}</span><br /></>}
-                  {project && <><span style={{ color: '#6366f1' }}>{project}</span><br /></>}
+                  {project && <><span style={{ color: '#0050a9' }}>{project}</span><br /></>}
                   {country && <><span>{country}</span><br /></>}
                   <span style={{ color: '#f97316', fontWeight: 600, fontSize: 11 }}>Parked</span><br />
                   {p.endedAt ? new Date(p.endedAt).toLocaleTimeString() : ''}<br />

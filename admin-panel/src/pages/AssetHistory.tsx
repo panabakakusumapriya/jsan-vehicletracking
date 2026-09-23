@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useMemo, useState } from 'react';
 import { api, downloadFile } from '../lib/api';
 import type { CustodyReport, CustodyStint } from '../lib/types';
@@ -178,7 +179,7 @@ export function AssetHistory() {
     <div>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Asset history</h1>
+          <h1 className="page-title"><PageIcon name="history" />Asset history</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             Who had which vehicle and which mobile, month by month
           </p>

@@ -1,3 +1,4 @@
+import { AppIcon } from './AppIcon';
 import { useEffect, useRef, useState } from 'react';
 
 type ExportFormat = 'kml' | 'json';
@@ -28,13 +29,7 @@ const CHOICES: Choice[] = [
   { format: 'json', layer: 'raw', label: 'Raw GPS · JSON', hint: 'Points with speed, heading, timestamps' },
 ];
 
-const DownloadIcon = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <polyline points="7 10 12 15 17 10" />
-    <line x1="12" y1="15" x2="12" y2="3" />
-  </svg>
-);
+
 
 const ChevronIcon = ({ open }: { open: boolean }) => (
   <svg
@@ -92,17 +87,20 @@ export function ExportButtons({ onExport, disabled, snappedAvailable = false, st
       <button
         type="button"
         className="btn-ghost"
+        aria-haspopup="menu"
+        aria-expanded={open}
         disabled={disabled || pending !== null}
         onClick={() => setOpen((v) => !v)}
         style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, fontWeight: 600 }}
       >
-        <DownloadIcon />
+        <AppIcon name="download" size={16} />
         {pending ? (status || 'Exporting…') : 'Export'}
         <ChevronIcon open={open} />
       </button>
 
       {open && (
         <div
+          className="export-menu"
           role="menu"
           style={{
             position: 'absolute',

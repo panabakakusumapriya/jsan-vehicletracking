@@ -81,27 +81,10 @@ module.exports = {
   WEATHER_WIND_CAUTION_KMH: parseInt(process.env.WEATHER_WIND_CAUTION_KMH || '40', 10),
   WEATHER_GUST_UNSAFE_KMH: parseInt(process.env.WEATHER_GUST_UNSAFE_KMH || '60', 10),
 
-  // ---- Hotels (Booking.com via RapidAPI — METERED, unlike the weather feed) ----
-  // Set RAPIDAPI_KEY in .env to override. The fallback below is the key supplied for this
-  // build; because it lives in the repo, treat it as public and rotate it before going live.
-  RAPIDAPI_KEY: process.env.RAPIDAPI_KEY || '8b971fb882msh8f6038d99f96281p1040a5jsn0a1a5df61c89',
-  // Every uncached search is a billable call, so results are held far longer than a forecast.
-  // Room availability moves in hours, not minutes.
-  HOTELS_CACHE_MINUTES: parseInt(process.env.HOTELS_CACHE_MINUTES || '60', 10),
-  // Hard stop per UTC day. A stuck page refreshing on a timer could otherwise spend a whole
-  // month's plan overnight; this fails loudly instead.
-  HOTELS_DAILY_CALL_CAP: parseInt(process.env.HOTELS_DAILY_CALL_CAP || '150', 10),
-  // Drivers within ~1 km share a cached search — they would be offered the same beds anyway.
-  HOTELS_GRID_DEGREES: parseFloat(process.env.HOTELS_GRID_DEGREES || '0.01'),
-  // Provider accepts 10–500 km. 30 km is a sensible night-stop radius for someone already
-  // tired; the manager can widen it per search.
-  HOTELS_DEFAULT_RADIUS_KM: parseInt(process.env.HOTELS_DEFAULT_RADIUS_KM || '30', 10),
-  HOTELS_MAX_NIGHTS: parseInt(process.env.HOTELS_MAX_NIGHTS || '30', 10),
-  HOTELS_CURRENCY: (process.env.HOTELS_CURRENCY || 'INR').toUpperCase(),
-  // Same position window the weather tab uses: an older fix could put a driver in the wrong
-  // city, and booking a room in the wrong city is worse than saying "unknown".
+  // Database-backed hotel search.
+  HOTELS_DEFAULT_RADIUS_KM: parseInt(process.env.HOTELS_DEFAULT_RADIUS_KM || '15', 10),
+  HOTELS_MAX_RESULTS: parseInt(process.env.HOTELS_MAX_RESULTS || '40', 10),
   HOTELS_ACTIVE_DAYS: parseInt(process.env.HOTELS_ACTIVE_DAYS || '7', 10),
-  HOTELS_TIMEOUT_MS: parseInt(process.env.HOTELS_TIMEOUT_MS || '15000', 10),
 
   // ---- Couriers ----
   // The courier page now answers from the imported CourierLocation collection (see
@@ -110,7 +93,7 @@ module.exports = {
   // live search returns as a fallback for the regions the dataset covers thinly.
   //
   // ---- LEGACY: Serper.dev Places — METERED, no longer called by the courier page ----
-  // Unlike RAPIDAPI_KEY above, this has NO source-committed fallback — set SERPER_API_KEY in
+  // This has no source-committed fallback — set SERPER_API_KEY in
   // .env only. Serper's free tier is a ONE-TIME 2,500-query bucket (not a monthly reset), so
   // an accidentally-public key here would be a bigger, harder-to-notice leak than a metered
   // subscription would be.

@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DistanceModeToggle, type DistanceMode } from '../components/DistanceModeToggle';
 import { ExportButtons } from '../components/ExportButtons';
@@ -75,15 +76,7 @@ const FilterIcon = () => (
   </svg>
 );
 
-const ReportIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-    <polyline points="14 2 14 8 20 8"/>
-    <line x1="16" y1="13" x2="8" y2="13"/>
-    <line x1="16" y1="17" x2="8" y2="17"/>
-    <polyline points="10 9 9 9 8 9"/>
-  </svg>
-);
+
 
 export function Reports() {
   const [drivers, setDrivers] = useState<User[]>([]);
@@ -243,7 +236,7 @@ export function Reports() {
       <div className="page-head">
         <div>
           <h1 className="page-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <ReportIcon /> Reports
+            <PageIcon name="report" /> Reports
           </h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             View merged daily routes per driver
@@ -302,7 +295,7 @@ export function Reports() {
           </div>
         ) : filteredSummaries.length === 0 ? (
           <div className="card" style={{ textAlign: 'center', padding: '60px 24px', color: 'var(--muted)' }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>📊</div>
+            <div className="page-empty-emblem"><PageIcon name="report" /></div>
             <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8, color: 'var(--text-2)' }}>
               No trip reports yet
             </div>

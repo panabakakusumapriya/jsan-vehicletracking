@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { ssdsApi } from '../lib/ssdsApi';
 
@@ -44,7 +45,7 @@ export function DriverMyTimesheets() {
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">My Timesheets</h1>
+        <h1 className="page-title"><PageIcon name="clock" />My Timesheets</h1>
         <button className="btn-ghost" onClick={load}>Refresh</button>
       </div>
 
