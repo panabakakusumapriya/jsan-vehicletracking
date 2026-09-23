@@ -69,7 +69,7 @@ interface LinkRow {
  *  customer confirms what the ordering means. */
 const PRIORITY_COLOR: Record<number, [number, number, number]> = {
   0: [148, 163, 184],
-  1: [124, 58, 237],
+  1: [0, 80, 169],
   2: [37, 99, 235],
   3: [217, 119, 6],
 };
@@ -231,7 +231,7 @@ export function CoverageMap({
           filled: true,
           getFillColor: (f: { properties: AreaProps }) => {
             const id = f.properties.areaId || '';
-            if (selected.has(id)) return [124, 58, 237, 190]; // selected reads first, before hue
+            if (selected.has(id)) return [0, 80, 169, 190]; // selected reads first, before hue
             const c = shadeOf(f.properties);
             // Translucent so the basemap's streets stay readable underneath — the fill is a
             // summary, not a mask.

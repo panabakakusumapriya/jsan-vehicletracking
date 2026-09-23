@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
@@ -36,7 +37,7 @@ export function Projects() {
     <div>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Projects</h1>
+          <h1 className="page-title"><PageIcon name="folder" />Projects</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             Every manager, team lead and driver belongs to one of these. A project's coverage scope
             decides which history its UKM is measured against.

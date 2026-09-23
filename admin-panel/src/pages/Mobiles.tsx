@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
@@ -64,7 +65,7 @@ export function Mobiles() {
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Mobiles</h1>
+          <h1 className="page-title"><PageIcon name="phone" />Mobiles</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             Device inventory — every handover is recorded, so you can see who had which phone in any month
           </p>

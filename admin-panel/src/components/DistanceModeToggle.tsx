@@ -14,12 +14,13 @@ interface DistanceModeToggleProps {
  */
 export function DistanceModeToggle({ mode, onChange, cleanedAvailable }: DistanceModeToggleProps) {
   return (
-    <div style={{ display: 'inline-flex', gap: 4, background: 'var(--bg)', padding: 3, borderRadius: 'var(--radius)' }}>
+    <div className="distance-mode-control" role="group" aria-label="Route display">
       {(['raw', 'cleaned'] as const).map((m) => (
         <button
           key={m}
           type="button"
           className="btn-ghost"
+          aria-pressed={mode === m}
           disabled={m === 'cleaned' && !cleanedAvailable}
           title={m === 'cleaned' && !cleanedAvailable ? 'Not map-matched yet' : undefined}
           onClick={() => onChange(m)}

@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { DateField } from '../components/DateField';
@@ -268,7 +269,7 @@ export function Trips() {
       `}</style>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Trips</h1>
+          <h1 className="page-title"><PageIcon name="route" />Trips</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             One row per driver per day — click a row to see that day&apos;s individual trips
           </p>
@@ -410,7 +411,7 @@ export function Trips() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                         <div style={{
                           width: 30, height: 30, borderRadius: 9,
-                          background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.18)',
+                          background: 'var(--brand-light)', border: '1px solid rgba(0,80,169,0.18)',
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                           color: 'var(--brand)', fontSize: 10, fontWeight: 800, flexShrink: 0,
                         }}>
@@ -495,7 +496,7 @@ export function Trips() {
                                         style={{
                                           display: 'inline-flex', alignItems: 'center', gap: 4,
                                           fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',
-                                          background: 'var(--brand-light)', border: '1px solid rgba(124,58,237,0.2)',
+                                          background: 'var(--brand-light)', border: '1px solid rgba(0,80,169,0.2)',
                                           borderRadius: 7, padding: '4px 10px',
                                         }}
                                       >

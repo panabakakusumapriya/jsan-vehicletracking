@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
@@ -128,7 +129,7 @@ export function Managers() {
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">Users</h1>
+        <h1 className="page-title"><PageIcon name="users" />Users</h1>
         <button className="btn" onClick={() => setShowAdd(true)}>
           + Add user
         </button>

@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import React, { useEffect, useMemo, useState } from 'react';
 import { divIcon } from 'leaflet';
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
@@ -39,7 +40,7 @@ const DAYS = [0, 1, 2, 3, 4];
 /* ── Map marker icon ── */
 function parkedCarIcon(risk: DrivingRisk | null, selected: boolean) {
   const fill = risk === 'unsafe' ? '#dc2626' : risk === 'caution' ? '#f97316' : '#059669';
-  const stroke = selected ? '#7c3aed' : '#ffffff';
+  const stroke = selected ? '#0050a9' : '#ffffff';
   const strokeW = selected ? 2.4 : 1.6;
   const size = selected ? 36 : 30;
   const svg = `
@@ -553,7 +554,7 @@ export function Weather() {
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Predictive Weather</h1>
+          <h1 className="page-title"><PageIcon name="weather" />Predictive Weather</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             {tab === 'history' ? 'Historical weather conditions during completed trips' : (() => {
               const d = new Date();

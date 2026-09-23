@@ -1,7 +1,6 @@
 const asyncHandler = require('../utils/asyncHandler');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { hotelsForDrivers } = require('../services/hotelSearch');
-const { isConfigured, budgetStatus } = require('../services/bookingHotels');
 
 /**
  * GET /api/hotels/near-driver
@@ -9,9 +8,13 @@ const { isConfigured, budgetStatus } = require('../services/bookingHotels');
  * Hotels around a driver's own last reported position. With no `driverId` it picks the first
  * driver we can place, so the page has something real on it the moment it opens.
  *
- * Query: driverId, arrival, departure (YYYY-MM-DD), adults, rooms, childrenAge ("0,17"),
- *        radiusKm (10–500), currency (ISO 4217), page, sort (distance|price|rating),
- *        freeParkingOnly (true|1), minScore.
+ * Answered from the imported HotelLocation dataset — see services/hotelLocations.js. There is no
+ * external provider behind this any more, so there is no key to be missing, no quota to be spent
+ * and no upstream to be down. The dates, price and rating parameters went with it: a directory of
+ * buildings has none of those to filter on, and accepting them would promise something we cannot
+ * deliver.
+ *
+ * Query: driverId, radiusKm (1–200), category.
  */
 exports.nearDriver = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
@@ -21,26 +24,17 @@ exports.nearDriver = asyncHandler(async (req, res) => {
     const result = await hotelsForDrivers({
       scope,
       driverId: q.driverId || null,
-      arrival: q.arrival || null,
-      departure: q.departure || null,
-      adults: q.adults,
-      rooms: q.rooms,
-      childrenAge: q.childrenAge || '',
       radiusKm: q.radiusKm,
-      currency: q.currency,
-      page: q.page,
-      sort: q.sort,
-      freeParkingOnly: q.freeParkingOnly === 'true' || q.freeParkingOnly === '1',
-      minScore: parseFloat(q.minScore) || 0,
+      category: typeof q.category === 'string' ? q.category : null,
+      project: typeof q.project === 'string' ? q.project : null,
     });
     res.json(result);
   } catch (err) {
-    // A provider outage, a spent quota or a missing key are all operational facts about the
-    // hotel feed — none of them should read like the panel is broken.
-    res.status(err.status || 502).json({
-      error: err.message || 'Could not reach the hotel service',
-      configured: isConfigured(),
-      budget: budgetStatus(),
+    // Only our own database can fail now, and that is a real fault rather than an operational
+    // fact about someone else's service — so it reads as a 500, not a 502 "upstream is unhappy".
+    res.status(err.status || 500).json({
+      error: err.message || 'Could not load hotel locations',
+      configured: false,
     });
   }
 });

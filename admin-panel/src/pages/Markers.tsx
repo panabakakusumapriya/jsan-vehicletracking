@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useCallback, useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
@@ -115,7 +116,7 @@ export function Markers() {
     <div>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Marker Categories</h1>
+          <h1 className="page-title"><PageIcon name="pin" />Marker Categories</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             What drivers can flag from the field. The colour is the flag group — red for stops
             and incidents, yellow for restricted ground, blue for impassable road. Dropped

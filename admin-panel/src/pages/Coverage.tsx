@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CoverageMap } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
@@ -107,7 +108,7 @@ export function Coverage() {
     <div>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Coverage</h1>
+          <h1 className="page-title"><PageIcon name="coverage" />Coverage</h1>
           <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
             Progress against the road network the customer requires driven
           </p>
@@ -264,7 +265,7 @@ function ProgressTab({
    */
   const driverViz = useMemo(() => {
     const PALETTE: [number, number, number][] = [
-      [124, 58, 237], [37, 99, 235], [5, 150, 105], [217, 119, 6],
+      [0, 80, 169], [37, 99, 235], [5, 150, 105], [217, 119, 6],
       [219, 39, 119], [8, 145, 178], [132, 204, 22], [239, 68, 68],
       [99, 102, 241], [20, 184, 166], [234, 88, 12], [168, 85, 247],
     ];

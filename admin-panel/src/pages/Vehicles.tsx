@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
@@ -58,7 +59,7 @@ export function Vehicles() {
     <div>
       <div className="page-head">
         <div>
-          <h1 className="page-title">Vehicles</h1>
+          <h1 className="page-title"><PageIcon name="vehicle" />Vehicles</h1>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <select className="input" style={{ width: 120, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>

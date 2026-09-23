@@ -1,3 +1,4 @@
+import { PageIcon } from '../components/AppIcon';
 import { useEffect, useState } from 'react';
 import { ssdsApi } from '../lib/ssdsApi';
 
@@ -33,7 +34,7 @@ export function DriverMyDailyReports() {
   return (
     <div>
       <div className="page-head">
-        <h1 className="page-title">My Daily Reports</h1>
+        <h1 className="page-title"><PageIcon name="report" />My Daily Reports</h1>
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>

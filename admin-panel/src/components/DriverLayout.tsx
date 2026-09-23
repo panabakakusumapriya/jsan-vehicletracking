@@ -1,22 +1,11 @@
+import { AppIcon } from './AppIcon';
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 
-const SsdsIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/>
-  </svg>
-);
-const TimesheetIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-  </svg>
-);
-const DailyReportIcon = () => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>
-  </svg>
-);
+const SsdsIcon = () => <AppIcon name="grid" size={19} />;
+const TimesheetIcon = () => <AppIcon name="clock" size={19} />;
+const DailyReportIcon = () => <AppIcon name="report" size={19} />;
 const MenuIcon = () => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="3" y1="6" x2="21" y2="6" />
@@ -70,7 +59,7 @@ export function DriverLayout() {
         <div className="sidebar-top">
           <div className="brand">
             <div className="brand-logo"><img src="/brand/logo.png" alt="JSAN" /></div>
-            <div className="brand-name">JSAN ATLAS <span>driver</span></div>
+            <div className="brand-product">ATLAS <span>OPS</span></div>
           </div>
           <button className="hamburger" onClick={toggleFromSidebar} aria-label={rail ? 'Expand' : 'Collapse'}>
             <MenuIcon />

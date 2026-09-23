@@ -1,3 +1,4 @@
+import { AppIcon } from './AppIcon';
 import type { ReactNode } from 'react';
 
 export function Modal({ title, onClose, children, wide = false }: {
@@ -12,7 +13,7 @@ export function Modal({ title, onClose, children, wide = false }: {
       <div className={`modal${wide ? ' wide' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>{title}</h3>
-          <button className="modal-close" onClick={onClose} aria-label="Close">✕</button>
+          <button className="modal-close" onClick={onClose} aria-label="Close"><AppIcon name="close" size={19} /></button>
         </div>
         {children}
       </div>

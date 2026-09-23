@@ -7,7 +7,7 @@ const Trip = require('../models/Trip');
 async function recentDriverPositions(scope, activeDays) {
   const cutoff = new Date(Date.now() - activeDays * 86400_000);
   const rows = await Trip.aggregate([
-    { $match: { ...scope, lastLocation: { $ne: null }, startedAt: { $gte: cutoff } } },
+    { $match: { ...scope, lastLocation: { $ne: null }, ...(activeDays == null ? {} : { startedAt: { $gte: cutoff } }) } },
     { $sort: { startedAt: -1 } },
     {
       $group: {

@@ -19,8 +19,7 @@ function createApp() {
         scriptSrc: ["'self'", "'unsafe-inline'", "unpkg.com", "cdnjs.cloudflare.com", "cdn.jsdelivr.net", "fonts.googleapis.com"],
         styleSrc: ["'self'", "'unsafe-inline'", "unpkg.com", "cdnjs.cloudflare.com", "fonts.googleapis.com"],
         fontSrc: ["'self'", "fonts.gstatic.com", "cdnjs.cloudflare.com"],
-        // cf.bstatic.com serves Booking.com property photos on the Hotels tab.
-        imgSrc: ["'self'", "data:", "*.tile.openstreetmap.org", "unpkg.com", "cf.bstatic.com"],
+        imgSrc: ["'self'", "data:", "*.tile.openstreetmap.org", "unpkg.com"],
         connectSrc: ["'self'", "ws:", "wss:"],
       },
     },
@@ -53,6 +52,7 @@ function createApp() {
       service: 'jsan-tracking-api',
       time: new Date().toISOString(),
       features: {
+        databaseHotels: true,
         // Uploads are stored in MongoDB (GridFS) and survive a redeploy. When false, this build
         // still writes them to the container's ephemeral disk.
         durableUploads: true,
