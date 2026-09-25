@@ -1,2 +1,13 @@
 # Large hotel source dataset; import locally into MongoDB.
 /hotels_worldwide.csv
+
+# Customer GIS deliveries — cleaned/covered shapefiles and network exports, ~1.6 GB.
+# Imported into MongoDB with backend/src/seed/importCoveredRoads.js; the database is the
+# record, not the repo. Keeping them out is what stops `git add -A` committing a gigabyte.
+/Final Merge/
+/FinalMerge0708/
+/P2/
+/QLD_P2_RMOB_Nav_new/
+/QLD.zip
+/Qld boundaries.zip
+/core-tracking-code/Final Merge/

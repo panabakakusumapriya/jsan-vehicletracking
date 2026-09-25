@@ -24,6 +24,12 @@ router.get('/versions/:id/areas', ctrl.versionAreas);
 // Simplified outlines + per-area coverage, for the WebGL choropleth.
 router.get('/versions/:id/areas.geojson', ctrl.versionAreasGeoJson);
 router.get('/versions/:id/links', ctrl.versionLinks);
+// Every road inside a held work area — the "Assigned routes" layer, drawn at any zoom.
+router.get('/versions/:id/assigned-links', ctrl.versionAssignedLinks);
+// Everyone with driven road on this network, for the map's driver legend.
+router.get('/versions/:id/coverage-drivers', ctrl.versionCoverageDrivers);
+// Snapped driven routes across the project, for the map's "Driven tracks" layer.
+router.get('/versions/:id/tracks', ctrl.versionTracks);
 router.post('/versions/:id/activate', requireRole('admin', 'manager'), ctrl.activateVersion);
 
 /* ---- who is responsible for which work area ---- */
@@ -40,6 +46,20 @@ router.put(
   ctrl.setAreaAssignments
 );
 router.get('/areas/:areaId/assignments/history', ctrl.areaAssignmentHistory);
+
+/* ---- is this area finished? the manager's verdict, not a computed threshold ---- */
+// Everything the click-a-polygon panel shows: totals, the per-driver split, who holds it.
+router.get('/versions/:id/areas/:areaId/coverage', ctrl.areaCoverage);
+router.post(
+  '/versions/:id/areas/:areaId/complete',
+  requireRole('admin', 'manager'),
+  ctrl.completeArea
+);
+router.post(
+  '/versions/:id/areas/:areaId/reopen',
+  requireRole('admin', 'manager'),
+  ctrl.reopenArea
+);
 router.delete('/versions/:id', requireRole('admin'), ctrl.deleteVersion);
 
 module.exports = router;

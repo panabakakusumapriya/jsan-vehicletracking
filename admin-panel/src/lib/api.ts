@@ -44,8 +44,22 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    // The message alone is not always enough: a refusal can carry structure the caller needs to
+    // act on — which areas were blocked, and whether this user may override. Attaching the body
+    // costs nothing and keeps every existing `e.message` call site working unchanged.
+    const err = new Error(data?.error || `Request failed (${res.status})`) as ApiError;
+    err.status = res.status;
+    err.body = data;
+    throw err;
+  }
   return data as T;
+}
+
+/** An Error from the API, carrying the response body for callers that need more than a message. */
+export interface ApiError extends Error {
+  status?: number;
+  body?: unknown;
 }
 
 export const api = {

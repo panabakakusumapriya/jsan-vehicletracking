@@ -43,3 +43,25 @@ export function decodeRouteShapes(shapes: string[] | null | undefined): [number,
   if (!shapes || !shapes.length) return [];
   return shapes.flatMap((s) => decodePolyline6(s));
 }
+
+/**
+ * A trip's cleaned geometry as paths to draw, which is NOT always one line.
+ *
+ * Map-matched chunks are consecutive pieces of a single match, so they concatenate into one
+ * continuous route. The chunks derived for an imported day are individual roads, in an order
+ * nobody recorded — the source file carries a date and a road list, not a sequence. Joining
+ * those would draw confident straight lines between roads across the whole region, inventing a
+ * path the driver may never have taken, so each road stays its own path.
+ */
+export function cleanedPaths(trip: {
+  cleanedRouteShapes?: string[] | null;
+  importBatchId?: string | null;
+} | null | undefined): [number, number][][] {
+  const shapes = trip?.cleanedRouteShapes;
+  if (!shapes?.length) return [];
+  if (!trip?.importBatchId) {
+    const joined = decodeRouteShapes(shapes);
+    return joined.length > 1 ? [joined] : [];
+  }
+  return shapes.map((s) => decodePolyline6(s)).filter((p) => p.length > 1);
+}

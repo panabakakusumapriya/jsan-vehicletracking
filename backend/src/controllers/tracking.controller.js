@@ -23,8 +23,7 @@ const { getDriverRoads } = require('../services/driverRoads');
 const { scopeForProject } = require('../services/coverageScope');
 const { rebuildScope } = require('../services/globalUkm');
 const mongoose = require('mongoose');
-const zlib = require('zlib');
-const { promisify } = require('util');
+const { sendCompressed } = require('../utils/compressedJson');
 
 /**
  * POST /api/tracking/ingest   (driver only)
@@ -992,55 +991,6 @@ exports.myAreas = asyncHandler(async (req, res) => {
 });
 
 /**
- * Send a JSON body gzipped, when the client says it can take it.
- *
- * This app has NO compression middleware — nothing in app.js compresses anything, and
- * `compression` is not even a dependency. That is survivable for the rest of the API, whose
- * responses are kilobytes. It is not survivable for my-roads: one full area measures ~2.5 MB of
- * JSON, and every byte of it crosses a driver's metered mobile plan. gzip takes that to ~0.5 MB.
- * Shipping the uncompressed version would undo the whole reason the payload is positional tuples
- * instead of GeoJSON in the first place.
- *
- * Done here rather than by adding middleware in app.js because this is the only route in the file
- * that is megabytes large, and a blanket middleware would also start compressing the 10-second
- * ingest acks, where the CPU is pure loss.
- *
- * zlib.gzip and not gzipSync: 2.5 MB takes ~80 ms to compress, and gzipSync spends all of it on
- * the event loop, stalling every other request on this single-process API. The async form runs on
- * the threadpool.
- *
- * Cache-Control makes the response storable-but-revalidated, which lets Express's own ETag turn
- * the common case — driver reopens the map, coverage has not moved — into an empty 304 instead of
- * a second half-megabyte. `private` because the body is one driver's assigned network and must
- * never sit in a shared proxy cache.
- */
-const gzip = promisify(zlib.gzip);
-
-async function sendCompressed(req, res, body) {
-  const json = JSON.stringify(body);
-  res.set('Cache-Control', 'private, no-cache');
-  // Without Vary, a cache that stored the gzipped body could hand it to a client that never asked
-  // for gzip and cannot decode it.
-  res.set('Vary', 'Accept-Encoding');
-  res.type('application/json');
-
-  if (!req.acceptsEncodings('gzip')) return res.send(json);
-
-  try {
-    const packed = await gzip(json, { level: zlib.constants.Z_DEFAULT_COMPRESSION });
-    res.set('Content-Encoding', 'gzip');
-    return res.send(packed);
-  } catch (err) {
-    // Compression failing is not a reason to fail the request — the driver still needs the map.
-    // Logged rather than swallowed so a systematically failing zlib is visible instead of just
-    // showing up as an unexplained bandwidth bill.
-    console.error('[my-roads] gzip failed, sending uncompressed:', err.message);
-    res.removeHeader('Content-Encoding');
-    return res.send(json);
-  }
-}
-
-/**
  * GET /api/tracking/my-roads?areaId=…   (driver only)
  *
  * The individual roads inside one of the driver's areas, each flagged driven or not, so the app can
@@ -1074,7 +1024,7 @@ exports.myRoads = asyncHandler(async (req, res) => {
   // the customer's network.
   if (!roads) return res.status(403).json({ error: 'You are not assigned to this area' });
 
-  await sendCompressed(req, res, roads);
+  await sendCompressed(req, res, roads, 'my-roads');
 });
 
 /**

@@ -163,23 +163,30 @@ export function vehicleAtElapsed(points: TripPoint[], elapsedMs: number) {
  * completed route" view (currentTime pinned at the end) fade to near-invisible
  * at the start of the route, so it's switched off outside active playback.
  *
- * `snappedPath` (optional, [lon, lat][] decoded from Trip.cleanedRouteShapes) swaps the
- * animated raw trail for a static road-snapped line when the raw/cleaned toggle is set to
- * "cleaned" -- the vehicle marker and start/end markers stay driven by the real recorded
- * points either way, since only the raw trace carries per-point timestamps to play back.
+ * `snappedPaths` (optional, [lon, lat][][] built by cleanedPaths()) swaps the animated raw
+ * trail for a static road-snapped line when the raw/cleaned toggle is set to "cleaned" -- the
+ * vehicle marker and start/end markers stay driven by the real recorded points either way,
+ * since only the raw trace carries per-point timestamps to play back.
+ *
+ * It is a LIST of paths, not one: an imported day's roads must not be strung together in an
+ * order nobody recorded (see cleanedPaths). A day with such a route but no recorded points is
+ * normal — it still draws, just with no vehicle to animate along it.
  */
 export function buildReplayLayers(
   points: TripPoint[],
   elapsedMs: number,
   fading: boolean,
-  snappedPath?: [number, number][] | null,
+  snappedPaths?: [number, number][][] | null,
   ukmPaths?: [number, number][][] | null,
   outsidePaths?: [number, number][][] | null
 ) {
-  if (points.length === 0) return [];
+  const snapped = snappedPaths?.filter((p) => p.length > 1) ?? [];
+  // An imported day has a route and no GPS at all. Returning nothing on an empty point list
+  // drew an empty map for a day that has perfectly good geometry to show.
+  if (points.length === 0 && snapped.length === 0) return [];
 
   const layers = [];
-  if (snappedPath && snappedPath.length > 1) {
+  if (snapped.length) {
     // With UKM stretches available the route is drawn in two passes: the whole thing muted
     // underneath, then the new road picked out on top. Overlaying rather than splitting the route
     // into new/repeated pieces keeps it continuous — a gap between two coloured runs would read as
@@ -188,7 +195,7 @@ export function buildReplayLayers(
     layers.push(
       new PathLayer({
         id: 'trip-replay-path-snapped',
-        data: [{ path: snappedPath }],
+        data: snapped.map((path) => ({ path })),
         getPath: (d) => d.path,
         getColor: hasUkm ? REPEATED_TINT : SNAPPED_TINT,
         getWidth: 5,

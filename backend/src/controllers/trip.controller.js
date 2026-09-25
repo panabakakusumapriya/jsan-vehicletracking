@@ -186,6 +186,10 @@ exports.list = asyncHandler(async (req, res) => {
 
   const [trips, total] = await Promise.all([
     Trip.find(filter)
+      // Geometry is excluded from the LIST: nothing in the table draws a route, and an imported
+      // day carries ~700 encoded road chunks. Fifty of those rows made a multi-megabyte response
+      // for a page that renders numbers. The detail endpoint still returns the full document.
+      .select('-cleanedRouteShapes -ukmNewShapes -ukmUniqueShapes -linkUkmShapes -outAreaShapes')
       .sort({ startedAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
@@ -405,6 +409,7 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
   let totalDistance = 0;
   let totalDistanceCleaned = 0;
   let matchedTrips = 0;
+  let importedTrips = 0;
   let maxSpeed = 0;
   let totalPoints = 0;
 
@@ -422,12 +427,16 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
       cleanedDistanceMeters: trip.cleanedDistanceMeters,
       cleanedRouteShapes: trip.cleanedRouteShapes || [],
       mapMatchStatus: trip.mapMatchStatus,
+      // The client needs this to draw the shapes correctly: an imported day's chunks are separate
+      // roads and must not be strung together (see admin-panel lib/polyline cleanedPaths).
+      importBatchId: trip.importBatchId || null,
       maxSpeedKmh: trip.maxSpeedKmh,
       points,
     });
     totalDistance += trip.distanceMeters || 0;
     totalDistanceCleaned += trip.cleanedDistanceMeters ?? trip.distanceMeters ?? 0;
     if (trip.mapMatchStatus === 'matched') matchedTrips += 1;
+    if (trip.importBatchId) importedTrips += 1;
     maxSpeed = Math.max(maxSpeed, trip.maxSpeedKmh || 0);
     totalPoints += points.length;
   }
@@ -441,6 +450,9 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
     totalDistance,
     totalDistanceCleaned,
     matchedTrips,
+    // A day of nothing but imported trips has no measured speed at all — 0 km/h there is not a
+    // reading, it is the absence of one, and the client says so rather than printing a number.
+    importedTrips,
     maxSpeed,
     totalPoints,
     trips: tripsData,
@@ -503,7 +515,24 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
         // uniformly "cleaned" until every trip in the group has matched. matchedTrips below
         // tells the caller how much of the group that actually is.
         totalDistanceCleaned: { $sum: { $ifNull: ['$cleanedDistanceMeters', '$distanceMeters'] } },
-        matchedTrips: { $sum: { $cond: [{ $eq: ['$mapMatchStatus', 'matched'] }, 1, 0] } },
+        // "Cleaned", not "map-matched". An imported trip never passed through the matcher, but its
+        // distance was measured on the customer's own road geometry rather than on raw GPS, which
+        // is what cleaned means here. Counting it as raw understated every imported day.
+        matchedTrips: {
+          $sum: {
+            $cond: [
+              {
+                $or: [
+                  { $eq: ['$mapMatchStatus', 'matched'] },
+                  { $ne: [{ $ifNull: ['$importBatchId', null] }, null] },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+        importedTrips: { $sum: { $cond: [{ $ne: [{ $ifNull: ['$importBatchId', null] }, null] }, 1, 0] } },
         maxSpeed: { $max: '$maxSpeedKmh' },
         firstStart: { $min: '$startedAt' },
         lastEnd: { $max: '$endedAt' },
@@ -532,6 +561,7 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     totalDistance: r.totalDistance || 0,
     totalDistanceCleaned: r.totalDistanceCleaned || 0,
     matchedTrips: r.matchedTrips || 0,
+    importedTrips: r.importedTrips || 0,
     maxSpeed: r.maxSpeed || 0,
     firstStart: r.firstStart,
     lastEnd: r.lastEnd,

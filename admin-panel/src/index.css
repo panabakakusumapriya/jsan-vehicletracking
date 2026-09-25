@@ -1163,6 +1163,34 @@ select.input { cursor: pointer; }
   max-width: calc(100% - 32px);
 }
 
+/* The click-a-polygon panel: one area's numbers, and the sign-off. Bottom-left rather than
+   centred so it never sits on top of the selection bar, and narrow enough that the polygon it
+   describes stays visible beside it. */
+.cov-area-panel {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  width: 320px;
+  max-width: calc(100% - 32px);
+  background: var(--panel);
+  border: 1px solid var(--brand-2);
+  box-shadow: 0 8px 28px -12px rgba(17,24,39,0.35);
+  border-radius: 10px;
+  padding: 12px 14px;
+  z-index: 5;
+}
+
+/* Layer switches in the map header. */
+.cov-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 /* Driver legend on the coverage map — one swatch per person, so a colour means a name. */
 .cov-legend-drivers {
   display: flex; flex-wrap: wrap; gap: 4px 12px;

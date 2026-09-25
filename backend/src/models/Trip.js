@@ -10,6 +10,13 @@ const tripSchema = new mongoose.Schema(
     // uuid generated on the device when a trip starts. Makes offline sync idempotent:
     // re-sending the same clientTripId maps to the same server Trip.
     clientTripId: { type: String, default: null },
+    /**
+     * Set only on trips created by a bulk import of historical covered-road data, never by the
+     * app. It is provenance and it is the undo handle: every row a single import wrote shares one
+     * batch id, so the whole thing can be found, audited, and deleted again without guessing
+     * which trips were real. Null on everything the fleet actually recorded.
+     */
+    importBatchId: { type: String, default: null, index: true },
     driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     vehicleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', default: null },
@@ -57,6 +64,15 @@ const tripSchema = new mongoose.Schema(
     // Kept as separate per-chunk strings rather than one merged polyline so the worker never has
     // to decode+re-encode to stitch chunks together; the frontend decodes and concatenates them.
     cleanedRouteShapes: { type: [String], default: undefined },
+    /**
+     * How many positions the cleaned route holds.
+     *
+     * Deliberately NOT `pointCount`, which counts GPS fixes a handset actually recorded and stays
+     * 0 for an imported day — there were none. A trip rebuilt from the customer's cleaned road
+     * geometry still has real positions, just derived from the road centrelines rather than
+     * measured, and this is where that count lives so neither number has to lie.
+     */
+    cleanedPointCount: { type: Number, default: null },
     mapMatchStatus: {
       type: String,
       enum: ['pending', 'matching', 'matched', 'failed', 'skipped'],

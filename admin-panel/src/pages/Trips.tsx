@@ -22,6 +22,8 @@ interface DaySummary {
   timezone?: string;
   totalTrips: number;
   totalDistance: number;
+  /** How many of the day's trips came from imported GIS data rather than a handset. */
+  importedTrips?: number;
   maxSpeed: number;
   firstStart: string;
   lastEnd: string | null;
@@ -424,7 +426,13 @@ export function Trips() {
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.date}</td>
                     <td style={{ fontWeight: 700 }}>{s.totalTrips}</td>
                     <td style={{ fontWeight: 600 }}>{km(s.totalDistance)}</td>
-                    <td>{Math.round(s.maxSpeed)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
+                    {/* Every trip imported means nothing was ever measured; a day that mixes the
+                        two still has a real reading from the recorded half. */}
+                    <td title={(s.importedTrips ?? 0) >= s.totalTrips ? 'No GPS was recorded for an imported day, so speed was never measured.' : undefined}>
+                      {(s.importedTrips ?? 0) >= s.totalTrips
+                        ? <span style={{ color: 'var(--muted)' }}>—</span>
+                        : <>{Math.round(s.maxSpeed)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></>}
+                    </td>
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(s.firstStart)}</td>
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.lastEnd ? sessionDt(s.lastEnd) : '—'}</td>
                   </tr>
@@ -458,12 +466,71 @@ export function Trips() {
                                       : <span style={{ color: 'var(--muted)' }}>—</span>
                                     }
                                   </td>
-                                  <td><span className={`badge ${statusBadge(t.status)}`}>{t.status.replace('_', ' ')}</span></td>
+                                  <td>
+                                    <span className={`badge ${statusBadge(t.status)}`}>{t.status.replace('_', ' ')}</span>
+                                    {/* Without this, an imported day reads as a broken recording:
+                                        0 points, no route, yet a real distance. */}
+                                    {t.importBatchId && (
+                                      <span
+                                        className="badge gray"
+                                        style={{ marginLeft: 6 }}
+                                        title="Imported from cleaned GIS data. The distance is measured on the customer's own road geometry, so it is a cleaned figure — but no GPS was recorded, so there is no route to replay."
+                                      >
+                                        imported
+                                      </span>
+                                    )}
+                                  </td>
                                   <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(t.startedAt)}</td>
                                   <td style={{ color: 'var(--muted)', fontSize: 13 }}>{t.endedAt ? sessionDt(t.endedAt) : '—'}</td>
                                   <td style={{ fontWeight: 600 }}>{km(t.distanceMeters)}</td>
-                                  <td>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
-                                  <td style={{ color: 'var(--muted)' }}>{t.pointCount}</td>
+                                  {/* Same reason as Points: no GPS means no speed was ever
+                                      measured. A flat 0 km/h claims the vehicle never moved. */}
+                                  <td
+                                    title={
+                                      t.importBatchId
+                                        ? 'No GPS was recorded for an imported day, so speed was never measured.'
+                                        : undefined
+                                    }
+                                  >
+                                    {t.importBatchId ? (
+                                      <span style={{ color: 'var(--muted)' }}>—</span>
+                                    ) : (
+                                      <>
+                                        {Math.round(t.maxSpeedKmh)}{' '}
+                                        <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span>
+                                      </>
+                                    )}
+                                  </td>
+                                  {/* An imported day has no GPS fixes — the source is an attribute
+                                      table of roads and dates. Printing its true 0 made a real
+                                      day of work look like a failed recording, so the cell shows
+                                      what that day DID produce: the roads it first covered. */}
+                                  <td
+                                    style={{ color: 'var(--muted)' }}
+                                    title={
+                                      t.importBatchId
+                                        ? 'Imported from cleaned GIS data. No GPS was recorded, so there are no measured fixes — this counts the positions of the roads that day covered, taken from the customer’s own geometry.'
+                                        : undefined
+                                    }
+                                  >
+                                    {t.importBatchId ? (
+                                      t.cleanedPointCount != null ? (
+                                        <>
+                                          {t.cleanedPointCount.toLocaleString()}
+                                          <span style={{ fontSize: 11, marginLeft: 4 }}>derived</span>
+                                        </>
+                                      ) : t.linkCoveredCount != null ? (
+                                        <>
+                                          {t.linkCoveredCount.toLocaleString()}
+                                          <span style={{ fontSize: 11, marginLeft: 4 }}>roads</span>
+                                        </>
+                                      ) : (
+                                        '—'
+                                      )
+                                    ) : (
+                                      t.pointCount
+                                    )}
+                                  </td>
                                   <td
                                     style={{ fontWeight: 600 }}
                                     title={t.effectiveUkmMeters == null

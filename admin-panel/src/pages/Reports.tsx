@@ -8,7 +8,7 @@ import { km } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 import { buildReplayLayers, vehicleAtElapsed } from '../lib/map3d/TripPathLayer';
 import { useTripPlayback } from '../lib/map3d/useTripPlayback';
-import { decodeRouteShapes } from '../lib/polyline';
+import { cleanedPaths } from '../lib/polyline';
 import type { MapMatchStatus, User } from '../lib/types';
 
 interface PathPoint {
@@ -28,6 +28,8 @@ interface TripSegment {
   cleanedDistanceMeters?: number | null;
   cleanedRouteShapes?: string[] | null;
   mapMatchStatus?: MapMatchStatus;
+  /** Set when the day came from imported GIS data: no GPS, and road chunks that must stay apart. */
+  importBatchId?: string | null;
   maxSpeedKmh: number;
   points: PathPoint[];
 }
@@ -41,6 +43,7 @@ interface MergedData {
   totalDistance: number;
   totalDistanceCleaned: number;
   matchedTrips: number;
+  importedTrips?: number;
   maxSpeed: number;
   totalPoints: number;
   trips: TripSegment[];
@@ -54,6 +57,7 @@ interface MergedSummary {
   totalDistance: number;
   totalDistanceCleaned: number;
   matchedTrips: number;
+  importedTrips?: number;
   maxSpeed: number;
   firstStart: string;
   lastEnd: string | null;
@@ -154,16 +158,16 @@ export function Reports() {
 
   const playback = useTripPlayback(allPoints);
 
-  // Concatenate each trip's matched shape in trip order — mirrors how allPoints concatenates
-  // raw points across the day's trips, just for the snapped layer instead.
-  const snappedPath = useMemo(() => {
+  // One path per trip rather than one path for the day: concatenating them drew a straight line
+  // from where each trip ended to where the next began, across road the driver never took.
+  const snappedPaths = useMemo(() => {
     if (mode !== 'cleaned' || !merged) return null;
-    return merged.trips.flatMap((t) => decodeRouteShapes(t.cleanedRouteShapes));
+    return merged.trips.flatMap((t) => cleanedPaths(t));
   }, [mode, merged]);
 
   const layers = useMemo(
-    () => buildReplayLayers(allPoints, playback.currentTimeMs, playback.playing, snappedPath),
-    [allPoints, playback.currentTimeMs, playback.playing, snappedPath]
+    () => buildReplayLayers(allPoints, playback.currentTimeMs, playback.playing, snappedPaths),
+    [allPoints, playback.currentTimeMs, playback.playing, snappedPaths]
   );
 
   // Auto-zoom to where the car is during playback (throttled to ~1s)
@@ -329,7 +333,11 @@ export function Reports() {
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.date}</td>
                     <td>{s.totalTrips}</td>
                     <td style={{ fontWeight: 600 }}>{km(mode === 'cleaned' ? s.totalDistanceCleaned : s.totalDistance)}</td>
-                    <td>{Math.round(s.maxSpeed)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
+                    <td title={(s.importedTrips ?? 0) >= s.totalTrips ? 'No GPS was recorded for an imported day, so speed was never measured.' : undefined}>
+                      {(s.importedTrips ?? 0) >= s.totalTrips
+                        ? <span style={{ color: 'var(--muted)' }}>—</span>
+                        : <>{Math.round(s.maxSpeed)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></>}
+                    </td>
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>
                       {s.firstStart ? new Date(s.firstStart).toLocaleTimeString() : '—'}
                     </td>
@@ -384,7 +392,11 @@ export function Reports() {
             </div>
             <div className="stat">
               <div className="icon">⚡</div>
-              <div className="v">{Math.round(merged.maxSpeed)} <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--muted)' }}>km/h</span></div>
+              <div className="v">
+                {(merged.importedTrips ?? 0) >= merged.totalTrips
+                  ? <span style={{ color: 'var(--muted)' }}>—</span>
+                  : <>{Math.round(merged.maxSpeed)} <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--muted)' }}>km/h</span></>}
+              </div>
               <div className="k">Max speed</div>
             </div>
             <div className="stat">
@@ -420,7 +432,11 @@ export function Reports() {
                       {t.endedAt ? new Date(t.endedAt).toLocaleTimeString() : '—'}
                     </td>
                     <td style={{ fontWeight: 600 }}>{km(mode === 'cleaned' && t.cleanedDistanceMeters != null ? t.cleanedDistanceMeters : t.distanceMeters)}</td>
-                    <td>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></td>
+                    <td title={t.importBatchId ? 'No GPS was recorded for an imported day, so speed was never measured.' : undefined}>
+                      {t.importBatchId
+                        ? <span style={{ color: 'var(--muted)' }}>—</span>
+                        : <>{Math.round(t.maxSpeedKmh)} <span style={{ color: 'var(--muted)', fontSize: 12 }}>km/h</span></>}
+                    </td>
                     <td style={{ color: 'var(--muted)' }}>{t.points.length}</td>
                     <td>
                       <span className={`badge ${t.status === 'active' ? 'green' : t.status === 'timed_out' ? 'amber' : 'gray'}`}>

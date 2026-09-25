@@ -1,7 +1,9 @@
 import type { Layer, PickingInfo } from '@deck.gl/core';
+import { PathStyleExtension } from '@deck.gl/extensions';
 import { GeoJsonLayer, PathLayer } from '@deck.gl/layers';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { decodePolyline6 } from '../lib/polyline';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 
 /**
@@ -20,8 +22,13 @@ import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
  *     is a grey smear that tells you nothing and costs everything.
  */
 
-const LINK_ZOOM = 11.5;
-const LINK_LIMIT = 6000;
+// The viewport scope's cap. Higher than the old browse limit because this layer is now the answer
+// to "show me the roads", not a teaser that expected you to zoom in — but still a cap, because all
+// 402 polygons together hold 653,494 links.
+const INVIEW_LINK_LIMIT = 30000;
+// One area at a time, so a bigger cap is affordable: the largest area in delivery 1 holds ~4,800
+// links. The server caps the parameter at 10,000 regardless.
+const AREA_LINK_LIMIT = 10000;
 
 type Geometry = { type: string; coordinates: unknown };
 
@@ -38,6 +45,15 @@ interface AreaProps {
   coveredLinks?: number;
   pct?: number;
   bbox?: [number, number, number, number] | null;
+  /** A manager has signed this area off. Independent of `pct` on purpose — see AreaCompletion. */
+  completed?: boolean;
+  completedAt?: string | null;
+  completedByName?: string | null;
+  /**
+   * Who holds this area, delivered with the polygon itself. Authoritative over the separately
+   * fetched assignment list, which can be older than the map it is describing.
+   */
+  assignedTo?: string[];
 }
 
 interface AreaFeature {
@@ -52,6 +68,42 @@ interface AreaCollection {
   bbox: [number, number, number, number] | null;
   approximated: number;
   features: AreaFeature[];
+}
+
+/**
+ * A road inside an assigned area, as positional tuples: [linkId, funcClass, covered, coords].
+ * No field names on the wire — at 100k links the key names would cost more than the coordinates.
+ */
+type AssignedLinkTuple = [string, number | null, 0 | 1, [number, number][], number];
+
+interface AssignedLink {
+  linkId: string;
+  funcClass: number | null;
+  covered: boolean;
+  path: [number, number][];
+  /** Who first drove it, so the road can be drawn in that person's colour. */
+  driverId: string | null;
+  driverName: string | null;
+}
+
+/** One snapped route as the API returns it: polyline6 chunks, one per matched stretch. */
+interface TrackRow {
+  tripId: string;
+  driverId: string;
+  driverName: string;
+  startedAt: string;
+  cleanedMeters: number;
+  shapes: string[];
+}
+
+/** One drawable stretch. Chunks stay separate so a gap in the match is not bridged by a line. */
+interface TrackPath {
+  tripId: string;
+  driverId: string;
+  driverName: string;
+  startedAt: string;
+  cleanedMeters: number;
+  path: [number, number][];
 }
 
 interface LinkRow {
@@ -88,6 +140,15 @@ function coverageColor(pct: number): [number, number, number] {
 
 const km = (m: number) => (m / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 });
 
+/**
+ * Lets the polygon outline be dashed. Built once at module scope — deck.gl compares extensions by
+ * identity, and a new instance per render would rebuild the layer on every frame.
+ */
+const DASHED_OUTLINE = new PathStyleExtension({ dash: true });
+/** Dash in pixels, matching lineWidthUnits. [] is deck.gl's "draw this one solid". */
+const DASH_PATTERN: [number, number] = [6, 4];
+const SOLID: [number, number] = [0, 0];
+
 export function CoverageMap({
   versionId,
   importJobId,
@@ -100,12 +161,34 @@ export function CoverageMap({
   driverColorByArea,
   driverNamesByArea,
   driverLegend,
+  showAreas = true,
+  roadScope = 'assigned',
+  colorRoadsByDriver = false,
+  assignedKey,
+  areaRoadsFor,
+  showTracks = false,
+  tracksFrom,
+  tracksTo,
+  tracksAreaId,
+  driverColorById,
+  onTracksMeta,
 }: {
   /** A committed version — shows coverage and lets road links load. */
   versionId?: string;
   /** An uncommitted import — shows work areas read straight off the shapefile. */
   importJobId?: string;
-  mode: 'coverage' | 'priority' | 'driver';
+  /**
+   * What the polygons encode.
+   *
+   * `assignment` is the working view and carries TWO facts at once, because they are read
+   * together — "Morgan has it, and it is 44% done". The outline says who holds it; the fill says
+   * how much of it is driven. They used to be separate Driver and Coverage tabs, which meant
+   * answering that one question took two clicks and a memory of the first picture.
+   *
+   * `priority` stays its own view: the customer's band is a label, not a quantity, so it cannot
+   * share an encoding with a percentage.
+   */
+  mode: 'assignment' | 'priority';
   height?: number;
   onSelectArea?: (areaId: string) => void;
   /** Areas currently selected for assignment. Drawn with a heavy outline. */
@@ -117,16 +200,72 @@ export function CoverageMap({
   /** areaId -> names of every driver holding it. Shown in the tooltip; the fill can only carry one
    *  colour, so this is where a shared area actually becomes legible. */
   driverNamesByArea?: Record<string, string[]>;
-  /** Legend entries for the 'driver' mode: which colour is which person. */
-  driverLegend?: { name: string; color: [number, number, number] }[];
+  /** Which colour is which person, and how much road they have driven on this network. */
+  driverLegend?: { name: string; color: [number, number, number]; meters?: number }[];
   /** Frame this one area when it changes. The six clusters sit far apart, so arriving from the
    *  areas table has to land on the area you clicked rather than on the whole state. */
   focusAreaId?: string | null;
+  /** Draw the work-area polygons at all. Off leaves the roads on their own basemap. */
+  showAreas?: boolean;
+  /**
+   * Which roads to draw, all in the same red/blue contract.
+   *
+   *   off      — none.
+   *   assigned — every road in a held area: outstanding work included. Complete, any zoom.
+   *   covered  — every road anyone has driven, project-wide, whoever holds it now. Complete, any
+   *              zoom. This is the only scope that shows work whose assignment has been released
+   *              or that arrived through a history import.
+   *   inview   — every road in EVERY polygon, bounded by the viewport instead of by assignment.
+   *              It has to be bounded by something: all 402 areas hold 653,494 links, five times
+   *              what the complete scopes can ship, so this one draws what is on screen and says
+   *              plainly when it has truncated.
+   */
+  roadScope?: 'off' | 'assigned' | 'covered' | 'inview';
+  /**
+   * Draw every road inside a polygon somebody currently holds — red still to drive, blue driven.
+   *
+   * Unlike the viewport scope this one is complete: it is the size of the territory actually out
+   * with crews, not the size of the delivery, which is what lets a dispatcher read the whole
+   * assigned picture zoomed out to a region.
+   */
+  /** Draw driven roads in the colour of whoever drove them, instead of the standard blue. */
+  colorRoadsByDriver?: boolean;
+  /** Changes when assignments or coverage move, so the layer refetches rather than going stale. */
+  assignedKey?: string;
+  /**
+   * Load and draw every road inside this ONE area, whatever the zoom.
+   *
+   * The viewport loader deliberately refuses below zoom 11.5 — 61,563 km of hairlines at country
+   * zoom is a grey smear. That rule is right for browsing and wrong for verifying: a manager
+   * checking whether a suburb is finished needs to see the whole suburb's streets at once, framed
+   * on the area rather than on whatever happens to be in view. Scoped by areaId, so the request
+   * is bounded by the area rather than by the screen.
+   */
+  areaRoadsFor?: string | null;
+  /** Draw the fleet's snapped routes for the project over the network. */
+  showTracks?: boolean;
+  /** ISO dates. The window is what keeps this payload finite — see versionTracks on the backend. */
+  tracksFrom?: string;
+  tracksTo?: string;
+  /** Limit tracks to trips recorded while this area was assigned. */
+  tracksAreaId?: string | null;
+  /** driverId -> colour, so a track and the polygons that driver holds read as one person. */
+  driverColorById?: Record<string, [number, number, number]>;
+  /** Reports what came back, so the page can show the count and how many are still snapping. */
+  onTracksMeta?: (meta: { count: number; pendingSnap: number; truncated: boolean }) => void;
 }) {
   const mapRef = useRef<Map3DHandle>(null);
   const [areas, setAreas] = useState<AreaCollection | null>(null);
   const [links, setLinks] = useState<LinkRow[]>([]);
-  const [zoom, setZoom] = useState(0);
+  const [tracks, setTracks] = useState<TrackPath[]>([]);
+  const trackRequest = useRef(0);
+  const [assignedLinks, setAssignedLinks] = useState<AssignedLink[]>([]);
+  const [assignedLoading, setAssignedLoading] = useState(false);
+  const assignedRequest = useRef(0);
+  // Roads for one whole area, loaded independently of the viewport loader below.
+  const [areaLinks, setAreaLinks] = useState<LinkRow[]>([]);
+  const [areaLinksLoading, setAreaLinksLoading] = useState(false);
+  const areaLinkRequest = useRef(0);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [linksLoading, setLinksLoading] = useState(false);
@@ -173,10 +312,131 @@ export function CoverageMap({
     }
   }, [focusAreaId, areas]);
 
-  const handleMoveEnd = useCallback(
-    (bbox: [number, number, number, number], z: number) => {
-      setZoom(z);
-      if (!versionId || z < LINK_ZOOM) {
+  // Every road in a held area. One request per version — not per pan — because the answer does
+  // not depend on where the camera is.
+  useEffect(() => {
+    if (!versionId || (roadScope !== 'assigned' && roadScope !== 'covered')) {
+      setAssignedLinks([]);
+      return;
+    }
+    const ticket = ++assignedRequest.current;
+    setAssignedLoading(true);
+    api
+      .get<{
+        links: AssignedLinkTuple[];
+        truncated: boolean;
+        drivers: { driverId: string; name: string }[];
+      }>(`/api/network/versions/${versionId}/assigned-links?scope=${roadScope}`)
+      .then((r) => {
+        if (ticket !== assignedRequest.current) return;
+        // The wire format indexes into a short driver list rather than repeating a 24-character
+        // id on every one of tens of thousands of links.
+        const who = r.drivers || [];
+        setAssignedLinks(
+          r.links.map(([linkId, funcClass, covered, path, driverIdx]) => ({
+            linkId,
+            funcClass,
+            covered: covered === 1,
+            path,
+            driverId: driverIdx >= 0 && who[driverIdx] ? who[driverIdx].driverId : null,
+            driverName: driverIdx >= 0 && who[driverIdx] ? who[driverIdx].name : null,
+          }))
+        );
+      })
+      .catch(() => {
+        if (ticket === assignedRequest.current) setAssignedLinks([]);
+      })
+      .finally(() => {
+        if (ticket === assignedRequest.current) setAssignedLoading(false);
+      });
+  }, [versionId, roadScope, assignedKey]);
+
+  // The fleet's snapped routes for this project. Nothing is drawn until the matcher has finished
+  // with a trip — see versionTracks: raw GPS over a road network reads as coverage that the
+  // ledger does not agree with.
+  useEffect(() => {
+    if (!versionId || !showTracks) {
+      setTracks([]);
+      return;
+    }
+    const params = new URLSearchParams();
+    if (tracksFrom) params.set('from', tracksFrom);
+    if (tracksTo) params.set('to', tracksTo);
+    if (tracksAreaId) params.set('areaId', tracksAreaId);
+    const ticket = ++trackRequest.current;
+    api
+      .get<{ tracks: TrackRow[]; pendingSnap: number; truncated: boolean }>(
+        `/api/network/versions/${versionId}/tracks?${params}`
+      )
+      .then((r) => {
+        if (ticket !== trackRequest.current) return;
+        const paths: TrackPath[] = [];
+        for (const t of r.tracks) {
+          for (const shape of t.shapes) {
+            const path = decodePolyline6(shape);
+            // A one-point chunk is not a line; deck.gl would draw nothing and warn.
+            if (path.length < 2) continue;
+            paths.push({
+              tripId: t.tripId,
+              driverId: t.driverId,
+              driverName: t.driverName,
+              startedAt: t.startedAt,
+              cleanedMeters: t.cleanedMeters,
+              path,
+            });
+          }
+        }
+        setTracks(paths);
+        onTracksMeta?.({
+          count: r.tracks.length,
+          pendingSnap: r.pendingSnap,
+          truncated: r.truncated,
+        });
+      })
+      .catch(() => {
+        if (ticket === trackRequest.current) setTracks([]);
+      });
+  }, [versionId, showTracks, tracksFrom, tracksTo, tracksAreaId, onTracksMeta]);
+
+  // Every road inside one area, at any zoom. Bounded by the area's own bbox AND by areaId, so a
+  // request stays the size of a suburb rather than the size of the screen.
+  useEffect(() => {
+    if (!versionId || !areaRoadsFor || !areas || roadScope === 'off') {
+      setAreaLinks([]);
+      return;
+    }
+    const box = areas.features.find((f) => f.properties.areaId === areaRoadsFor)?.properties.bbox;
+    if (!box) {
+      setAreaLinks([]);
+      return;
+    }
+    const ticket = ++areaLinkRequest.current;
+    setAreaLinksLoading(true);
+    api
+      .get<{ links: LinkRow[]; truncated: boolean }>(
+        `/api/network/versions/${versionId}/links?bbox=${box
+          .map((n) => n.toFixed(5))
+          .join(',')}&areaId=${areaRoadsFor}&limit=${AREA_LINK_LIMIT}`
+      )
+      .then((r) => {
+        if (ticket === areaLinkRequest.current) setAreaLinks(r.links);
+      })
+      .catch(() => {
+        if (ticket === areaLinkRequest.current) setAreaLinks([]);
+      })
+      .finally(() => {
+        if (ticket === areaLinkRequest.current) setAreaLinksLoading(false);
+      });
+  }, [versionId, areaRoadsFor, areas, roadScope]);
+
+  // The last camera the map settled on. Kept because roads can be switched on without the map
+  // moving, and the only other source of the viewport is the move event itself — without this,
+  // ticking the box did nothing at all until you happened to pan.
+  const lastView = useRef<{ bbox: [number, number, number, number] } | null>(null);
+
+  const loadLinks = useCallback(
+    (bbox: [number, number, number, number]) => {
+      if (!versionId || roadScope !== 'inview') {
         setLinks([]);
         setTruncated(false);
         return;
@@ -185,7 +445,7 @@ export function CoverageMap({
       setLinksLoading(true);
       api
         .get<{ links: LinkRow[]; truncated: boolean }>(
-          `/api/network/versions/${versionId}/links?bbox=${bbox.map((n) => n.toFixed(5)).join(',')}&limit=${LINK_LIMIT}`
+          `/api/network/versions/${versionId}/links?bbox=${bbox.map((n) => n.toFixed(5)).join(',')}&limit=${INVIEW_LINK_LIMIT}`
         )
         .then((r) => {
           if (ticket !== linkRequest.current) return;
@@ -199,8 +459,23 @@ export function CoverageMap({
           if (ticket === linkRequest.current) setLinksLoading(false);
         });
     },
-    [versionId]
+    [versionId, roadScope]
   );
+
+  const handleMoveEnd = useCallback(
+    (bbox: [number, number, number, number]) => {
+      lastView.current = { bbox };
+      loadLinks(bbox);
+    },
+    [loadLinks]
+  );
+
+  // Switching roads on (or changing version) loads them for wherever the camera already is.
+  useEffect(() => {
+    const view = lastView.current;
+    if (!view) return;
+    loadLinks(view.bbox);
+  }, [loadLinks]);
 
   // getTooltip is created once; reading the prop directly would pin the first render's value and
   // the tooltip would name whoever held the area when the map first drew.
@@ -212,16 +487,30 @@ export function CoverageMap({
   const selectionKey = (selectedIds || []).join(',');
 
   const layers = useMemo<Layer[]>(() => {
-    const shadeOf = (p: AreaProps): [number, number, number] => {
-      if (mode === 'driver') {
-        return driverColorByArea?.[p.areaId || ''] || [203, 213, 225]; // unassigned = pale slate
-      }
-      return mode === 'coverage' ? coverageColor(p.pct || 0) : priorityColor(p.priority);
-    };
+    // The fill is always a quantity: how much of the area is driven, or which band it sits in.
+    const shadeOf = (p: AreaProps): [number, number, number] =>
+      mode === 'assignment' ? coverageColor(p.pct || 0) : priorityColor(p.priority);
+
+    /**
+     * Held by somebody right now. The polygon's own `assignedTo` is the truth; the colour map is
+     * only a fallback for an older server that does not send it yet.
+     */
+    const isAssigned = (p: AreaProps) =>
+      (p.assignedTo ? p.assignedTo.length > 0 : false) || Boolean(driverColorByArea?.[p.areaId || '']);
+    /**
+     * An assigned polygon is drawn as an OUTLINE, with no fill at all.
+     *
+     * The fill is what hides the roads inside it, and once the assigned network is on the map
+     * those roads — red outstanding, blue driven — are the thing being read. A translucent wash
+     * over them costs more than it says: the polygon's boundary already carries the whole of
+     * "this belongs to someone", and the driver legend below carries who.
+     */
+    const OUTLINE_ONLY: [number, number, number, number] = [0, 0, 0, 0];
+    const ASSIGNED_BLUE: [number, number, number, number] = [37, 99, 235, 255];
 
     const out: Layer[] = [];
 
-    if (areas?.features.length) {
+    if (showAreas && areas?.features.length) {
       out.push(
         new GeoJsonLayer<AreaProps>({
           id: 'work-areas',
@@ -232,29 +521,78 @@ export function CoverageMap({
           getFillColor: (f: { properties: AreaProps }) => {
             const id = f.properties.areaId || '';
             if (selected.has(id)) return [0, 80, 169, 190]; // selected reads first, before hue
+            /**
+             * An assigned area keeps NO fill while its roads are on the map.
+             *
+             * Those roads are the same fact at higher resolution — red outstanding, blue driven —
+             * so a percentage wash over them would bury the detail to restate the summary. Switch
+             * the assigned-routes layer off and the fill comes back, because then the polygon is
+             * the only thing left carrying it.
+             */
+            if (mode === 'assignment' && roadScope !== 'off' && isAssigned(f.properties)) {
+              return OUTLINE_ONLY;
+            }
             const c = shadeOf(f.properties);
             // Translucent so the basemap's streets stay readable underneath — the fill is a
             // summary, not a mask.
             return [c[0], c[1], c[2], 110];
           },
+          // The outline answers "whose is this", independently of the fill's percentage.
           getLineColor: (f: { properties: AreaProps }) => {
             const id = f.properties.areaId || '';
             if (selected.has(id)) return [91, 33, 182, 255];
+            // A signed-off area gets an emerald border. Deliberately the OUTLINE and not the fill:
+            // completion and percentage are independent facts, and a manager needs to read both
+            // at once — "done" and "done at 44%" is a real combination.
+            if (f.properties.completed) return [4, 120, 87, 255];
+            if (mode === 'assignment') {
+              // Both blue: an area is an area. Solid means someone holds it, dashed means it is
+              // still waiting — the same language the delivered design used.
+              return isAssigned(f.properties) ? ASSIGNED_BLUE : [37, 99, 235, 200];
+            }
             const c = shadeOf(f.properties);
             return [c[0], c[1], c[2], 235];
           },
           // Selected polygons get a heavy border so a chosen cluster is legible even where the
           // areas are tiny and packed, which is most of inner Melbourne.
+          // An assigned outline has to carry on its own what a fill used to say, so it is drawn
+          // heavier than an unassigned one.
           getLineWidth: (f: { properties: AreaProps }) =>
-            selected.has(f.properties.areaId || '') ? 3 : 1,
+            selected.has(f.properties.areaId || '')
+              ? 3
+              : f.properties.completed
+                ? 2.2
+                : isAssigned(f.properties)
+                  ? 2
+                  : 1,
           lineWidthUnits: 'pixels',
           lineWidthMinPixels: 1.2,
+          /**
+           * Dashed while unassigned, solid once it is somebody's. Selected and completed areas
+           * stay solid, so the state being acted on is never the ambiguous one.
+           *
+           * Spread through a cast because PathStyleExtension contributes `extensions` and
+           * `getDashArray` at runtime and GeoJsonLayer's prop type does not know about them. The
+           * cast is deliberately confined to these two props rather than loosening the layer.
+           */
+          ...({
+            extensions: [DASHED_OUTLINE],
+            getDashArray: (f: { properties: AreaProps }) =>
+              mode === 'assignment' &&
+              !isAssigned(f.properties) &&
+              !f.properties.completed &&
+              !selected.has(f.properties.areaId || '')
+                ? DASH_PATTERN
+                : SOLID,
+          } as object),
           updateTriggers: {
             // deck.gl caches accessor results; without naming every input here a selection would
             // change state but not repaint.
-            getFillColor: [mode, selectionKey, driverColorByArea],
+            getFillColor: [mode, selectionKey, driverColorByArea, roadScope],
             getLineColor: [mode, selectionKey, driverColorByArea],
-            getLineWidth: [selectionKey],
+            // Width now depends on whether an area is assigned, so the colour map belongs here too
+            // — without it, assigning an area would recolour its outline but not thicken it.
+            getLineWidth: [selectionKey, driverColorByArea],
           },
           onClick: (info: PickingInfo & { srcEvent?: MouseEvent }) => {
             const props = (info.object as AreaFeature | undefined)?.properties;
@@ -270,6 +608,33 @@ export function CoverageMap({
       );
     }
 
+    // Under the road layers on purpose: the tracks say where the fleet went, the roads say what
+    // that earned. When they disagree — a street driven but not claimed — the road's colour is
+    // the one that must win the eye.
+    if (tracks.length) {
+      out.push(
+        new PathLayer<TrackPath>({
+          id: 'driven-tracks',
+          data: tracks,
+          pickable: true,
+          getPath: (d) => d.path,
+          // Coloured by driver, with the same palette the polygons use, so a track and the areas
+          // that person holds read as one crew.
+          getColor: (d) => {
+            const c = driverColorById?.[d.driverId] || [124, 58, 237];
+            return [c[0], c[1], c[2], 200];
+          },
+          getWidth: 3,
+          widthUnits: 'meters',
+          widthMinPixels: 1.5,
+          widthMaxPixels: 6,
+          capRounded: true,
+          jointRounded: true,
+          updateTriggers: { getColor: [driverColorById] },
+        })
+      );
+    }
+
     if (links.length) {
       out.push(
         new PathLayer<LinkRow>({
@@ -277,9 +642,10 @@ export function CoverageMap({
           data: links,
           pickable: true,
           getPath: (d) => d.coordinates,
-          // Green once driven, neutral slate until then. Uncovered is the normal state at the
-          // start of a project, so it must not look like an error.
-          getColor: (d) => (d.covered ? [5, 150, 105, 235] : [100, 116, 139, 190]),
+          // The same contract as every other road layer on this map: red outstanding, blue
+          // driven. It used to be green-on-slate, from when this layer was a browsing aid at high
+          // zoom rather than the answer to "show me the roads".
+          getColor: (d) => (d.covered ? [37, 99, 235, 235] : [220, 38, 38, 215]),
           // Arterials heavier than local streets, matching how the basemap already reads.
           getWidth: (d) => (d.funcClass && d.funcClass <= 3 ? 5 : d.funcClass === 4 ? 3.5 : 2.2),
           widthUnits: 'meters',
@@ -291,19 +657,105 @@ export function CoverageMap({
       );
     }
 
+    if (assignedLinks.length) {
+      out.push(
+        new PathLayer<AssignedLink>({
+          id: 'assigned-road-links',
+          data: assignedLinks,
+          pickable: true,
+          getPath: (d) => d.path,
+          /**
+           * RED still to drive, BLUE driven. This is the contract the driver's phone uses and it
+           * is not negotiable by default, because it is the one question the map exists to answer.
+           *
+           * Colouring driven roads per driver instead was a mistake worth recording: the palette
+           * handed one driver the same red as "to drive" and two others orange and magenta, so at
+           * hairline width a suburb that was 54% finished read as entirely outstanding. Per-driver
+           * colour is now opt-in, for when the question really is "whose work is this" rather
+           * than "what is left".
+           */
+          getColor: (d) => {
+            if (!d.covered) return [220, 38, 38, 220];
+            const c = (colorRoadsByDriver && d.driverId && driverColorById?.[d.driverId]) || [37, 99, 235];
+            return [c[0], c[1], c[2], 235];
+          },
+          getWidth: (d) => (d.funcClass && d.funcClass <= 3 ? 4.5 : d.funcClass === 4 ? 3.2 : 2.2),
+          widthUnits: 'meters',
+          widthMinPixels: 1.3,
+          widthMaxPixels: 8,
+          capRounded: true,
+          jointRounded: true,
+          updateTriggers: { getColor: [driverColorById, colorRoadsByDriver] },
+        })
+      );
+    }
+
+    if (areaLinks.length) {
+      out.push(
+        new PathLayer<LinkRow>({
+          id: 'area-road-links',
+          data: areaLinks,
+          pickable: true,
+          getPath: (d) => d.coordinates,
+          /**
+           * The DRIVER'S colours, on purpose: blue where the street is recorded as driven, red
+           * where it is still outstanding.
+           *
+           * The fleet-wide layer above uses green-on-slate because at country zoom "not driven
+           * yet" is the normal state of 61,563 km and must not read as an error. Inside a single
+           * area being verified the question is the opposite one — what is left — and the manager
+           * should be looking at the same picture the driver has on the phone, where red means
+           * still to drive. Two colour languages for two genuinely different questions.
+           */
+          getColor: (d) => (d.covered ? [37, 99, 235, 240] : [220, 38, 38, 225]),
+          getWidth: (d) => (d.funcClass && d.funcClass <= 3 ? 5 : d.funcClass === 4 ? 3.5 : 2.4),
+          widthUnits: 'meters',
+          widthMinPixels: 1.6,
+          widthMaxPixels: 9,
+          capRounded: true,
+          jointRounded: true,
+        })
+      );
+    }
+
     return out;
-  }, [areas, links, mode, onSelectArea, onToggleSelect, selected, selectionKey, driverColorByArea]);
+  }, [
+    areas,
+    links,
+    areaLinks,
+    assignedLinks,
+    tracks,
+    driverColorById,
+    showAreas,
+    mode,
+    onSelectArea,
+    onToggleSelect,
+    selected,
+    selectionKey,
+    driverColorByArea,
+  ]);
 
   const getTooltip = useCallback((info: PickingInfo) => {
-    const obj = info.object as (AreaFeature & LinkRow) | undefined;
+    const obj = info.object as (AreaFeature & LinkRow & TrackPath) | undefined;
     if (!obj) return null;
+
+    if (obj.tripId) {
+      return {
+        html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${obj.driverName}</b><div style="opacity:.7">${new Date(
+          obj.startedAt
+        ).toLocaleString()}</div><div style="margin-top:3px">${(obj.cleanedMeters / 1000).toFixed(1)} km snapped</div></div>`,
+      };
+    }
 
     if ('properties' in obj && obj.properties) {
       const p = obj.properties;
       const rows: string[] = [];
       if (p.parentName) rows.push(`<div style="opacity:.7">${p.parentName}</div>`);
       rows.push(`<div style="opacity:.7">P${p.priority} · ${p.areaCode}</div>`);
-      const holders = driverNamesRef.current?.[p.areaId || ''] || [];
+      // Same source the fill uses, so the hover can never contradict the panel.
+      const holders = p.assignedTo?.length
+        ? p.assignedTo
+        : driverNamesRef.current?.[p.areaId || ''] || [];
       rows.push(
         holders.length
           ? `<div style="margin-top:4px"><b>${holders.join(', ')}</b></div>`
@@ -315,8 +767,29 @@ export function CoverageMap({
         );
         rows.push(`<div style="opacity:.7">${(p.targetLinks || 0).toLocaleString()} links</div>`);
       }
+      if (p.completed) {
+        rows.push(
+          `<div style="margin-top:4px;color:#059669"><b>✓ Completed</b>${
+            p.completedByName ? ` · ${p.completedByName}` : ''
+          }</div>`
+        );
+      }
       return {
         html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${p.name || p.areaCode}</b>${rows.join('')}</div>`,
+      };
+    }
+
+    // An assigned-network link carries a decoded path and no metadata — the wire format drops
+    // every field the layer does not draw, so it must not fall into the branch below that reads
+    // a name and a length.
+    if (obj.linkId && Array.isArray((obj as unknown as AssignedLink).path)) {
+      const a = obj as unknown as AssignedLink;
+      return {
+        html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${
+          a.covered ? '✓ driven' : 'not driven yet'
+        }</b>${
+          a.covered && a.driverName ? `<div>by ${a.driverName}</div>` : ''
+        }<div style="opacity:.7">FC${a.funcClass ?? '?'}</div><div style="opacity:.55;font-family:monospace;font-size:11px">${a.linkId}</div></div>`,
       };
     }
 
@@ -328,15 +801,38 @@ export function CoverageMap({
     return null;
   }, []);
 
+  const areaRoadsNote =
+    areaRoadsFor && areaLinks.length
+      ? ` · ${areaLinks.length.toLocaleString()} in the selected area (blue = driven, red = still to drive)`
+      : '';
+
+  const drivenCount = assignedLinks.reduce((n, l) => n + (l.covered ? 1 : 0), 0);
+  const assignedHint = assignedLoading
+    ? 'Loading routes…'
+    : assignedLinks.length
+      ? `${assignedLinks.length.toLocaleString()} ${roadScope === 'covered' ? 'driven roads, project-wide' : 'roads in assigned areas'}` +
+        // Pointless in the 'covered' scope, where the count is 100% by definition.
+        (roadScope === 'covered'
+          ? ''
+          : ` · ${drivenCount.toLocaleString()} driven (${((drivenCount / assignedLinks.length) * 100).toFixed(0)}%)`) +
+        ` · ${colorRoadsByDriver ? 'driven roads take the driver’s colour, red = to drive' : 'red = to drive, blue = driven'}`
+      : '';
+
+  const inviewDriven = links.reduce((n, l) => n + (l.covered ? 1 : 0), 0);
   const linksHint = !versionId
     ? 'Road links appear once the import is committed'
-    : zoom < LINK_ZOOM
-      ? 'Zoom in to load road links'
-      : linksLoading
-        ? 'Loading road links…'
-        : truncated
-          ? `Showing the first ${LINK_LIMIT.toLocaleString()} links — zoom in further to see them all`
-          : `${links.length.toLocaleString()} links in view`;
+    : roadScope === 'off'
+      ? 'Roads hidden — pick a Routes scope to draw them'
+      : assignedHint
+        ? assignedHint
+        : linksLoading || areaLinksLoading
+          ? 'Loading roads…'
+          : roadScope === 'inview'
+            ? (truncated
+                // Say so rather than letting an arbitrary 30,000 of 653,494 read as the whole truth.
+                ? `Showing the first ${INVIEW_LINK_LIMIT.toLocaleString()} roads in view — zoom in to see every one`
+                : `${links.length.toLocaleString()} roads in view · ${inviewDriven.toLocaleString()} driven`) + areaRoadsNote
+            : '';
 
   return (
     <div className="cov-map" style={{ height }}>
@@ -351,36 +847,46 @@ export function CoverageMap({
       />
 
       <div className="cov-map-legend">
-        {mode === 'driver' ? (
-          <div className="cov-legend-drivers">
-            {(driverLegend || []).slice(0, 8).map((d) => (
-              <span key={d.name} className="cov-legend-row" style={{ gap: 5 }}>
-                <span className="cov-swatch" style={{ background: `rgb(${d.color.join(',')})` }} />
-                <span>{d.name}</span>
-              </span>
-            ))}
-            {(driverLegend || []).length > 8 && (
-              <span className="cov-legend-note">+{(driverLegend || []).length - 8} more</span>
-            )}
-            <span className="cov-legend-row" style={{ gap: 5 }}>
-              <span className="cov-swatch" style={{ background: 'rgb(203,213,225)' }} />
-              <span>unassigned</span>
-            </span>
-          </div>
-        ) : mode === 'coverage' ? (
+        {mode === 'assignment' ? (
           <>
+            {/* Outline first, because it is the fact people look for: whose is this. */}
+            <div className="cov-legend-row">
+              <span className="cov-line" style={{ background: 'rgb(37,99,235)' }} />
+              <span>assigned</span>
+              <span
+                className="cov-line"
+                style={{ background: 'none', borderTop: '2px dashed rgb(37,99,235)', height: 0 }}
+              />
+              <span>unassigned</span>
+              <span className="cov-line" style={{ background: 'rgb(4,120,87)' }} />
+              <span>completed</span>
+            </div>
             <div className="cov-legend-row">
               <span className="cov-swatch" style={{ background: 'rgb(148,163,184)' }} />
               <span className="cov-swatch" style={{ background: 'rgb(76,156,144)' }} />
               <span className="cov-swatch" style={{ background: 'rgb(5,150,105)' }} />
-              <span>0% → 100% covered</span>
+              <span>fill: 0% → 100% driven</span>
             </div>
-            <div className="cov-legend-row">
-              <span className="cov-line" style={{ background: 'rgb(5,150,105)' }} />
-              <span>driven</span>
-              <span className="cov-line" style={{ background: 'rgb(100,116,139)' }} />
-              <span>not yet</span>
-            </div>
+            {(driverLegend || []).length > 0 && (
+              <div className="cov-legend-drivers">
+                {(driverLegend || []).slice(0, 10).map((d) => (
+                  <span key={d.name} className="cov-legend-row" style={{ gap: 5 }}>
+                    <span className="cov-swatch" style={{ background: `rgb(${d.color.join(',')})` }} />
+                    <span>
+                      {d.name}
+                      {/* The kilometres are the point: a name with 0 km is a test account holding
+                          an empty area, and a name with 3,701 km is where the work went. */}
+                      {typeof d.meters === 'number' && (
+                        <span style={{ color: 'var(--muted)' }}> · {km(d.meters)} km</span>
+                      )}
+                    </span>
+                  </span>
+                ))}
+                {(driverLegend || []).length > 10 && (
+                  <span className="cov-legend-note">+{(driverLegend || []).length - 10} more</span>
+                )}
+              </div>
+            )}
           </>
         ) : (
           <div className="cov-legend-row">

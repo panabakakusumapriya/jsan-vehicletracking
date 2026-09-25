@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CoverageMap } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { api, uploadRaw } from '../lib/api';
+import type { ApiError } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import type {
   AreaAssignment,
+  AreaCoverageDetail,
   ColumnMapping,
   CoverageArea,
   CoverageSummary,
@@ -31,6 +33,12 @@ import type {
 
 const km = (metres: number) => (metres / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 });
 const pct = (part: number, whole: number) => (whole > 0 ? (part / whole) * 100 : 0);
+/** A date input's value, N days from today. Local date parts — a UTC ISO slice shifts the day. */
+const isoDay = (offsetDays: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 const mb = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`;
 
 /** HERE functional class, in the customer's terms rather than the number. */
@@ -119,14 +127,10 @@ export function Coverage() {
               <option key={p._id} value={p._id}>{p.name}</option>
             ))}
           </select>
-          {versions.length > 0 && (
-            <select className="input" value={versionId} onChange={(e) => setVersionId(e.target.value)} style={{ width: 'auto' }}>
-              {versions.map((v) => (
-                <option key={v._id} value={v._id}>
-                  {v.label}{v.status === 'active' ? ' · active' : ` · ${v.status}`}
-                </option>
-              ))}
-            </select>
+          {versions.length > 1 && (
+            <span style={{ color: 'var(--muted)', fontSize: 12.5 }}>
+              {versions.length} deliveries · showing all
+            </span>
           )}
         </div>
       </div>
@@ -142,7 +146,7 @@ export function Coverage() {
 
       {tab === 'progress' &&
         (version ? (
-          <ProgressTab version={version} onChanged={loadVersions} canEdit={canEdit} />
+          <ProgressTab version={version} scopeId={projectId} onChanged={loadVersions} canEdit={canEdit} />
         ) : (
           <div className="card empty-state">
             <h3 style={{ margin: '0 0 6px' }}>No target network yet</h3>
@@ -165,10 +169,18 @@ export function Coverage() {
 
 function ProgressTab({
   version,
+  scopeId,
   onChanged,
   canEdit,
 }: {
+  /** The newest delivery — used only for actions that target one, like Make active. */
   version: NetworkVersion;
+  /**
+   * What every READ is scoped to: the project, not a delivery. The API accepts either id in the
+   * same position, and a project means "everything this project has" — which is the only way a
+   * project holding two states shows both at once.
+   */
+  scopeId: string;
   onChanged: () => void;
   canEdit: boolean;
 }) {
@@ -179,7 +191,10 @@ function ProgressTab({
   const [busy, setBusy] = useState(false);
   const [assignments, setAssignments] = useState<AreaAssignment[]>([]);
   const [assigning, setAssigning] = useState<CoverageArea[] | null>(null);
-  const [mapMode, setMapMode] = useState<'coverage' | 'priority' | 'driver'>('driver');
+  // Two views, not three: who holds an area and how much of it is done are read together, so they
+  // share one picture (outline / fill). The customer's priority band is a label rather than a
+  // quantity and cannot share that encoding, so it keeps its own view.
+  const [mapMode, setMapMode] = useState<'assignment' | 'priority'>('assignment');
   // Areas picked on the map, waiting to be handed to a driver. Territory is carved
   // geographically, so the selection lives on the map rather than in the table.
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -187,6 +202,48 @@ function ProgressTab({
   // all-areas view is mostly empty space — picking a row has to take the camera there.
   const [focusAreaId, setFocusAreaId] = useState<string | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
+
+  // Layer switches. Verifying an area is a different job from browsing the programme: the
+  // polygons that make the overview readable are exactly what hides the streets underneath.
+  const [showAreasLayer, setShowAreasLayer] = useState(true);
+  // Roads means ALL roads in view, across every polygon — not just the one that happens to be
+  // selected. Picking an area additionally loads that area's roads in full, at any zoom.
+  /**
+   * Which roads are drawn. One setting, because "show me the roads" is one question asked at three
+   * scales: the territory out with crews, everything ever driven, or everything inside every
+   * polygon in view. The last exists because the first two are complete but narrow, and a
+   * dispatcher looking at a region wants the outstanding red in areas nobody holds yet.
+   */
+  const [roadScope, setRoadScope] = useState<'off' | 'assigned' | 'covered' | 'inview'>('assigned');
+  // Off by default: red/blue is the contract the phone uses, and per-driver hues override it.
+  const [colorRoadsByDriver, setColorRoadsByDriver] = useState(false);
+  /** Everyone with driven road on this network — NOT the same set as "everyone holding a polygon". */
+  const [coverageDrivers, setCoverageDrivers] = useState<
+    { driverId: string | null; name: string; links: number; meters: number }[]
+  >([]);
+  // Driven tracks are off by default: they are the heaviest layer on the map and the one a
+  // manager turns ON to answer a specific question, rather than the backdrop they browse in.
+  const [showTracks, setShowTracks] = useState(false);
+  const [tracksFrom, setTracksFrom] = useState(() => isoDay(-14));
+  const [tracksTo, setTracksTo] = useState(() => isoDay(0));
+  const [tracksMeta, setTracksMeta] = useState<{
+    count: number;
+    pendingSnap: number;
+    truncated: boolean;
+  } | null>(null);
+  // Stable identity: the map re-fetches whenever this changes, so an inline arrow would loop.
+  const onTracksMeta = useCallback(
+    (m: { count: number; pendingSnap: number; truncated: boolean }) => setTracksMeta(m),
+    []
+  );
+  // The click-a-polygon panel: the numbers a manager cross-verifies before signing an area off.
+  const [detail, setDetail] = useState<AreaCoverageDetail | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  // Exactly one area picked is the "inspect this" gesture; a multi-selection is the "assign these"
+  // gesture and keeps the old bar.
+  const singleAreaId = selectedIds.length === 1 ? selectedIds[0] : null;
 
   const showAreaOnMap = useCallback((areaId: string) => {
     setFocusAreaId(areaId);
@@ -201,14 +258,77 @@ function ProgressTab({
     });
   }, []);
 
+  /** The panel's numbers, reloaded whenever the picked area changes or an action lands. */
+  const loadDetail = useCallback(
+    (areaId: string | null) => {
+      if (!areaId) {
+        setDetail(null);
+        setDetailError(null);
+        return;
+      }
+      setDetailBusy(true);
+      api
+        .get<AreaCoverageDetail>(`/api/network/versions/${scopeId}/areas/${areaId}/coverage`)
+        .then((r) => {
+          setDetail(r);
+          setDetailError(null);
+        })
+        .catch((e) => {
+          setDetail(null);
+          setDetailError(e instanceof Error ? e.message : 'Could not load this area');
+        })
+        .finally(() => setDetailBusy(false));
+    },
+    [scopeId]
+  );
+
+  useEffect(() => loadDetail(singleAreaId), [singleAreaId, loadDetail]);
+
+  // Bumped after a sign-off so the table, the stat strip and the choropleth all catch up.
+  const [reloadKey, setReloadKey] = useState(0);
+
+  /**
+   * Sign the area off, or put it back in play.
+   *
+   * Completing also releases whoever holds it (server side), which is what makes the verdict mean
+   * something on the ground: the roads stop appearing as work on the driver's phone.
+   */
+  const setCompletion = async (complete: boolean) => {
+    if (!detail) return;
+    const areaId = detail.area._id;
+    setDetailBusy(true);
+    setDetailError(null);
+    try {
+      await api.post(
+        `/api/network/versions/${scopeId}/areas/${areaId}/${complete ? 'complete' : 'reopen'}`,
+        {}
+      );
+      loadDetail(areaId);
+      loadAssignments();
+      setReloadKey((n) => n + 1);
+      onChanged();
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : 'That did not save');
+    } finally {
+      setDetailBusy(false);
+    }
+  };
+
   const loadAssignments = useCallback(() => {
     api
-      .get<{ assignments: AreaAssignment[] }>(`/api/network/versions/${version._id}/assignments`)
+      .get<{ assignments: AreaAssignment[] }>(`/api/network/versions/${scopeId}/assignments`)
       .then((r) => setAssignments(r.assignments))
       .catch(() => setAssignments([]));
-  }, [version._id]);
+  }, [scopeId]);
 
   useEffect(loadAssignments, [loadAssignments]);
+
+  useEffect(() => {
+    api
+      .get<{ drivers: typeof coverageDrivers }>(`/api/network/versions/${scopeId}/coverage-drivers`)
+      .then((r) => setCoverageDrivers(r.drivers || []))
+      .catch(() => setCoverageDrivers([]));
+  }, [scopeId, reloadKey]);
 
   // areaId -> the drivers currently responsible for it. Built once per load rather than filtered
   // per row, so a 402-row table is not 402 passes over the assignment list.
@@ -228,10 +348,10 @@ function ProgressTab({
 
   useEffect(() => {
     api
-      .get<{ coverage: CoverageSummary }>(`/api/network/versions/${version._id}`)
+      .get<{ coverage: CoverageSummary }>(`/api/network/versions/${scopeId}`)
       .then((r) => setSummary(r.coverage))
       .catch(() => setSummary(null));
-  }, [version._id]);
+  }, [scopeId, reloadKey]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -239,12 +359,12 @@ function ProgressTab({
     if (query.trim()) params.set('q', query.trim());
     const t = setTimeout(() => {
       api
-        .get<{ areas: CoverageArea[] }>(`/api/network/versions/${version._id}/areas?${params}`)
+        .get<{ areas: CoverageArea[] }>(`/api/network/versions/${scopeId}/areas?${params}`)
         .then((r) => setAreas(r.areas))
         .catch(() => setAreas([]));
     }, 250);
     return () => clearTimeout(t);
-  }, [version._id, priority, query]);
+  }, [scopeId, priority, query, reloadKey]);
 
   const activate = async () => {
     setBusy(true);
@@ -264,15 +384,31 @@ function ProgressTab({
    * than array order, which is why re-fetching does not repaint everyone a different colour.
    */
   const driverViz = useMemo(() => {
+    /**
+     * No red in here, deliberately. Red is "still to drive" everywhere else on this map and on
+     * the driver's phone, so handing it to a person made their finished roads indistinguishable
+     * from outstanding ones — which is exactly what happened before it was removed.
+     */
     const PALETTE: [number, number, number][] = [
       [0, 80, 169], [37, 99, 235], [5, 150, 105], [217, 119, 6],
-      [219, 39, 119], [8, 145, 178], [132, 204, 22], [239, 68, 68],
+      [219, 39, 119], [8, 145, 178], [132, 204, 22], [120, 53, 15],
       [99, 102, 241], [20, 184, 166], [234, 88, 12], [168, 85, 247],
     ];
-    const ids = [...new Set(assignments.map((a) =>
-      typeof a.driverId === 'object' && a.driverId ? a.driverId._id : String(a.driverId)
-    ))].sort();
+    /**
+     * Everyone the map might need a colour for: whoever holds a polygon AND whoever has driven
+     * road on this network. Those two sets diverge the moment an area is released or a history
+     * import lands, and colouring only the holders left thousands of kilometres of real work
+     * drawn in a default blue with nobody's name against it.
+     */
+    const ids = [...new Set([
+      ...assignments.map((a) =>
+        typeof a.driverId === 'object' && a.driverId ? a.driverId._id : String(a.driverId)
+      ),
+      ...coverageDrivers.map((d) => d.driverId).filter((id): id is string => Boolean(id)),
+    ])].sort();
     const colorFor = new Map(ids.map((id, i) => [id, PALETTE[i % PALETTE.length]]));
+    const metersById = new Map(coverageDrivers.map((d) => [String(d.driverId), d.meters]));
+    const nameFromCoverage = new Map(coverageDrivers.map((d) => [String(d.driverId), d.name]));
 
     const byArea: Record<string, [number, number, number]> = {};
     const namesByArea: Record<string, string[]> = {};
@@ -293,12 +429,23 @@ function ProgressTab({
       (namesByArea[areaKey] ||= []).push(name);
     }
 
+    // Most road driven first. Alphabetical would bury the person who did 3,701 km under a test
+    // account that holds an empty area.
     const legend = ids
-      .map((id) => ({ name: nameFor.get(id) || 'Unknown', color: colorFor.get(id)! }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .map((id) => ({
+        name: nameFor.get(id) || nameFromCoverage.get(id) || 'Unknown',
+        color: colorFor.get(id)!,
+        meters: metersById.get(id) || 0,
+      }))
+      .sort((a, b) => b.meters - a.meters || a.name.localeCompare(b.name));
 
-    return { byArea, namesByArea, legend };
-  }, [assignments]);
+    // Same palette keyed by driver, so a driven track and the polygons that driver holds are
+    // visibly the same person.
+    const byDriver: Record<string, [number, number, number]> = {};
+    for (const [id, color] of colorFor) byDriver[id] = color;
+
+    return { byArea, namesByArea, legend, byDriver };
+  }, [assignments, coverageDrivers]);
 
   const selectedAreas = useMemo(
     () => areas.filter((a) => selectedIds.includes(a._id)),
@@ -329,6 +476,14 @@ function ProgressTab({
         <div className="stat"><div className="v">{km(covered)} km</div><div className="k">Covered</div></div>
         <div className="stat"><div className="v">{pct(covered, target).toFixed(1)}%</div><div className="k">Complete</div></div>
         <div className="stat"><div className="v">{km(remaining)} km</div><div className="k">Remaining</div></div>
+        <div className="stat">
+          <div className="v" style={{ color: '#059669' }}>{(summary?.completedAreas ?? 0).toLocaleString()}</div>
+          <div className="k">Completed areas</div>
+        </div>
+        <div className="stat">
+          <div className="v">{(summary?.assignedAreas ?? 0).toLocaleString()}</div>
+          <div className="k">Assigned areas</div>
+        </div>
         <div className="stat"><div className="v">{version.counts.areas.toLocaleString()}</div><div className="k">Work areas</div></div>
         <div className="stat"><div className="v">{version.counts.links.toLocaleString()}</div><div className="k">Road links</div></div>
       </div>
@@ -344,22 +499,111 @@ function ProgressTab({
           <div>
             <h3 className="cov-h3" style={{ margin: 0 }}>Work areas</h3>
             <p className="cov-sub" style={{ margin: '2px 0 0' }}>
-              {mapMode === 'driver'
-                ? 'Shaded by who is responsible — click areas to assign them'
-                : mapMode === 'coverage'
-                  ? 'Shaded by how much of each area is driven'
-                  : "Shaded by the customer's priority band"}
-              {' · zoom in to load the roads themselves'}
+              {mapMode === 'assignment'
+                ? 'Outline = who holds it (blue assigned · grey unassigned · green completed). Fill = how much is driven, shown once an area’s own roads are hidden.'
+                : "Shaded by the customer's priority band — confirm what P0 means before dispatching against it"}
+              {' · click an area to inspect or assign it'}
             </p>
           </div>
-          <div className="cov-tabs" style={{ border: 'none', margin: 0 }}>
-            <button className={mapMode === 'driver' ? 'active' : ''} onClick={() => setMapMode('driver')}>Driver</button>
-            <button className={mapMode === 'coverage' ? 'active' : ''} onClick={() => setMapMode('coverage')}>Coverage</button>
-            <button className={mapMode === 'priority' ? 'active' : ''} onClick={() => setMapMode('priority')}>Priority</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            {/* Two switches, because verifying an area and browsing the programme want opposite
+                things: the polygon fill that makes the overview readable is the same fill that
+                hides the streets a manager is trying to check. */}
+            <label className="cov-check" title="Draw the work-area polygons">
+              <input
+                type="checkbox"
+                checked={showAreasLayer}
+                onChange={(e) => setShowAreasLayer(e.target.checked)}
+              />
+              Areas (polygons)
+            </label>
+            {/* One control for roads, because they are one question asked at three scales. */}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
+              Routes
+              <select
+                className="input"
+                style={{ width: 186, padding: '4px 8px', fontSize: 12.5 }}
+                value={roadScope}
+                onChange={(e) => setRoadScope(e.target.value as typeof roadScope)}
+                title={
+                  'in assigned areas: every road in a held area, complete at any zoom. ' +
+                  'driven anywhere: everything anyone has driven, project-wide. ' +
+                  'in every polygon: all 402 areas, bounded by what is on screen.'
+                }
+              >
+                <option value="off">off</option>
+                <option value="assigned">in assigned areas</option>
+                <option value="covered">driven anywhere</option>
+                <option value="inview">in every polygon (in view)</option>
+              </select>
+            </span>
+            {roadScope !== 'off' && (
+              <label
+                className="cov-check"
+                title="Off: red = to drive, blue = driven. On: driven roads take the colour of whoever drove them."
+              >
+                <input
+                  type="checkbox"
+                  checked={colorRoadsByDriver}
+                  onChange={(e) => setColorRoadsByDriver(e.target.checked)}
+                />
+                colour by driver
+              </label>
+            )}
+            <label className="cov-check" title="Snapped routes the fleet actually drove">
+              <input
+                type="checkbox"
+                checked={showTracks}
+                onChange={(e) => setShowTracks(e.target.checked)}
+              />
+              Driven tracks
+              {showTracks && tracksMeta && (
+                <span style={{ color: 'var(--muted)' }}>
+                  {' '}({tracksMeta.count}
+                  {tracksMeta.truncated ? '+' : ''}
+                  {tracksMeta.pendingSnap > 0 ? ` · ⏳ ${tracksMeta.pendingSnap}` : ''})
+                </span>
+              )}
+            </label>
+            {showTracks && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
+                <input
+                  className="input"
+                  type="date"
+                  style={{ width: 140, padding: '4px 8px' }}
+                  value={tracksFrom}
+                  max={tracksTo}
+                  onChange={(e) => setTracksFrom(e.target.value)}
+                />
+                <span style={{ color: 'var(--muted)' }}>→</span>
+                <input
+                  className="input"
+                  type="date"
+                  style={{ width: 140, padding: '4px 8px' }}
+                  value={tracksTo}
+                  min={tracksFrom}
+                  onChange={(e) => setTracksTo(e.target.value)}
+                />
+              </span>
+            )}
+            <div className="cov-tabs" style={{ border: 'none', margin: 0 }}>
+              <button
+                className={mapMode === 'assignment' ? 'active' : ''}
+                onClick={() => setMapMode('assignment')}
+              >
+                Drivers &amp; coverage
+              </button>
+              <button
+                className={mapMode === 'priority' ? 'active' : ''}
+                onClick={() => setMapMode('priority')}
+              >
+                Priority
+              </button>
+            </div>
           </div>
         </div>
         <CoverageMap
-          versionId={version._id}
+          versionId={scopeId}
           mode={mapMode}
           height={560}
           focusAreaId={focusAreaId}
@@ -368,9 +612,141 @@ function ProgressTab({
           driverColorByArea={driverViz.byArea}
           driverNamesByArea={driverViz.namesByArea}
           driverLegend={driverViz.legend}
+          showAreas={showAreasLayer}
+          roadScope={roadScope}
+          // Refetch when assignments move or an area is signed off — both change what is drawn.
+          assignedKey={`${assignments.length}:${reloadKey}`}
+          areaRoadsFor={roadScope === 'off' ? null : singleAreaId}
+          showTracks={showTracks}
+          tracksFrom={tracksFrom}
+          tracksTo={tracksTo}
+          // With one polygon picked, narrow the tracks to trips recorded while it was assigned —
+          // the question stops being "where did the fleet go" and becomes "who drove THIS area".
+          tracksAreaId={singleAreaId}
+          colorRoadsByDriver={colorRoadsByDriver}
+          driverColorById={driverViz.byDriver}
+          onTracksMeta={onTracksMeta}
         />
 
-        {selectedIds.length > 0 && (
+        {/* One polygon picked = inspect it. This is the panel a manager cross-verifies in before
+            signing the area off: the total, the split by who actually drove it first, and who is
+            holding it now. */}
+        {singleAreaId && (
+          <div className="cov-area-panel">
+            {detailBusy && !detail && <div className="cov-sub">Loading…</div>}
+            {detailError && <div className="error-text">{detailError}</div>}
+            {detail && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <strong style={{ fontSize: 14 }}>{detail.area.name}</strong>
+                    <div className="cov-sub" style={{ margin: '2px 0 0' }}>
+                      {detail.area.parentName ? `${detail.area.parentName} · ` : ''}
+                      P{detail.area.priority} · {detail.area.areaCode}
+                    </div>
+                  </div>
+                  <button className="btn-ghost" style={{ padding: '2px 8px' }} onClick={() => setSelectedIds([])}>✕</button>
+                </div>
+
+                <div style={{ marginTop: 8, fontSize: 13 }}>
+                  {detail.assignments.length ? (
+                    <span>
+                      Assigned to{' '}
+                      <b>{detail.assignments.map((a) => a.driverName || 'Unknown').join(', ')}</b>
+                    </span>
+                  ) : (
+                    <span style={{ color: 'var(--muted)' }}>Unassigned</span>
+                  )}
+                </div>
+
+                <div style={{ marginTop: 8, fontSize: 13 }}>
+                  <div>
+                    Roads driven: <b>{detail.pct.toFixed(1)}%</b>
+                    <span style={{ color: 'var(--muted)' }}>
+                      {' '}— {km(detail.coveredMeters)} of {km(detail.area.targetMeters)} km
+                    </span>
+                  </div>
+                  {detail.assignments.length > 0 && (
+                    <div style={{ color: 'var(--muted)' }}>
+                      By the current holder: {detail.assignedPct.toFixed(1)}% — {km(detail.assignedMeters)} km
+                    </div>
+                  )}
+                </div>
+
+                {/* Who got there first, because first-cover-wins is fleet-wide: an area can go
+                    green because another crew drove it, and a sign-off must not silently imply
+                    the assigned driver did the work. */}
+                {detail.byDriver.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
+                    {detail.byDriver.slice(0, 4).map((d) => (
+                      <div key={d.driverId || 'none'}>
+                        {d.name}: {km(d.meters)} km · {d.links.toLocaleString()} roads
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {detail.completion?.status === 'completed' && (
+                  <div style={{ marginTop: 8, fontSize: 12.5, color: '#047857' }}>
+                    <b>✓ Completed</b>
+                    {detail.completion.completedByName ? ` by ${detail.completion.completedByName}` : ''}
+                    {detail.completion.completedAt
+                      ? ` · ${new Date(detail.completion.completedAt).toLocaleDateString()}`
+                      : ''}
+                    {typeof detail.completion.pctAtCompletion === 'number'
+                      ? ` · at ${detail.completion.pctAtCompletion.toFixed(1)}%`
+                      : ''}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                  {canEdit && detail.completion?.status !== 'completed' && (
+                    <button className="btn" disabled={detailBusy} onClick={() => setCompletion(true)}>
+                      ✓ Mark completed
+                    </button>
+                  )}
+                  {canEdit && detail.completion?.status === 'completed' && (
+                    <button className="btn-ghost" disabled={detailBusy} onClick={() => setCompletion(false)}>
+                      Reopen
+                    </button>
+                  )}
+                  {canEdit && detail.completion?.status !== 'completed' && (
+                    <button
+                      className="btn-ghost"
+                      onClick={() => {
+                        const row = areas.find((a) => a._id === detail.area._id);
+                        if (row) setAssigning([row]);
+                      }}
+                    >
+                      Assign driver…
+                    </button>
+                  )}
+                  {detail.area.bbox && detail.area.bbox.length === 4 && (
+                    <a
+                      className="btn-ghost"
+                      style={{ textDecoration: 'none', lineHeight: '30px' }}
+                      href={`https://www.google.com/maps?q=${(
+                        (detail.area.bbox[1] + detail.area.bbox[3]) / 2
+                      ).toFixed(5)},${((detail.area.bbox[0] + detail.area.bbox[2]) / 2).toFixed(5)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open in Google Maps ↗
+                    </a>
+                  )}
+                </div>
+
+                <div className="cov-sub" style={{ margin: '8px 0 0' }}>
+                  {detail.completion?.status === 'completed'
+                    ? 'Completed areas cannot be assigned to another driver without an override.'
+                    : 'Completing releases the driver and takes these roads off their phone.'}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {selectedIds.length > 1 && (
           <div className="cov-selection-bar">
             <div>
               <strong>{selectedIds.length} area{selectedIds.length === 1 ? '' : 's'} selected</strong>
@@ -492,7 +868,20 @@ function ProgressTab({
                 title={`Show ${a.name} on the map`}
               >
                 <td>
-                  <div style={{ fontWeight: 600 }}>{a.name}</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {a.name}
+                    {a.completed && (
+                      <span
+                        className="badge green"
+                        style={{ marginLeft: 6 }}
+                        title={`Signed off${a.completedByName ? ` by ${a.completedByName}` : ''}${
+                          a.completedAt ? ` on ${new Date(a.completedAt).toLocaleDateString()}` : ''
+                        }`}
+                      >
+                        ✓ Completed
+                      </span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'monospace' }}>{a.areaCode}</div>
                 </td>
                 <td style={{ color: 'var(--muted)' }}>{a.parentName || '—'}</td>
@@ -532,6 +921,7 @@ function ProgressTab({
       {assigning && assigning.length > 0 && (
         <AssignDriversModal
           version={version}
+          scopeId={scopeId}
           areas={assigning}
           driversByArea={driversByArea}
           onClose={() => setAssigning(null)}
@@ -1036,12 +1426,15 @@ function ReportView({
  */
 function AssignDriversModal({
   version,
+  scopeId,
   areas,
   driversByArea,
   onClose,
   onSaved,
 }: {
   version: NetworkVersion;
+  /** Project scope, so areas from any of its deliveries can be assigned in one call. */
+  scopeId: string;
   /** One area from the table, or a whole cluster picked on the map. */
   areas: CoverageArea[];
   driversByArea: Map<string, { id: string; name: string }[]>;
@@ -1062,10 +1455,14 @@ function AssignDriversModal({
   }, [areas, driversByArea]);
 
   const [drivers, setDrivers] = useState<User[]>([]);
-  const [selected, setSelected] = useState<string[]>(commonDrivers);
+  // One area belongs to one driver, so this is a single choice, not a set. Kept as an array
+  // because the endpoint takes driverIds — and because releasing is "nobody", i.e. empty.
+  const [selected, setSelected] = useState<string[]>(commonDrivers.slice(0, 1));
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set by a refusal the server says this user may force past — only ever a completed area.
+  const [canOverride, setCanOverride] = useState(false);
 
   useEffect(() => {
     const projectId =
@@ -1089,21 +1486,35 @@ function AssignDriversModal({
     });
   }, [drivers, query, selected]);
 
-  const toggle = (id: string) =>
-    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  /** Picking a driver replaces whoever was picked; picking the same one again releases the area. */
+  const toggle = (id: string) => setSelected((prev) => (prev[0] === id ? [] : [id]));
 
-  const save = async () => {
+  const save = async (override = false) => {
     setBusy(true);
     setError(null);
+    setCanOverride(false);
     try {
       // One request for the whole selection — see bulkAssign in network.controller.js.
-      await api.put(`/api/network/versions/${version._id}/assignments`, {
+      await api.put(`/api/network/versions/${scopeId}/assignments`, {
         areaIds: areas.map((a) => a._id),
         driverIds: selected,
         mode: 'set',
+        ...(override ? { override: true } : {}),
       });
       onSaved();
     } catch (e) {
+      // A 409 is a rule, not a failure: the area is signed off, or it already has a driver. The
+      // body says which, and whether this user is allowed to force past it.
+      const body = (e as ApiError).body as
+        | { blockers?: { reason: string }[]; canOverride?: boolean; hint?: string }
+        | undefined;
+      if (body?.blockers?.length) {
+        setCanOverride(body.canOverride === true);
+        setError(
+          `${e instanceof Error ? e.message : 'Blocked'}${body.hint ? ` — ${body.hint}` : ''}`
+        );
+        return;
+      }
       setError(e instanceof Error ? e.message : 'Failed to save');
     } finally {
       setBusy(false);
@@ -1142,9 +1553,13 @@ function AssignDriversModal({
         {visible.map((d) => (
           <label key={d._id} className="cov-driver-row">
             <input
-              type="checkbox"
+              type="radio"
+              name="assign-driver"
               checked={selected.includes(d._id)}
+              // onChange never fires for the already-checked radio, and clicking the current
+              // choice again is how an area is released — so the clear lives on click.
               onChange={() => toggle(d._id)}
+              onClick={() => { if (selected[0] === d._id) toggle(d._id); }}
             />
             <span>
               <span style={{ fontWeight: 600 }}>{d.name}</span>
@@ -1163,8 +1578,13 @@ function AssignDriversModal({
 
       <div className="modal-actions">
         <button className="btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn" disabled={busy} onClick={save}>
-          {busy ? 'Saving…' : `Assign ${selected.length} driver${selected.length === 1 ? '' : 's'}`}
+        {canOverride && (
+          <button className="btn-ghost" disabled={busy} onClick={() => save(true)}>
+            Assign anyway
+          </button>
+        )}
+        <button className="btn" disabled={busy} onClick={() => save()}>
+          {busy ? 'Saving…' : selected.length === 0 ? 'Release area' : 'Assign driver'}
         </button>
       </div>
     </Modal>

@@ -316,6 +316,12 @@ export interface Trip {
   cleanedDistanceMeters?: number | null;
   cleanedRouteShapes?: string[] | null;
   mapMatchStatus?: MapMatchStatus;
+  /**
+   * Set only on trips created by a bulk import of historical covered-road data. Such a trip has a
+   * real cleaned distance but no GPS and no route to replay — see the backend's
+   * seed/importCoveredRoads.js.
+   */
+  importBatchId?: string | null;
   // Fraction of the trace (0..1) genuinely snapped to roads. Below 1 means some stretch could not
   // be matched and kept its raw GPS geometry instead, so the "snapped" route is partly raw — see
   // matchSegment() in the backend's services/valhalla.js.
@@ -371,6 +377,8 @@ export interface Trip {
   linkUkmNetworkMeters?: number | null;
   linkUkmShapes?: string[] | null;
   linkCoveredCount?: number | null;
+  /** Positions in the cleaned route. Real coordinates; not GPS fixes. See Trip.cleanedPointCount. */
+  cleanedPointCount?: number | null;
   linkCoverageStatus?: 'pending' | 'computed' | 'review' | 'no_network' | 'failed';
   linkCoverageComputedAt?: string | null;
   // Which UKM the driver is measured on, and that figure — the one every surface should show.
@@ -594,6 +602,11 @@ export interface CoverageSummary {
   coveredLinks: number;
   targetMeters: number;
   targetLinks: number;
+  /** Areas a manager has signed off in the project's current coverage cycle. */
+  completedAreas?: number;
+  /** Areas currently in a driver's hands, counted by areaCode. */
+  assignedAreas?: number;
+  totalAreas?: number;
   byPriority: CoverageBand[];
   byFuncClass: CoverageBand[];
 }
@@ -610,6 +623,43 @@ export interface CoverageArea {
   coveredMeters: number;
   coveredLinks: number;
   bbox?: number[];
+  /** Signed off by a manager. Independent of the percentage — see AreaCompletion on the backend. */
+  completed?: boolean;
+  completedAt?: string | null;
+  completedByName?: string | null;
+}
+
+/**
+ * Everything the click-a-polygon panel shows: the area's totals, who holds it, and — the part
+ * that makes cross-verification possible — the coverage split by whoever first drove each road.
+ */
+export interface AreaCoverageDetail {
+  area: {
+    _id: string;
+    areaCode: string;
+    name: string;
+    parentName: string | null;
+    priority: number;
+    targetMeters: number;
+    targetLinks: number;
+    bbox?: number[] | null;
+  };
+  coveredMeters: number;
+  coveredLinks: number;
+  pct: number;
+  /** Of the covered roads, how much the drivers currently holding this area got to first. */
+  assignedMeters: number;
+  assignedPct: number;
+  byDriver: { driverId: string | null; name: string; meters: number; links: number }[];
+  assignments: { driverId: string; driverName: string | null; assignedAt: string }[];
+  completion: {
+    status: 'completed' | 'reopened';
+    completedAt: string | null;
+    completedByName: string | null;
+    completedByDriverName: string | null;
+    pctAtCompletion: number | null;
+    note: string | null;
+  } | null;
 }
 
 /** Which driver is responsible for a work area. See backend/src/models/AreaAssignment.js. */

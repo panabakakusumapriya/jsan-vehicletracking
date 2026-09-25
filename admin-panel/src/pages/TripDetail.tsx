@@ -8,7 +8,7 @@ import { km, sessionDt, statusBadge } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 import { buildReplayLayers, vehicleAtElapsed } from '../lib/map3d/TripPathLayer';
 import { useTripPlayback } from '../lib/map3d/useTripPlayback';
-import { decodeRouteShapes } from '../lib/polyline';
+import { cleanedPaths, decodeRouteShapes } from '../lib/polyline';
 import type { Trip } from '../lib/types';
 import { useTripMarkers } from '../components/TripMarkers';
 
@@ -39,8 +39,20 @@ function formatClock(ms: number): string {
  * speed, a point count in the thousands) beside an empty map. Saying "not recorded yet" there is
  * actively misleading — the points were recorded, and nothing is coming to fill the gap.
  */
-function NoPointsNotice({ pointCount }: { pointCount: number }) {
+function NoPointsNotice({ pointCount, imported, derivedCount }: { pointCount: number; imported?: boolean; derivedCount?: number | null }) {
   const wereRecorded = pointCount > 0;
+  // An imported day never had a handset running, so "no points recorded yet" reads as a fault
+  // where there was none. It has geometry — just the customer's roads rather than GPS fixes.
+  if (imported) {
+    return (
+      <p className="muted" style={{ marginTop: 12 }}>
+        Imported from cleaned GIS data: no GPS was recorded, so there is no trace to replay and no
+        timing to scrub through. The route above is drawn from
+        {derivedCount ? ` the ${derivedCount.toLocaleString()} positions of ` : ' '}
+        the roads this day covered, as supplied by the customer.
+      </p>
+    );
+  }
   return (
     <p className="muted" style={{ marginTop: 12 }}>
       {wereRecorded ? (
@@ -419,18 +431,37 @@ export function TripDetail() {
       .finally(() => setLoading(false));
   }, [id]);
 
-  // Show the whole recorded route, not just a fixed zoom on its first point.
+  // Show the whole route, not just a fixed zoom on its first point. Falls back to the cleaned
+  // geometry for an imported day, which has no recorded points to frame — without this the map
+  // opened on a default view nowhere near the roads it was drawing.
   useEffect(() => {
     if (points.length > 0) {
       mapRef.current?.fitToRoute(points.map((p) => [p.lon, p.lat]));
+      return;
     }
-  }, [points]);
+    const fallback = cleanedPaths(trip).flat();
+    if (fallback.length > 1) mapRef.current?.fitToRoute(fallback);
+  }, [points, trip]);
 
   const playback = useTripPlayback(points);
 
-  const cleanedAvailable = trip?.mapMatchStatus === 'matched' && !!trip.cleanedRouteShapes?.length;
-  const snappedPath = useMemo(
-    () => (mode === 'cleaned' ? decodeRouteShapes(trip?.cleanedRouteShapes) : null),
+  // A trip with no raw trace has nothing to show in "raw" mode. Opening there meant an imported
+  // day presented as an empty map until you found the toggle. Only ever switches the initial
+  // view — once the user picks a mode it is theirs.
+  const modeChosen = useRef(false);
+  useEffect(() => {
+    if (modeChosen.current || !trip) return;
+    if (points.length === 0 && trip.cleanedRouteShapes?.length) setMode('cleaned');
+  }, [trip, points]);
+
+  /**
+   * Having a cleaned route is a property of the DATA, not of which process produced it. An
+   * imported day is rebuilt from the customer's own road geometry and stays `skipped`, because
+   * the matcher genuinely never ran on it — gating on 'matched' hid a route that exists.
+   */
+  const cleanedAvailable = !!trip?.cleanedRouteShapes?.length;
+  const snappedPaths = useMemo(
+    () => (mode === 'cleaned' ? cleanedPaths(trip) : null),
     [mode, trip]
   );
   // Each UKM stretch stays a separate path: joining them would draw a straight line across the
@@ -474,16 +505,19 @@ export function TripDetail() {
 
   const layers = useMemo(
     () => [
-      ...buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths, outsidePaths),
+      ...buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPaths, ukmPaths, outsidePaths),
       ...tripMarkers.layers,
     ],
-    [points, playback.currentTimeMs, playback.playing, snappedPath, ukmPaths, outsidePaths, tripMarkers.layers]
+    [points, playback.currentTimeMs, playback.playing, snappedPaths, ukmPaths, outsidePaths, tripMarkers.layers]
   );
 
   if (loading) return <div className="muted">Loading trip…</div>;
   if (!trip) return <div className="muted">Trip not found.</div>;
 
-  const start: [number, number] = points[0] ? [points[0].lon, points[0].lat] : [78.45, 17.42];
+  // points[0] for a recorded trip; the first cleaned coordinate for an imported day, which has
+  // no points — otherwise the map opens on the default centre, nowhere near the roads it draws.
+  const start: [number, number] =
+    points[0] ? [points[0].lon, points[0].lat] : snappedPaths?.[0]?.[0] ?? cleanedPaths(trip)[0]?.[0] ?? [78.45, 17.42];
   const driver = typeof trip.driverId === 'object' ? trip.driverId.name : 'Driver';
   // The figure the UKM tile shows. An assigned driver's number is the assigned-route one and
   // nothing else — falling back to the global figure under an "assigned roads" badge would put a
@@ -499,7 +533,11 @@ export function TripDetail() {
           Trip · {driver} <span className={`badge ${statusBadge(trip.status)}`}>{trip.status}</span>
         </h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <DistanceModeToggle mode={mode} onChange={setMode} cleanedAvailable={cleanedAvailable} />
+          <DistanceModeToggle
+            mode={mode}
+            onChange={(m) => { modeChosen.current = true; setMode(m); }}
+            cleanedAvailable={cleanedAvailable}
+          />
           <ExportButtons
             snappedAvailable={cleanedAvailable}
             onExport={(format, layer) => downloadFile(`/api/trips/${id}/export?format=${format}&layer=${layer}`)}
@@ -612,13 +650,34 @@ export function TripDetail() {
             </div>
           </div>
         )}
-        <div className="stat">
-          <div className="v">{Math.round(trip.maxSpeedKmh)} km/h</div>
+        {/* An imported day was never measured by a handset: a flat 0 km/h claims the vehicle
+            stood still all day, which is the opposite of what the file records. */}
+        <div
+          className="stat"
+          title={trip.importBatchId ? 'No GPS was recorded for an imported day, so speed was never measured.' : undefined}
+        >
+          <div className="v">
+            {trip.importBatchId
+              ? <span style={{ color: 'var(--muted)' }}>—</span>
+              : `${Math.round(trip.maxSpeedKmh)} km/h`}
+          </div>
           <div className="k">Max speed</div>
         </div>
-        <div className="stat">
-          <div className="v">{trip.pointCount}</div>
-          <div className="k">Points</div>
+        {/* Points means GPS fixes, and an imported day has none. It does have positions — the
+            vertices of the roads it covered — so the card names which of the two it is showing
+            rather than printing a bare 0 beside a map full of route. */}
+        <div
+          className="stat"
+          title={trip.importBatchId
+            ? 'Imported from cleaned GIS data. No GPS was recorded, so there are no measured fixes — this counts the positions of the roads that day covered, taken from the customer’s own geometry.'
+            : undefined}
+        >
+          <div className="v">
+            {trip.importBatchId && trip.cleanedPointCount != null
+              ? trip.cleanedPointCount.toLocaleString()
+              : trip.pointCount}
+          </div>
+          <div className="k">{trip.importBatchId && trip.cleanedPointCount != null ? 'Positions (derived)' : 'Points'}</div>
         </div>
         <div className="stat">
           <div className="v" style={{ fontSize: 15 }}>{sessionDt(trip.startedAt)}</div>
@@ -743,7 +802,13 @@ export function TripDetail() {
         </div>
       )}
 
-      {points.length === 0 && <NoPointsNotice pointCount={trip.pointCount} />}
+      {points.length === 0 && (
+        <NoPointsNotice
+          pointCount={trip.pointCount}
+          imported={!!trip.importBatchId}
+          derivedCount={trip.cleanedPointCount}
+        />
+      )}
     </div>
   );
 }

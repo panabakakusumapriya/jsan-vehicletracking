@@ -132,6 +132,21 @@ function signedArea(ring) {
  *     index quietly treats the polygon as the entire globe minus the area you meant, and every
  *     containment query returns almost everything.
  */
+/**
+ * Vertex count of a Polygon or MultiPolygon — a cheap shape fingerprint.
+ *
+ * Used only to tell "the same area delivered twice" from "the same code on two different shapes".
+ * It is not a geometric comparison and does not need to be: two features with the same code and
+ * the same vertex count are, in a merged delivery, the same polygon copied.
+ */
+function countVertices(geometry) {
+  if (!geometry || !geometry.coordinates) return 0;
+  const rings = geometry.type === 'Polygon' ? geometry.coordinates : geometry.coordinates.flat();
+  let n = 0;
+  for (const ring of rings) n += ring.length;
+  return n;
+}
+
 function polygonToGeoJson(parts) {
   const polygons = [];
   for (const ring of parts) {
@@ -364,8 +379,21 @@ async function buildReport(job, layers, onProgress = () => {}) {
 
   const areas = [];
   const priorityTally = new Map();
-  const seenCodes = new Set();
+  /**
+   * code -> a fingerprint of the first feature that claimed it.
+   *
+   * A repeated area code is not a broken delivery, it is what a GIS merge produces: the QLD
+   * boundaries arrived as QLD_P2 and QLD_P3 merged into one file, and 290 areas sit in both, 283
+   * of them byte-identical. Rejecting the file gave the operator nowhere to go — the fix would
+   * have been to re-do the merge in ArcGIS. So the repeat is DROPPED and reported instead, which
+   * protects the denominator exactly as the old block did while leaving the import possible.
+   *
+   * The fingerprint exists to separate the harmless case from the one worth a human's attention:
+   * the same area twice is fine, the same code with a different size or priority is a conflict.
+   */
+  const seenCodes = new Map();
   const duplicateCodes = [];
+  const conflictingCodes = [];
   let emptyAreaGeometry = 0;
 
   // Reusing the active version's areas: pull them from the database instead of parsing.
@@ -380,11 +408,23 @@ async function buildReport(job, layers, onProgress = () => {}) {
         return;
       }
       const code = mapping.areaCode ? String(attrs[mapping.areaCode] ?? '').trim() : '';
-      if (code && seenCodes.has(code)) duplicateCodes.push(code);
-      if (code) seenCodes.add(code);
-
       const priority = mapping.priority ? Number(attrs[mapping.priority] ?? 0) || 0 : 0;
       const areaSqm = mapping.areaSqm ? Number(attrs[mapping.areaSqm] ?? 0) || null : null;
+
+      if (code && seenCodes.has(code)) {
+        duplicateCodes.push(code);
+        const first = seenCodes.get(code);
+        const vertices = countVertices(geometry);
+        // Same code, different shape or different band: dropping one of these silently would
+        // quietly pick a winner for something the customer needs to resolve.
+        if (first.priority !== priority || first.areaSqm !== areaSqm || first.vertices !== vertices) {
+          if (conflictingCodes.length < 20) conflictingCodes.push(code);
+        }
+        return; // first occurrence wins; the denominator counts this area once
+      }
+      if (code) {
+        seenCodes.set(code, { priority, areaSqm, vertices: countVertices(geometry) });
+      }
       const outer = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates[0][0];
 
       const row = priorityTally.get(priority) || { areas: 0, areaSqm: 0 };
@@ -409,9 +449,22 @@ async function buildReport(job, layers, onProgress = () => {}) {
   );
 
   if (duplicateCodes.length) {
-    errors.push({
+    warnings.push({
       code: 'DUPLICATE_AREA_CODE',
-      message: `${duplicateCodes.length} duplicate area code(s), e.g. ${duplicateCodes.slice(0, 3).join(', ')}. Each area must appear once or the denominator double-counts.`,
+      message:
+        `${duplicateCodes.length} repeated area code(s) were collapsed to one area each, e.g. ` +
+        `${[...new Set(duplicateCodes)].slice(0, 3).join(', ')}. The first occurrence of each was kept, ` +
+        `so the denominator counts every area once. This is normal in a file merged from several ` +
+        `source layers.`,
+    });
+  }
+  if (conflictingCodes.length) {
+    warnings.push({
+      code: 'CONFLICTING_AREA_CODE',
+      message:
+        `${conflictingCodes.length} of those repeats disagree with each other on size, priority or ` +
+        `shape, e.g. ${conflictingCodes.slice(0, 3).join(', ')}. The first was kept — check these ` +
+        `against the source if the band or area matters.`,
     });
   }
   if (emptyAreaGeometry) {
@@ -452,6 +505,7 @@ async function buildReport(job, layers, onProgress = () => {}) {
 
   const seenLinkIds = new Set();
   const duplicateLinkIds = [];
+  let duplicateLinkCount = 0;
   const funcClassTally = new Map();
   const dirTally = new Map();
   const bucketTally = new Map();
@@ -496,7 +550,14 @@ async function buildReport(job, layers, onProgress = () => {}) {
     const id = mapping.linkId ? String(attrs[mapping.linkId] ?? '').trim() : '';
     if (!id) missingLinkId++;
     else if (seenLinkIds.has(id)) {
+      duplicateLinkCount++;
       if (duplicateLinkIds.length < 20) duplicateLinkIds.push(id);
+      // Undo the counting done above: a repeated id is one road, and adding its length twice is
+      // precisely the double-counted denominator this rule exists to prevent. The commit pass
+      // skips it as well, so what is measured here is what gets written.
+      linkCount--;
+      totalMeters -= metres;
+      continue;
     } else seenLinkIds.add(id);
 
     const name = mapping.linkName ? String(attrs[mapping.linkName] ?? '').trim() : '';
@@ -524,10 +585,14 @@ async function buildReport(job, layers, onProgress = () => {}) {
       message: `${multiPartLinks} link(s) have multi-part geometry. Only the first part would be imported, which would silently understate the target — split them upstream and re-deliver.`,
     });
   }
-  if (duplicateLinkIds.length) {
-    errors.push({
+  if (duplicateLinkCount) {
+    warnings.push({
       code: 'DUPLICATE_LINK_ID',
-      message: `Duplicate link id(s) found, e.g. ${duplicateLinkIds.slice(0, 3).join(', ')}. Link ids are the ledger's primary key and must be unique.`,
+      message:
+        `${duplicateLinkCount} repeated link id(s) were skipped, e.g. ` +
+        `${duplicateLinkIds.slice(0, 3).join(', ')}. A link id is the ledger's key, so the first ` +
+        `occurrence was kept and its length counted once. Where the repeats are different ` +
+        `geometry — a road split in two upstream — only the first piece is in the target.`,
     });
   }
   if (missingLinkId) {
@@ -799,8 +864,22 @@ async function commit(job, layers, areas, mapping, onProgress = () => {}) {
     // No road layer: the version is areas-only. Assignment, the driver's map and the areas table
     // all work from these alone; only coverage needs links, and it stays at a zero denominator
     // until a road layer is added.
+    /**
+     * The same first-wins rule the preflight measured with.
+     *
+     * This pass re-reads the shapefile rather than reusing the validated list, so without its own
+     * guard a repeated link id would be written twice — the figures shown to the operator would
+     * say one thing and the ledger would hold another.
+     */
+    const writtenLinkIds = new Set();
+
     for (const { attrs, parts } of layers.network ? shapefile.features(layers.network.chosen) : []) {
       if (!parts.length || parts[0].length < 2) continue;
+      const linkId = String(attrs[mapping.linkId] ?? '').trim();
+      if (linkId) {
+        if (writtenLinkIds.has(linkId)) continue;
+        writtenLinkIds.add(linkId);
+      }
       const coords = parts[0];
       const metres = lineLength(coords);
       const area = locate(midpointOf(coords));
@@ -819,7 +898,7 @@ async function commit(job, layers, areas, mapping, onProgress = () => {}) {
       batch.push({
         projectId: job.projectId,
         networkVersionId: version._id,
-        linkId: String(attrs[mapping.linkId] ?? '').trim(),
+        linkId,
         name: (mapping.linkName ? String(attrs[mapping.linkName] ?? '').trim() : '') || null,
         funcClass,
         dirTravel: ['B', 'F', 'T'].includes(dirRaw) ? dirRaw : 'B',

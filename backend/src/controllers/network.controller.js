@@ -9,9 +9,12 @@ const RoadLink = require('../models/RoadLink');
 const LinkCoverage = require('../models/LinkCoverage');
 const Project = require('../models/Project');
 const AreaAssignment = require('../models/AreaAssignment');
+const AreaCompletion = require('../models/AreaCompletion');
 const User = require('../models/User');
 const Trip = require('../models/Trip');
 const { rebuildNetworkCoverage } = require('../services/linkCoverage');
+const { compactLine } = require('../services/driverRoads');
+const { sendCompressed } = require('../utils/compressedJson');
 
 const networkImport = require('../services/networkImport');
 const { kickImportRunner } = require('../services/importRunner');
@@ -44,6 +47,91 @@ function assertProjectAccess(user, projectId) {
     err.status = 403;
     throw err;
   }
+}
+
+/**
+ * Resolve what a read is scoped to: one delivery, or a whole project.
+ *
+ * `:id` may be a NetworkVersion id — one frozen delivery, the old behaviour — or a Project id,
+ * which means "everything this project has". The second exists because a project accumulates
+ * deliveries and they are not always re-deliveries of the same ground: PRJ-025 holds Victoria
+ * (402 areas) and Queensland (330), with no overlapping area code or link id between them.
+ * Under version-scoping, activating Queensland made every kilometre of Victoria's work vanish
+ * from the map — not deleted, just unreachable without knowing to pick a superseded snapshot.
+ *
+ * A project's scope is the ACTIVE version plus any superseded one that still holds coverage or a
+ * live assignment. Older re-deliveries of the same ground carry neither, so they drop out and
+ * their duplicate areas never double-count.
+ */
+async function resolveNetworkScope(req) {
+  const id = asObjectId(req.params.id);
+  if (!id) return null;
+
+  const version = await NetworkVersion.findById(id).select('projectId status label counts targetMeters byPriority byFuncClass activatedAt createdAt');
+  if (version) {
+    return { projectId: version.projectId, versionIds: [version._id], primary: version, isProject: false };
+  }
+
+  const project = await Project.findById(id).select('_id name');
+  if (!project) return null;
+
+  const all = await NetworkVersion.find({ projectId: project._id }).sort({ createdAt: -1 }).lean();
+  if (!all.length) return null;
+
+  const withCoverage = new Set(
+    (await LinkCoverage.distinct('networkVersionId', { projectId: project._id })).map(String)
+  );
+  const withAssignments = new Set(
+    (await AreaAssignment.distinct('networkVersionId', { projectId: project._id, releasedAt: null })).map(String)
+  );
+
+  const keep = all.filter(
+    (v) => v.status === 'active' || withCoverage.has(String(v._id)) || withAssignments.has(String(v._id))
+  );
+  const chosen = keep.length ? keep : [all[0]];
+  const primary = chosen.find((v) => v.status === 'active') || chosen[0];
+
+  return {
+    projectId: project._id,
+    versionIds: chosen.map((v) => v._id),
+    versions: chosen,
+    primary,
+    isProject: true,
+    // Summed so a project-wide read reports one denominator rather than the active delivery's.
+    totals: chosen.reduce(
+      (acc, v) => ({
+        areas: acc.areas + (v.counts?.areas || 0),
+        links: acc.links + (v.counts?.links || 0),
+        targetMeters: acc.targetMeters + (v.targetMeters || 0),
+      }),
+      { areas: 0, links: 0, targetMeters: 0 }
+    ),
+  };
+}
+
+/**
+ * Add up a precomputed rollup (byPriority / byFuncClass) across every delivery in scope.
+ *
+ * Each version stores its own bands. A project spanning two states has the same P1 band in both,
+ * and reading only the active delivery's copy would report Queensland's P1 as the whole
+ * programme's. Version-scoped reads keep the single delivery's array untouched.
+ */
+function mergeBands(scope, version, field, key) {
+  const sources = scope.isProject && scope.versions ? scope.versions : [version];
+  const merged = new Map();
+  for (const v of sources) {
+    for (const raw of v[field] || []) {
+      const band = raw.toObject ? raw.toObject() : raw;
+      const k = band[key];
+      const acc = merged.get(k) || { [key]: k, areas: 0, links: 0, meters: 0, areaSqKm: 0 };
+      acc.areas += band.areas || 0;
+      acc.links += band.links || 0;
+      acc.meters += band.meters || 0;
+      acc.areaSqKm += band.areaSqKm || 0;
+      merged.set(k, acc);
+    }
+  }
+  return [...merged.values()].sort((a, b) => (a[key] ?? 0) - (b[key] ?? 0));
 }
 
 /* ------------------------------------------------------------------ import jobs */
@@ -321,12 +409,13 @@ async function listVersions(req, res) {
  * the 654k links.
  */
 async function versionSummary(req, res) {
-  const version = await NetworkVersion.findById(req.params.id).populate('projectId', 'name code');
-  if (!version) return res.status(404).json({ error: 'Network version not found' });
-  assertProjectAccess(req.user, version.projectId?._id || version.projectId);
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = await NetworkVersion.findById(scope.primary._id).populate('projectId', 'name code');
 
   const rows = await LinkCoverage.aggregate([
-    { $match: { networkVersionId: version._id } },
+    { $match: { networkVersionId: { $in: scope.versionIds } } },
     {
       $group: {
         _id: { priority: '$priority', funcClass: '$funcClass' },
@@ -354,19 +443,38 @@ async function versionSummary(req, res) {
     coveredByFuncClass.set(row._id.funcClass, f);
   }
 
+  const projectId = version.projectId?._id || version.projectId;
+  const cycleId = await cycleIdFor(projectId);
+  const [completedAreas, assignedAreaCodes] = await Promise.all([
+    AreaCompletion.countDocuments({
+      projectId,
+      coverageCycleId: cycleId,
+      status: 'completed',
+    }),
+    // By areaCode, so an area held through an older version's row still counts as assigned.
+    AreaAssignment.distinct('areaCode', { projectId, releasedAt: null }),
+  ]);
+
   return res.json({
     version,
     coverage: {
       coveredMeters,
       coveredLinks,
-      targetMeters: version.targetMeters,
-      targetLinks: version.counts.links,
-      byPriority: version.byPriority.map((band) => ({
+      // Project-wide reads sum every delivery in scope, so the denominator is the whole programme
+      // rather than whichever delivery happens to be active.
+      targetMeters: scope.totals ? scope.totals.targetMeters : version.targetMeters,
+      targetLinks: scope.totals ? scope.totals.links : version.counts.links,
+      // Headline counters for the map's stat strip: how many areas are signed off, and how many
+      // are currently in somebody's hands.
+      completedAreas,
+      assignedAreas: assignedAreaCodes.length,
+      totalAreas: scope.totals ? scope.totals.areas : version.counts.areas,
+      byPriority: mergeBands(scope, version, 'byPriority', 'priority').map((band) => ({
         ...(band.toObject ? band.toObject() : band),
         coveredMeters: coveredByPriority.get(band.priority)?.meters || 0,
         coveredLinks: coveredByPriority.get(band.priority)?.links || 0,
       })),
-      byFuncClass: version.byFuncClass.map((row) => ({
+      byFuncClass: mergeBands(scope, version, 'byFuncClass', 'funcClass').map((row) => ({
         ...(row.toObject ? row.toObject() : row),
         coveredMeters: coveredByFuncClass.get(row.funcClass)?.meters || 0,
         coveredLinks: coveredByFuncClass.get(row.funcClass)?.links || 0,
@@ -382,11 +490,12 @@ async function versionSummary(req, res) {
  * area, which at 402 areas would be 402 round trips for a single page render.
  */
 async function versionAreas(req, res) {
-  const version = await NetworkVersion.findById(req.params.id).select('projectId');
-  if (!version) return res.status(404).json({ error: 'Network version not found' });
-  assertProjectAccess(req.user, version.projectId);
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
 
-  const filter = { networkVersionId: version._id };
+  const filter = { networkVersionId: { $in: scope.versionIds } };
   if (req.query.priority !== undefined && req.query.priority !== '') {
     filter.priority = Number(req.query.priority);
   }
@@ -398,18 +507,27 @@ async function versionAreas(req, res) {
     WorkArea.find(filter)
       .select('areaCode name parentName priority areaSqm targetMeters targetLinks bbox')
       .sort({ priority: 1, targetMeters: -1 })
-      .limit(1000),
+      // A project spanning two states has more areas than one delivery does.
+      .limit(scope.isProject ? 3000 : 1000),
     LinkCoverage.aggregate([
-      { $match: { networkVersionId: version._id } },
+      { $match: { networkVersionId: { $in: scope.versionIds } } },
       { $group: { _id: '$areaId', meters: { $sum: '$lengthMeters' }, links: { $sum: 1 } } },
     ]),
   ]);
 
   const byArea = new Map(covered.map((row) => [String(row._id), row]));
 
+  const cycleId = await cycleIdFor(scope.projectId);
+  const completions = await completionsByCode(
+    version.projectId,
+    cycleId,
+    areas.map((a) => a.areaCode)
+  );
+
   return res.json({
     areas: areas.map((a) => {
       const hit = byArea.get(String(a._id));
+      const done = completions.get(a.areaCode);
       return {
         _id: a._id,
         areaCode: a.areaCode,
@@ -422,6 +540,9 @@ async function versionAreas(req, res) {
         coveredMeters: hit?.meters || 0,
         coveredLinks: hit?.links || 0,
         bbox: a.bbox,
+        completed: !!done,
+        completedAt: done ? done.completedAt : null,
+        completedByName: done ? done.completedByName : null,
       };
     }),
   });
@@ -520,9 +641,10 @@ async function deleteVersion(req, res) {
  * can be handed. `covered` marks each link so the overlay can colour done against outstanding.
  */
 async function versionLinks(req, res) {
-  const version = await NetworkVersion.findById(req.params.id).select('projectId');
-  if (!version) return res.status(404).json({ error: 'Network version not found' });
-  assertProjectAccess(req.user, version.projectId);
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
 
   const bbox = String(req.query.bbox || '')
     .split(',')
@@ -533,7 +655,7 @@ async function versionLinks(req, res) {
 
   const limit = Math.min(Number(req.query.limit) || 4000, 10000);
   const filter = {
-    networkVersionId: version._id,
+    networkVersionId: { $in: scope.versionIds },
     geometry: {
       $geoIntersects: {
         $geometry: {
@@ -564,7 +686,7 @@ async function versionLinks(req, res) {
   const coveredIds = new Set(
     (
       await LinkCoverage.find({
-        networkVersionId: version._id,
+        networkVersionId: { $in: scope.versionIds },
         linkId: { $in: page.map((l) => l.linkId) },
       }).select('linkId')
     ).map((c) => c.linkId)
@@ -637,16 +759,17 @@ async function backfillOutlines(areas) {
  * 402 areas are on screen. Two queries regardless of how many areas there are.
  */
 async function versionAreasGeoJson(req, res) {
-  const version = await NetworkVersion.findById(req.params.id).select('projectId');
-  if (!version) return res.status(404).json({ error: 'Network version not found' });
-  assertProjectAccess(req.user, version.projectId);
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
 
   const [areas, covered] = await Promise.all([
-    WorkArea.find({ networkVersionId: version._id }).select(
+    WorkArea.find({ networkVersionId: { $in: scope.versionIds } }).select(
       'areaCode name parentName priority areaSqm targetMeters targetLinks outline bbox'
     ),
     LinkCoverage.aggregate([
-      { $match: { networkVersionId: version._id } },
+      { $match: { networkVersionId: { $in: scope.versionIds } } },
       { $group: { _id: '$areaId', meters: { $sum: '$lengthMeters' }, links: { $sum: 1 } } },
     ]),
   ]);
@@ -654,12 +777,43 @@ async function versionAreasGeoJson(req, res) {
   await backfillOutlines(areas);
 
   const byArea = new Map(covered.map((row) => [String(row._id), row]));
+  const cycleId = await cycleIdFor(version.projectId);
+  const completions = await completionsByCode(
+    version.projectId,
+    cycleId,
+    areas.map((a) => a.areaCode)
+  );
+
+  /**
+   * Who holds each area, shipped WITH the polygon rather than fetched separately.
+   *
+   * The map used to learn this from its own call to /assignments, so the two could disagree about
+   * the same polygon: click it and the panel (a live read) said "Assigned to Ali Azhar" while
+   * hovering it said "Unassigned", because the hover was reading a list fetched when the page
+   * loaded. Anything that changed assignments outside the panel — a bulk allocation, another
+   * operator — left the map quietly wrong until someone reloaded. One fetch, one answer.
+   */
+  const liveHolders = await AreaAssignment.find({
+    projectId: version.projectId,
+    releasedAt: null,
+  })
+    .select('areaCode driverName driverId')
+    .populate('driverId', 'name')
+    .lean();
+  const holdersByCode = new Map();
+  for (const row of liveHolders) {
+    if (!row.areaCode) continue;
+    const name = row.driverId?.name || row.driverName || 'Unknown driver';
+    if (!holdersByCode.has(row.areaCode)) holdersByCode.set(row.areaCode, []);
+    if (!holdersByCode.get(row.areaCode).includes(name)) holdersByCode.get(row.areaCode).push(name);
+  }
   let bounds = null;
   let approximated = 0;
 
   const features = areas.map((a) => {
     const hit = byArea.get(String(a._id));
     const coveredMeters = hit?.meters || 0;
+    const done = completions.get(a.areaCode);
     bounds = bboxUnion(bounds, a.bbox && a.bbox.length === 4 ? a.bbox : null);
 
     // An area imported before `outline` existed would otherwise force us to load its full
@@ -691,6 +845,13 @@ async function versionAreasGeoJson(req, res) {
         coveredMeters,
         coveredLinks: hit?.links || 0,
         pct: a.targetMeters > 0 ? (coveredMeters / a.targetMeters) * 100 : 0,
+        // Carried into the choropleth so a signed-off area reads as finished at a glance, however
+        // its percentage happens to look — the two are deliberately independent.
+        completed: !!done,
+        completedAt: done ? done.completedAt : null,
+        completedByName: done ? done.completedByName : null,
+        // [] rather than null: the map tests length, and "nobody" is a real answer.
+        assignedTo: holdersByCode.get(a.areaCode) || [],
         // Carried so the client can frame a single area without recomputing an extent from its
         // geometry. The work areas are six widely separated clusters across 295 x 263 km, so the
         // whole-extent view is mostly empty space and jumping to one area is the normal action.
@@ -775,9 +936,10 @@ async function importPreviewGeoJson(req, res) {
 
 /** Every live area -> driver assignment on a version, for the table and the map colouring. */
 async function listAssignments(req, res) {
-  const version = await NetworkVersion.findById(req.params.id).select('projectId');
-  if (!version) return res.status(404).json({ error: 'Network version not found' });
-  assertProjectAccess(req.user, version.projectId);
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
 
   /**
    * Resolved by areaCode, matching what the DRIVER endpoints do.
@@ -787,7 +949,7 @@ async function listAssignments(req, res) {
    * Whittlesea on their phone while the panel showed it unassigned — so a manager would think the
    * area was free and hand it to someone else. Whatever the driver sees, the panel must show.
    */
-  const areas = await WorkArea.find({ networkVersionId: version._id })
+  const areas = await WorkArea.find({ networkVersionId: { $in: scope.versionIds } })
     .select('_id areaCode')
     .lean();
   const areaIdByCode = new Map(areas.map((a) => [a.areaCode, a._id]));
@@ -836,15 +998,85 @@ async function listAssignments(req, res) {
  * `releasedAt` is stamped and the row is kept — rather than deleted, so who was responsible for an
  * area last month survives this month's reshuffle.
  */
+/**
+ * Why an area may not take this assignment.
+ *
+ * Two rules, and the second is narrower than it first looks:
+ *
+ *  - **completed** — a manager has signed the area off in this cycle. Handing it to anyone else
+ *    is re-doing paid work.
+ *  - **multiple_drivers** — the save would leave TWO drivers holding one polygon at once. One
+ *    polygon belongs to one driver, full stop. It tests the RESULT, not the current state,
+ *    precisely so a HANDOVER still works: replacing driver A with driver B ends with one holder
+ *    and is allowed — which is what happens when a driver stops driving or leaves the company.
+ *    Two at once is the wasteful case, since first-cover-wins means the second crew earns nothing
+ *    for streets the first already drove.
+ *
+ * Only `completed` can be overridden, and only by an admin or manager, because an area signed off
+ * in error must not become a dead end. The single-driver rule has no override: it is an
+ * invariant, not a preference.
+ */
+function blockerFor(area, completion, resultingDriverNames) {
+  const base = { areaId: String(area._id), areaCode: area.areaCode, name: area.name };
+  if (completion) {
+    return {
+      ...base,
+      reason: 'completed',
+      completedAt: completion.completedAt,
+      completedByName: completion.completedByName || null,
+      message: `${area.name} was marked completed${
+        completion.completedByName ? ` by ${completion.completedByName}` : ''
+      }`,
+    };
+  }
+  if (resultingDriverNames.length > 1) {
+    return {
+      ...base,
+      reason: 'multiple_drivers',
+      drivers: resultingDriverNames,
+      message: `${area.name} would be held by ${resultingDriverNames.length} drivers at once (${resultingDriverNames.join(', ')})`,
+    };
+  }
+  return null;
+}
+
+/** May this caller force past a blocker? Team leads assign; only admins and managers override. */
+function mayOverride(user) {
+  return user.role === 'admin' || user.role === 'manager';
+}
+
+/** An override clears a completion, never the one-driver-per-area invariant. */
+function clearableByOverride(blocker) {
+  return blocker.reason === 'completed';
+}
+
+function respondBlocked(res, blockers, user) {
+  const overridable = blockers.every(clearableByOverride) && mayOverride(user);
+  return res.status(409).json({
+    error:
+      blockers.length === 1
+        ? blockers[0].message
+        : `${blockers.length} areas cannot be assigned as requested`,
+    blockers,
+    canOverride: overridable,
+    hint: overridable
+      ? 'Send override:true to assign anyway — the reason is recorded on the assignment.'
+      : blockers.some((b) => b.reason === 'multiple_drivers')
+        ? 'A work area belongs to one driver. Release the current holder first, then assign the new one.'
+        : 'Ask an admin or manager to override this.',
+  });
+}
+
 async function setAreaAssignments(req, res) {
-  const version = await NetworkVersion.findById(req.params.id).select('projectId');
-  if (!version) return res.status(404).json({ error: 'Network version not found' });
-  assertProjectAccess(req.user, version.projectId);
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
 
   const area = await WorkArea.findOne({
     _id: asObjectId(req.params.areaId) || null,
-    networkVersionId: version._id,
-  }).select('name areaCode');
+    networkVersionId: { $in: scope.versionIds },
+  }).select('name areaCode networkVersionId');
   if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
 
   const wanted = Array.isArray(req.body.driverIds)
@@ -865,6 +1097,23 @@ async function setAreaAssignments(req, res) {
   const toRelease = current.filter((row) => !wantedIds.has(String(row.driverId)));
   const toAdd = drivers.filter((driver) => !currentIds.has(String(driver._id)));
 
+  // Only a NEW holder can be blocked. Releasing drivers, or re-saving the same set, always goes
+  // through — a manager must never be trapped unable to take an area off someone.
+  const override = req.body && req.body.override === true && mayOverride(req.user);
+  if (toAdd.length) {
+    const cycleId = await cycleIdFor(version.projectId);
+    const completions = await completionsByCode(version.projectId, cycleId, [area.areaCode]);
+    const blocker = blockerFor(
+      area,
+      completions.get(area.areaCode),
+      drivers.map((d) => d.name)
+    );
+    // The override clears a completion; it can never clear the one-driver-per-area invariant.
+    if (blocker && !(override && clearableByOverride(blocker))) {
+      return respondBlocked(res, [blocker], req.user);
+    }
+  }
+
   if (toRelease.length) {
     await AreaAssignment.updateMany(
       { _id: { $in: toRelease.map((row) => row._id) } },
@@ -875,8 +1124,10 @@ async function setAreaAssignments(req, res) {
   if (toAdd.length) {
     await AreaAssignment.insertMany(
       toAdd.map((driver) => ({
-        projectId: version.projectId,
-        networkVersionId: version._id,
+        projectId: scope.projectId,
+        // The delivery this AREA came from — a filter would be meaningless on a write, and the
+        // project's active delivery may not be the one that owns this polygon.
+        networkVersionId: area.networkVersionId,
         areaId: area._id,
         driverId: driver._id,
         areaName: area.name,
@@ -911,9 +1162,10 @@ async function setAreaAssignments(req, res) {
  *   remove — release these drivers from the selected areas
  */
 async function bulkAssign(req, res) {
-  const version = await NetworkVersion.findById(req.params.id).select('projectId');
-  if (!version) return res.status(404).json({ error: 'Network version not found' });
-  assertProjectAccess(req.user, version.projectId);
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
 
   const mode = ['set', 'add', 'remove'].includes(req.body.mode) ? req.body.mode : 'set';
   const areaIds = [...new Set((req.body.areaIds || []).map(asObjectId).filter(Boolean))];
@@ -922,8 +1174,8 @@ async function bulkAssign(req, res) {
 
   const areas = await WorkArea.find({
     _id: { $in: areaIds },
-    networkVersionId: version._id,
-  }).select('name areaCode');
+    networkVersionId: { $in: scope.versionIds },
+  }).select('name areaCode networkVersionId');
   if (areas.length !== areaIds.length) {
     return res.status(400).json({ error: 'One or more areas do not belong to this network version' });
   }
@@ -954,7 +1206,7 @@ async function bulkAssign(req, res) {
   const current = await AreaAssignment.find({
     areaId: { $in: areaIds },
     releasedAt: null,
-  }).select('areaId driverId');
+  }).select('areaId driverId driverName');
 
   const held = new Map(); // areaId -> Set(driverId)
   for (const row of current) {
@@ -982,8 +1234,8 @@ async function bulkAssign(req, res) {
       for (const driver of drivers) {
         if (existing.has(String(driver._id))) continue;
         additions.push({
-          projectId: version.projectId,
-          networkVersionId: version._id,
+          projectId: scope.projectId,
+          networkVersionId: area.networkVersionId,
           areaId,
           driverId: driver._id,
           areaName: area.name,
@@ -995,6 +1247,48 @@ async function bulkAssign(req, res) {
         });
       }
     }
+  }
+
+  // Blockers are checked once, for every area gaining a driver, and the whole save is refused if
+  // any single area is blocked. All-or-nothing on purpose: a lasso over twelve suburbs that
+  // silently assigned nine and skipped three would be discovered in the field, not on the screen.
+  const override = req.body && req.body.override === true && mayOverride(req.user);
+  if (additions.length) {
+    const gaining = [...new Set(additions.map((a) => String(a.areaId)))];
+    const cycleId = await cycleIdFor(version.projectId);
+    const completions = await completionsByCode(
+      version.projectId,
+      cycleId,
+      gaining.map((id) => areaById.get(id)).filter(Boolean).map((a) => a.areaCode)
+    );
+
+    const releasing = new Set(releaseIds.map(String));
+    const holdersAfter = new Map(); // areaId -> driver names still holding it after this save
+    for (const row of current) {
+      if (releasing.has(String(row._id))) continue;
+      const key = String(row.areaId);
+      if (!holdersAfter.has(key)) holdersAfter.set(key, []);
+      holdersAfter.get(key).push(row.driverName || 'another driver');
+    }
+    for (const add of additions) {
+      const key = String(add.areaId);
+      if (!holdersAfter.has(key)) holdersAfter.set(key, []);
+      holdersAfter.get(key).push(add.driverName);
+    }
+
+    const blockers = [];
+    for (const areaId of gaining) {
+      const area = areaById.get(areaId);
+      if (!area) continue;
+      const blocker = blockerFor(
+        area,
+        completions.get(area.areaCode),
+        holdersAfter.get(areaId) || []
+      );
+      // An override clears completions only — a second driver on a polygon is refused regardless.
+      if (blocker && !(override && clearableByOverride(blocker))) blockers.push(blocker);
+    }
+    if (blockers.length) return respondBlocked(res, blockers, req.user);
   }
 
   if (releaseIds.length) {
@@ -1011,7 +1305,7 @@ async function bulkAssign(req, res) {
   }
 
   const rows = await AreaAssignment.find({
-    networkVersionId: version._id,
+    networkVersionId: { $in: scope.versionIds },
     releasedAt: null,
   }).populate('driverId', 'name email');
 
@@ -1040,6 +1334,473 @@ async function areaAssignmentHistory(req, res) {
   return res.json({ area, history: rows });
 }
 
+/* ---- assigned routes: every road inside a polygon somebody holds ---- */
+
+/**
+ * The whole network is 654,447 links and can only ever be drawn by viewport. The ASSIGNED network
+ * is a different animal: it is bounded by how much territory is actually out with crews, which is
+ * the set a dispatcher looks at all day. Capped anyway — a project that assigned everything would
+ * be back to the whole network.
+ */
+const ASSIGNED_LINK_LIMIT = 120000;
+
+/**
+ * GET /versions/:id/assigned-links — every road inside a currently-held work area, at any zoom.
+ *
+ * Returned as positional tuples `[linkId, funcClass, covered, coords]` and gzipped, the same
+ * shape the phone's my-roads uses and for the same reason: at this size GeoJSON spends more bytes
+ * on repeated key names than on coordinates. Geometry is simplified and rounded by the shared
+ * `compactLine`, so the two maps draw the same lines from the same arithmetic.
+ *
+ * Assignments resolve by `areaCode`, so a driver still holding an area through a row written
+ * against an earlier import is included — the same rule my-areas and the trip attributor use.
+ */
+async function versionAssignedLinks(req, res) {
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
+
+  /**
+   * `assigned` draws the territory that is out with crews — every road in a held area, driven or
+   * not, so outstanding work is visible as well as finished work.
+   *
+   * `covered` draws every road anyone has driven, anywhere in the project. It exists because work
+   * outlives an assignment: a bulk import of historical driving, or an area since released, leaves
+   * thousands of driven roads in polygons nobody holds today. Those are invisible under `assigned`
+   * and would otherwise only show up as a percentage in a polygon's fill.
+   */
+  const linkScope = req.query.scope === 'covered' ? 'covered' : 'assigned';
+  const driverIds = String(req.query.driverIds || '')
+    .split(',')
+    .map(asObjectId)
+    .filter(Boolean);
+
+  let areaIds = null;
+  if (linkScope === 'assigned') {
+    const assignmentFilter = { projectId: scope.projectId, releasedAt: null };
+    if (driverIds.length) assignmentFilter.driverId = { $in: driverIds };
+    const codes = await AreaAssignment.distinct('areaCode', assignmentFilter);
+    if (!codes.length) return res.json({ links: [], areas: 0, covered: 0, truncated: false, drivers: [] });
+    const areas = await WorkArea.find({ networkVersionId: { $in: scope.versionIds }, areaCode: { $in: codes } })
+      .select('_id')
+      .lean();
+    areaIds = areas.map((a) => a._id);
+    if (!areaIds.length) return res.json({ links: [], areas: 0, covered: 0, truncated: false, drivers: [] });
+  }
+
+  const coverFilter = { networkVersionId: { $in: scope.versionIds } };
+  if (areaIds) coverFilter.areaId = { $in: areaIds };
+  if (linkScope === 'covered' && driverIds.length) coverFilter.firstDriverId = { $in: driverIds };
+
+  // Who first covered each link — this is what lets a road be drawn in its driver's colour, and
+  // the reason LinkCoverage.firstDriverId has been indexed since the ledger was built.
+  const coverage = await LinkCoverage.find(coverFilter).select('linkId firstDriverId -_id').lean();
+  const coverBy = new Map(coverage.map((c) => [c.linkId, c.firstDriverId ? String(c.firstDriverId) : null]));
+
+  const linkFilter = { networkVersionId: { $in: scope.versionIds } };
+  if (areaIds) linkFilter.areaId = { $in: areaIds };
+  else linkFilter.linkId = { $in: [...coverBy.keys()] };
+
+  const rows = await RoadLink.find(linkFilter)
+    .select('linkId funcClass geometry.coordinates -_id')
+    .limit(ASSIGNED_LINK_LIMIT + 1)
+    .lean();
+
+  const truncated = rows.length > ASSIGNED_LINK_LIMIT;
+  const page = truncated ? rows.slice(0, ASSIGNED_LINK_LIMIT) : rows;
+
+  // Driver ids are 24 characters each and would be repeated on tens of thousands of links, so the
+  // wire format carries an index into a short list instead.
+  const driverIndex = new Map();
+  const drivers = [];
+  const links = [];
+  for (const l of page) {
+    const line = compactLine(l.geometry && l.geometry.coordinates);
+    if (!line) continue;
+    const who = coverBy.get(l.linkId);
+    let idx = -1;
+    if (who) {
+      if (!driverIndex.has(who)) {
+        driverIndex.set(who, drivers.length);
+        drivers.push(who);
+      }
+      idx = driverIndex.get(who);
+    }
+    links.push([l.linkId, l.funcClass, coverBy.has(l.linkId) ? 1 : 0, line, idx]);
+  }
+
+  const names = drivers.length
+    ? await User.find({ _id: { $in: drivers } }).select('name').lean()
+    : [];
+  const nameById = new Map(names.map((u) => [String(u._id), u.name]));
+
+  return sendCompressed(
+    req,
+    res,
+    {
+      scope: linkScope,
+      links,
+      areas: areaIds ? areaIds.length : null,
+      covered: coverBy.size,
+      truncated,
+      drivers: drivers.map((id) => ({ driverId: id, name: nameById.get(id) || 'Unknown driver' })),
+      // Changes whenever the drawn picture could have changed, so the client can cache on it.
+      version: `${version._id}:${linkScope}:${links.length}:${coverBy.size}`,
+    },
+    'assigned-links'
+  );
+}
+
+/**
+ * GET /versions/:id/coverage-drivers — everyone with driven road on this network, and how much.
+ *
+ * The map's driver legend used to be built from live assignments, which answers "who is holding a
+ * polygon" and not "whose work is on this map". Those diverge the moment an area is released or a
+ * history import lands: 10,568 km of real driving sat on the map credited to five people whose
+ * names were nowhere in the legend, while two test accounts holding empty areas were listed.
+ */
+async function versionCoverageDrivers(req, res) {
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
+
+  const rows = await LinkCoverage.aggregate([
+    { $match: { networkVersionId: { $in: scope.versionIds } } },
+    { $group: { _id: '$firstDriverId', links: { $sum: 1 }, meters: { $sum: '$lengthMeters' } } },
+    { $sort: { meters: -1 } },
+  ]);
+
+  const ids = rows.map((r) => r._id).filter(Boolean);
+  const users = ids.length ? await User.find({ _id: { $in: ids } }).select('name').lean() : [];
+  const nameById = new Map(users.map((u) => [String(u._id), u.name]));
+
+  return res.json({
+    drivers: rows.map((r) => ({
+      driverId: r._id ? String(r._id) : null,
+      name: r._id ? nameById.get(String(r._id)) || 'Unknown driver' : 'Unattributed',
+      links: r.links,
+      meters: r.meters,
+    })),
+  });
+}
+
+/* ---- driven tracks: where the fleet actually went, on the coverage map ---- */
+
+// A fortnight is the window the coverage map opens on; 90 days is as far back as one request may
+// reach. Both exist for payload reasons — a snapped route is a few tens of KB, so "every track
+// ever" is tens of megabytes and would arrive long after anyone stopped caring.
+const TRACKS_DEFAULT_DAYS = 14;
+const TRACKS_MAX_DAYS = 90;
+const TRACKS_DEFAULT_LIMIT = 200;
+const TRACKS_MAX_LIMIT = 500;
+
+/**
+ * GET /versions/:id/tracks — the snapped routes driven across this PROJECT in a date window.
+ *
+ * SNAPPED ONLY, deliberately. Raw GPS wanders off the carriageway, doubles back through buildings
+ * and is exactly what map-matching exists to fix; drawing it over a road network invites the
+ * reader to conclude a street was driven when the ledger says otherwise. A trip still waiting for
+ * the matcher is therefore not drawn — it is counted in `pendingSnap`, so the map can say "3 trips
+ * still processing" rather than silently under-reporting the day's work.
+ *
+ * Scoped to the version's project. Optional `driverIds` narrows it to particular crews, and
+ * `areaId` to trips recorded while that polygon was assigned (`Trip.assignedAreaIds`), which is
+ * the filter a manager wants when verifying one area.
+ */
+async function versionTracks(req, res) {
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
+
+  const to = req.query.to ? new Date(req.query.to) : new Date();
+  if (Number.isNaN(to.getTime())) return res.status(400).json({ error: 'to is not a date' });
+  // A date picker sends '2026-09-24', which parses to midnight — so the day the user chose as the
+  // end of the range would contain none of its own trips. Run it to the end of that day.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to || ''))) {
+    to.setUTCHours(23, 59, 59, 999);
+  }
+  const from = req.query.from
+    ? new Date(req.query.from)
+    : new Date(to.getTime() - TRACKS_DEFAULT_DAYS * 86400000);
+  if (Number.isNaN(from.getTime())) return res.status(400).json({ error: 'from is not a date' });
+  if (to.getTime() - from.getTime() > TRACKS_MAX_DAYS * 86400000) {
+    return res.status(400).json({ error: `Date range is limited to ${TRACKS_MAX_DAYS} days` });
+  }
+
+  const filter = {
+    projectId: scope.projectId,
+    startedAt: { $gte: from, $lte: to },
+  };
+  const driverIds = String(req.query.driverIds || '')
+    .split(',')
+    .map(asObjectId)
+    .filter(Boolean);
+  if (driverIds.length) filter.driverId = { $in: driverIds };
+  const areaId = asObjectId(req.query.areaId);
+  if (areaId) filter.assignedAreaIds = areaId;
+
+  const limit = Math.min(Number(req.query.limit) || TRACKS_DEFAULT_LIMIT, TRACKS_MAX_LIMIT);
+
+  const [rows, pendingSnap] = await Promise.all([
+    // Any trip that HAS a cleaned route, however it got one: the matcher for recorded drives,
+    // the derivation from covered roads for imported days. Both are snapped geometry.
+    Trip.find({ ...filter, cleanedRouteShapes: { $exists: true, $ne: [] } })
+      .select('driverId startedAt endedAt cleanedRouteShapes cleanedDistanceMeters effectiveUkmMeters')
+      .sort({ startedAt: -1 })
+      .limit(limit + 1)
+      .lean(),
+    // Everything in the window the matcher has not finished with. Counted, never drawn.
+    Trip.countDocuments({ ...filter, cleanedRouteShapes: { $in: [null, []] } }),
+  ]);
+
+  const truncated = rows.length > limit;
+  if (truncated) rows.length = limit;
+
+  const names = await User.find({ _id: { $in: [...new Set(rows.map((t) => String(t.driverId)))] } })
+    .select('name')
+    .lean();
+  const nameById = new Map(names.map((u) => [String(u._id), u.name]));
+
+  // gzipped: a busy month of imported days is ~2.3 MB of polyline, and this app has no
+  // compression middleware. Same reason the assigned-network layer goes out this way.
+  return sendCompressed(req, res, {
+    from,
+    to,
+    truncated,
+    pendingSnap,
+    tracks: rows.map((t) => ({
+      tripId: String(t._id),
+      driverId: String(t.driverId),
+      driverName: nameById.get(String(t.driverId)) || 'Unknown driver',
+      startedAt: t.startedAt,
+      endedAt: t.endedAt,
+      cleanedMeters: t.cleanedDistanceMeters || 0,
+      ukmMeters: t.effectiveUkmMeters || 0,
+      // polyline6, exactly as the matcher produced it — the client decodes, never derives.
+      shapes: t.cleanedRouteShapes || [],
+    })),
+  }, 'tracks');
+}
+
+/* ---- completion: a manager's verdict that an area is finished ---- */
+
+/**
+ * The project's coverage cycle, normalised the way CoverageSegment stores it: '' means "no
+ * cycle", never null. Completions are keyed by it so that starting a new capture cycle reopens
+ * every area by itself — that cycle is the customer paying to drive the same streets again.
+ */
+async function cycleIdFor(projectId) {
+  const project = await Project.findById(projectId).select('coverageCycleId').lean();
+  return (project && project.coverageCycleId) || '';
+}
+
+/** areaCode -> live completion row, for the areas named. */
+async function completionsByCode(projectId, cycleId, areaCodes) {
+  const codes = [...new Set(areaCodes.filter(Boolean))];
+  if (!codes.length) return new Map();
+  const rows = await AreaCompletion.find({
+    projectId,
+    coverageCycleId: cycleId,
+    areaCode: { $in: codes },
+    status: 'completed',
+  }).lean();
+  return new Map(rows.map((row) => [row.areaCode, row]));
+}
+
+/**
+ * Coverage inside one area, split by who got there first.
+ *
+ * The split is the point. First-cover-wins is fleet-wide, so an area can turn green because a
+ * different crew drove it, and a manager cross-verifying "has MY driver finished this?" cannot
+ * answer that from the area total alone. `LinkCoverage.firstDriverId` has been indexed since the
+ * ledger was built but nothing ever queried it — this is that query.
+ */
+async function areaCoverageBreakdown(versionId, areaId) {
+  const rows = await LinkCoverage.aggregate([
+    { $match: { networkVersionId: versionId, areaId } },
+    { $group: { _id: '$firstDriverId', meters: { $sum: '$lengthMeters' }, links: { $sum: 1 } } },
+    { $sort: { meters: -1 } },
+  ]);
+
+  const driverIds = rows.map((r) => r._id).filter(Boolean);
+  const drivers = driverIds.length
+    ? await User.find({ _id: { $in: driverIds } }).select('name').lean()
+    : [];
+  const nameById = new Map(drivers.map((d) => [String(d._id), d.name]));
+
+  return {
+    coveredMeters: rows.reduce((sum, r) => sum + (r.meters || 0), 0),
+    coveredLinks: rows.reduce((sum, r) => sum + (r.links || 0), 0),
+    byDriver: rows.map((r) => ({
+      driverId: r._id ? String(r._id) : null,
+      name: r._id ? nameById.get(String(r._id)) || 'Unknown driver' : 'Unattributed',
+      meters: r.meters || 0,
+      links: r.links || 0,
+    })),
+  };
+}
+
+/**
+ * GET /versions/:id/areas/:areaId/coverage — everything the click-a-polygon panel needs.
+ */
+async function areaCoverage(req, res) {
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
+
+  const area = await WorkArea.findOne({
+    _id: asObjectId(req.params.areaId) || null,
+    networkVersionId: { $in: scope.versionIds },
+  }).select('name parentName areaCode priority targetMeters targetLinks bbox networkVersionId');
+  if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
+
+  const cycleId = await cycleIdFor(version.projectId);
+  const [breakdown, assignments, completion] = await Promise.all([
+    areaCoverageBreakdown(area.networkVersionId, area._id),
+    // By areaCode, not areaId: a driver assigned before the latest import holds a row pointing at
+    // the previous version's polygon, and they are still very much on this area.
+    AreaAssignment.find({
+      projectId: version.projectId,
+      areaCode: area.areaCode,
+      releasedAt: null,
+    })
+      .select('driverId driverName assignedAt')
+      .lean(),
+    AreaCompletion.findOne({
+      projectId: version.projectId,
+      coverageCycleId: cycleId,
+      areaCode: area.areaCode,
+    }).lean(),
+  ]);
+
+  const assignedIds = new Set(assignments.map((a) => String(a.driverId)));
+  const assignedMeters = breakdown.byDriver
+    .filter((d) => d.driverId && assignedIds.has(d.driverId))
+    .reduce((sum, d) => sum + d.meters, 0);
+
+  return res.json({
+    area: {
+      _id: area._id,
+      areaCode: area.areaCode,
+      name: area.name,
+      parentName: area.parentName,
+      priority: area.priority,
+      targetMeters: area.targetMeters,
+      targetLinks: area.targetLinks,
+      bbox: area.bbox,
+    },
+    coveredMeters: breakdown.coveredMeters,
+    coveredLinks: breakdown.coveredLinks,
+    pct: area.targetMeters > 0 ? (breakdown.coveredMeters / area.targetMeters) * 100 : 0,
+    // The same roads, but only what the drivers who currently hold this area covered first —
+    // "did my crew do this, or did someone else?"
+    assignedMeters,
+    assignedPct: area.targetMeters > 0 ? (assignedMeters / area.targetMeters) * 100 : 0,
+    byDriver: breakdown.byDriver,
+    assignments,
+    completion: completion || null,
+  });
+}
+
+/**
+ * POST /versions/:id/areas/:areaId/complete — the manager signs the area off.
+ *
+ * Also RELEASES every live assignment on the area, which is the behaviour that makes completion
+ * mean something on the ground: the driver's phone stops listing those roads as work to do.
+ * Released by `areaCode` rather than `areaId` on purpose — assignments made against an earlier
+ * network version point at that version's polygon row and would otherwise survive the sign-off.
+ */
+async function completeArea(req, res) {
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
+
+  const area = await WorkArea.findOne({
+    _id: asObjectId(req.params.areaId) || null,
+    networkVersionId: { $in: scope.versionIds },
+  }).select('name areaCode targetMeters targetLinks networkVersionId');
+  if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
+
+  const cycleId = await cycleIdFor(version.projectId);
+  const breakdown = await areaCoverageBreakdown(area.networkVersionId, area._id);
+  const top = breakdown.byDriver.find((d) => d.driverId) || null;
+
+  const completion = await AreaCompletion.findOneAndUpdate(
+    { projectId: version.projectId, coverageCycleId: cycleId, areaCode: area.areaCode },
+    {
+      $set: {
+        status: 'completed',
+        areaId: area._id,
+        networkVersionId: area.networkVersionId,
+        areaName: area.name,
+        completedAt: new Date(),
+        completedBy: req.user._id,
+        completedByName: req.user.name,
+        completedByDriverId: top ? top.driverId : null,
+        completedByDriverName: top ? top.name : null,
+        coveredMeters: breakdown.coveredMeters,
+        targetMeters: area.targetMeters,
+        pctAtCompletion:
+          area.targetMeters > 0 ? (breakdown.coveredMeters / area.targetMeters) * 100 : 0,
+        note: req.body && req.body.note ? String(req.body.note).trim() : null,
+        reopenedAt: null,
+        reopenedBy: null,
+        reopenReason: null,
+      },
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+
+  const released = await AreaAssignment.updateMany(
+    { projectId: version.projectId, areaCode: area.areaCode, releasedAt: null },
+    { $set: { releasedAt: new Date(), releasedBy: req.user._id } }
+  );
+
+  return res.json({ completion, releasedAssignments: released.modifiedCount || 0 });
+}
+
+/**
+ * POST /versions/:id/areas/:areaId/reopen — the verdict was wrong, or the ground changed.
+ *
+ * Completion has to be reversible. A re-matched route can release links it no longer covers, and
+ * activating a new network version rebuilds the whole ledger, so an area's percentage can fall
+ * after it was signed off.
+ */
+async function reopenArea(req, res) {
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const version = scope.primary;
+
+  const area = await WorkArea.findOne({
+    _id: asObjectId(req.params.areaId) || null,
+    networkVersionId: { $in: scope.versionIds },
+  }).select('areaCode networkVersionId');
+  if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
+
+  const cycleId = await cycleIdFor(version.projectId);
+  const completion = await AreaCompletion.findOneAndUpdate(
+    { projectId: version.projectId, coverageCycleId: cycleId, areaCode: area.areaCode },
+    {
+      $set: {
+        status: 'reopened',
+        reopenedAt: new Date(),
+        reopenedBy: req.user._id,
+        reopenReason: req.body && req.body.reason ? String(req.body.reason).trim() : null,
+      },
+    },
+    { new: true }
+  );
+  if (!completion) return res.status(404).json({ error: 'That area is not marked completed' });
+
+  return res.json({ completion });
+}
+
 module.exports = {
   listJobs,
   createJob,
@@ -1059,6 +1820,12 @@ module.exports = {
   setAreaAssignments,
   bulkAssign,
   areaAssignmentHistory,
+  areaCoverage,
+  completeArea,
+  reopenArea,
+  versionTracks,
+  versionAssignedLinks,
+  versionCoverageDrivers,
   activateVersion,
   deleteVersion,
 };

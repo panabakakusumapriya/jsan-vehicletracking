@@ -264,4 +264,4 @@ async function getDriverRoads({ driverId, projectIds, areaId }) {
   };
 }
 
-module.exports = { getDriverRoads, MAX_LINKS, SIMPLIFY_TOLERANCE_METERS };
+module.exports = { getDriverRoads, compactLine, MAX_LINKS, SIMPLIFY_TOLERANCE_METERS };

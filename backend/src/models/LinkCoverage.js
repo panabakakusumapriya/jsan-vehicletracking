@@ -17,6 +17,12 @@ const mongoose = require('mongoose');
 const linkCoverageSchema = new mongoose.Schema(
   {
     projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+    /**
+     * Set only on claims written by a bulk import of historical covered-road data — see
+     * Trip.importBatchId. Null on every claim the map-matcher earned from a recorded drive, which
+     * is what lets an import be undone without disturbing anything the fleet actually drove.
+     */
+    importBatchId: { type: String, default: null, index: true },
     networkVersionId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'NetworkVersion',
