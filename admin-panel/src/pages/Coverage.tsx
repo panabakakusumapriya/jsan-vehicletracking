@@ -63,6 +63,132 @@ const MAPPING_FIELDS: { key: keyof ColumnMapping; label: string; layer: 'boundar
   { key: 'autoAccess', label: 'Car accessible', layer: 'network' },
 ];
 
+/**
+ * Find an area by name and go there.
+ *
+ * Territory is handed out geographically, and the map spans whole states — a dispatcher who
+ * knows the suburb they want ("Gachibowli", "SA2-1") should not have to hunt for its polygon
+ * by panning and hovering. Matches name, the customer's code, and the parent region, via the
+ * same server search as the areas table, so every area is findable, not just the ones loaded.
+ *
+ * Keyboard: ↑/↓ to move, Enter to go (the top match when nothing is highlighted), Esc to close.
+ */
+function AreaSearch({ scopeId, onPick }: { scopeId: string; onPick: (area: CoverageArea) => void }) {
+  const [text, setText] = useState('');
+  const [hits, setHits] = useState<CoverageArea[]>([]);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const q = text.trim();
+    if (!q) { setHits([]); setBusy(false); return; }
+    setBusy(true);
+    let live = true;
+    const t = setTimeout(() => {
+      api
+        .get<{ areas: CoverageArea[] }>(`/api/network/versions/${scopeId}/areas?q=${encodeURIComponent(q)}`)
+        .then((r) => {
+          if (!live) return;
+          // Names that START with what was typed first: "Mad" should offer Madhapur before
+          // Ward 12 Kamalanagar-Madannapet.
+          const lower = q.toLowerCase();
+          const rank = (a: CoverageArea) => {
+            const n = a.name.toLowerCase();
+            const bare = n.replace(/^ward\s+\d+\s+/, '');
+            if (bare.startsWith(lower) || n.startsWith(lower) || a.areaCode.toLowerCase() === lower) return 0;
+            if (n.includes(lower)) return 1;
+            return 2;
+          };
+          setHits([...r.areas].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name)).slice(0, 8));
+          setActive(0);
+        })
+        .catch(() => { if (live) setHits([]); })
+        .finally(() => { if (live) setBusy(false); });
+    }, 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [text, scopeId]);
+
+  // Close when clicking anywhere else on the page.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, []);
+
+  const go = (a: CoverageArea | undefined) => {
+    if (!a) return;
+    onPick(a);
+    setText(a.name);
+    setOpen(false);
+  };
+
+  const showList = open && text.trim() !== '';
+
+  return (
+    <div ref={boxRef} style={{ position: 'relative' }}>
+      <input
+        className="input"
+        type="search"
+        placeholder="Find an area on the map…"
+        aria-label="Find an area on the map"
+        value={text}
+        style={{ width: 230, padding: '4px 10px', fontSize: 12.5 }}
+        onChange={(e) => { setText(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActive((i) => Math.min(i + 1, hits.length - 1)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => Math.max(i - 1, 0)); }
+          else if (e.key === 'Enter') { e.preventDefault(); go(hits[active] ?? hits[0]); }
+          else if (e.key === 'Escape') setOpen(false);
+        }}
+      />
+      {showList && (
+        <div
+          role="listbox"
+          style={{
+            position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 30, width: 320,
+            background: 'var(--panel)', border: '1px solid var(--line-2)', borderRadius: 8,
+            boxShadow: '0 8px 24px rgba(0,0,0,.18)', overflow: 'hidden',
+          }}
+        >
+          {busy && hits.length === 0 && (
+            <div style={{ padding: '8px 12px', fontSize: 12.5, color: 'var(--muted)' }}>Searching…</div>
+          )}
+          {!busy && hits.length === 0 && (
+            <div style={{ padding: '8px 12px', fontSize: 12.5, color: 'var(--muted)' }}>No area matches “{text.trim()}”</div>
+          )}
+          {hits.map((a, i) => (
+            <button
+              key={a._id}
+              type="button"
+              role="option"
+              aria-selected={i === active}
+              onMouseEnter={() => setActive(i)}
+              onClick={() => go(a)}
+              style={{
+                display: 'block', width: '100%', textAlign: 'left', padding: '7px 12px',
+                border: 'none', cursor: 'pointer', fontSize: 12.5,
+                background: i === active ? 'var(--panel-2)' : 'transparent', color: 'var(--text)',
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>{a.name}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>
+                {a.areaCode}{a.parentName ? ` · ${a.parentName}` : ''}
+                {' · '}{a.targetLinks.toLocaleString()} roads
+                {a.completed ? ' · completed' : ''}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Bar({ value, total, tone = 'brand' }: { value: number; total: number; tone?: 'brand' | 'green' }) {
   const p = Math.min(100, pct(value, total));
   return (
@@ -245,9 +371,29 @@ function ProgressTab({
   // gesture and keeps the old bar.
   const singleAreaId = selectedIds.length === 1 ? selectedIds[0] : null;
 
+  // Bumped on every request to frame an area, so asking for the same area twice still moves the
+  // camera — after panning away, "take me back to Gachibowli" must work the second time too.
+  const [focusNonce, setFocusNonce] = useState(0);
+
   const showAreaOnMap = useCallback((areaId: string) => {
     setFocusAreaId(areaId);
+    setFocusNonce((n) => n + 1);
     mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, []);
+
+  /**
+   * A search hit: fly there AND select it. Selecting is the point — one selected area opens the
+   * panel with Assign in it, so finding a suburb by name and handing it to a driver is two
+   * actions, not a hunt across the map for a polygon you can only identify by hovering.
+   */
+  // The row the search handed back, kept so "Assign driver…" works for it even when the areas
+  // table below is filtered to something else and does not contain it.
+  const searchPickRef = useRef<CoverageArea | null>(null);
+  const pickAreaFromSearch = useCallback((area: CoverageArea) => {
+    searchPickRef.current = area;
+    setSelectedIds([area._id]);
+    setFocusAreaId(area._id);
+    setFocusNonce((n) => n + 1);
   }, []);
 
   /** Plain click replaces the selection; shift/ctrl-click builds a cluster up one area at a time. */
@@ -506,6 +652,7 @@ function ProgressTab({
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <AreaSearch scopeId={scopeId} onPick={pickAreaFromSearch} />
             {/* Two switches, because verifying an area and browsing the programme want opposite
                 things: the polygon fill that makes the overview readable is the same fill that
                 hides the streets a manager is trying to check. */}
@@ -607,6 +754,7 @@ function ProgressTab({
           mode={mapMode}
           height={560}
           focusAreaId={focusAreaId}
+          focusNonce={focusNonce}
           selectedIds={selectedIds}
           onToggleSelect={toggleSelect}
           driverColorByArea={driverViz.byArea}
@@ -714,7 +862,8 @@ function ProgressTab({
                     <button
                       className="btn-ghost"
                       onClick={() => {
-                        const row = areas.find((a) => a._id === detail.area._id);
+                        const row = areas.find((a) => a._id === detail.area._id)
+                          ?? (searchPickRef.current?._id === detail.area._id ? searchPickRef.current : null);
                         if (row) setAssigning([row]);
                       }}
                     >

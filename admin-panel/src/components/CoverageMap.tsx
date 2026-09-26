@@ -156,6 +156,7 @@ export function CoverageMap({
   height = 520,
   onSelectArea,
   focusAreaId,
+  focusNonce = 0,
   selectedIds,
   onToggleSelect,
   driverColorByArea,
@@ -205,6 +206,9 @@ export function CoverageMap({
   /** Frame this one area when it changes. The six clusters sit far apart, so arriving from the
    *  areas table has to land on the area you clicked rather than on the whole state. */
   focusAreaId?: string | null;
+  /** Changes on every request to frame `focusAreaId`, so asking for the SAME area again — after
+   *  panning away — still moves the camera. Without it the effect sees no change and does nothing. */
+  focusNonce?: number;
   /** Draw the work-area polygons at all. Off leaves the roads on their own basemap. */
   showAreas?: boolean;
   /**
@@ -310,7 +314,7 @@ export function CoverageMap({
       framed.current = true; // suppress the whole-extent fit that would otherwise fight this
       requestAnimationFrame(() => mapRef.current?.fitBounds(box, 14));
     }
-  }, [focusAreaId, areas]);
+  }, [focusAreaId, focusNonce, areas]);
 
   // Every road in a held area. One request per version — not per pan — because the answer does
   // not depend on where the camera is.

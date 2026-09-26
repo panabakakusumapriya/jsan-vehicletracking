@@ -499,8 +499,18 @@ async function versionAreas(req, res) {
   if (req.query.priority !== undefined && req.query.priority !== '') {
     filter.priority = Number(req.query.priority);
   }
-  if (req.query.q) {
-    filter.name = { $regex: String(req.query.q).trim(), $options: 'i' };
+  /**
+   * Search by what a dispatcher actually types: the suburb's name, the customer's code for it
+   * ("SA2-1", "GHMC-W105"), or the region it sits in. Name alone missed the code, which is what
+   * the customer's own paperwork uses.
+   *
+   * Escaped as a literal: this used to be handed straight to $regex, so typing "(" or "[" into
+   * the search box threw a regex error and came back as a 500.
+   */
+  const q = String(req.query.q || '').trim();
+  if (q) {
+    const literal = { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    filter.$or = [{ name: literal }, { areaCode: literal }, { parentName: literal }];
   }
 
   const [areas, covered] = await Promise.all([
