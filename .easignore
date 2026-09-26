@@ -1,0 +1,40 @@
+# What EAS Build uploads for the mobile app.
+#
+# EAS archives the whole git repository, not just JSAN-AUTO-TRACKING. This repo also carries the
+# backend, the admin panel and ~250 MB of customer GIS data (p1vc-roads alone is 168 MB), which
+# made every build a ~194 MB upload that failed partway on an ordinary connection. The app is
+# about 2 MB.
+#
+# When this file exists EAS uses it INSTEAD of .gitignore, so the app's own ignore rules are
+# repeated below. Keep the two in step. /android and /ios matter most: they are generated on the
+# build server (continuous native generation), and uploading the local copies would make EAS
+# build from those instead of regenerating them.
+
+# Everything at the top level except the app.
+/*
+!/JSAN-AUTO-TRACKING/
+
+# The app's own .gitignore, anchored to its folder.
+/JSAN-AUTO-TRACKING/node_modules/
+/JSAN-AUTO-TRACKING/.expo/
+/JSAN-AUTO-TRACKING/dist/
+/JSAN-AUTO-TRACKING/web-build/
+/JSAN-AUTO-TRACKING/expo-env.d.ts
+/JSAN-AUTO-TRACKING/.kotlin/
+/JSAN-AUTO-TRACKING/app-example
+/JSAN-AUTO-TRACKING/ios
+/JSAN-AUTO-TRACKING/android
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+*.pem
+.env*.local
+*.tsbuildinfo
