@@ -154,6 +154,7 @@ export function Drivers() {
               <th className="sticky-col sl-1">Project</th>
               <th className="sticky-col sl-2">Driver ID</th>
               <th className="sticky-col sl-3">Driver Name</th>
+              <th>Login Email</th>
               <th>Vehicles</th>
               <th>VIDs</th>
               <th>Mobiles</th>
@@ -189,6 +190,7 @@ export function Drivers() {
                   <td className="sticky-col sl-1" title={d.project || ''}>{d.project || <M />}</td>
                   <td className="sticky-col sl-2" title={d.driverId || ''}>{d.driverId || <M />}</td>
                   <td className="sticky-col sl-3" style={{ fontWeight: 600 }} title={d.name}>{d.name}</td>
+                  <td style={{ whiteSpace: 'nowrap' }} title="The address this driver signs in to the app with">{d.email || <M />}</td>
                   <td style={{ whiteSpace: 'nowrap', maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis' }} title={dVehicles.map(v => v.plateNumber).join(', ')}>
                     {dVehicles.length ? dVehicles.map(v => v.plateNumber).join(', ') : <M />}
                   </td>
@@ -206,7 +208,10 @@ export function Drivers() {
                   <td style={{ whiteSpace: 'nowrap' }}>{d.teamLeadId && typeof d.teamLeadId === 'object' ? d.teamLeadId.name : <M />}</td>
                   <td>{d.poc || <M />}</td>
                   <td>{d.contact || <M />}</td>
-                  <td>{d.personalMail || d.email || <M />}</td>
+                  {/* Personal Mail only. It used to fall back to the login email, so the column
+                      showed an address the driver cannot necessarily read mail at, under a label
+                      that says otherwise — and hid which address is the login. */}
+                  <td>{d.personalMail || <M />}</td>
                   <td>{d.driverAddress || <M />}</td>
                   <td>{d.ctsMail || <M />}</td>
                   <td>{d.driverStatus || <M />}</td>
@@ -248,7 +253,7 @@ export function Drivers() {
               );
             })}
             {drivers.length === 0 && (
-              <tr><td colSpan={26} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
+              <tr><td colSpan={29} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
             )}
           </tbody>
         </table>
@@ -626,6 +631,7 @@ function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, c
   );
   const [form, setForm] = useState({
     name: driver.name,
+    email: driver.email || '',
     phone: driver.phone || '',
     country: driver.country || '',
     managerId: managerIdVal as string,
@@ -694,6 +700,10 @@ function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, c
       // already have, since a non-admin can't legitimately change it to anything else anyway.
       if (isAdmin ? projectId : (!driverProjectId && projectId)) body.projectId = projectId;
       if (form.password) body.password = form.password;
+      // Only when actually changed: the login email is the account's identity, and resending an
+      // unchanged value is a needless uniqueness check against every other user.
+      const newEmail = form.email.trim().toLowerCase();
+      if (newEmail && newEmail !== (driver.email || '').toLowerCase()) body.email = newEmail;
       await api.patch(`/api/users/${driver._id}`, body);
       onSaved();
     } catch (e) {
@@ -707,6 +717,14 @@ function EditDriver({ driver, vehicles, devices, managers, teamLeads, isAdmin, c
         <SectionLabel text="Account" />
         <Row>
           <F label="Full name"><input className="input" value={form.name} onChange={e => set('name', e.target.value)} /></F>
+          {/* The address the driver signs in to the app with. It used to be missing from this form
+              entirely — only Personal Mail and CTS Mail were shown — so there was no way to see
+              which address a driver logs in with, and contact addresses got mistaken for it. */}
+          <F label="Login email (used to sign in to the app)">
+            <input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} />
+          </F>
+        </Row>
+        <Row>
           <F label="Phone"><input className="input" value={form.phone} onChange={e => set('phone', e.target.value)} /></F>
         </Row>
 
