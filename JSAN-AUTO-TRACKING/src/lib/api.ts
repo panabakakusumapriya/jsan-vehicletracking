@@ -182,6 +182,38 @@ export function apiMyRoads(token: string, areaId: string): Promise<MyRoads> {
   return request(`/api/tracking/my-roads?areaId=${encodeURIComponent(areaId)}`, {}, token);
 }
 
+/**
+ * The cache key for an area's roads, without the roads — a few hundred bytes.
+ *
+ * Exists so the map can ask "has any of this changed colour?" often. apiMyRoads is a quarter of
+ * a megabyte and cannot be polled; that is why the app used to hold its copy for 12 hours and
+ * why a driver's own morning work, and anything another crew covered in the same polygon, stayed
+ * invisible until the cache aged out. Compare the returned `version` against the cached one and
+ * only call apiMyRoads when they differ.
+ */
+/**
+ * Which of these trips has the server finished with? Asked by the phone's own client trip ids —
+ * the UUIDs the tracking service mints, which are all the phone has.
+ *
+ *   settled - the roads payload now carries the audited answer; drop the local guess.
+ *   pending - still queued, or matching failed (which nothing retries) — keep the guess.
+ *   unknown - the server has not received the trip yet.
+ */
+export function apiMyTripsSettled(
+  token: string,
+  clientTripIds: string[],
+): Promise<{ trips: { clientTripId: string; state: 'settled' | 'pending' | 'unknown' }[] }> {
+  const ids = clientTripIds.map(encodeURIComponent).join(',');
+  return request(`/api/tracking/my-trips/settled?ids=${ids}`, {}, token);
+}
+
+export function apiMyRoadsVersion(
+  token: string,
+  areaId: string,
+): Promise<{ areaId: string; version: string }> {
+  return request(`/api/tracking/my-roads/version?areaId=${encodeURIComponent(areaId)}`, {}, token);
+}
+
 /** One closed trip in the driver's route history. */
 export type MyHistoryTrip = {
   id: string;

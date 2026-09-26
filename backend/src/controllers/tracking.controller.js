@@ -19,7 +19,7 @@ const { closeDeadTrips, driversWithLiveApp } = require('../services/tripLifecycl
 // stay available for side-by-side comparison against the global engine during cutover, but
 // nothing reads them for a business number any more — see services/globalUkm.js.
 const { computeTripUkm } = require('../services/ukmCompute');
-const { getDriverRoads } = require('../services/driverRoads');
+const { getDriverRoads, getDriverRoadsVersion } = require('../services/driverRoads');
 const { scopeForProject } = require('../services/coverageScope');
 const { rebuildScope } = require('../services/globalUkm');
 const mongoose = require('mongoose');
@@ -1025,6 +1025,84 @@ exports.myRoads = asyncHandler(async (req, res) => {
   if (!roads) return res.status(403).json({ error: 'You are not assigned to this area' });
 
   await sendCompressed(req, res, roads, 'my-roads');
+});
+
+/**
+ * GET /api/tracking/my-trips/settled?ids=<clientTripId>,<clientTripId>,…
+ *
+ * Has the server finished with these trips? The phone asks this about every trip it has painted
+ * streets for locally, so it knows when its own guess can be retired in favour of the audited
+ * answer the roads payload now carries.
+ *
+ * Asked by CLIENT trip id, because that is the only id the phone has: its guesses are recorded
+ * against the UUID the tracking service mints at trip start, and the server's ObjectId never
+ * reaches the handset. Looking up by that id on the {clientTripId, driverId} unique index is
+ * cheap, and scoping to the caller is what stops one driver reading another's trips.
+ *
+ * Three answers, deliberately not two:
+ *   settled - the server has a verdict. Link attribution reached computed/review/no_network, or
+ *             matching was skipped because there was nothing to match. The roads payload now
+ *             says what was credited, and the phone must stop claiming anything beyond it.
+ *   pending - still in the queue, or it failed. A FAILED match or attribution is not a verdict:
+ *             nothing retries it automatically, so treating it as settled would repaint streets
+ *             the driver really did drive as red because Valhalla was down for five minutes.
+ *             The phone keeps its guess, and its own expiry retires it.
+ *   unknown - no such trip yet — typically points still waiting in the phone's upload queue.
+ */
+const SETTLED_LINK_STATES = ['computed', 'review', 'no_network'];
+const MAX_SETTLED_QUERY = 50;
+
+exports.myTripsSettled = asyncHandler(async (req, res) => {
+  const ids = String(req.query.ids || '')
+    .split(',')
+    .map((s) => s.trim())
+    // Client trip ids are UUIDs; anything else is not one of ours and is not worth a query.
+    .filter((s) => /^[\w-]{8,64}$/.test(s));
+  const unique = [...new Set(ids)].slice(0, MAX_SETTLED_QUERY);
+  if (!unique.length) return res.json({ trips: [] });
+
+  const rows = await Trip.find({ driverId: req.user._id, clientTripId: { $in: unique } })
+    .select('clientTripId status mapMatchStatus linkCoverageStatus -_id')
+    .lean();
+  const byId = new Map(rows.map((t) => [t.clientTripId, t]));
+
+  const trips = unique.map((clientTripId) => {
+    const t = byId.get(clientTripId);
+    if (!t) return { clientTripId, state: 'unknown' };
+    const settled = t.status !== 'active' && (
+      SETTLED_LINK_STATES.includes(t.linkCoverageStatus) || t.mapMatchStatus === 'skipped'
+    );
+    return { clientTripId, state: settled ? 'settled' : 'pending' };
+  });
+  res.json({ trips });
+});
+
+/**
+ * GET /api/tracking/my-roads/version?areaId=… — "has anything changed?", in a few hundred bytes.
+ *
+ * The app holds its copy of an area's roads for hours because pulling them again is a quarter of
+ * a megabyte. That is right for the geometry and wrong for the colours: coverage moves all day,
+ * as the driver's own morning trips finish attribution and as other crews claim streets in the
+ * same polygon. This lets the map ask often and download rarely.
+ *
+ * Not rate-limited alongside my-roads on purpose — it reads the coverage ledger (memoised per
+ * area, see driverRoads.js) and no road geometry, so it has its own, looser cap.
+ */
+exports.myRoadsVersion = asyncHandler(async (req, res) => {
+  const areaId = String(req.query.areaId || '');
+  if (!/^[a-f\d]{24}$/i.test(areaId)) {
+    return res.status(400).json({ error: 'areaId query param is required' });
+  }
+
+  const result = await getDriverRoadsVersion({
+    driverId: req.user._id,
+    projectIds: req.user.projectIds,
+    areaId,
+  });
+  // Same single message as my-roads, for the same reason.
+  if (!result) return res.status(403).json({ error: 'You are not assigned to this area' });
+
+  res.json(result);
 });
 
 /**

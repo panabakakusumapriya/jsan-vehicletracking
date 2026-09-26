@@ -15,6 +15,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -394,7 +395,15 @@ type AppState =
   | 'permission-check'   // show health gate before login
   | 'ready';             // all good, show the app
 
-export default function RootLayout() {
+/**
+ * Everything below renders inside a SafeAreaProvider (see the default export).
+ *
+ * It is mounted at the very root, outside the gated screens, because those render full-bleed
+ * too — and because `useSafeAreaInsets` returns zeros without a provider above it, which is a
+ * silent wrong answer rather than an error. The tab bar reads the bottom inset from it so the
+ * labels are not sitting under the system navigation bar.
+ */
+function RootLayoutInner() {
   const colorScheme = useColorScheme();
   const [appState, setAppState] = useState<AppState>('checking');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -556,6 +565,14 @@ export default function RootLayout() {
         <TrackingGuard />
       </ThemeProvider>
     </AuthProvider>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <SafeAreaProvider>
+      <RootLayoutInner />
+    </SafeAreaProvider>
   );
 }
 

@@ -18,6 +18,14 @@ export type LocationEvent = {
    *  can move; nothing is recorded or uploaded for those. */
   tripId: string | null;
   tripStatus: 'active' | 'ended' | 'timed_out' | 'idle';
+  /**
+   * Horizontal accuracy in metres, and compass bearing in degrees, as the provider reported
+   * them — null when it did not. Both feed the driver map's on-device matcher: accuracy widens
+   * how far it will look for a road, heading is what stops it painting the cross street at a
+   * junction or the road beneath an overpass. Null is not zero; a bearing of 0 is due north.
+   */
+  accuracy: number | null;
+  heading: number | null;
   recordedAt: string;
 };
 

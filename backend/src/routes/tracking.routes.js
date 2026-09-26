@@ -38,6 +38,34 @@ router.get('/my-areas', authenticate, requireRole('user'), ctrl.myAreas);
 // Driver reads the individual roads inside one of those areas, flagged driven / not driven.
 router.get('/my-roads', authenticate, requireRole('user'), roadsLimiter, ctrl.myRoads);
 
+/**
+ * The two small reads the driver map makes to keep itself current: "has any area changed
+ * colour?" and "has the server finished these trips?". Both are cheap per call — the version is
+ * memoised per area, the trip lookup is one indexed query — but the app makes them on a timer
+ * and on every return to the foreground, so they get their own cap rather than none.
+ *
+ * Separate from roadsLimiter on purpose: sharing it would let routine probing eat the budget
+ * the real download needs, and the download is what the probe exists to avoid.
+ *
+ * 300 per 15 min per driver. Expected use is well under a tenth of that: a probe per area every
+ * four minutes, plus one per foreground.
+ */
+const syncLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many map sync requests; try again shortly' },
+});
+
+// "Has anything changed?" — the cache key alone, no geometry. Kept next to my-roads because
+// the two must agree about what a version is.
+router.get('/my-roads/version', authenticate, requireRole('user'), syncLimiter, ctrl.myRoadsVersion);
+
+// "Has the server finished these trips?" — by the phone's own trip ids.
+router.get('/my-trips/settled', authenticate, requireRole('user'), syncLimiter, ctrl.myTripsSettled);
+
 // Driver reads their own route history. Heavy like my-roads (a month of snapped routes), so it
 // gets the same kind of per-driver cap; the app caches it and asks a handful of times a day.
 const historyLimiter = rateLimit({

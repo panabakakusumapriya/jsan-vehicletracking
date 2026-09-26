@@ -1,6 +1,7 @@
 import { router, usePathname } from 'expo-router';
 import { useEffect } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import { useAuth } from '@/src/lib/auth';
@@ -23,6 +24,15 @@ const ALL_TABS = [
 export function TabBar() {
   const pathname = usePathname();
   const { user } = useAuth();
+  /**
+   * The system navigation bar's height, from the device rather than guessed.
+   *
+   * This used to be a flat `paddingBottom: 20`, which is about right for a phone with on-screen
+   * buttons and wrong everywhere else: on gesture navigation the home indicator sits over the
+   * tab labels, and on a device with no inset at all it leaves 20 px of dead white. The floor
+   * of 10 keeps the labels off the very bottom edge when the inset is zero.
+   */
+  const insets = useSafeAreaInsets();
 
   // Filter tabs based on project's enabledModules
   const enabled = user?.enabledModules;
@@ -41,7 +51,7 @@ export function TabBar() {
   if (tabs.length <= 1) return null;
 
   return (
-    <View style={s.bar}>
+    <View style={[s.bar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
       {tabs.map(tab => {
         const active = pathname === tab.path;
         return (
@@ -67,7 +77,7 @@ const s = StyleSheet.create({
     backgroundColor: C.bg,
     borderTopWidth: 1,
     borderTopColor: C.border,
-    paddingBottom: 20,
+    // paddingBottom comes from the safe-area inset at render time — see useSafeAreaInsets above.
     paddingTop: 8,
   },
   tab:         { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, paddingVertical: 4 },

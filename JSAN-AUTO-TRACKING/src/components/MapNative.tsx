@@ -149,14 +149,25 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
     }
     return { coveredFC: multiLineFC(covered), uncoveredFC: multiLineFC(uncovered), roadLinesById: byId };
   }, [roads]);
+  /**
+   * Finished links plus the driven pieces of unfinished ones, in ONE source.
+   *
+   * One source rather than two on purpose: every GeoJSONSource is a separate upload to the GL
+   * context, and this one is rebuilt whenever the driver moves far enough to cover new road —
+   * far more often than the road network behind it. Keeping it to a single small collection is
+   * what stops the live layer costing anything noticeable while driving.
+   */
   const liveCoveredFC = useMemo(() => {
     const lines: [number, number][][] = [];
     for (const id of liveCovered?.ids ?? []) {
       const line = roadLinesById.get(id);
       if (line) lines.push(line);
     }
+    for (const piece of liveCovered?.partials ?? []) {
+      if (piece.length >= 2) lines.push(piece);
+    }
     return multiLineFC(lines);
-  }, [roadLinesById, liveCovered?.ids]);
+  }, [roadLinesById, liveCovered?.ids, liveCovered?.partials]);
 
   const areasData = useMemo(() => areasFC(areas), [areas]);
   const historyFC = useMemo(() => multiLineFC(history?.lines ?? []), [history]);

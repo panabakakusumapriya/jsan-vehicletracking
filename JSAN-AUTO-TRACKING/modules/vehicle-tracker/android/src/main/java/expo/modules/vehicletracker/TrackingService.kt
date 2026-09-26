@@ -753,7 +753,7 @@ class TrackingService : Service() {
             val idleTick = android.os.SystemClock.elapsedRealtime()
             if (idleTick - lastIdleEmitMs >= IDLE_EMIT_MS) {
                 lastIdleEmitMs = idleTick
-                TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, null, "idle", location.time))
+                TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, null, "idle", location.time, location))
             }
 
             // A poor fix must not ARM or ADVANCE the trip-start watch: with 48 m error, the
@@ -929,7 +929,7 @@ class TrackingService : Service() {
                         "tripId" to newId,
                         "recordedAt" to iso(if (location.time > 0) location.time else wallNow)
                     ))
-                    TrackerEvents.emit("onLocation",  locMap(rawLat, rawLon, speedKmh, newId, "active", location.time))
+                    TrackerEvents.emit("onLocation",  locMap(rawLat, rawLon, speedKmh, newId, "active", location.time, location))
                     emitState("tracking")
                     updateNotification("Trip started ($gate) • ${speedKmh.roundToInt()} km/h")
                     applyCadence(now)
@@ -1065,7 +1065,7 @@ class TrackingService : Service() {
                 lastHeartbeatMs  = now
 
                 savePoint(rawLat, rawLon, location, speedKmh, tripId, "active", wallNow)
-                TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, tripId, "active", location.time))
+                TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, tripId, "active", location.time, location))
                 updateNotification("Trip • ${speedKmh.roundToInt()} km/h")
                 // Deliberately NO upload here. The point is in SQLite; uploadRunnable batches it
                 // with its neighbours on the next window. Uploading per fix is what produced one
@@ -1180,6 +1180,11 @@ class TrackingService : Service() {
                 "speedKmh"   to 0.0,
                 "tripId"     to tripId,
                 "tripStatus" to "active",
+                // A heartbeat repeats the last recorded position; there is no new fix behind it,
+                // so there is no accuracy or bearing to report. The matcher reads that as "tell
+                // me nothing new", which is exactly right for a vehicle that has not moved.
+                "accuracy"   to null,
+                "heading"    to null,
                 "recordedAt" to iso(wallNow)
             ))
             val stoppedMin = ((now - lastMovedMs) / 60_000L).toInt()
@@ -1642,15 +1647,29 @@ class TrackingService : Service() {
     private fun emitState(state: String) =
         TrackerEvents.emit("onStateChange", mapOf("state" to state))
 
+    /**
+     * `accuracy` and `heading` are here for the driver map's on-device matcher, which decides
+     * which street to paint blue as it is driven (src/lib/localSnap.ts). Both are genuinely
+     * needed and neither can be recovered in JS: accuracy sets how far the matcher may look for
+     * a road before it gives up, and heading is what rejects the cross street at the junction
+     * and the road under the overpass. Inferring heading from consecutive fixes is possible but
+     * noisy at the ~10 m spacing points are recorded at; the fused provider already knows.
+     *
+     * Null rather than a stand-in value when the provider did not supply them — the matcher
+     * treats "unknown" and "zero" completely differently, and a bearing of 0 means due north.
+     */
     private fun locMap(
         lat: Double, lon: Double, speedKmh: Double,
         tripId: String?, status: String, locationTime: Long,
+        location: Location? = null,
     ) = mapOf(
         "lat"        to lat,
         "lon"        to lon,
         "speedKmh"   to speedKmh,
         "tripId"     to tripId,
         "tripStatus" to status,
+        "accuracy"   to (location?.takeIf { it.hasAccuracy() }?.accuracy?.toDouble()),
+        "heading"    to (location?.takeIf { it.hasBearing() }?.bearing?.toDouble()),
         "recordedAt" to iso(if (locationTime > 0) locationTime else System.currentTimeMillis()),
     )
 }

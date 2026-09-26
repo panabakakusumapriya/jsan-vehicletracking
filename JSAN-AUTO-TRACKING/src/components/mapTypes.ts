@@ -111,9 +111,21 @@ export interface MapGLProps {
   onMarkerTap?: (id: string) => void;
   /** Live local breadcrumb for the current trip. */
   trail?: MapGLTrail | null;
-  /** Links THIS phone has seen driven right now — drawn as covered immediately, ahead of the
-   *  server's post-trip attribution (which later replaces the live guess with audited truth). */
-  liveCovered?: { version: number; ids: ReadonlySet<string> } | null;
+  /**
+   * What THIS phone has seen driven right now, drawn as covered immediately, ahead of the
+   * server's post-trip attribution (which later replaces the live guess with audited truth).
+   *
+   * Two parts because coverage is not a boolean. `ids` are links driven end to end, drawn from
+   * the road's own geometry. `partials` are the driven SUB-PATHS of links only partly done —
+   * ready-made lines, because the arc-length maths that produced them belongs with the matcher
+   * in src/lib/localSnap.ts and not in a rendering component. Blue therefore stops where the
+   * driver stopped, instead of a 40 m turn-in painting a whole 1.4 km road.
+   */
+  liveCovered?: {
+    version: number;
+    ids: ReadonlySet<string>;
+    partials?: [number, number][][];
+  } | null;
   style?: StyleProp<ViewStyle>;
   /**
    * Fires when the map cannot be drawn at all (style failed to load, no GL). The component

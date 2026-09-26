@@ -38,10 +38,22 @@ const { simplifyPath } = require('../utils/geo');
 // streets quietly missing from it.
 const MAX_LINKS = 20000;
 
-// Display only. At ~4 m a 94 m link keeps its shape at every zoom a driver actually uses, and the
-// vertices that survive are the corners rather than the wobble between them. The full geometry
-// stays in Mongo: coverage attribution must never be decided against a smoothed line.
-const SIMPLIFY_TOLERANCE_METERS = 4;
+/**
+ * No simplification. This used to drop vertices at a 4 m tolerance, which was defensible while
+ * the geometry was only ever drawn — but it is now also what the phone MATCHES against.
+ *
+ * The on-device matcher (JSAN-AUTO-TRACKING/src/lib/localSnap.ts) asks "is the vehicle within
+ * 11 m of this centreline?". A line displaced by up to 4 m spends a third of that budget before
+ * the GPS has even been consulted, and it does so worst exactly where it hurts — on curves,
+ * where simplification cuts the corner and where a driver most needs the road to light up.
+ *
+ * The cost is payload, and it is smaller than it looks: the ~1.1 m coordinate rounding below,
+ * and the duplicate-vertex drop that comes with it, still remove most of the redundancy, and
+ * the response is gzipped. Rendering is not a concern — MapLibre draws these on the GPU and
+ * does its own simplification per zoom level, so the extra vertices cost the phone nothing to
+ * display. Set this above 0 only with a measurement in hand.
+ */
+const SIMPLIFY_TOLERANCE_METERS = 0;
 
 // ~1.1 m at Victorian latitudes. Finer than the road is wide, so nothing visible is lost, and it
 // caps each number at 8 characters instead of the 17 a raw double serialises to — roughly a third
@@ -248,12 +260,9 @@ async function getDriverRoads({ driverId, projectIds, areaId }) {
    * already-covered road again does not change what the driver sees, so it must not bust the cache
    * and force a quarter-megabyte refetch.
    */
-  const version = [
-    networkVersionId,
-    coverage.length,
-    newestCoverMs,
-    coverageChecksum(coveredIds),
-  ].join('.');
+  const version = buildVersion(networkVersionId, coverage.length, newestCoverMs, coveredIds);
+  // The full read just computed the freshest possible answer; hand it to the cheap probe too.
+  rememberVersion(networkVersionId, areaId, version);
 
   return {
     areaId: String(areaId),
@@ -264,4 +273,118 @@ async function getDriverRoads({ driverId, projectIds, areaId }) {
   };
 }
 
-module.exports = { getDriverRoads, compactLine, MAX_LINKS, SIMPLIFY_TOLERANCE_METERS };
+/**
+ * Just the cache key for one area — the same string getDriverRoads() returns, without the roads.
+ *
+ * This exists because there was no cheap way to ask "has anything changed?". The only endpoint
+ * that could answer also sent the entire network, so the client settled for not asking: it held
+ * its copy for 12 hours. That is the wrong trade during a shift. A driver's own morning trips
+ * finish attribution while they are still out, and another crew working the same polygon claims
+ * streets all day, and none of it showed up until the cache aged out or the app was reinstalled.
+ *
+ * Reading the coverage ledger alone — no RoadLink documents, no geometry, no simplification —
+ * makes revalidation cost a few hundred bytes, so the map can check every few minutes and pull
+ * the real payload only on the rare occasion the answer moved.
+ *
+ * MUST stay byte-identical to the `version` built in getDriverRoads, which is why both are in
+ * this file and built from the same pieces: if they ever disagree the client either refetches
+ * forever or never refetches at all, and neither failure announces itself.
+ */
+async function getDriverRoadsVersion({ driverId, projectIds, areaId }) {
+  // Entitlement is checked on every call, memo or not: three small indexed reads, and the one
+  // part of this that must never be served from a cache.
+  const networkVersionId = await authoriseArea(driverId, projectIds, areaId);
+  if (!networkVersionId) return null;
+
+  const cached = recallVersion(networkVersionId, areaId);
+  if (cached) return { areaId: String(areaId), version: cached };
+
+  const coverage = await LinkCoverage.find({ networkVersionId, areaId })
+    .select('linkId firstAt -_id')
+    .lean();
+
+  const coveredIds = new Set();
+  let newestCoverMs = 0;
+  for (const c of coverage) {
+    coveredIds.add(c.linkId);
+    const ms = c.firstAt ? new Date(c.firstAt).getTime() : 0;
+    if (ms > newestCoverMs) newestCoverMs = ms;
+  }
+
+  const version = buildVersion(networkVersionId, coverage.length, newestCoverMs, coveredIds);
+  rememberVersion(networkVersionId, areaId, version);
+  return { areaId: String(areaId), version };
+}
+
+/**
+ * The geometry format, as part of the cache key.
+ *
+ * Coverage alone does not move the key when the SHAPE of what is served changes — dropping
+ * simplification from 4 m to 0 left every phone holding the old simplified lines, which the
+ * on-device matcher then measures its 11 m buffer against, until that area's coverage happened
+ * to change. Folding the format into the key makes a format change a one-time refetch for every
+ * client, which is exactly the intent. Change this whenever what compactLine emits changes.
+ */
+const GEOMETRY_TAG = `g${SIMPLIFY_TOLERANCE_METERS}`;
+
+/** The one place a version string is assembled — getDriverRoads and the probe must agree. */
+function buildVersion(networkVersionId, coveredCount, newestCoverMs, coveredIds) {
+  return [
+    networkVersionId,
+    coveredCount,
+    newestCoverMs,
+    coverageChecksum(coveredIds),
+    GEOMETRY_TAG,
+  ].join('.');
+}
+
+/**
+ * Short-lived memo of each area's version, shared by every driver working it.
+ *
+ * Without it the probe is not actually cheap: computing the key means reading the area's whole
+ * coverage ledger — up to 20,000 rows — which is the same scan my-roads does. A crew of ten on
+ * one polygon, each probing every few minutes, would repeat that scan dozens of times an hour
+ * for an answer that is identical between them. A minute of staleness is invisible next to
+ * attribution latency, which is itself minutes.
+ *
+ * Process-local. On a multi-instance deployment each instance keeps its own, which only costs
+ * a few more scans; it is never wrong, because it can at worst be a minute behind.
+ */
+const VERSION_MEMO_TTL_MS = 60 * 1000;
+const VERSION_MEMO_MAX = 5000;
+const versionMemo = new Map();
+
+function memoKey(networkVersionId, areaId) {
+  return `${networkVersionId}:${areaId}`;
+}
+
+function recallVersion(networkVersionId, areaId) {
+  const hit = versionMemo.get(memoKey(networkVersionId, areaId));
+  if (!hit) return null;
+  if (Date.now() - hit.at > VERSION_MEMO_TTL_MS) {
+    versionMemo.delete(memoKey(networkVersionId, areaId));
+    return null;
+  }
+  return hit.version;
+}
+
+function rememberVersion(networkVersionId, areaId, version) {
+  // Crude bound rather than an LRU: the working set is a few hundred areas, so reaching the cap
+  // means something is wrong, and starting over is a safe reaction to that.
+  if (versionMemo.size >= VERSION_MEMO_MAX) versionMemo.clear();
+  versionMemo.set(memoKey(networkVersionId, areaId), { at: Date.now(), version });
+}
+
+/** Tests only: coverage written directly to the ledger must not be hidden by the memo. */
+function clearVersionMemo() {
+  versionMemo.clear();
+}
+
+module.exports = {
+  getDriverRoads,
+  getDriverRoadsVersion,
+  clearVersionMemo,
+  compactLine,
+  MAX_LINKS,
+  SIMPLIFY_TOLERANCE_METERS,
+};

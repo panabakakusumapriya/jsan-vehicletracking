@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AppState as RNAppState,
   ActivityIndicator,
   Linking,
   Modal,
@@ -23,11 +24,16 @@ import { API_BASE_URL, IS_CUSTOM_API } from '@/src/lib/config';
 import { type MapGLHandle, type MapGLHistory, type MapGLMarkers, type MapGLTrace, type MapGLTrail, type RoadTuple } from '@/src/components/mapTypes';
 import { DriverMap } from '@/src/components/DriverMap';
 import {
-  apiDropMarker, apiMarkerCategories, apiMyAreas, apiMyMarkers,
+  apiDropMarker, apiMarkerCategories, apiMyAreas, apiMyMarkers, apiMyRoadsVersion, apiMyTripsSettled,
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
 } from '@/src/lib/api';
 import { enqueueMarker, flushMarkerQueue, newClientId } from '@/src/lib/markerQueue';
-import { buildRoadIndexAsync, hitLinkIds, loadLiveCovered, saveLiveCovered, type RoadIndex } from '@/src/lib/liveCover';
+import {
+  buildSnapIndexAsync, createCoverStore, createMatcher, coverLines, coverTripIds, dropTrip,
+  expireTrips, ingestFix,
+  type CoverLines, type CoverStore, type Matcher, type SnapIndex,
+} from '@/src/lib/localSnap';
+import { COVER_TTL_MS, loadCover, saveCover } from '@/src/lib/localSnapStore';
 import * as Location from 'expo-location';
 import { decodeRouteShapeLines } from '@/src/lib/polyline';
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
@@ -85,6 +91,8 @@ const NO_AREAS: MyArea[] = [];
  * the order my-areas returns them.
  */
 const MAX_DRAWN_LINKS = 20000;
+/** How long an area whose roads failed to load waits before the version probe retries it. */
+const FAILED_AREA_RETRY_MS = 15 * 60_000;
 
 interface Point { lat: number; lon: number; speedKmh: number; recordedAt: string }
 interface Trip {
@@ -199,23 +207,65 @@ export default function MapScreen() {
    * attribution stays the audited truth (it force-refreshes the roads and replaces this),
    * but "do I take that red street?" needs answering mid-shift, not at end of day.
    */
-  const [liveCovered, setLiveCovered] = useState<{ version: number; ids: Set<string> }>(
-    () => ({ version: 0, ids: new Set<string>() })
-  );
-  const liveCoveredRef = useRef(liveCovered);
-  liveCoveredRef.current = liveCovered;
-  const liveCoveredSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const roadIndexRef = useRef<RoadIndex | null>(null);
+  const [liveCovered, setLiveCovered] = useState<{
+    version: number; ids: ReadonlySet<string>; partials: [number, number][][];
+  }>(() => ({ version: 0, ids: new Set<string>(), partials: [] }));
+  /**
+   * The matcher's own state. Refs, not state: a GPS fix arrives every second or so and only the
+   * DRAWN result belongs in React. Putting the store in state would re-render the screen for
+   * every fix, including the ones that change nothing.
+   */
+  const coverStoreRef = useRef<CoverStore>(createCoverStore());
+  const matcherRef = useRef<Matcher | null>(null);
+  const snapIndexRef = useRef<SnapIndex | null>(null);
+  const coverSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Whose guesses these are. The store on disk is per driver — see localSnapStore.ts. */
+  const coverOwnerRef = useRef<string | null>(user?._id ?? null);
+  coverOwnerRef.current = user?._id ?? null;
+  /** The trip being driven right now. Never offered up for settling: the server cannot have
+   *  finished a trip that is still producing fixes. */
+  const activeTripIdRef = useRef<string | null>(null);
+
+  /** Redraw from whatever the matcher currently believes. */
+  const refreshLiveCovered = useCallback(() => {
+    const index = snapIndexRef.current;
+    if (!index) return;
+    const lines: CoverLines = coverLines(index, coverStoreRef.current);
+    setLiveCovered({ version: Date.now(), ids: lines.fullIds, partials: lines.partials });
+  }, []);
+
+  /** Coalesced write — the disk does not need to keep up with the wheels. */
+  const scheduleCoverSave = useCallback(() => {
+    if (coverSaveTimerRef.current) return;
+    coverSaveTimerRef.current = setTimeout(() => {
+      coverSaveTimerRef.current = null;
+      saveCover(coverOwnerRef.current, coverStoreRef.current);
+    }, 15_000);
+  }, []);
+
+  /** Write now — for the moments a guess is retired, which must not be undone by a crash. */
+  const saveCoverNow = useCallback(() => {
+    if (coverSaveTimerRef.current) clearTimeout(coverSaveTimerRef.current);
+    coverSaveTimerRef.current = null;
+    saveCover(coverOwnerRef.current, coverStoreRef.current);
+  }, []);
+
+  // The index is rebuilt when the road network itself changes. The COVERAGE is not touched here:
+  // it belongs to trips, not to a payload version, and is retired trip by trip as the server
+  // attributes them. Rebuilding it here is what used to repaint the morning red.
   useEffect(() => {
     let cancelled = false;
-    roadIndexRef.current = null;
-    if (roads.length) {
-      buildRoadIndexAsync(roads, () => cancelled).then((index) => {
-        if (!cancelled) roadIndexRef.current = index;
-      });
-    }
+    snapIndexRef.current = null;
+    matcherRef.current = null;
+    if (!roads.length) return () => { cancelled = true; };
+    buildSnapIndexAsync(roads, () => cancelled).then((index) => {
+      if (cancelled || !index) return;
+      snapIndexRef.current = index;
+      matcherRef.current = createMatcher(index);
+      refreshLiveCovered();
+    });
     return () => { cancelled = true; };
-  }, [roads]);
+  }, [roads, refreshLiveCovered]);
 
   /**
    * Route history: every closed trip in the chosen window, drawn grey under the current route.
@@ -324,6 +374,11 @@ export default function MapScreen() {
 
   const roadsSeqRef = useRef(0);
   const roadsKeyRef = useRef<string | null>(null);
+  /** areaId -> the roads version currently on screen for it. */
+  const loadedVersionsRef = useRef<Map<string, string>>(new Map());
+  /** areaId -> when its roads last failed to load, so a failing area is retried on a backoff
+   *  instead of on every probe. */
+  const areaFailedAtRef = useRef<Map<string, number>>(new Map());
   const clippedRef  = useRef(false);
   const pendingForceKeyRef = useRef<string | null>(null);
   const traceSigRef = useRef('');
@@ -385,8 +440,8 @@ export default function MapScreen() {
    * commits would each be a new `roads` identity and therefore a fresh layer rebuild - the map
    * would redraw once per area instead of once.
    */
-  const loadRoads = useCallback(async (list: MyArea[], force: boolean) => {
-    if (!token) return;
+  const loadRoads = useCallback(async (list: MyArea[], force: boolean): Promise<boolean> => {
+    if (!token) return false;
 
     const areaKey = list.map((a) => a.id).join(',');
 
@@ -394,18 +449,20 @@ export default function MapScreen() {
     // for the same areas finishing afterwards answers straight out of the cache and would overwrite
     // the fresh result, making pull-to-refresh look broken. Only the identical request is skipped -
     // a changed allocation still has to load, forced request in flight or not.
-    if (!force && pendingForceKeyRef.current === areaKey) return;
+    if (!force && pendingForceKeyRef.current === areaKey) return false;
 
     const seq = ++roadsSeqRef.current;
 
     if (list.length === 0) {
       roadsKeyRef.current = '';
+      loadedVersionsRef.current.clear();
       clippedRef.current = false;
       setRoads(NO_ROADS);
       setRoadsError(null);
       setRoadsNote(null);
       setRoadsLoading(false);
-      return;
+      // Nothing assigned means nothing to wait for — the server's answer is "no network".
+      return true;
     }
 
     setRoadsLoading(true);
@@ -423,14 +480,26 @@ export default function MapScreen() {
     }
 
     // A newer load started while this one was in flight, or the screen went away.
-    if (!mountedRef.current || seq !== roadsSeqRef.current) return;
+    if (!mountedRef.current || seq !== roadsSeqRef.current) return false;
 
     const ok: RoadsResult[] = [];
     const failed: string[] = [];
+    // Per-area record of what is on screen, for the version probe. Kept per area rather than as
+    // one joined key so that one area failing does not make every probe look like a change and
+    // trigger a full re-download of all of them — see revalidateRoads.
+    const now = Date.now();
+    const held = new Map<string, string>();
     settled.forEach((r, i) => {
-      if (r.status === 'fulfilled') ok.push(r.value);
-      else failed.push(`${list[i].areaCode || list[i].name}: ${errMsg(r.reason, 'request failed')}`);
+      if (r.status === 'fulfilled') {
+        ok.push(r.value);
+        held.set(list[i].id, r.value.data.version);
+        areaFailedAtRef.current.delete(list[i].id);
+      } else {
+        failed.push(`${list[i].areaCode || list[i].name}: ${errMsg(r.reason, 'request failed')}`);
+        areaFailedAtRef.current.set(list[i].id, now);
+      }
     });
+    loadedVersionsRef.current = held;
 
     /**
      * `version` is the server's own coverage cache key - it moves when, and only when, something in
@@ -467,7 +536,137 @@ export default function MapScreen() {
     }
     setRoadsNote(notes.length ? notes.join(' / ') : null);
     setRoadsLoading(false);
+
+    // "Fresh" means every area came from the server just now. A stale offline copy or a missing
+    // area is not the server's current answer, so nothing that waits on that answer — retiring
+    // the phone's own guesses, above all — may act on it.
+    return failed.length === 0 && !ok.some((r) => r.stale);
   }, [token]);
+
+  /**
+   * Ask whether anything has changed colour, and only download if it has.
+   *
+   * The roads payload is a quarter of a megabyte per area, so the app holds it for hours — right
+   * for the geometry, wrong for the coverage. Two things move it during a shift: the driver's own
+   * earlier trips finishing attribution, and other crews claiming streets in the same polygon.
+   * Neither used to appear until the cache aged out.
+   *
+   * Compared AREA BY AREA against what is actually on screen. Comparing one joined key meant an
+   * area that failed to load was simply absent from one side, so every probe looked like a change
+   * and re-downloaded everything — which fed the rate limiter that had caused the failure. An area
+   * with nothing on screen is retried on a backoff instead.
+   *
+   * Returns true when it started a reload.
+   */
+  const revalidateRoads = useCallback(async (): Promise<boolean> => {
+    const list = areasRef.current;
+    if (!token || !list.length || !mountedRef.current) return false;
+    const probes = await Promise.allSettled(list.map((a) => apiMyRoadsVersion(token, a.id)));
+    if (!mountedRef.current) return false;
+    const now = Date.now();
+    let changed = false;
+    probes.forEach((p, i) => {
+      if (p.status !== 'fulfilled') return;   // a failed probe proves nothing either way
+      const id = list[i].id;
+      const onScreen = loadedVersionsRef.current.get(id);
+      if (onScreen === undefined) {
+        if (now - (areaFailedAtRef.current.get(id) ?? 0) >= FAILED_AREA_RETRY_MS) changed = true;
+      } else if (onScreen !== p.value.version) {
+        changed = true;
+      }
+    });
+    if (changed) void loadRoads(list, true);
+    return changed;
+  }, [token, loadRoads]);
+
+  /**
+   * The handover: retire the phone's own guesses for every trip the server has finished, once the
+   * server's answer for those trips is on screen.
+   *
+   * This is what makes the local blue TEMPORARY. While a trip is in the queue its streets are
+   * painted from this phone's own matching; once the server has map-matched and attributed it, the
+   * roads payload carries the audited, Valhalla-snapped answer — and that is what stays on the
+   * driver's map, cached with the roads, including when they open it tomorrow.
+   *
+   * It asks the server by the phone's own trip ids rather than watching for the current trip's
+   * status to flip, because that transition is usually missed: the next trip has started before
+   * the last one is attributed, or the app was closed when it finished. Asking about every trip
+   * still held works however much of the day the screen was not watching.
+   *
+   * Order matters, and is the point of the `fresh` check: the audited roads are downloaded FIRST,
+   * and a guess is dropped only if that download actually came from the server. Dropping first —
+   * or after a refresh that fell back to an offline copy — would turn streets the driver just
+   * watched go blue back to red.
+   *
+   * Returns true when it reloaded the roads.
+   */
+  const reconcilingRef = useRef(false);
+  const reconcileSettled = useCallback(async (): Promise<boolean> => {
+    // Before the first successful my-areas the areas list is empty only because it has not
+    // arrived — reloading roads for "no areas" then would blank the map.
+    if (!token || !mountedRef.current || reconcilingRef.current || areasSigRef.current === null) {
+      return false;
+    }
+    const active = activeTripIdRef.current;
+    const ids = coverTripIds(coverStoreRef.current).filter((id) => id !== active);
+    if (!ids.length) return false;
+
+    reconcilingRef.current = true;
+    try {
+      const settledIds: string[] = [];
+      for (let i = 0; i < ids.length; i += 50) {
+        const r = await apiMyTripsSettled(token, ids.slice(i, i + 50));
+        for (const t of r.trips) if (t.state === 'settled') settledIds.push(t.clientTripId);
+      }
+      if (!settledIds.length || !mountedRef.current) return false;
+
+      const fresh = await loadRoads(areasRef.current, true);
+      if (!fresh || !mountedRef.current) return true;   // try again on the next sync
+
+      let dropped = false;
+      for (const id of settledIds) dropped = dropTrip(coverStoreRef.current, id) || dropped;
+      if (dropped) {
+        refreshLiveCovered();
+        saveCoverNow();
+      }
+      return true;
+    } catch {
+      // Offline or a transient failure. Guesses stay exactly as they were; the next sync asks again.
+      return false;
+    } finally {
+      reconcilingRef.current = false;
+    }
+  }, [token, loadRoads, refreshLiveCovered, saveCoverNow]);
+
+  /**
+   * One pass of keeping the map current: settle finished trips (which reloads the roads if any
+   * settled), otherwise check whether anyone else changed a colour, and retire guesses old enough
+   * that no verdict is coming.
+   */
+  const syncMap = useCallback(async () => {
+    if (expireTrips(coverStoreRef.current, Date.now(), COVER_TTL_MS)) {
+      refreshLiveCovered();
+      saveCoverNow();
+    }
+    const reloaded = await reconcileSettled();
+    if (!reloaded) {
+      try { await revalidateRoads(); } catch { /* next pass */ }
+    }
+  }, [reconcileSettled, revalidateRoads, refreshLiveCovered, saveCoverNow]);
+  const syncMapRef = useRef(syncMap);
+  syncMapRef.current = syncMap;
+
+  // On every return to the app, and slowly while it is open. Coming back to the phone after a
+  // stint of driving is exactly when the answer is most likely to have moved.
+  useEffect(() => {
+    const sub = RNAppState.addEventListener('change', (st) => {
+      if (st === 'active') void syncMapRef.current();
+    });
+    const timer = setInterval(() => { void syncMapRef.current(); }, 4 * 60_000);
+    // And once shortly after opening, when the areas have had a moment to arrive.
+    const first = setTimeout(() => { void syncMapRef.current(); }, 5_000);
+    return () => { sub.remove(); clearInterval(timer); clearTimeout(first); };
+  }, []);
 
   /**
    * The driver's route history, via the on-device cache. Fetched on open, on refresh, when the
@@ -547,13 +746,15 @@ export default function MapScreen() {
    */
   useEffect(() => { loadRoads(areas, false); }, [areas, loadRoads]);
 
-  // Rehydrate the live-covered set for THIS roads version: an app restart mid-shift must not
-  // paint the morning's work red again while the server is still processing its trips. A new
-  // roads version (post-trip attribution landed) starts a fresh set — the server has spoken.
+  // Rehydrate for whoever is signed in: an app restart mid-shift must not paint the morning's
+  // work red again while the server is still working through the trips that produced it. Keyed
+  // on the driver, so a different driver signing in on this phone starts from their own store
+  // and never sees the previous driver's streets as covered.
   useEffect(() => {
-    const ids = loadLiveCovered(roadsKeyRef.current ?? '');
-    setLiveCovered({ version: Date.now(), ids });
-  }, [roads]);
+    coverStoreRef.current = loadCover(driverId) ?? createCoverStore();
+    if (matcherRef.current) matcherRef.current.prev = null;
+    refreshLiveCovered();
+  }, [driverId, refreshLiveCovered]);
 
   historyDaysRef.current = prefs.historyDays;
   // Not before the saved preferences are in: firing on the default window and then again on the
@@ -594,8 +795,11 @@ export default function MapScreen() {
     // roads only change at the second: nothing turns blue until the links have been attributed,
     // and a ~250 KB re-download on the first would find the same version every time.
     if (matchedNow || linksDoneNow) loadHistory(historyDaysRef.current, true);
-    if (linksDoneNow) loadRoads(areasRef.current, true);
-  }, [trip, loadRoads, loadHistory]);
+    // The trip on screen has just been attributed. Settle it now rather than waiting for the next
+    // sync pass — see reconcileSettled for why the handover asks the server rather than trusting
+    // this transition, which is often missed.
+    if (linksDoneNow) void syncMapRef.current();
+  }, [trip, loadHistory]);
 
   /**
    * A slow revalidation for the case the poll cannot see: yesterday's trip finishing attribution
@@ -673,29 +877,24 @@ export default function MapScreen() {
         // fixes only — idle fixes would sketch the walk to the car. ~12 m gate (1e-4 deg is
         // ~11 m): tighter bloats the line, looser cuts corners. Bounded to the recent stretch;
         // the server's raw trace carries the full route within a poll or two anyway.
-        // Flip the street blue AS IT IS DRIVEN — the awareness the red/blue map exists for.
-        // Grid lookup + point-to-segment ≤25 m; the set only ever grows within a roads version.
-        if (e.tripStatus === 'active') {
-          const idx = roadIndexRef.current;
-          if (idx) {
-            const hits = hitLinkIds(idx, e.lon, e.lat);
-            if (hits.length) {
-              const cur = liveCoveredRef.current;
-              const nextIds = new Set(cur.ids);
-              let changed = false;
-              for (const id of hits) {
-                if (!nextIds.has(id)) { nextIds.add(id); changed = true; }
-              }
-              if (changed) {
-                setLiveCovered({ version: Date.now(), ids: nextIds });
-                if (!liveCoveredSaveTimerRef.current) {
-                  liveCoveredSaveTimerRef.current = setTimeout(() => {
-                    liveCoveredSaveTimerRef.current = null;
-                    saveLiveCovered(roadsKeyRef.current ?? '', liveCoveredRef.current.ids);
-                  }, 15_000);
-                }
-              }
-            }
+        // Paint the street AS IT IS DRIVEN — the awareness the red/blue map exists for.
+        // Matched, not merely "near": see src/lib/localSnap.ts for why that distinction is the
+        // whole feature. Only redraws when the painted picture actually moved, which a parked
+        // vehicle's heartbeat fixes never do.
+        if (e.tripStatus === 'active' && e.tripId) activeTripIdRef.current = e.tripId;
+        if (e.tripStatus === 'active' && matcherRef.current) {
+          const at = Date.parse(e.recordedAt);
+          const changed = ingestFix(matcherRef.current, coverStoreRef.current, {
+            lon: e.lon,
+            lat: e.lat,
+            bearing: typeof e.heading === 'number' ? e.heading : null,
+            accuracy: typeof e.accuracy === 'number' ? e.accuracy : null,
+            tripId: e.tripId ?? null,
+            atMs: Number.isFinite(at) ? at : null,
+          });
+          if (changed) {
+            refreshLiveCovered();
+            scheduleCoverSave();
           }
         }
 
@@ -718,9 +917,10 @@ export default function MapScreen() {
       // Trip over: the breadcrumb's job is done — the server trace (and soon the snapped
       // route) owns the drawing from here.
       VehicleTracker.addTripEndListener(() => {
-        if (liveCoveredSaveTimerRef.current) clearTimeout(liveCoveredSaveTimerRef.current);
-        liveCoveredSaveTimerRef.current = null;
-        saveLiveCovered(roadsKeyRef.current ?? '', liveCoveredRef.current.ids);
+        if (coverSaveTimerRef.current) clearTimeout(coverSaveTimerRef.current);
+        coverSaveTimerRef.current = null;
+        saveCover(coverOwnerRef.current, coverStoreRef.current);
+        activeTripIdRef.current = null;
         trailTripRef.current = null;
         trailLineRef.current = [];
         setTrail({ version: Date.now(), line: [] });
@@ -730,10 +930,10 @@ export default function MapScreen() {
     ].filter(Boolean);
     return () => {
       subs.forEach((s) => s?.remove());
-      if (liveCoveredSaveTimerRef.current) clearTimeout(liveCoveredSaveTimerRef.current);
-      liveCoveredSaveTimerRef.current = null;
+      if (coverSaveTimerRef.current) clearTimeout(coverSaveTimerRef.current);
+      coverSaveTimerRef.current = null;
     };
-  }, []);
+  }, [refreshLiveCovered, scheduleCoverSave]);
 
   // The notice owns its own lifetime. Failures re-fire on every failed flush (~10-30 s), each
   // replacing the event object and re-arming this timer — the banner stays up exactly while
@@ -1031,11 +1231,25 @@ export default function MapScreen() {
   );
 
   /** Counts for the legend, and the only thing left to show if the map itself cannot be drawn. */
+  /**
+   * No polygon assigned — a free drive.
+   *
+   * Distinguished from "we could not ask" (areasError) and from "still asking" (loading): only
+   * a successful answer of zero means the driver genuinely holds nothing today. Everything else
+   * on this screen keeps working — the live dot, the breadcrumb, history, markers and the
+   * recording itself. What is absent is the assigned network, so there is no red to turn blue
+   * and nothing for the matcher to match against.
+   */
+  const freeDrive = !loading && !areasError && areas.length === 0;
+
   const roadStats = useMemo(() => {
     let covered = 0;
+    // Whole links only. A street the driver is halfway down is drawn half blue but is not
+    // counted as done, because it is not — counting it would be the same lie the old
+    // mark-the-whole-link behaviour told, just in a number instead of a colour.
     for (const r of roads) if (r[2] === 1 || liveCovered.ids.has(r[0])) covered += 1;
     return { total: roads.length, covered, todo: roads.length - covered };
-    // The Set mutates in place; version is its change signal.
+    // `version` is the change signal for the id set, which is replaced rather than compared.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roads, liveCovered.version]);
 
@@ -1087,14 +1301,25 @@ export default function MapScreen() {
    */
   const legend = (
     <View style={s.legend}>
-      <View style={s.legendItem}>
-        <View style={[s.legendDot, { backgroundColor: C.roadTodo }]} />
-        <Text style={s.legendText}>To drive{roadStats.total ? ` ${roadStats.todo.toLocaleString()}` : ''}</Text>
-      </View>
-      <View style={s.legendItem}>
-        <View style={[s.legendDot, { backgroundColor: C.roadDone }]} />
-        <Text style={s.legendText}>Covered{roadStats.total ? ` ${roadStats.covered.toLocaleString()}` : ''}</Text>
-      </View>
+      {/* Red and blue mean nothing without an assigned network, so on a free drive the legend
+          does not pretend otherwise — it names the mode and describes only what IS drawn. */}
+      {freeDrive ? (
+        <View style={s.legendItem}>
+          <View style={[s.legendDot, { backgroundColor: C.roadTrace }]} />
+          <Text style={s.legendText}>Free drive · recording</Text>
+        </View>
+      ) : (
+        <>
+          <View style={s.legendItem}>
+            <View style={[s.legendDot, { backgroundColor: C.roadTodo }]} />
+            <Text style={s.legendText}>To drive{roadStats.total ? ` ${roadStats.todo.toLocaleString()}` : ''}</Text>
+          </View>
+          <View style={s.legendItem}>
+            <View style={[s.legendDot, { backgroundColor: C.roadDone }]} />
+            <Text style={s.legendText}>Covered{roadStats.total ? ` ${roadStats.covered.toLocaleString()}` : ''}</Text>
+          </View>
+        </>
+      )}
       <View style={s.legendItem}>
         <View style={[s.legendDot, { backgroundColor: C.roadTrace }]} />
         <Text style={s.legendText}>Your route</Text>
@@ -1161,6 +1386,10 @@ export default function MapScreen() {
     // Errors are the banner's job — repeating them here would say the same thing twice on one
     // screen. The hint only ever explains an EMPTY map that is working correctly.
     if (areasError) return null;
+    // Holding no polygon is a working state, not a fault: plenty of shifts are ordinary driving
+    // with nothing to cover. Saying "none allocated to you yet" made it read as a setup problem
+    // the driver was expected to chase, when the right answer is "drive; it is being recorded".
+    if (freeDrive) return 'Free drive — no area assigned. Your route is still being recorded.';
     return 'No work areas allocated to you yet';
   })();
 
