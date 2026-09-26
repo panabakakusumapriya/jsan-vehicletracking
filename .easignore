@@ -5,17 +5,38 @@
 # made every build a ~194 MB upload that failed partway on an ordinary connection. The app is
 # about 2 MB.
 #
+# Everything that is not the app is listed BY NAME. The tidier "ignore /*, then re-include
+# !/JSAN-AUTO-TRACKING/" is not supported by EAS's matcher: it silently produced an EMPTY
+# archive and a build that failed before installing anything. Check with
+#   npx eas build:inspect --platform android --profile preview --stage archive --output <dir>
+# after touching this file. A new top-level folder of data must be added here, or it ships.
+#
 # When this file exists EAS uses it INSTEAD of .gitignore, so the app's own ignore rules are
-# repeated below. Keep the two in step. /android and /ios matter most: they are generated on the
-# build server (continuous native generation), and uploading the local copies would make EAS
-# build from those instead of regenerating them.
+# repeated below. /android and /ios matter most: they are generated on the build server
+# (continuous native generation), and uploading the local copies would make EAS build from those
+# instead of regenerating them.
 
-# Everything at the top level except the app.
-/*
-!/JSAN-AUTO-TRACKING/
+# ── Not the app ──
+/.claude/
+/admin-panel/
+/backend/
+/core-tracking-code/
+/docs/
+/scripts/
+/Final Merge/
+/FinalMerge0708/
+/P2/
+/QLD_P2_RMOB_Nav_new/
+/p1vc-polygons/
+/p1vc-roads/
+/*.zip
+/*.geojson
+/*.csv
+/*.md
+/*.txt
 
-# The app's own .gitignore, anchored to its folder.
-/JSAN-AUTO-TRACKING/node_modules/
+# ── The app's own .gitignore, anchored to its folder ──
+node_modules/
 /JSAN-AUTO-TRACKING/.expo/
 /JSAN-AUTO-TRACKING/dist/
 /JSAN-AUTO-TRACKING/web-build/
