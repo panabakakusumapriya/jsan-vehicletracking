@@ -1,7 +1,7 @@
 import type { Layer, PickingInfo } from '@deck.gl/core';
 import { PathStyleExtension } from '@deck.gl/extensions';
 import { GeoJsonLayer, PathLayer } from '@deck.gl/layers';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../lib/api';
 import { decodePolyline6 } from '../lib/polyline';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
@@ -138,6 +138,9 @@ function coverageColor(pct: number): [number, number, number] {
   ];
 }
 
+/** The pinned area card's width — also the room the camera leaves for it when framing an area. */
+const POPUP_WIDTH = 320;
+
 const km = (m: number) => (m / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 });
 
 /**
@@ -172,7 +175,11 @@ export function CoverageMap({
   tracksTo,
   tracksAreaId,
   driverColorById,
+  driverFilter,
+  highlightAreaIds,
   onTracksMeta,
+  areaPopupId,
+  areaPopup,
 }: {
   /** A committed version — shows coverage and lets road links load. */
   versionId?: string;
@@ -190,7 +197,8 @@ export function CoverageMap({
    * share an encoding with a percentage.
    */
   mode: 'assignment' | 'priority';
-  height?: number;
+  /** Pixels, or any CSS length — fullscreen passes '100vh'. */
+  height?: number | string;
   onSelectArea?: (areaId: string) => void;
   /** Areas currently selected for assignment. Drawn with a heavy outline. */
   selectedIds?: string[];
@@ -255,6 +263,20 @@ export function CoverageMap({
   tracksAreaId?: string | null;
   /** driverId -> colour, so a track and the polygons that driver holds read as one person. */
   driverColorById?: Record<string, [number, number, number]>;
+  /**
+   * Drivers the page is focused on. Empty/absent means everyone. Tracks are narrowed to them and
+   * roads someone else drove are faded, so "what has Morgan done" reads without the rest vanishing.
+   */
+  driverFilter?: string[];
+  /** Areas held by the filtered drivers; everything else is faded. Null = no filter. */
+  highlightAreaIds?: Set<string> | null;
+  /**
+   * A card pinned beside one area — the click-a-polygon panel. It sits off the area's right edge
+   * (left edge when there is no room) and follows the polygon as the camera moves, so the numbers
+   * are read next to the shape they describe rather than in a corner of the map.
+   */
+  areaPopupId?: string | null;
+  areaPopup?: ReactNode;
   /** Reports what came back, so the page can show the count and how many are still snapping. */
   onTracksMeta?: (meta: { count: number; pendingSnap: number; truncated: boolean }) => void;
 }) {
@@ -263,6 +285,7 @@ export function CoverageMap({
   const [links, setLinks] = useState<LinkRow[]>([]);
   const [tracks, setTracks] = useState<TrackPath[]>([]);
   const trackRequest = useRef(0);
+  const [tracksLoading, setTracksLoading] = useState(false);
   const [assignedLinks, setAssignedLinks] = useState<AssignedLink[]>([]);
   const [assignedLoading, setAssignedLoading] = useState(false);
   const assignedRequest = useRef(0);
@@ -275,6 +298,10 @@ export function CoverageMap({
   const [linksLoading, setLinksLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const framed = useRef(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const areaPopupIdRef = useRef(areaPopupId);
+  areaPopupIdRef.current = areaPopupId;
 
   // Guards a slow response for a viewport the user has already left from overwriting a newer one.
   const linkRequest = useRef(0);
@@ -312,7 +339,13 @@ export function CoverageMap({
     const box = hit?.properties.bbox;
     if (box) {
       framed.current = true; // suppress the whole-extent fit that would otherwise fight this
-      requestAnimationFrame(() => mapRef.current?.fitBounds(box, 14));
+      // When this area's card is about to open beside it, frame the polygon off-centre so the
+      // card lands on empty map instead of on top of the streets being checked.
+      const wide = (wrapRef.current?.clientWidth || 0) >= 760;
+      const padding = wide && focusAreaId === areaPopupIdRef.current
+        ? { top: 60, bottom: 60, left: 60, right: POPUP_WIDTH + 70 }
+        : 48;
+      requestAnimationFrame(() => mapRef.current?.fitBounds(box, 14, padding));
     }
   }, [focusAreaId, focusNonce, areas]);
 
@@ -368,6 +401,7 @@ export function CoverageMap({
     if (tracksTo) params.set('to', tracksTo);
     if (tracksAreaId) params.set('areaId', tracksAreaId);
     const ticket = ++trackRequest.current;
+    setTracksLoading(true);
     api
       .get<{ tracks: TrackRow[]; pendingSnap: number; truncated: boolean }>(
         `/api/network/versions/${versionId}/tracks?${params}`
@@ -399,6 +433,9 @@ export function CoverageMap({
       })
       .catch(() => {
         if (ticket === trackRequest.current) setTracks([]);
+      })
+      .finally(() => {
+        if (ticket === trackRequest.current) setTracksLoading(false);
       });
   }, [versionId, showTracks, tracksFrom, tracksTo, tracksAreaId, onTracksMeta]);
 
@@ -489,6 +526,12 @@ export function CoverageMap({
   const selected = useMemo(() => new Set(selectedIds || []), [selectedIds]);
   // A primitive deck.gl can compare — a Set never differs by identity in a useMemo dep.
   const selectionKey = (selectedIds || []).join(',');
+  const filterKey = (driverFilter || []).join(',');
+  const driverSet = useMemo(() => new Set(driverFilter || []), [driverFilter]);
+  const visibleTracks = useMemo(
+    () => (driverSet.size ? tracks.filter((t) => driverSet.has(t.driverId)) : tracks),
+    [tracks, driverSet]
+  );
 
   const layers = useMemo<Layer[]>(() => {
     // The fill is always a quantity: how much of the area is driven, or which band it sits in.
@@ -511,6 +554,10 @@ export function CoverageMap({
      */
     const OUTLINE_ONLY: [number, number, number, number] = [0, 0, 0, 0];
     const ASSIGNED_BLUE: [number, number, number, number] = [37, 99, 235, 255];
+
+    /** Outside the driver filter: kept on the map for context, but pushed well back. */
+    const isFaded = (p: AreaProps) =>
+      Boolean(highlightAreaIds) && !highlightAreaIds!.has(p.areaId || '') && !selected.has(p.areaId || '');
 
     const out: Layer[] = [];
 
@@ -539,12 +586,13 @@ export function CoverageMap({
             const c = shadeOf(f.properties);
             // Translucent so the basemap's streets stay readable underneath — the fill is a
             // summary, not a mask.
-            return [c[0], c[1], c[2], 110];
+            return [c[0], c[1], c[2], isFaded(f.properties) ? 25 : 110];
           },
           // The outline answers "whose is this", independently of the fill's percentage.
           getLineColor: (f: { properties: AreaProps }) => {
             const id = f.properties.areaId || '';
             if (selected.has(id)) return [91, 33, 182, 255];
+            if (isFaded(f.properties)) return [100, 116, 139, 70];
             // A signed-off area gets an emerald border. Deliberately the OUTLINE and not the fill:
             // completion and percentage are independent facts, and a manager needs to read both
             // at once — "done" and "done at 44%" is a real combination.
@@ -592,8 +640,8 @@ export function CoverageMap({
           updateTriggers: {
             // deck.gl caches accessor results; without naming every input here a selection would
             // change state but not repaint.
-            getFillColor: [mode, selectionKey, driverColorByArea, roadScope],
-            getLineColor: [mode, selectionKey, driverColorByArea],
+            getFillColor: [mode, selectionKey, driverColorByArea, roadScope, highlightAreaIds],
+            getLineColor: [mode, selectionKey, driverColorByArea, highlightAreaIds],
             // Width now depends on whether an area is assigned, so the colour map belongs here too
             // — without it, assigning an area would recolour its outline but not thicken it.
             getLineWidth: [selectionKey, driverColorByArea],
@@ -615,11 +663,11 @@ export function CoverageMap({
     // Under the road layers on purpose: the tracks say where the fleet went, the roads say what
     // that earned. When they disagree — a street driven but not claimed — the road's colour is
     // the one that must win the eye.
-    if (tracks.length) {
+    if (visibleTracks.length) {
       out.push(
         new PathLayer<TrackPath>({
           id: 'driven-tracks',
-          data: tracks,
+          data: visibleTracks,
           pickable: true,
           getPath: (d) => d.path,
           // Coloured by driver, with the same palette the polygons use, so a track and the areas
@@ -681,7 +729,9 @@ export function CoverageMap({
           getColor: (d) => {
             if (!d.covered) return [220, 38, 38, 220];
             const c = (colorRoadsByDriver && d.driverId && driverColorById?.[d.driverId]) || [37, 99, 235];
-            return [c[0], c[1], c[2], 235];
+            // Driven by someone outside the filter: still there, but not what is being read.
+            const faded = driverSet.size > 0 && !(d.driverId && driverSet.has(d.driverId));
+            return [c[0], c[1], c[2], faded ? 45 : 235];
           },
           getWidth: (d) => (d.funcClass && d.funcClass <= 3 ? 4.5 : d.funcClass === 4 ? 3.2 : 2.2),
           widthUnits: 'meters',
@@ -689,7 +739,7 @@ export function CoverageMap({
           widthMaxPixels: 8,
           capRounded: true,
           jointRounded: true,
-          updateTriggers: { getColor: [driverColorById, colorRoadsByDriver] },
+          updateTriggers: { getColor: [driverColorById, colorRoadsByDriver, filterKey] },
         })
       );
     }
@@ -728,8 +778,13 @@ export function CoverageMap({
     links,
     areaLinks,
     assignedLinks,
-    tracks,
+    visibleTracks,
     driverColorById,
+    colorRoadsByDriver,
+    driverSet,
+    filterKey,
+    highlightAreaIds,
+    roadScope,
     showAreas,
     mode,
     onSelectArea,
@@ -826,7 +881,7 @@ export function CoverageMap({
   const linksHint = !versionId
     ? 'Road links appear once the import is committed'
     : roadScope === 'off'
-      ? 'Roads hidden — pick a Routes scope to draw them'
+      ? 'Roads hidden — switch on a road layer to draw them'
       : assignedHint
         ? assignedHint
         : linksLoading || areaLinksLoading
@@ -838,8 +893,82 @@ export function CoverageMap({
                 : `${links.length.toLocaleString()} roads in view · ${inviewDriven.toLocaleString()} driven`) + areaRoadsNote
             : '';
 
+  const popupBox = useMemo(() => {
+    if (!areaPopupId || !areas) return null;
+    const box = areas.features.find((f) => f.properties.areaId === areaPopupId)?.properties.bbox;
+    return box && box.length === 4 ? box : null;
+  }, [areaPopupId, areas]);
+  const popupBoxRef = useRef(popupBox);
+  popupBoxRef.current = popupBox;
+
+  /**
+   * Pin the card beside the area. Written straight to the element's style because it runs on
+   * every camera frame — a React state update per frame would re-render the whole map layer set.
+   */
+  const placePopup = useCallback(() => {
+    const el = popupRef.current;
+    const wrap = wrapRef.current;
+    const box = popupBoxRef.current;
+    if (!el || !wrap) return;
+    const W = wrap.clientWidth;
+    const H = wrap.clientHeight;
+
+    // Narrow map: a callout beside a polygon has nowhere to go, so dock it as a bottom sheet.
+    if (W < 560 || !box) {
+      el.className = 'cov-area-pop docked';
+      el.style.transform = '';
+      return;
+    }
+
+    const [w, s, e, n] = box;
+    const midLat = (s + n) / 2;
+    const east = mapRef.current?.project([e, midLat]);
+    const west = mapRef.current?.project([w, midLat]);
+    const north = mapRef.current?.project([(w + e) / 2, n]);
+    const south = mapRef.current?.project([(w + e) / 2, s]);
+    if (!east || !west || !north || !south) return;
+
+    const pw = el.offsetWidth;
+    const ph = el.offsetHeight;
+    const GAP = 14;
+    const EDGE = 10;
+    const anchorY = (north[1] + south[1]) / 2;
+
+    // Right of the area first; the left if that would run off the map; otherwise whichever side
+    // has more room, clamped inside the frame.
+    let side: 'right' | 'left' = 'right';
+    let x = east[0] + GAP;
+    if (x + pw > W - EDGE) {
+      const lx = west[0] - GAP - pw;
+      if (lx >= EDGE) { x = lx; side = 'left'; }
+      else if (W - east[0] < west[0]) { x = Math.max(EDGE, lx); side = 'left'; }
+    }
+    x = Math.min(Math.max(EDGE, x), W - pw - EDGE);
+    const y = Math.min(Math.max(EDGE, anchorY - ph / 2), Math.max(EDGE, H - ph - EDGE));
+
+    // The caret points at the area's middle, and only while that middle is actually on screen.
+    const caretY = anchorY - y;
+    const anchorVisible = anchorY > 0 && anchorY < H && east[0] > 0 && west[0] < W;
+    const caretOk = anchorVisible && caretY > 16 && caretY < ph - 16;
+
+    el.className = `cov-area-pop side-${side}${caretOk ? '' : ' no-caret'}`;
+    el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    el.style.setProperty('--caret-y', `${Math.round(caretY)}px`);
+  }, []);
+
+  // Re-place when the area changes, when its outline arrives, and whenever the card's own size
+  // changes (it loads in two steps: a "Loading…" line, then the full numbers).
+  useLayoutEffect(() => {
+    placePopup();
+    const el = popupRef.current;
+    if (!el) return undefined;
+    const ro = new ResizeObserver(() => placePopup());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [placePopup, popupBox, areaPopupId]);
+
   return (
-    <div className="cov-map" style={{ height }}>
+    <div ref={wrapRef} className="cov-map" style={{ height }}>
       <Map3D
         ref={mapRef}
         center={[144.96, -37.81]}
@@ -848,7 +977,14 @@ export function CoverageMap({
         layers={layers}
         getTooltip={getTooltip}
         onMoveEnd={handleMoveEnd}
+        onMove={placePopup}
       />
+
+      {areaPopupId && areaPopup && (
+        <div ref={popupRef} className="cov-area-pop" role="dialog" aria-label="Selected area">
+          {areaPopup}
+        </div>
+      )}
 
       <div className="cov-map-legend">
         {mode === 'assignment' ? (
@@ -914,6 +1050,13 @@ export function CoverageMap({
           </div>
         )}
       </div>
+
+      {!loading && (assignedLoading || linksLoading || areaLinksLoading || tracksLoading) && (
+        <div className="cov-map-busy" role="status">
+          <span className="cov-spinner" />
+          Loading{tracksLoading ? ' tracks' : ' roads'}…
+        </div>
+      )}
 
       {(loading || error) && (
         <div className="cov-map-overlay">

@@ -1,5 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CoverageMap } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { api, uploadRaw } from '../lib/api';
@@ -195,6 +195,27 @@ function Bar({ value, total, tone = 'brand' }: { value: number; total: number; t
     <div className="cov-bar" title={`${p.toFixed(1)}%`}>
       <div className={`cov-bar-fill ${tone}`} style={{ width: `${p}%` }} />
     </div>
+  );
+}
+
+/** A labelled on/off switch — the map's layer list reads as a column of these. */
+function Switch({
+  checked,
+  onChange,
+  children,
+  title,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  children: ReactNode;
+  title?: string;
+}) {
+  return (
+    <label className="cov-switch" title={title}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="cov-switch-track" aria-hidden="true"><span className="cov-switch-thumb" /></span>
+      <span className="cov-switch-label">{children}</span>
+    </label>
   );
 }
 
@@ -579,6 +600,7 @@ function ProgressTab({
     // account that holds an empty area.
     const legend = ids
       .map((id) => ({
+        id,
         name: nameFor.get(id) || nameFromCoverage.get(id) || 'Unknown',
         color: colorFor.get(id)!,
         meters: metersById.get(id) || 0,
@@ -598,10 +620,224 @@ function ProgressTab({
     [areas, selectedIds]
   );
 
-  const covered = summary?.coveredMeters || 0;
-  const target = version.targetMeters;
-  const remaining = Math.max(0, target - covered);
+  /**
+   * Drivers focused from the crew panel. Empty means everyone — focusing narrows the picture to
+   * "what is Morgan's": their tracks, their driven roads, their polygons, with the rest faded
+   * rather than hidden so the territory keeps its context.
+   */
+  const [driverFilter, setDriverFilter] = useState<string[]>([]);
+  const toggleDriver = (id: string) =>
+    setDriverFilter((prev) => (prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]));
 
+  /** Areas held by a focused driver, or null when nobody is focused (nothing is faded). */
+  const highlightAreaIds = useMemo(() => {
+    if (!driverFilter.length) return null;
+    const wanted = new Set(driverFilter);
+    const ids = new Set<string>();
+    for (const a of assignments) {
+      const id = typeof a.driverId === 'object' && a.driverId ? a.driverId._id : String(a.driverId);
+      if (wanted.has(id)) ids.add(String(a.areaId));
+    }
+    return ids;
+  }, [driverFilter, assignments]);
+
+  // Every control lives ON the map, so fullscreen loses nothing — it takes the whole card along.
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === mapRef.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else mapRef.current?.requestFullscreen?.().catch(() => {});
+  };
+
+  const [layersOpen, setLayersOpen] = useState(false);
+  const layersRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!layersOpen) return undefined;
+    const onDown = (e: MouseEvent) => {
+      if (layersRef.current && !layersRef.current.contains(e.target as Node)) setLayersOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLayersOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [layersOpen]);
+  const [crewOpen, setCrewOpen] = useState(true);
+
+  /** A tracks window ending today, N days long — the three windows people actually ask about. */
+  const tracksPreset = (days: number) => {
+    setTracksFrom(isoDay(-days));
+    setTracksTo(isoDay(0));
+    setShowTracks(true);
+  };
+  const activePreset = tracksTo === isoDay(0)
+    ? [7, 14, 30].find((d) => tracksFrom === isoDay(-d)) ?? null
+    : null;
+
+  /** Drawn layers, counted for the badge on the Layers button so a closed panel still says so. */
+  const layersOn = Number(showAreasLayer) + Number(roadScope !== 'off') + Number(showTracks);
+
+  /**
+   * Denominators come from the SUMMARY, which is project-wide. `version` is only the newest
+   * delivery, and mixing the two printed "335 assigned" beside "134 work areas".
+   */
+  const covered = summary?.coveredMeters || 0;
+  const target = summary?.targetMeters || version.targetMeters;
+  const remaining = Math.max(0, target - covered);
+  const totalAreas = summary?.totalAreas ?? version.counts.areas;
+  const totalLinks = summary?.targetLinks ?? version.counts.links;
+  const completedCount = summary?.completedAreas ?? 0;
+  const assignedCount = summary?.assignedAreas ?? 0;
+  // Completing an area releases its holder, so the two counts do not overlap.
+  const openCount = Math.max(0, totalAreas - completedCount - assignedCount);
+  const donePct = pct(covered, target);
+  const maxCrewMeters = Math.max(1, ...driverViz.legend.map((d) => d.meters));
+
+  /**
+   * One polygon picked = inspect it. This is the card a manager cross-verifies in before signing
+   * the area off: the total, the split by who actually drove it first, and who is holding it now.
+   * It is pinned beside the polygon on the map (see CoverageMap's areaPopup).
+   */
+  // Only the picked area's numbers — never the previous area's for the moment the new one loads.
+  const shownDetail = detail && detail.area._id === singleAreaId ? detail : null;
+  const shownDone = shownDetail?.completion?.status === 'completed';
+  const areaCard = singleAreaId ? (
+    <div className="cov-pop-card">
+      {!shownDetail && !detailError && (
+        <div className="cov-pop-loading"><span className="cov-spinner" /> Loading area…</div>
+      )}
+      {detailError && (
+        <div className="cov-pop-head">
+          <div className="error-text" style={{ flex: 1 }}>{detailError}</div>
+          <button type="button" className="cov-pop-x" aria-label="Close" onClick={() => setSelectedIds([])}>✕</button>
+        </div>
+      )}
+      {shownDetail && (
+        <>
+          <div className="cov-pop-head">
+            <div className="cov-pop-title">
+              <strong>{shownDetail.area.name}</strong>
+              <span>
+                {shownDetail.area.parentName ? `${shownDetail.area.parentName} · ` : ''}
+                P{shownDetail.area.priority} · {shownDetail.area.areaCode}
+              </span>
+            </div>
+            <button type="button" className="cov-pop-x" aria-label="Close" onClick={() => setSelectedIds([])}>✕</button>
+          </div>
+
+          <div className="cov-pop-status">
+            {shownDone ? (
+              <span className="cov-pill green">✓ Completed</span>
+            ) : shownDetail.assignments.length ? (
+              <span className="cov-pill blue">Assigned</span>
+            ) : (
+              <span className="cov-pill gray">Unassigned</span>
+            )}
+            {shownDetail.assignments.length > 0 && (
+              <span className="cov-pop-holder">
+                {shownDetail.assignments.map((a) => a.driverName || 'Unknown').join(', ')}
+              </span>
+            )}
+          </div>
+
+          <div className="cov-pop-progress">
+            <div className="cov-pop-progress-row">
+              <span>Roads driven</span>
+              <b>{shownDetail.pct.toFixed(1)}%</b>
+            </div>
+            <div className="cov-bar">
+              <div className="cov-bar-fill green" style={{ width: `${Math.min(100, shownDetail.pct)}%` }} />
+            </div>
+            <div className="cov-pop-muted">
+              {km(shownDetail.coveredMeters)} of {km(shownDetail.area.targetMeters)} km
+              {shownDetail.assignments.length > 0 &&
+                ` · ${shownDetail.assignedPct.toFixed(1)}% by the current holder`}
+            </div>
+          </div>
+
+          {/* Who got there first, because first-cover-wins is fleet-wide: an area can go green
+              because another crew drove it, and a sign-off must not silently imply the assigned
+              driver did the work. */}
+          {shownDetail.byDriver.length > 0 && (
+            <div className="cov-pop-drivers">
+              {shownDetail.byDriver.slice(0, 4).map((d) => (
+                <div key={d.driverId || 'none'}>
+                  <span
+                    className="cov-crew-dot"
+                    style={{ background: `rgb(${(d.driverId && driverViz.byDriver[d.driverId] || [148, 163, 184]).join(',')})` }}
+                  />
+                  <span className="name">{d.name}</span>
+                  <span className="cov-pop-muted">{km(d.meters)} km · {d.links.toLocaleString()} roads</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {shownDone && shownDetail.completion && (
+            <div className="cov-pop-done">
+              Signed off
+              {shownDetail.completion.completedByName ? ` by ${shownDetail.completion.completedByName}` : ''}
+              {shownDetail.completion.completedAt
+                ? ` · ${new Date(shownDetail.completion.completedAt).toLocaleDateString()}`
+                : ''}
+              {typeof shownDetail.completion.pctAtCompletion === 'number'
+                ? ` · at ${shownDetail.completion.pctAtCompletion.toFixed(1)}%`
+                : ''}
+            </div>
+          )}
+
+          <div className="cov-pop-actions">
+            {canEdit && !shownDone && (
+              <button className="btn" disabled={detailBusy} onClick={() => setCompletion(true)}>
+                ✓ Mark completed
+              </button>
+            )}
+            {canEdit && shownDone && (
+              <button className="btn-ghost" disabled={detailBusy} onClick={() => setCompletion(false)}>
+                Reopen
+              </button>
+            )}
+            {canEdit && !shownDone && (
+              <button
+                className="btn-ghost"
+                onClick={() => {
+                  const row = areas.find((a) => a._id === shownDetail.area._id)
+                    ?? (searchPickRef.current?._id === shownDetail.area._id ? searchPickRef.current : null);
+                  if (row) setAssigning([row]);
+                }}
+              >
+                Assign driver…
+              </button>
+            )}
+            {shownDetail.area.bbox && shownDetail.area.bbox.length === 4 && (
+              <a
+                className="cov-pop-link"
+                href={`https://www.google.com/maps?q=${(
+                  (shownDetail.area.bbox[1] + shownDetail.area.bbox[3]) / 2
+                ).toFixed(5)},${((shownDetail.area.bbox[0] + shownDetail.area.bbox[2]) / 2).toFixed(5)}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Google Maps ↗
+              </a>
+            )}
+          </div>
+
+          <div className="cov-pop-foot">
+            {shownDone
+              ? 'Completed areas cannot be assigned to another driver without an override.'
+              : 'Completing releases the driver and takes these roads off their phone.'}
+          </div>
+        </>
+      )}
+    </div>
+  ) : null;
   return (
     <>
       {version.status !== 'active' && canEdit && (
@@ -617,149 +853,254 @@ function ProgressTab({
         </div>
       )}
 
-      <div className="stat-row">
-        <div className="stat"><div className="v">{km(target)} km</div><div className="k">Target</div></div>
-        <div className="stat"><div className="v">{km(covered)} km</div><div className="k">Covered</div></div>
-        <div className="stat"><div className="v">{pct(covered, target).toFixed(1)}%</div><div className="k">Complete</div></div>
-        <div className="stat"><div className="v">{km(remaining)} km</div><div className="k">Remaining</div></div>
-        <div className="stat">
-          <div className="v" style={{ color: '#059669' }}>{(summary?.completedAreas ?? 0).toLocaleString()}</div>
-          <div className="k">Completed areas</div>
+      {/* The headline is one question — how far along is the programme — so it gets one big
+          number and two bars, not a row of equal-weight tiles. */}
+      <div className="card cov-hero">
+        <div className="cov-hero-main">
+          <div className="cov-eyebrow">Network driven</div>
+          <div className="cov-hero-figure">
+            <span className="cov-hero-pct">{donePct.toFixed(1)}<small>%</small></span>
+            <span className="cov-hero-of">
+              <b>{km(covered)} km</b> of {km(target)} km
+            </span>
+          </div>
+          <div className="cov-meter" role="img" aria-label={`${donePct.toFixed(1)}% of the target network driven`}>
+            <div className="cov-meter-fill" style={{ width: `${Math.min(100, donePct)}%` }} />
+          </div>
+          <div className="cov-hero-foot">
+            <span><b>{km(remaining)} km</b> still to drive</span>
+            <span>{totalLinks.toLocaleString()} road links</span>
+          </div>
         </div>
-        <div className="stat">
-          <div className="v">{(summary?.assignedAreas ?? 0).toLocaleString()}</div>
-          <div className="k">Assigned areas</div>
+
+        <div className="cov-hero-areas">
+          <div className="cov-eyebrow">Work areas · {totalAreas.toLocaleString()}</div>
+          <div className="cov-stack" role="img" aria-label="Work areas by state">
+            <span className="done" style={{ flexGrow: completedCount }} />
+            <span className="held" style={{ flexGrow: assignedCount }} />
+            <span className="open" style={{ flexGrow: openCount }} />
+          </div>
+          <div className="cov-stack-key">
+            <span><i className="done" />{completedCount.toLocaleString()} signed off</span>
+            <span><i className="held" />{assignedCount.toLocaleString()} with a driver</span>
+            <span><i className="open" />{openCount.toLocaleString()} waiting</span>
+          </div>
         </div>
-        <div className="stat"><div className="v">{version.counts.areas.toLocaleString()}</div><div className="k">Work areas</div></div>
-        <div className="stat"><div className="v">{version.counts.links.toLocaleString()}</div><div className="k">Road links</div></div>
+
+        <div className="cov-hero-side">
+          <div className="cov-fact">
+            <span className="v">{coverageDrivers.length.toLocaleString()}</span>
+            <span className="k">drivers with coverage</span>
+          </div>
+          <div className="cov-fact">
+            <span className="v">
+              {showTracks && tracksMeta
+                ? `${tracksMeta.count.toLocaleString()}${tracksMeta.truncated ? '+' : ''}`
+                : '—'}
+            </span>
+            <span className="k">
+              {showTracks ? 'trips on the map' : 'tracks hidden'}
+              {showTracks && tracksMeta && tracksMeta.pendingSnap > 0 && ` · ${tracksMeta.pendingSnap} snapping`}
+            </span>
+          </div>
+        </div>
       </div>
 
-      {/* The map is the view, not a place you navigate to. Everything below is the same data as
-          a table, for the questions a picture cannot answer. */}
+      {/* The map is the view, not a place you navigate to. Every control floats on it, so the
+          fullscreen view is the same tool rather than a stripped-down one. */}
       <div
         ref={mapRef}
-        className="card"
+        className={`card cov-map-card${isFullscreen ? ' is-fullscreen' : ''}`}
         style={{ padding: 0, marginBottom: 16, overflow: 'hidden', position: 'relative' }}
       >
-        <div className="cov-table-head">
-          <div>
-            <h3 className="cov-h3" style={{ margin: 0 }}>Work areas</h3>
-            <p className="cov-sub" style={{ margin: '2px 0 0' }}>
-              {mapMode === 'assignment'
-                ? 'Outline = who holds it (blue assigned · grey unassigned · green completed). Fill = how much is driven, shown once an area’s own roads are hidden.'
-                : "Shaded by the customer's priority band — confirm what P0 means before dispatching against it"}
-              {' · click an area to inspect or assign it'}
-            </p>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-            <AreaSearch scopeId={scopeId} onPick={pickAreaFromSearch} />
-            {/* Two switches, because verifying an area and browsing the programme want opposite
-                things: the polygon fill that makes the overview readable is the same fill that
-                hides the streets a manager is trying to check. */}
-            <label className="cov-check" title="Draw the work-area polygons">
-              <input
-                type="checkbox"
-                checked={showAreasLayer}
-                onChange={(e) => setShowAreasLayer(e.target.checked)}
-              />
-              Areas (polygons)
-            </label>
-            {/* One control for roads, because they are one question asked at three scales. */}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
-              Routes
-              <select
-                className="input"
-                style={{ width: 186, padding: '4px 8px', fontSize: 12.5 }}
-                value={roadScope}
-                onChange={(e) => setRoadScope(e.target.value as typeof roadScope)}
-                title={
-                  'in assigned areas: every road in a held area, complete at any zoom. ' +
-                  'driven anywhere: everything anyone has driven, project-wide. ' +
-                  'in every polygon: all 402 areas, bounded by what is on screen.'
-                }
-              >
-                <option value="off">off</option>
-                <option value="assigned">in assigned areas</option>
-                <option value="covered">driven anywhere</option>
-                <option value="inview">in every polygon (in view)</option>
-              </select>
-            </span>
-            {roadScope !== 'off' && (
-              <label
-                className="cov-check"
-                title="Off: red = to drive, blue = driven. On: driven roads take the colour of whoever drove them."
-              >
-                <input
-                  type="checkbox"
-                  checked={colorRoadsByDriver}
-                  onChange={(e) => setColorRoadsByDriver(e.target.checked)}
-                />
-                colour by driver
-              </label>
+        <div className="cov-map-toolbar">
+          <AreaSearch scopeId={scopeId} onPick={pickAreaFromSearch} />
+
+          <div ref={layersRef} style={{ position: 'relative' }}>
+            <button
+              type="button"
+              className={`cov-map-btn${layersOpen ? ' active' : ''}`}
+              onClick={() => setLayersOpen((o) => !o)}
+              aria-expanded={layersOpen}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                <path d="M8 1.5 1.5 5 8 8.5 14.5 5 8 1.5Z" />
+                <path d="M1.5 8 8 11.5 14.5 8" />
+                <path d="M1.5 11 8 14.5 14.5 11" />
+              </svg>
+              Layers
+              <span className="cov-badge">{layersOn}</span>
+            </button>
+
+            {layersOpen && (
+              <div className="cov-layers-pop">
+                <section>
+                  <header>
+                    <span>Work areas</span>
+                    <Switch checked={showAreasLayer} onChange={setShowAreasLayer} title="Draw the work-area polygons">
+                      <span className="sr-only">Show work areas</span>
+                    </Switch>
+                  </header>
+                  <div className="cov-pop-row">
+                    <span>Shade by</span>
+                    <div className="cov-seg">
+                      <button className={mapMode === 'assignment' ? 'active' : ''} onClick={() => setMapMode('assignment')}>
+                        Progress
+                      </button>
+                      <button className={mapMode === 'priority' ? 'active' : ''} onClick={() => setMapMode('priority')}>
+                        Priority
+                      </button>
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <header><span>Roads</span></header>
+                  {/* One question asked at three scales, so one choice rather than three switches. */}
+                  <div className="cov-radio-list" role="radiogroup" aria-label="Which roads to draw">
+                    {([
+                      ['off', 'None', 'Just the areas and basemap'],
+                      ['assigned', 'In assigned areas', 'Every road a crew holds — red to drive'],
+                      ['covered', 'Everything driven', 'All driven road, project-wide'],
+                      ['inview', 'All roads on screen', 'Whole network, bounded by the view'],
+                    ] as const).map(([value, label, hint]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={roadScope === value}
+                        className={roadScope === value ? 'on' : ''}
+                        onClick={() => setRoadScope(value)}
+                      >
+                        <span className="dot" />
+                        <span>
+                          <b>{label}</b>
+                          <small>{hint}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  {roadScope !== 'off' && (
+                    <div className="cov-pop-row">
+                      <span>Tint driven roads by driver</span>
+                      <Switch checked={colorRoadsByDriver} onChange={setColorRoadsByDriver}>
+                        <span className="sr-only">Tint driven roads by driver</span>
+                      </Switch>
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <header>
+                    <span>Driven tracks</span>
+                    <Switch checked={showTracks} onChange={setShowTracks} title="Snapped routes the fleet actually drove">
+                      <span className="sr-only">Show driven tracks</span>
+                    </Switch>
+                  </header>
+                  <div className="cov-presets">
+                    {[7, 14, 30].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        className={showTracks && activePreset === d ? 'on' : ''}
+                        onClick={() => tracksPreset(d)}
+                      >
+                        Last {d} days
+                      </button>
+                    ))}
+                  </div>
+                  <div className="cov-dates">
+                    <input
+                      type="date"
+                      aria-label="Tracks from"
+                      value={tracksFrom}
+                      max={tracksTo}
+                      onChange={(e) => { setTracksFrom(e.target.value); setShowTracks(true); }}
+                    />
+                    <span>to</span>
+                    <input
+                      type="date"
+                      aria-label="Tracks to"
+                      value={tracksTo}
+                      min={tracksFrom}
+                      onChange={(e) => { setTracksTo(e.target.value); setShowTracks(true); }}
+                    />
+                  </div>
+                </section>
+              </div>
             )}
-            <label className="cov-check" title="Snapped routes the fleet actually drove">
-              <input
-                type="checkbox"
-                checked={showTracks}
-                onChange={(e) => setShowTracks(e.target.checked)}
-              />
-              Driven tracks
-              {showTracks && tracksMeta && (
-                <span style={{ color: 'var(--muted)' }}>
-                  {' '}({tracksMeta.count}
-                  {tracksMeta.truncated ? '+' : ''}
-                  {tracksMeta.pendingSnap > 0 ? ` · ⏳ ${tracksMeta.pendingSnap}` : ''})
-                </span>
-              )}
-            </label>
-            {showTracks && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5 }}>
-                <input
-                  className="input"
-                  type="date"
-                  style={{ width: 140, padding: '4px 8px' }}
-                  value={tracksFrom}
-                  max={tracksTo}
-                  onChange={(e) => setTracksFrom(e.target.value)}
-                />
-                <span style={{ color: 'var(--muted)' }}>→</span>
-                <input
-                  className="input"
-                  type="date"
-                  style={{ width: 140, padding: '4px 8px' }}
-                  value={tracksTo}
-                  min={tracksFrom}
-                  onChange={(e) => setTracksTo(e.target.value)}
-                />
-              </span>
-            )}
-            <div className="cov-tabs" style={{ border: 'none', margin: 0 }}>
-              <button
-                className={mapMode === 'assignment' ? 'active' : ''}
-                onClick={() => setMapMode('assignment')}
-              >
-                Drivers &amp; coverage
-              </button>
-              <button
-                className={mapMode === 'priority' ? 'active' : ''}
-                onClick={() => setMapMode('priority')}
-              >
-                Priority
-              </button>
-            </div>
           </div>
+
+          <button
+            type="button"
+            className="cov-map-btn icon"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}
+            aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              {isFullscreen
+                ? <path d="M6 1v5H1M10 1v5h5M6 15v-5H1M10 15v-5h5" />
+                : <path d="M1 6V1h5M15 6V1h-5M1 10v5h5M15 10v5h-5" />}
+            </svg>
+          </button>
         </div>
+
+        {/* The crew, on the map they are working. Ranked by road driven; the bar is relative to
+            the busiest driver, so a 0 km test account reads as exactly that. */}
+        {driverViz.legend.length > 0 && (
+          crewOpen ? (
+            <div className="cov-crew">
+              <div className="cov-crew-head">
+                <span>Crew <em>{driverViz.legend.length}</em></span>
+                {driverFilter.length > 0 && (
+                  <button type="button" className="cov-link" onClick={() => setDriverFilter([])}>Show all</button>
+                )}
+                <button type="button" className="cov-crew-x" onClick={() => setCrewOpen(false)} aria-label="Hide crew">
+                  –
+                </button>
+              </div>
+              <div className="cov-crew-list">
+                {driverViz.legend.map((d) => {
+                  const on = driverFilter.includes(d.id);
+                  const dim = driverFilter.length > 0 && !on;
+                  const rgb = `rgb(${d.color.join(',')})`;
+                  return (
+                    <button
+                      key={d.id}
+                      type="button"
+                      className={`cov-crew-row${on ? ' on' : ''}${dim ? ' dim' : ''}`}
+                      onClick={() => toggleDriver(d.id)}
+                      aria-pressed={on}
+                      title={on ? 'Stop focusing on this driver' : 'Focus the map on this driver'}
+                    >
+                      <span className="cov-crew-dot" style={{ background: rgb }} />
+                      <span className="cov-crew-name">{d.name}</span>
+                      <span className="cov-crew-km">{km(d.meters)} km</span>
+                      <span className="cov-crew-bar">
+                        <span style={{ width: `${(d.meters / maxCrewMeters) * 100}%`, background: rgb }} />
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <button type="button" className="cov-map-btn cov-crew-pill" onClick={() => setCrewOpen(true)}>
+              Crew <span className="cov-badge">{driverFilter.length || driverViz.legend.length}</span>
+            </button>
+          )
+        )}
         <CoverageMap
           versionId={scopeId}
           mode={mapMode}
-          height={560}
+          height={isFullscreen ? '100vh' : 620}
           focusAreaId={focusAreaId}
           focusNonce={focusNonce}
           selectedIds={selectedIds}
           onToggleSelect={toggleSelect}
           driverColorByArea={driverViz.byArea}
           driverNamesByArea={driverViz.namesByArea}
-          driverLegend={driverViz.legend}
           showAreas={showAreasLayer}
           roadScope={roadScope}
           // Refetch when assignments move or an area is signed off — both change what is drawn.
@@ -773,127 +1114,12 @@ function ProgressTab({
           tracksAreaId={singleAreaId}
           colorRoadsByDriver={colorRoadsByDriver}
           driverColorById={driverViz.byDriver}
+          driverFilter={driverFilter}
+          highlightAreaIds={highlightAreaIds}
           onTracksMeta={onTracksMeta}
+          areaPopupId={singleAreaId}
+          areaPopup={areaCard}
         />
-
-        {/* One polygon picked = inspect it. This is the panel a manager cross-verifies in before
-            signing the area off: the total, the split by who actually drove it first, and who is
-            holding it now. */}
-        {singleAreaId && (
-          <div className="cov-area-panel">
-            {detailBusy && !detail && <div className="cov-sub">Loading…</div>}
-            {detailError && <div className="error-text">{detailError}</div>}
-            {detail && (
-              <>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                  <div style={{ flex: 1 }}>
-                    <strong style={{ fontSize: 14 }}>{detail.area.name}</strong>
-                    <div className="cov-sub" style={{ margin: '2px 0 0' }}>
-                      {detail.area.parentName ? `${detail.area.parentName} · ` : ''}
-                      P{detail.area.priority} · {detail.area.areaCode}
-                    </div>
-                  </div>
-                  <button className="btn-ghost" style={{ padding: '2px 8px' }} onClick={() => setSelectedIds([])}>✕</button>
-                </div>
-
-                <div style={{ marginTop: 8, fontSize: 13 }}>
-                  {detail.assignments.length ? (
-                    <span>
-                      Assigned to{' '}
-                      <b>{detail.assignments.map((a) => a.driverName || 'Unknown').join(', ')}</b>
-                    </span>
-                  ) : (
-                    <span style={{ color: 'var(--muted)' }}>Unassigned</span>
-                  )}
-                </div>
-
-                <div style={{ marginTop: 8, fontSize: 13 }}>
-                  <div>
-                    Roads driven: <b>{detail.pct.toFixed(1)}%</b>
-                    <span style={{ color: 'var(--muted)' }}>
-                      {' '}— {km(detail.coveredMeters)} of {km(detail.area.targetMeters)} km
-                    </span>
-                  </div>
-                  {detail.assignments.length > 0 && (
-                    <div style={{ color: 'var(--muted)' }}>
-                      By the current holder: {detail.assignedPct.toFixed(1)}% — {km(detail.assignedMeters)} km
-                    </div>
-                  )}
-                </div>
-
-                {/* Who got there first, because first-cover-wins is fleet-wide: an area can go
-                    green because another crew drove it, and a sign-off must not silently imply
-                    the assigned driver did the work. */}
-                {detail.byDriver.length > 0 && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
-                    {detail.byDriver.slice(0, 4).map((d) => (
-                      <div key={d.driverId || 'none'}>
-                        {d.name}: {km(d.meters)} km · {d.links.toLocaleString()} roads
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {detail.completion?.status === 'completed' && (
-                  <div style={{ marginTop: 8, fontSize: 12.5, color: '#047857' }}>
-                    <b>✓ Completed</b>
-                    {detail.completion.completedByName ? ` by ${detail.completion.completedByName}` : ''}
-                    {detail.completion.completedAt
-                      ? ` · ${new Date(detail.completion.completedAt).toLocaleDateString()}`
-                      : ''}
-                    {typeof detail.completion.pctAtCompletion === 'number'
-                      ? ` · at ${detail.completion.pctAtCompletion.toFixed(1)}%`
-                      : ''}
-                  </div>
-                )}
-
-                <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-                  {canEdit && detail.completion?.status !== 'completed' && (
-                    <button className="btn" disabled={detailBusy} onClick={() => setCompletion(true)}>
-                      ✓ Mark completed
-                    </button>
-                  )}
-                  {canEdit && detail.completion?.status === 'completed' && (
-                    <button className="btn-ghost" disabled={detailBusy} onClick={() => setCompletion(false)}>
-                      Reopen
-                    </button>
-                  )}
-                  {canEdit && detail.completion?.status !== 'completed' && (
-                    <button
-                      className="btn-ghost"
-                      onClick={() => {
-                        const row = areas.find((a) => a._id === detail.area._id)
-                          ?? (searchPickRef.current?._id === detail.area._id ? searchPickRef.current : null);
-                        if (row) setAssigning([row]);
-                      }}
-                    >
-                      Assign driver…
-                    </button>
-                  )}
-                  {detail.area.bbox && detail.area.bbox.length === 4 && (
-                    <a
-                      className="btn-ghost"
-                      style={{ textDecoration: 'none', lineHeight: '30px' }}
-                      href={`https://www.google.com/maps?q=${(
-                        (detail.area.bbox[1] + detail.area.bbox[3]) / 2
-                      ).toFixed(5)},${((detail.area.bbox[0] + detail.area.bbox[2]) / 2).toFixed(5)}`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open in Google Maps ↗
-                    </a>
-                  )}
-                </div>
-
-                <div className="cov-sub" style={{ margin: '8px 0 0' }}>
-                  {detail.completion?.status === 'completed'
-                    ? 'Completed areas cannot be assigned to another driver without an override.'
-                    : 'Completing releases the driver and takes these roads off their phone.'}
-                </div>
-              </>
-            )}
-          </div>
-        )}
 
         {selectedIds.length > 1 && (
           <div className="cov-selection-bar">

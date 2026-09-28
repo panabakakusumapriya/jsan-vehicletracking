@@ -22,7 +22,13 @@ export interface Map3DHandle {
   /** Smooth camera follow that rotates the map to face the driving direction. */
   driveTo(center: [number, number], bearing: number): void;
   /** Frame a [west, south, east, north] extent -- used to jump to a work area. */
-  fitBounds(bbox: [number, number, number, number], maxZoom?: number): void;
+  fitBounds(
+    bbox: [number, number, number, number],
+    maxZoom?: number,
+    padding?: number | { top: number; bottom: number; left: number; right: number }
+  ): void;
+  /** Screen pixels, relative to the map container, of a [lon, lat]. Null before the map exists. */
+  project(lngLat: [number, number]): [number, number] | null;
 }
 
 interface Map3DProps {
@@ -39,10 +45,13 @@ interface Map3DProps {
    *  The coverage map loads road links per viewport off this -- 654k links can
    *  never all be on screen, so what is drawn is decided by where you are. */
   onMoveEnd?: (bbox: [number, number, number, number], zoom: number) => void;
+  /** Fires on EVERY camera frame and on resize. For repositioning DOM that is pinned to a place
+   *  on the map — keep it cheap, never fetch from it. */
+  onMove?: () => void;
 }
 
 export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
-  { center, zoom = 14, layers, onClick, getTooltip, pitch = DEFAULT_PITCH, onMoveEnd },
+  { center, zoom = 14, layers, onClick, getTooltip, pitch = DEFAULT_PITCH, onMoveEnd, onMove },
   ref
 ) {
   // Read through refs inside the map effect and the imperative handle: both run once, so a
@@ -51,6 +60,8 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
   pitchRef.current = pitch;
   const moveEndRef = useRef(onMoveEnd);
   moveEndRef.current = onMoveEnd;
+  const moveRef = useRef(onMove);
+  moveRef.current = onMove;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MaplibreMap | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
@@ -94,6 +105,9 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
     };
     map.on('moveend', handleMoveEnd);
     map.once('load', handleMoveEnd);
+    const handleMove = () => moveRef.current?.();
+    map.on('move', handleMove);
+    map.on('resize', handleMove);
 
     const overlay = new MapboxOverlay({ interleaved: true, layers, onClick, getTooltip });
     map.addControl(overlay);
@@ -117,6 +131,8 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
       cancelAnimationFrame(frame);
       map.off('error', handleError);
       map.off('moveend', handleMoveEnd);
+      map.off('move', handleMove);
+      map.off('resize', handleMove);
       map.remove();
       mapRef.current = null;
       overlayRef.current = null;
@@ -174,7 +190,7 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
           { padding: 60, maxZoom: 17, pitch: pitchRef.current, duration: 800 }
         );
       },
-      fitBounds(bbox, maxZoom = 15) {
+      fitBounds(bbox, maxZoom = 15, padding = 48) {
         const map = mapRef.current;
         if (!map) return;
         const [w, s, e, n] = bbox;
@@ -184,8 +200,14 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
             [w, s],
             [e, n],
           ],
-          { padding: 48, maxZoom, pitch: pitchRef.current, duration: 700 }
+          { padding, maxZoom, pitch: pitchRef.current, duration: 700 }
         );
+      },
+      project(lngLat) {
+        const map = mapRef.current;
+        if (!map) return null;
+        const p = map.project(lngLat);
+        return [p.x, p.y];
       },
     }),
     []
