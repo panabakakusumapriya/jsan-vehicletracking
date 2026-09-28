@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60">
+  <title>JSAN</title>
+  <rect width="60" height="60" rx="8" fill="#fff"/>
+  <g fill="#096088">
+    <path d="M6 6h48v11H17v37H6z"/>
+    <path d="M43 27h11v27H27V43h16z"/>
+  </g>
+</svg>

@@ -58,7 +58,7 @@ export function DriverLayout() {
       <aside className="sidebar">
         <div className="sidebar-top">
           <div className="brand">
-            <div className="brand-logo"><img src="/brand/logo.png" alt="JSAN" /></div>
+            <div className="brand-logo"><img src="/brand/footer-logo.png" alt="JSAN" /></div>
             <div className="brand-product">ATLAS <span>OPS</span></div>
           </div>
           <button className="hamburger" onClick={toggleFromSidebar} aria-label={rail ? 'Expand' : 'Collapse'}>

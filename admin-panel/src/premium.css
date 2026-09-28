@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap');
 /* Shared visual system for the admin panel, driver portal and sign-in screen.
    Brand colors matched to https://www.jsanconsulting.com/:
    primary #0050a9, deep blue #012f62, cyan #00d4ff, navy #05132b. */
@@ -35,8 +36,20 @@ button, input, select, textarea { font: inherit; }
 button, a, input, select, textarea, summary { -webkit-tap-highlight-color: transparent; }
 :where(button, a, input, select, textarea, summary):focus-visible { outline: 3px solid var(--brand); outline-offset: 3px; }
 .content { min-width: 0; background: radial-gradient(ellipse at 95% 0%, #e8f4fc80, transparent 45%), var(--bg); }
-.sidebar { background: linear-gradient(165deg, #012f62, #05132b 65%); border-right: 1px solid #1b497b; }
-.sidebar::before { background: radial-gradient(circle, #0050a926, transparent 70%); }
+/* ---- Sidebar: the jsanconsulting.com menu panel ----
+   White ground, Open Sans, gray-700 items that turn JSAN blue on a blue-50 pill, and the site's
+   2px blue-cyan-blue rule along the top edge. Colours and timings are taken from the site's own
+   stylesheet so the product and the website read as one. */
+.sidebar {
+  background: #ffffff;
+  border-right: 1px solid #e4e9f2;
+  box-shadow: 10px 0 28px -22px rgba(1,47,98,0.45);
+  font-family: 'Open Sans', system-ui, -apple-system, sans-serif;
+}
+.sidebar::before {
+  top: 0; right: 0; left: 0; width: auto; height: 2px; border-radius: 0;
+  background: linear-gradient(90deg, #0050a9, #00d4ff, #0050a9);
+}
 .sidebar-top { padding-top: 24px; padding-bottom: 24px; align-items: center; }
 .sidebar .brand { justify-content: center; min-width: 0; }
 .sidebar .brand-logo {
@@ -45,47 +58,47 @@ button, a, input, select, textarea, summary { -webkit-tap-highlight-color: trans
 }
 .sidebar .brand-logo img {
   width: 126px; max-width: 100%; height: auto;
-  filter: brightness(0) invert(1);
+  filter: none;
 }
-.sidebar-top .hamburger { background: #ffffff08; border-color: #ffffff1a; }
-.sidebar-top .hamburger:hover { background: #ffffff18; border-color: #ffffff40; }
+.sidebar-top .hamburger { background: #ffffff; color: #374151; border-color: #e4e9f2; }
+.sidebar-top .hamburger:hover { background: #eff6ff; color: #0050a9; border-color: #cbd4e3; }
 .brand-name { font-size: 11px; letter-spacing: 1.5px; margin-top: 2px; }
 .brand-name span { color: #00d4ff; letter-spacing: .5px; }
 .sidebar nav { gap: 4px; }
-.nav-section-label { color: #8495ae; font-weight: 600; letter-spacing: 1.7px; padding: 16px 12px 7px; }
-.sidebar nav a { font-size: 12px; padding: 10px 12px; border: 1px solid transparent; border-radius: 10px; gap: 11px; }
-.sidebar nav a svg { opacity: .85; }
-.sidebar nav a.active { background: linear-gradient(110deg, #0050a940, #00d4ff20); border-color: #8796c12e; box-shadow: inset 0 1px #ffffff08; }
-.sidebar nav a.active::before { background: #00d4ff; width: 2px; top: 11px; bottom: 11px; }
-.sidebar nav a:hover { border-color: #ffffff12; }
-.sidebar-foot { background: #05132b40; }
+.nav-section-label { color: #00b4d8; font-size: 11px; font-weight: 700; letter-spacing: 0.25em; padding: 16px 12px 7px; }
+.sidebar nav a { font-size: 14px; line-height: 20px; font-weight: 500; color: #374151; padding: 10px 12px; border: 0; border-radius: 8px; gap: 11px; }
+.sidebar nav a svg { opacity: 1; color: #6b7280; }
+.sidebar nav a.active { background: #eff6ff; color: #0050a9; box-shadow: none; }
+.sidebar nav a.active::before { display: none; }
+.sidebar-foot { background: #ffffff; border-top-color: #e4e9f2; }
 /* Keep footer icon buttons legible against the dark sidebar in every state.
    Direct-child selectors exclude the notification popover's light action buttons. */
 .sidebar-foot > .btn-ghost,
 .sidebar-foot > .alerts-bell > .btn-ghost {
-  color: #e8effb;
-  background: #153a62;
-  border-color: #1b497b;
+  color: #0050a9;
+  background: #ffffff;
+  border-color: #e4e9f2;
   min-width: 36px;
   min-height: 36px;
   justify-content: center;
 }
 .sidebar-foot > .btn-ghost:hover,
 .sidebar-foot > .alerts-bell > .btn-ghost:hover {
-  color: #fff;
-  background: #1b497b;
+  color: #012f62;
+  background: #eff6ff;
   border-color: #7db8e8;
 }
 .sidebar-foot > .btn-ghost:focus-visible,
 .sidebar-foot > .alerts-bell > .btn-ghost:focus-visible {
-  outline-color: #00d4ff;
+  outline-color: #0050a9;
 }
 .sidebar-foot > .btn-ghost svg,
 .sidebar-foot > .alerts-bell > .btn-ghost svg { opacity: 1; }
 .sidebar-foot .alerts-pop .btn-ghost { color: var(--text-2); border-color: var(--line-2); }
 .sidebar-foot .alerts-pop .btn-ghost:hover { color: var(--text); background: var(--brand-light); }
 .avatar { border-radius: 11px; background: linear-gradient(145deg, #0050a9, #0050a9); }
-.who-role { color: #b8eaff; background: #0050a929; border-color: #00d4ff3b; }
+.who-name { color: #19243b; }
+.who-role { color: #0050a9; background: #eff6ff; border-color: #cfe0f5; }
 .hamburger { border-radius: 10px; }
 .page-head { gap: 18px; padding: 19px 22px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(115deg, #fff, #f9faff); box-shadow: var(--shadow-sm); flex-wrap: wrap; margin-bottom: 20px; }
 .page-head > div { min-width: 0; }
@@ -195,7 +208,7 @@ summary { color: var(--text-2); }
 
 /* JSAN website accents: cyan provides emphasis on dark surfaces. */
 .sidebar nav a.active::before { background: var(--brand-cyan); }
-.sidebar nav a.active svg { color: var(--brand-cyan); }
+.sidebar nav a.active svg { color: #0050a9; }
 .brand-name span, .login-brand-name span { color: var(--brand-cyan); }
 .page-emblem { color: var(--brand); background: var(--brand-light); }
 .page-emblem--map, .page-emblem--coverage, .page-emblem--vehicle,
@@ -215,31 +228,32 @@ summary { color: var(--text-2); }
 .brand-product {
   width: 126px; max-width: 100%; text-align: center;
   font-size: 17px; line-height: 1.25; font-weight: 800;
-  letter-spacing: 1px; color: #ffffff; white-space: nowrap;
+  letter-spacing: 1px; color: #012f62; white-space: nowrap;
 }
-.brand-product span { color: var(--brand-cyan); font-weight: 800; }
+.brand-product span { color: #00b4d8; font-weight: 800; }
 
 
 /* ---- Sidebar tabs: underline sweep + chevron on hover, held on the current page ----
    The label gets a blue-to-cyan underline that grows from the left, and a cyan chevron slides in
    at the right edge. The current page keeps both, which replaces the old left bar. The icon-only
    rail has no label to underline, so it keeps the plain treatment. */
-.sidebar nav a { transition: background .18s, color .18s, border-color .18s; }
-.sidebar nav a:hover { background: #ffffff0f; color: #fff; }
+.sidebar nav a { transition: background .2s, color .2s; }
+.sidebar nav a:hover { background: #eff6ff; color: #0050a9; }
+.sidebar nav a:hover svg { color: #0050a9; }
 .sidebar nav a .nav-label {
   padding-bottom: 3px;
-  background: linear-gradient(90deg, #4a9ff5, var(--brand-cyan)) no-repeat left bottom / 0% 2px;
-  transition: background-size .28s ease;
+  background: linear-gradient(90deg, #0050a9, #00d4ff) no-repeat left bottom / 0% 2px;
+  transition: background-size .3s ease;
 }
 .sidebar nav a:hover .nav-label,
 .sidebar nav a.active .nav-label { background-size: 100% 2px; }
-.sidebar nav a.active { color: #fff; }
+.sidebar nav a.active { color: #0050a9; }
 .sidebar nav a::after {
   content: '';
   margin-left: auto; flex-shrink: 0;
   width: 6px; height: 6px;
-  border-top: 2px solid var(--brand-cyan);
-  border-right: 2px solid var(--brand-cyan);
+  border-top: 2px solid #00d4ff;
+  border-right: 2px solid #00d4ff;
   border-radius: 1px;
   opacity: 0;
   transform: translateX(-6px) rotate(45deg);
