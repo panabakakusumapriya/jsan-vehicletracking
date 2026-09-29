@@ -6,11 +6,6 @@ const { signToken } = require('../utils/jwt');
 const { isValidTimeZone } = require('../utils/timezone');
 const asyncHandler = require('../utils/asyncHandler');
 
-// A driver session is considered dead once no authed request has arrived for this long,
-// which frees the account if the app was killed without logging out. The tracker pushes
-// location every ~10s, so an active session stays well within this window.
-const SESSION_IDLE_MS = 2 * 60 * 1000;
-
 // Attach the driver's project-level mobile app permissions to the user object
 async function attachEnabledModules(userData) {
   if (userData.role === 'user' && userData.projectIds?.length) {
@@ -48,20 +43,20 @@ exports.login = asyncHandler(async (req, res) => {
   const ok = await user.verifyPassword(password);
   if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
-  // Single active session for drivers: reject a second concurrent login.
   if (user.role === 'user') {
-    const lastSeen = user.sessionLastSeenAt ? user.sessionLastSeenAt.getTime() : 0;
-    const sessionAlive = user.activeSessionId && (Date.now() - lastSeen) < SESSION_IDLE_MS;
-    if (sessionAlive) {
-      return res.status(409).json({
-        error: 'ALREADY_LOGGED_IN',
-        message: 'This account is already logged in on another device. Log out there first.',
-      });
-    }
-    // Claim the session — this new token becomes the only valid one for this user.
+    /**
+     * A driver account may be signed in on any number of phones at once.
+     *
+     * It used to be locked to one: a second login was refused with ALREADY_LOGGED_IN while the
+     * first phone had been active in the last two minutes, and every older token was rejected
+     * as SESSION_SUPERSEDED. That stranded crews who share a login or swap handsets mid-shift.
+     * Each login now gets its own token and none of them cancels another; a lost phone is still
+     * cut off by deactivating the account. Clearing activeSessionId also retires the lock for
+     * accounts that claimed a session before this change.
+     */
     const sessionId = crypto.randomUUID();
-    user.activeSessionId = sessionId;
-    user.sessionLastSeenAt = new Date();
+    user.activeSessionId = null;
+    user.sessionLastSeenAt = null;
     user.lastLoginAt = new Date();
     await user.save();
     // Log sign-in activity
@@ -80,7 +75,7 @@ exports.login = asyncHandler(async (req, res) => {
   return res.json({ token: signToken(user), user: user.toSafeJSON() });
 });
 
-// POST /api/auth/logout — clears the active session so the driver can sign in again.
+// POST /api/auth/logout — records the sign-out. Other phones on the same account stay signed in.
 exports.logout = asyncHandler(async (req, res) => {
   if (req.user) {
     // Log sign-out activity

@@ -73,13 +73,23 @@ function assert(cond, msg) {
   const adminLoginDays = Math.round((adminLoginDecoded.exp - adminLoginDecoded.iat) / DAY);
   assert(adminLogin.status === 200 && adminLoginDays === 30, 'a real admin login still issues a 30-day token');
 
-  console.log('\n── the long-lived driver token still respects the single-session lock ──');
+  console.log('\n── one driver account, signed in on two phones at once ──');
   const meOk = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${driverLogin.body.token}`);
   assert(meOk.status === 200, 'a fresh driver token authenticates fine');
 
-  // A second login from the "same" account (simulating another device) supersedes the first.
+  // A second login from the same account (another device) is allowed, and does not sign the
+  // first device out.
   const secondLogin = await request(app).post('/api/auth/login').send({ email: 'driver@x.com', password: 'pw123456' });
-  assert(secondLogin.status === 409, 'a concurrent second driver login is still rejected as ALREADY_LOGGED_IN — the longer expiry did not weaken this');
+  assert(secondLogin.status === 200 && Boolean(secondLogin.body.token), 'a second concurrent driver login is accepted');
+  const meFirst = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${driverLogin.body.token}`);
+  const meSecond = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${secondLogin.body.token}`);
+  assert(meFirst.status === 200, 'the first phone stays signed in after the second login');
+  assert(meSecond.status === 200, 'the second phone is signed in too');
+
+  // Signing out on one phone leaves the other working.
+  await request(app).post('/api/auth/logout').set('Authorization', `Bearer ${secondLogin.body.token}`);
+  const meAfterLogout = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${driverLogin.body.token}`);
+  assert(meAfterLogout.status === 200, 'logging out on one phone does not sign the other out');
 
   console.log(`\n🎉 TOKEN EXPIRY — ${passed} assertions passed`);
   await mongoose.disconnect();

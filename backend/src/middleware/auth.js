@@ -11,22 +11,8 @@ async function authenticate(req, res, next) {
     const user = await User.findById(payload.sub);
     if (!user || !user.active) return res.status(401).json({ error: 'Invalid or inactive user' });
 
-    // Single-session enforcement: once a user has claimed a session, only the token bound
-    // to that session (matching jti) is accepted. Superseded/old tokens are rejected.
-    if (user.activeSessionId && payload.jti !== user.activeSessionId) {
-      return res.status(401).json({
-        error: 'SESSION_SUPERSEDED',
-        message: 'This account was signed in on another device.',
-      });
-    }
-
-    // Keep the session alive (throttled to avoid a write per request).
-    if (user.activeSessionId) {
-      const last = user.sessionLastSeenAt ? user.sessionLastSeenAt.getTime() : 0;
-      if (Date.now() - last > 20000) {
-        User.updateOne({ _id: user._id }, { $set: { sessionLastSeenAt: new Date() } }).catch(() => {});
-      }
-    }
+    // No single-session check: a driver may be signed in on several phones at once, and a
+    // new login must not invalidate the others. See auth.controller.js login.
 
     req.user = user;
     return next();
