@@ -53,7 +53,10 @@ exports.driving = asyncHandler(async (req, res) => {
  */
 exports.tripHistory = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
-  const filter = { ...scope, status: { $in: ['ended', 'timed_out'] } };
+  // Parked-GPS-jitter sessions excluded (services/tripNoise.js): this list carries each trip's
+  // distance and max speed, and a session where the vehicle never moved would contribute hard
+  // numbers to it while being no drive at all.
+  const filter = { ...scope, status: { $in: ['ended', 'timed_out'] }, parkedJitter: { $ne: true } };
   if (req.query.driverId) filter.driverId = req.query.driverId;
   if (req.query.from || req.query.to) {
     filter.startedAt = {};

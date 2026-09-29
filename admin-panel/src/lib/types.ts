@@ -316,6 +316,15 @@ export interface Trip {
   cleanedDistanceMeters?: number | null;
   cleanedRouteShapes?: string[] | null;
   mapMatchStatus?: MapMatchStatus;
+  // Parked GPS jitter: a closed session that never left one spot — net displacement and spread
+  // both tiny — while the handset's fixes wandered. Not a drive, so it is excluded from coverage
+  // attribution and from every report; the fields below say why so a detail page can explain
+  // itself. See backend services/tripNoise.js.
+  parkedJitter?: boolean | null;
+  /** Net displacement, first fix to last, in metres. */
+  parkedJitterMeters?: number | null;
+  /** Largest distance between any two fixes, in metres. */
+  parkedJitterSpreadMeters?: number | null;
   /**
    * Set only on trips created by a bulk import of historical covered-road data. Such a trip has a
    * real cleaned distance but no GPS and no route to replay — see the backend's
@@ -345,7 +354,9 @@ export interface Trip {
   coverageCycleId?: string | null;
   // 'pending' means not established yet, which is NOT 'computed' with a value of 0. A trip that
   // covered no new road and a trip nobody has measured must never render the same way.
-  ukmStatus?: 'pending' | 'computed' | 'review' | 'failed';
+  // 'skipped' is the FINAL verdict for a session that was not a drive at all — parked GPS jitter
+  // (trip.parkedJitter). Its figures stay null for the same reason: nothing was established.
+  ukmStatus?: 'pending' | 'computed' | 'review' | 'failed' | 'skipped';
   // Road covered by this trip once same-trip repeats are removed.
   distinctRoadMeters?: number | null;
   // Real distance re-driven inside this trip: cleaned distance minus the distinct figure.
@@ -379,7 +390,9 @@ export interface Trip {
   linkCoveredCount?: number | null;
   /** Positions in the cleaned route. Real coordinates; not GPS fixes. See Trip.cleanedPointCount. */
   cleanedPointCount?: number | null;
-  linkCoverageStatus?: 'pending' | 'computed' | 'review' | 'no_network' | 'failed';
+  // 'skipped' = not a drive (parked GPS jitter), so there is nothing to measure against the
+  // network — a final verdict, not a pending one.
+  linkCoverageStatus?: 'pending' | 'computed' | 'review' | 'no_network' | 'failed' | 'skipped';
   linkCoverageComputedAt?: string | null;
   // Which UKM the driver is measured on, and that figure — the one every surface should show.
   ukmBasis?: 'assigned' | 'global' | null;

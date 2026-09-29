@@ -2,6 +2,7 @@ const Trip = require('../models/Trip');
 const AppActivity = require('../models/AppActivity');
 const env = require('../config/env');
 const { computeTripUkm } = require('./ukmCompute');
+const { classifyTrip } = require('./tripNoise');
 
 /**
  * Close active trips whose driver has genuinely gone away.
@@ -92,9 +93,12 @@ async function closeDeadTrips(extraFilter = {}) {
     { $set: { status: 'timed_out', endedAt: new Date() } }
   );
 
-  // Fire-and-forget UKM computation for each closed trip.
+  // Fire-and-forget UKM computation for each closed trip, and the parked-jitter verdict with it:
+  // this close path is the one a long-forgotten parked session takes (app killed mid-session), so
+  // the verdict has to be made here — the matcher only ever sees trips that reach it.
   for (const t of toClose) {
     computeTripUkm(t._id, t.driverId).catch(() => {});
+    classifyTrip(t._id).catch(() => {});
   }
 
   return res.modifiedCount || 0;
@@ -122,9 +126,11 @@ async function closeOverlongTrips() {
     { _id: { $in: overlong.map((t) => t._id) } },
     { $set: { status: 'completed', endedAt: new Date() } }
   );
-  // Fire-and-forget UKM computation, same as the dead-trip close.
+  // Fire-and-forget UKM computation, same as the dead-trip close, plus the parked-jitter verdict —
+  // an overnight session left reporting at a parking spot is exactly the shape this catches.
   for (const t of overlong) {
     computeTripUkm(t._id, t.driverId).catch(() => {});
+    classifyTrip(t._id).catch(() => {});
   }
   return res.modifiedCount || 0;
 }

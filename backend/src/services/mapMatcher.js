@@ -5,6 +5,7 @@ const { matchTrace } = require('./valhalla');
 const { recomputeDriverUkm } = require('./roadSegments');
 const { attributeTrip, computeTripMetrics } = require('./globalUkm');
 const { attributeTripLinks } = require('./linkCoverage');
+const { featuresFromPoints, verdictFields } = require('./tripNoise');
 
 /**
  * Background worker: snaps each completed trip's raw GPS trace onto the road network via
@@ -42,17 +43,47 @@ async function processTrip(tripId) {
   if (!trip) return null; // someone else claimed it, or it moved on already
 
   try {
-    if ((trip.distanceMeters || 0) < env.MAP_MATCH_MIN_DISTANCE_METERS) {
-      await Trip.updateOne({ _id: trip._id }, { $set: { mapMatchStatus: 'skipped' } });
-      return 'skipped';
-    }
-
     // `accuracy` is what tells Valhalla how far each fix is allowed to be wrong. Without it
     // every point was presented as equally trustworthy and the matcher snapped 40 m-error fixes
     // to whatever road happened to be nearest them — see traceRoute() in services/valhalla.js.
+    //
+    // Fetched BEFORE the distance gate below, because the parked-jitter verdict is made from these
+    // points and that gate cannot see the difference: GPS drift accumulates into real "distance",
+    // so the sessions that most need skipping are the ones that would sail through it.
     const points = await LocationPoint.find({ tripId: trip._id })
       .sort({ recordedAt: 1 })
       .select('lat lon recordedAt accuracy');
+
+    // Parked-GPS jitter: the app reporting while the vehicle sat still. Skipping here does two
+    // things at once — saves the Valhalla call, and keeps the trip from ever claiming coverage it
+    // never drove. See services/tripNoise.js for the rule and why both clauses are load-bearing.
+    const verdict = verdictFields(featuresFromPoints(points));
+    if (verdict && verdict.parkedJitter) {
+      await Trip.updateOne(
+        { _id: trip._id },
+        {
+          $set: {
+            ...verdict,
+            mapMatchStatus: 'skipped',
+            // Final verdicts, not a pending state — there is nothing here to measure, ever. The
+            // attribution engines never see this trip, so this is the only place these get set.
+            ukmStatus: 'skipped',
+            linkCoverageStatus: 'skipped',
+          },
+        }
+      );
+      return 'skipped';
+    }
+
+    if ((trip.distanceMeters || 0) < env.MAP_MATCH_MIN_DISTANCE_METERS) {
+      // The verdict (when there is one — 0-1 valid fixes can't produce it) rides along, so even a
+      // too-short trip carries the evidence of why it was skipped.
+      await Trip.updateOne(
+        { _id: trip._id },
+        { $set: { ...(verdict || {}), mapMatchStatus: 'skipped' } }
+      );
+      return 'skipped';
+    }
 
     if (points.length < 2) {
       await Trip.updateOne({ _id: trip._id }, { $set: { mapMatchStatus: 'skipped' } });
@@ -75,6 +106,9 @@ async function processTrip(tripId) {
           mapMatchStatus: 'matched',
           mapMatchedAt: new Date(),
           mapMatchError: null,
+          // The parked-jitter verdict rides along: this trip is a deliberate "not jitter", which is
+          // a different fact from the schema default's "never asked". See services/tripNoise.js.
+          ...(verdict || {}),
         },
       }
     );

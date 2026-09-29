@@ -73,6 +73,10 @@ function createApp() {
         // assigned against another. Sibling of versionIndependentAssignments, which fixed the
         // same class of stranding WITHIN one delivery.
         liveNetworkVersions: true,
+        // A closed session that never left one spot (parked GPS jitter) is classified as not-a-
+        // drive, excluded from coverage attribution and from every report, and answers 'skipped'.
+        // See services/tripNoise.js.
+        parkedJitter: true,
       },
     })
   );

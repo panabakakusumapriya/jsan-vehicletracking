@@ -171,7 +171,7 @@ async function recomputeDriverUkm(driverId) {
     driverId,
     status: { $in: ['completed', 'timed_out'] },
   })
-    .select('_id startedAt cleanedRouteShapes')
+    .select('_id startedAt cleanedRouteShapes parkedJitter')
     .sort({ startedAt: 1, _id: 1 }) // _id breaks ties so the order is total, not just partial
     .lean();
 
@@ -180,6 +180,29 @@ async function recomputeDriverUkm(driverId) {
   const ops = [];
 
   for (const trip of trips) {
+    // A parked-GPS-jitter session is not a drive: it claims no road, and it must not MUTE any
+    // either — which is why this `continue` comes before `seen` is touched. A parked session
+    // recorded in the same car park a later real trip also drives must not make that street read
+    // as "already covered by me". Its figures are cleared rather than left at whatever an earlier
+    // build computed for it. See services/tripNoise.js.
+    if (trip.parkedJitter) {
+      ops.push({
+        updateOne: {
+          filter: { _id: trip._id },
+          update: {
+            $set: { ukmMeters: null, ukmWithinTripMeters: null, ukmComputedAt: now },
+            $unset: {
+              ukmNewShapes: 1,
+              uniqueRoadMeters: 1,
+              selfUniqueRoadMeters: 1,
+              uniqueRoadComputedAt: 1,
+            },
+          },
+        },
+      });
+      continue;
+    }
+
     if (!trip.cleanedRouteShapes || !trip.cleanedRouteShapes.length) continue;
 
     const { withinTrip, newKeys, newShapes } = analyseTrip(trip.cleanedRouteShapes, seen);

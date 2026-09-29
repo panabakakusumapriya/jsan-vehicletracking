@@ -145,6 +145,23 @@ module.exports = {
   // Trips shorter than this (parked/GPS-blip sessions) are marked "skipped" rather than
   // spending a Valhalla call on a trace with nothing meaningful to snap.
   MAP_MATCH_MIN_DISTANCE_METERS: parseInt(process.env.MAP_MATCH_MIN_DISTANCE_METERS || '30', 10),
+
+  // ---- Parked-GPS jitter: phantom "trips" the vehicle never drove ----
+  // The app keeps reporting while the vehicle sits still, so a parking spot produces "trips" made
+  // of a few hundred metres of GPS drift. Left alone they inflate trip counts, wreck averages (one
+  // teleported fix read as 107 km/h) and CLAIM COVERAGE for road nobody drove. A closed trip is
+  // parked noise when its first and last fix are within NET_MAX of each other AND no two fixes
+  // anywhere are further apart than SPREAD_MAX. Both clauses are load-bearing — net alone would
+  // delete a real out-and-back drive that returned near its start, spread alone would delete a
+  // genuine 169 m reposition inside a car park. Calibrated against production data on 2026-09-29:
+  // 14/14 parked sessions of the ground-truth day caught, 0/5 real trips excluded, and fleet-wide
+  // the flag lands on 15% of trips but 0.2% of the distance. These values ARE the business
+  // contract, not tuning knobs — see services/tripNoise.js for the full reasoning before changing
+  // one.
+  PARKED_JITTER_ENABLED: (process.env.PARKED_JITTER_ENABLED || 'true').toLowerCase() !== 'false',
+  PARKED_JITTER_NET_MAX_METERS: parseInt(process.env.PARKED_JITTER_NET_MAX_METERS || '150', 10),
+  PARKED_JITTER_SPREAD_MAX_METERS: parseInt(process.env.PARKED_JITTER_SPREAD_MAX_METERS || '400', 10),
+
   // Gap-filling (routing between two points across a signal dropout, via Valhalla's /route) is
   // implemented but OFF by default — it fabricates road geometry for a stretch nothing actually
   // observed, which is a bigger judgment call than snapping an existing trace onto the road.

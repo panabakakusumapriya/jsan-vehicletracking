@@ -120,9 +120,11 @@ const tripSchema = new mongoose.Schema(
     // pending  - not established yet. NOT the same as zero, and must never be rendered as one:
     //            0 means "processed, and none of it was new", null means "we do not know".
     // failed   - the map match failed, so there is no geometry to reason about.
+    // skipped  - a parked-GPS-jitter session (services/tripNoise.js): the vehicle never left a
+    //            small area, so there is no drive to measure. A final verdict, not a pending one.
     ukmStatus: {
       type: String,
-      enum: ['pending', 'computed', 'review', 'failed'],
+      enum: ['pending', 'computed', 'review', 'failed', 'skipped'],
       default: 'pending',
     },
     // Road covered by this trip after removing everything it drove twice itself: drive a street
@@ -151,6 +153,19 @@ const tripSchema = new mongoose.Schema(
     // Which build of the engine produced the numbers above. Stamped so a figure can be traced to
     // its code, and so a re-run can target only trips left behind by an older version.
     ukmAlgorithmVersion: { type: String, default: null },
+
+    // ---- Parked-GPS jitter — see services/tripNoise.js ----
+    // A closed trip whose fixes never left a small area is the app reporting while the vehicle sat
+    // still, not a drive. Flagged once, read everywhere: the coverage engines treat a flagged trip
+    // as ineligible, reports exclude it, /parked deliberately still shows it (the vehicle's real
+    // position is in there). parkedJitterAt null means "not classified yet" — which is why it is
+    // distinct from parkedJitter:false, a deliberate "this was a real drive" verdict.
+    parkedJitter: { type: Boolean, default: false },
+    parkedJitterAt: { type: Date, default: null },
+    // First-to-last-fix displacement, and the widest distance between any two fixes. Stored so a
+    // verdict can be audited (and re-tuned) without replaying the points.
+    parkedJitterMeters: { type: Number, default: null },
+    parkedJitterSpreadMeters: { type: Number, default: null },
 
     // ---- Assigned-network coverage — see services/linkCoverage.js ----
     // The two blocks above measure road against OTHER DRIVING. This block measures it against the
@@ -182,9 +197,10 @@ const tripSchema = new mongoose.Schema(
     linkCoveredCount: { type: Number, default: null },
     // no_network - the trip's project has no active network version, so there is nothing to measure
     //              against. Not an error; not zero either.
+    // skipped    - a parked-GPS-jitter session (services/tripNoise.js); nothing to attribute.
     linkCoverageStatus: {
       type: String,
-      enum: ['pending', 'computed', 'review', 'no_network', 'failed'],
+      enum: ['pending', 'computed', 'review', 'no_network', 'failed', 'skipped'],
       default: 'pending',
     },
     linkCoverageComputedAt: { type: Date, default: null },

@@ -251,7 +251,7 @@ function splitByArea(items, areas) {
 
 const TRIP_FIELDS =
   '_id driverId projectId startedAt endedAt status cleanedRouteShapes cleanedMatchedRatio ' +
-  'mapMatchStatus cleanedDistanceMeters';
+  'mapMatchStatus cleanedDistanceMeters parkedJitter';
 
 /**
  * Up to ~`n` [lon, lat] points spread along the route, ends included — enough to tell which

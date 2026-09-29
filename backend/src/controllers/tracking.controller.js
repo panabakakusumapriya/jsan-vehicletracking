@@ -21,6 +21,7 @@ const { computeTripUkm } = require('../services/ukmCompute');
 const { getDriverRoads, getDriverRoadsVersion } = require('../services/driverRoads');
 const { scopeForProject } = require('../services/coverageScope');
 const { rebuildScope } = require('../services/globalUkm');
+const { classifyTrip } = require('../services/tripNoise');
 const mongoose = require('mongoose');
 const { sendCompressed } = require('../utils/compressedJson');
 
@@ -72,11 +73,19 @@ exports.ingest = asyncHandler(async (req, res) => {
     // Upsert the trip for this clientTripId.
     let trip = await Trip.findOne({ clientTripId, driverId: driver._id });
     if (!trip) {
-      // Enforce single active session: close any lingering active trips for this driver
-      await Trip.updateMany(
-        { driverId: driver._id, status: 'active' },
-        { $set: { status: 'completed', endedAt: new Date() } }
-      );
+      // Enforce single active session: close any lingering active trips for this driver.
+      const superseded = await Trip.find({ driverId: driver._id, status: 'active' })
+        .select('_id')
+        .lean();
+      if (superseded.length) {
+        await Trip.updateMany(
+          { _id: { $in: superseded.map((t) => t._id) } },
+          { $set: { status: 'completed', endedAt: new Date() } }
+        );
+        // A lingering session is often the app left reporting while the vehicle sat parked, so
+        // these are prime jitter candidates — verdict them like any other close.
+        for (const s of superseded) classifyTrip(s._id).catch(() => {});
+      }
       trip = await Trip.create({
         clientTripId,
         driverId: driver._id,
@@ -160,6 +169,13 @@ exports.ingest = asyncHandler(async (req, res) => {
               linkUkmNetworkMeters: null,
               linkCoveredCount: null,
               effectiveUkmMeters: null,
+              // And the parked-jitter verdict: it described a closed point set, but the trip is
+              // about to grow, so it is re-made from the full trace at the next close. Leaving a
+              // stale flag on a live trip would also hide a real drive from reports mid-session.
+              parkedJitter: false,
+              parkedJitterAt: null,
+              parkedJitterMeters: null,
+              parkedJitterSpreadMeters: null,
             },
             $unset: {
               cleanedRouteShapes: 1,
@@ -300,9 +316,12 @@ exports.ingest = asyncHandler(async (req, res) => {
 
     if (last) liveUpdates.push({ trip, last, ended: !!endSignal });
 
-    // Fire-and-forget UKM computation when a trip just completed.
+    // Fire-and-forget UKM computation when a trip just completed, and the parked-jitter verdict
+    // alongside it — the points this classification needs were appended above, so it runs against
+    // the complete trace. See services/tripNoise.js.
     if (endSignal && trip.status === 'active') {
       computeTripUkm(trip._id, driver._id).catch(() => {});
+      classifyTrip(trip._id).catch(() => {});
     }
   }
 
@@ -461,6 +480,10 @@ async function buildUkmTripFilter(req) {
   const tripFilter = {
     status: { $in: ['completed', 'timed_out'] },
     startedAt: { $gte: new Date(from), $lte: new Date(to) },
+    // Parked-GPS-jitter sessions (services/tripNoise.js) are not drives. Left in, they would count
+    // the vehicle sitting still as trips in a table whose figures get signed off, and pad the trip
+    // counts next to real work. This is a business report — no include-noise opt-out.
+    parkedJitter: { $ne: true },
     ...scope,
   };
   let driverIdFilter = null;
@@ -652,6 +675,9 @@ exports.ukmDriver = asyncHandler(async (req, res) => {
     driverId,
     status: { $in: ['completed', 'timed_out'] },
     startedAt: { $gte: new Date(from), $lte: new Date(to) },
+    // Parked-GPS-jitter sessions excluded, like the UKM report this map sits beside: the routes on
+    // it and the figures in the table have to describe the same drives (services/tripNoise.js).
+    parkedJitter: { $ne: true },
   })
     .select(
       'startedAt endedAt distanceMeters cleanedDistanceMeters cleanedRouteShapes mapMatchStatus ' +
@@ -866,6 +892,10 @@ exports.parked = asyncHandler(async (req, res) => {
   const activeTrips = await Trip.find({ status: 'active', ...scope }).select('driverId');
   const activeDriverIds = activeTrips.map((t) => t.driverId.toString());
 
+  // NOT filtered by parkedJitter, deliberately — see services/tripNoise.js. This endpoint answers
+  // "where is each vehicle right now", and a parked-GPS-jitter session IS a vehicle parked: its
+  // lastLocation is the real position to show. Excluding them would hide exactly the vehicles
+  // whose most recent session was noise, which is the opposite of what this map is for.
   const recentEnded = await Trip.find({
     status: { $in: ['completed', 'timed_out'] },
     endedAt: { $gte: cutoff },
@@ -1137,6 +1167,10 @@ exports.myHistory = asyncHandler(async (req, res) => {
     driverId: req.user._id,
     status: { $in: ['completed', 'timed_out'] },
     startedAt: { $gte: from },
+    // Parked-GPS-jitter sessions excluded from the driver's own history: the phone sitting still
+    // while its fixes wandered, not driving (services/tripNoise.js). Left in, a parked driver saw
+    // "19 trips" for a day with none.
+    parkedJitter: { $ne: true },
   })
     .select(
       'startedAt endedAt status distanceMeters cleanedDistanceMeters mapMatchStatus ' +

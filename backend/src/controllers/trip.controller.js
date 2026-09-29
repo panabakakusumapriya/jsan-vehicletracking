@@ -142,8 +142,18 @@ function snappedPathsFor(trip) {
 // than this function swallowing bad input silently.
 const toObjectId = (id) => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id);
 
+// Parked-GPS-jitter sessions — see services/tripNoise.js. The vehicle sat in one place while its
+// fixes wandered; there was no drive. Left in, they inflate every count, distance and speed
+// headline on every screen that reads trips, which is exactly how a parked car produced a day of
+// "19 trips" and a 107 km/h maximum. Excluded by default; `includeNoise=true` brings them back for
+// a caller that genuinely wants them (the Trips page offers it as a toggle).
+const includeNoise = (req) => String(req.query.includeNoise || '').toLowerCase() === 'true';
+// `$ne: true` rather than `false` on purpose: a trip that predates the classifier has no such field
+// yet, and excluding those would silently hide history until the backfill has run over it.
+const parkedJitterFilter = (req) => (includeNoise(req) ? {} : { parkedJitter: { $ne: true } });
+
 function buildTripFilter(req, scope) {
-  const filter = { ...scope };
+  const filter = { ...scope, ...parkedJitterFilter(req) };
   if (req.query.status) filter.status = req.query.status;
   if (req.query.driverId) {
     filter.driverId = toObjectId(req.query.driverId);
@@ -335,10 +345,13 @@ exports.exportMerged = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
+  // Parked sessions are excluded like everywhere else: this file is the day's driving record, and
+  // it has to agree with the page the user downloaded it from. ?includeNoise=true asks for them.
   const trips = await Trip.find({
     driverId,
     startedAt: { $gte: range.from, $lt: range.to },
     ...scope,
+    ...parkedJitterFilter(req),
   })
     .sort({ startedAt: 1 })
     .populate('driverId', 'name email')
@@ -396,10 +409,13 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
 
+  // Same exclusion as the list and the merged file — the day map and its totals are a driving
+  // record, and a parked session contributes no driving. ?includeNoise=true asks for them.
   const trips = await Trip.find({
     driverId,
     startedAt: { $gte: range.from, $lt: range.to },
     ...scope,
+    ...parkedJitterFilter(req),
   })
     .sort({ startedAt: 1 })
     .populate('driverId', 'name email')

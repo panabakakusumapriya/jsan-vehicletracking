@@ -12,7 +12,7 @@ import type { User } from '../lib/types';
  * Nothing on this page derives a UKM number or a UKM colour of its own — see the note above
  * DriverMapView for what used to happen here and why it had to stop. */
 
-type UkmStatus = 'pending' | 'computed' | 'review' | 'failed';
+type UkmStatus = 'pending' | 'computed' | 'review' | 'failed' | 'skipped';
 
 interface UkmDriver {
   driverId: string;

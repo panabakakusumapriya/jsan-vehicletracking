@@ -146,6 +146,12 @@ function earlierThan(aAt, aTrip, bAt, bTrip) {
 
 /** Whether this trip may take part in coverage attribution at all, and why not if it may not. */
 function eligibility(trip) {
+  // A parked-GPS-jitter session is checked first, ahead of anything about its geometry. Such a
+  // trip can have snapped shapes and a healthy match ratio — every check below would pronounce it
+  // perfectly good road — and the only thing wrong with it is that there was no drive at all: the
+  // vehicle sat in one place while its fixes wandered. See services/tripNoise.js.
+  // 'skipped' is a final verdict, not a pending one, exactly as in the map-matcher.
+  if (trip.parkedJitter) return { eligible: false, status: 'skipped' };
   if (!trip.cleanedRouteShapes || !trip.cleanedRouteShapes.length) {
     return { eligible: false, status: trip.mapMatchStatus === 'failed' ? 'failed' : 'pending' };
   }
@@ -367,7 +373,8 @@ async function computeTripMetrics(tripId) {
   const trip = await Trip.findById(tripId)
     .select(
       '_id driverId projectId startedAt endedAt status coverageScopeId coverageCycleId ' +
-        'cleanedRouteShapes cleanedDistanceMeters distanceMeters cleanedMatchedRatio mapMatchStatus'
+        'cleanedRouteShapes cleanedDistanceMeters distanceMeters cleanedMatchedRatio mapMatchStatus ' +
+        'parkedJitter'
     )
     .lean();
   if (!trip) return null;
@@ -394,6 +401,16 @@ async function computeTripMetrics(tripId) {
         $unset: { ukmUniqueShapes: 1, ukmDuplicateShapes: 1 },
       }
     );
+    // Give back any road this trip had staked. Normally there is nothing to give back — a parked
+    // trip is flagged before the map-matcher runs, so it never claimed — but history classified
+    // after the fact (see seed/backfillParkedJitter.js) and a verdict landing mid-match both leave
+    // live claims behind, and "no drive happened" must not keep owning streets. Trips that recorded
+    // this one as their first owner heal on the next scope rebuild, which is how the backfill
+    // settles them. The live race is vanishingly rare because the map-matcher reaches the same
+    // verdict from the same points, before it ever claims anything.
+    if (trip.parkedJitter) {
+      await CoverageSegment.deleteMany({ firstTripId: trip._id });
+    }
     await syncEffectiveUkm(trip._id);
     return { tripId: trip._id, status, globalUniqueMeters: null };
   }
@@ -483,7 +500,7 @@ async function overlapBreakdown(tripId) {
   const trip = await Trip.findById(tripId)
     .select(
       '_id driverId projectId startedAt endedAt status coverageScopeId coverageCycleId ' +
-        'cleanedRouteShapes cleanedMatchedRatio mapMatchStatus historicalDuplicateMeters'
+        'cleanedRouteShapes cleanedMatchedRatio mapMatchStatus historicalDuplicateMeters parkedJitter'
     )
     .lean();
   if (!trip) return null;
@@ -569,7 +586,7 @@ async function attributeTrip(tripId) {
   const trip = await Trip.findById(tripId)
     .select(
       '_id driverId projectId startedAt endedAt status coverageScopeId coverageCycleId ' +
-        'cleanedRouteShapes cleanedMatchedRatio mapMatchStatus'
+        'cleanedRouteShapes cleanedMatchedRatio mapMatchStatus parkedJitter'
     )
     .lean();
   if (!trip) return null;
@@ -644,7 +661,7 @@ async function rebuildScope(scopeId, cycleId = '', { onProgress } = {}) {
   })
     .select(
       '_id driverId projectId startedAt endedAt coverageScopeId coverageCycleId ' +
-        'cleanedRouteShapes cleanedMatchedRatio mapMatchStatus'
+        'cleanedRouteShapes cleanedMatchedRatio mapMatchStatus parkedJitter'
     )
     .sort({ startedAt: 1, _id: 1 })
     .lean();

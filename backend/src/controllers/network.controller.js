@@ -1543,6 +1543,11 @@ async function versionTracks(req, res) {
   const filter = {
     projectId: scope.projectId,
     startedAt: { $gte: from, $lte: to },
+    // Parked-GPS-jitter sessions (services/tripNoise.js) are neither drawn nor counted as pending.
+    // Not drawn because they are not drives — a small scribble where a vehicle sat. Not counted as
+    // pending because they never get snapped geometry, so they would sit in `pendingSnap` forever
+    // and have the map claim work is still processing when nothing is.
+    parkedJitter: { $ne: true },
   };
   const driverIds = String(req.query.driverIds || '')
     .split(',')

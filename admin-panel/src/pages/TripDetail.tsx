@@ -126,9 +126,11 @@ function UkmNote({ trip }: { trip: Trip }) {
       `\n\nDistinct road this trip covered: ${kmOf(distinctM)} km` +
       `\nAlready covered by the programme: ${kmOf(dupM)} km` +
       (trip.sameTripRepeatMeters ? `\nRe-driven within this trip: ${kmOf(trip.sameTripRepeatMeters)} km` : '') +
-      (trip.ukmStatus === 'review'
-        ? '\n\nFlagged REVIEW: part of the trace could not be snapped to a road, so its identity is not fully established.'
-        : '')
+      (trip.ukmStatus === 'skipped'
+        ? '\n\nSKIPPED: not a drive — a parked session whose GPS fixes wandered in place. It takes no part in coverage.'
+        : trip.ukmStatus === 'review'
+          ? '\n\nFlagged REVIEW: part of the trace could not be snapped to a road, so its identity is not fully established.'
+          : '')
     : 'Per-driver UKM — road this trip covered that this DRIVER had not driven before. The global ' +
       'figure (which also excludes road other drivers covered first) has not been computed for ' +
       'this trip yet.' +
@@ -199,9 +201,11 @@ function AssignedUkmBadge({ trip }: { trip: Trip }) {
     `\n\nAssigned links first covered: ${kmOf(trip.linkUkmMeters)} km` +
     `\nNetwork links first covered, any area: ${kmOf(trip.linkUkmNetworkMeters)} km` +
     `\nGlobal UKM (all driving, deduplicated across the programme): ${kmOf(trip.globalUniqueMeters)} km` +
-    (trip.linkCoverageStatus === 'review'
-      ? '\n\nFlagged REVIEW: part of the trace could not be snapped, so the link matches are indicative.'
-      : '');
+    (trip.linkCoverageStatus === 'skipped'
+      ? '\n\nSKIPPED: not a drive — a parked session whose GPS fixes wandered in place. No links are claimed.'
+      : trip.linkCoverageStatus === 'review'
+        ? '\n\nFlagged REVIEW: part of the trace could not be snapped, so the link matches are indicative.'
+        : '');
   return (
     <>
       <span
@@ -547,6 +551,24 @@ export function TripDetail() {
           </Link>
         </div>
       </div>
+
+      {/* Say plainly that this was not a drive. Without it the page shows a session with a
+          distance, a route and a max speed like any other trip, and nothing tells the reader its
+          figures are excluded from coverage and reports by design. */}
+      {trip.parkedJitter && (
+        <div style={{
+          marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 12.5,
+          background: 'rgba(217,119,6,0.08)', border: '1px solid rgba(217,119,6,0.25)', color: '#b45309',
+        }}>
+          <b>Not a drive — parked GPS jitter.</b>{' '}
+          This closed session never left one spot
+          {trip.parkedJitterMeters != null && ` (net displacement ${Math.round(trip.parkedJitterMeters)} m`}
+          {trip.parkedJitterSpreadMeters != null && `, largest spread ${Math.round(trip.parkedJitterSpreadMeters)} m)`}
+          {trip.parkedJitterMeters == null && ' (under the limits)'}. The distance and speed above are the
+          handset's fixes wandering while the vehicle stood still. It is excluded from coverage (UKM)
+          and from reports, and claims no road.
+        </div>
+      )}
 
       <div className="stat-row">
         <div className="stat">
