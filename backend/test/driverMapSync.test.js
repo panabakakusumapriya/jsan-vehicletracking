@@ -38,7 +38,7 @@ function assert(cond, msg) {
   const LinkCoverage = require('../src/models/LinkCoverage');
   const AreaAssignment = require('../src/models/AreaAssignment');
   const Trip = require('../src/models/Trip');
-  const { clearVersionMemo, SIMPLIFY_TOLERANCE_METERS } = require('../src/services/driverRoads');
+  const { clearVersionMemo, GEOMETRY_TAG } = require('../src/services/driverRoads');
   const app = createApp();
 
   const project = await Project.create({ name: 'Queensland' });
@@ -82,7 +82,7 @@ function assert(cond, msg) {
   const v0 = await roadsVersion(dan);
   assert(p0.status === 200 && typeof p0.body.version === 'string', 'the probe answers for an assigned area');
   assert(p0.body.version === v0, `the probe and my-roads agree exactly (${p0.body.version} vs ${v0})`);
-  assert(v0.endsWith(`.g${SIMPLIFY_TOLERANCE_METERS}`),
+  assert(v0.endsWith(`.${GEOMETRY_TAG}`),
     'the version carries the geometry format, so a format change forces every phone to refetch once');
   assert(!/"links"/.test(JSON.stringify(p0.body)), 'the probe ships no roads at all');
 

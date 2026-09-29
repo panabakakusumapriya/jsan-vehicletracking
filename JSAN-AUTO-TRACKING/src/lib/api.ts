@@ -163,8 +163,6 @@ export type MyRoads = {
    * skip re-rendering — and, more to the point, must not be made to re-download.
    */
   version: string;
-  /** True when the area held more links than the server's cap and the list was cut short. */
-  truncated: boolean;
   count: number;
   links: MyRoadLink[];
 };

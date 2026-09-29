@@ -7,8 +7,10 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/src/lib/auth';
 import {
   BASEMAPS,
@@ -23,6 +25,7 @@ import {
 import { API_BASE_URL, IS_CUSTOM_API } from '@/src/lib/config';
 import { type MapGLHandle, type MapGLHistory, type MapGLMarkers, type MapGLTrace, type MapGLTrail, type RoadTuple } from '@/src/components/mapTypes';
 import { DriverMap } from '@/src/components/DriverMap';
+import { BottomSheet, type BottomSheetHandle } from '@/src/components/BottomSheet';
 import {
   apiDropMarker, apiMarkerCategories, apiMyAreas, apiMyMarkers, apiMyRoadsVersion, apiMyTripsSettled,
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
@@ -85,14 +88,13 @@ const NO_ROADS: RoadTuple[] = [];
 const NO_AREAS: MyArea[] = [];
 
 /**
- * Ceiling on links actually handed to the map, across ALL of the driver's areas.
+ * Height of the stats sheet when it is collapsed — the strip that stays on screen.
  *
- * The server caps one area at 20,000 links. A driver holding five areas would hand the phone's
- * GPU five times that as layer data - not a slow map, a dead one. So the same 20,000 is applied
- * to the combined set, and the overflow is reported rather than silently dropped. Areas fill in
- * the order my-areas returns them.
+ * Full-screen map, everything else in the sheet. The overlay cards that used to live at the
+ * bottom of the map (the hint pill, the marker card, the placement bar) are positioned to clear
+ * it, so none of them can end up underneath.
  */
-const MAX_DRAWN_LINKS = 20000;
+const SHEET_PEEK = 80;
 /** How long an area whose roads failed to load waits before the version probe retries it. */
 const FAILED_AREA_RETRY_MS = 15 * 60_000;
 
@@ -295,6 +297,18 @@ export default function MapScreen() {
   const mapRef = useRef<MapGLHandle>(null);
   const driverId = user?._id ?? null;
 
+  /** The stats sheet, so map interactions can lower it (a marker card or the placement bar
+   *  always sits above it, and neither should have to be hunted for). */
+  const sheetRef = useRef<BottomSheetHandle>(null);
+  const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
+  /**
+   * How tall the sheet opens to. Well short of the screen so the map stays visible behind it, and
+   * short enough of the *usable* height (above the tab bar) that the top of the sheet never gets
+   * clipped on a small handset.
+   */
+  const sheetExpanded = Math.round(Math.min(winH * 0.55, winH - insets.top - 120));
+
   useEffect(() => {
     let alive = true;
     loadMapPrefs(driverId).then((p) => {
@@ -381,7 +395,6 @@ export default function MapScreen() {
   /** areaId -> when its roads last failed to load, so a failing area is retried on a backoff
    *  instead of on every probe. */
   const areaFailedAtRef = useRef<Map<string, number>>(new Map());
-  const clippedRef  = useRef(false);
   const pendingForceKeyRef = useRef<string | null>(null);
   const traceSigRef = useRef('');
 
@@ -458,7 +471,6 @@ export default function MapScreen() {
     if (list.length === 0) {
       roadsKeyRef.current = '';
       loadedVersionsRef.current.clear();
-      clippedRef.current = false;
       setRoads(NO_ROADS);
       setRoadsError(null);
       setRoadsNote(null);
@@ -512,16 +524,12 @@ export default function MapScreen() {
     const key = ok.map((r) => `${r.data.areaId}@${r.data.version}`).join('|');
     if (key !== roadsKeyRef.current) {
       roadsKeyRef.current = key;
+      // Every assigned road, every area — no ceiling. The old 20,000 cut meant a driver in a large
+      // network was shown a map with streets silently missing, which is the one thing this screen
+      // exists to prevent. The map draws roads as a handful of GeoJSON layers, so this is tens of
+      // thousands of coordinates in three sources, not tens of thousands of views.
       const links: RoadTuple[] = [];
-      let clipped = false;
-      for (const r of ok) {
-        for (const link of r.data.links) {
-          if (links.length >= MAX_DRAWN_LINKS) { clipped = true; break; }
-          links.push(link);
-        }
-        if (clipped) break;
-      }
-      clippedRef.current = clipped;
+      for (const r of ok) for (const link of r.data.links) links.push(link);
       setRoads(links.length ? links : NO_ROADS);
     }
 
@@ -529,13 +537,10 @@ export default function MapScreen() {
     else if (ok.length === 0) setRoadsError(`Roads unavailable - ${failed[0]}`);
     else setRoadsError(`Roads missing for ${failed.length} of ${list.length} areas - ${failed[0]}`);
 
-    // Not errors, but the driver is entitled to know when what they are looking at is incomplete or
-    // old - both change what "this street is still red" means.
+    // Not an error, but the driver is entitled to know when what they are looking at is old -
+    // it changes what "this street is still red" means.
     const notes: string[] = [];
     if (ok.some((r) => r.stale)) notes.push('offline - showing your last saved copy');
-    if (clippedRef.current || ok.some((r) => r.data.truncated)) {
-      notes.push(`too many roads to draw - only the first ${MAX_DRAWN_LINKS.toLocaleString()} are shown`);
-    }
     setRoadsNote(notes.length ? notes.join(' / ') : null);
     setRoadsLoading(false);
 
@@ -1027,6 +1032,8 @@ export default function MapScreen() {
   const beginPlacing = useCallback((cat: MarkerCategory) => {
     setPickerOpen(false);
     setTappedMarker(null);
+    // The placement bar and the pin need the map, not the sheet — and the sheet overlays both.
+    sheetRef.current?.collapse();
     setPlacing(cat);
     placingRef.current = true;
     // Start from where the driver IS, and seed the camera ref with the same position: the
@@ -1076,7 +1083,11 @@ export default function MapScreen() {
 
   const onMarkerTap = useCallback((id: string) => {
     const m = markers.find((x) => x.id === id);
-    if (m) setTappedMarker(m);
+    if (m) {
+      // The card opens just above the sheet's strip; leaving the sheet up would cover it.
+      sheetRef.current?.collapse();
+      setTappedMarker(m);
+    }
   }, [markers]);
 
   /** What a real pan-away looks like vs a pinch: the centre leaving the followed position
@@ -1199,7 +1210,7 @@ export default function MapScreen() {
    * checking their patch should not have to navigate away to change what they are looking at.
    */
   const controls = (
-    <View style={s.ctrlWrap} pointerEvents="box-none">
+    <View style={[s.ctrlWrap, { top: insets.top + 10 }]} pointerEvents="box-none">
       <View style={s.ctrlStack}>
         <TouchableOpacity style={s.ctrlBtn} onPress={() => mapRef.current?.zoomIn()} accessibilityLabel="Zoom in">
           <Text style={s.ctrlIcon}>＋</Text>
@@ -1445,8 +1456,48 @@ export default function MapScreen() {
 
   const badgeLive = trip?.status === 'active';
 
-  return (
-    <View style={{ flex: 1 }}>
+  /** The one line that is always true of this shift. It used to be a green strip across the top of
+   *  the map; it is now the first line of the sheet's collapsed strip — still always visible,
+   *  because it is also where the refresh button lives. */
+  const statusText = (trip
+    ? badgeLive
+      ? `Live session${updatedAt ? ` · updated ${elapsed(updatedAt.toISOString())}` : ''}`
+      : `Last trip · ended ${trip.endedAt ? elapsed(trip.endedAt) : ''}`
+    : areas.length > 0
+      ? `${areas.length} area${areas.length === 1 ? '' : 's'} allocated · no trip yet`
+      : 'No trip yet') + (trace?.kind === 'snapped' ? ' · snapped route' : '');
+
+  /**
+   * The second line of the collapsed strip: the first thing that needs saying, else a one-line
+   * summary of the shift. Deliberately not the notices list — a strip this size shows one line, or
+   * none of them are read. The whole list is in the sheet body, one drag away.
+   */
+  const sheetContext = notices[0]
+    ?? (trip
+      ? `${km(trip.distanceMeters)} · ${Math.round(trip.maxSpeedKmh)} km/h · ${points.length} pts`
+      : roadStats.total
+        ? `${roadStats.todo.toLocaleString()} to drive · ${roadStats.covered.toLocaleString()} covered`
+        : freeDrive ? 'Free drive · your route is still recorded' : null);
+
+  const sheetHeader = (
+    <>
+      <View style={s.sheetStatusRow}>
+        <View style={[s.liveDot, !badgeLive && s.lastDot]} />
+        <Text style={[s.liveText, !badgeLive && s.lastText]} numberOfLines={1}>{statusText}</Text>
+        <TouchableOpacity onPress={onRefresh} style={{ padding: 4 }} accessibilityLabel="Refresh">
+          {refreshing
+            ? <ActivityIndicator size="small" color={badgeLive ? C.green : C.muted} />
+            : <Text style={{ color: badgeLive ? C.green : C.muted, fontSize: 16 }}>↻</Text>}
+        </TouchableOpacity>
+      </View>
+      {sheetContext && <Text style={s.sheetContext} numberOfLines={1}>{sheetContext}</Text>}
+    </>
+  );
+
+  /** Everything that used to be stacked above the map, in one place, one drag away. The map keeps
+   *  the whole screen; nothing on this list changes what is drawn underneath it. */
+  const sheetBody = (
+    <>
       {/* Trip statistics, only when there is a trip to describe. */}
       {trip && (
         <View style={s.statsGrid}>
@@ -1485,28 +1536,6 @@ export default function MapScreen() {
         </View>
       )}
 
-      {/* Status strip. Always present, because it carries the refresh control — there is no pull
-          gesture over a full-bleed map, so this button is the driver's only way to ask for fresh
-          data. */}
-      <View style={[s.liveBadge, !badgeLive && s.lastBadge]}>
-        <View style={[s.liveDot, !badgeLive && s.lastDot]} />
-        <Text style={[s.liveText, !badgeLive && s.lastText]} numberOfLines={1}>
-          {trip
-            ? badgeLive
-              ? `Live session${updatedAt ? ` · updated ${elapsed(updatedAt.toISOString())}` : ''}`
-              : `Last trip · ended ${trip.endedAt ? elapsed(trip.endedAt) : ''}`
-            : areas.length > 0
-              ? `${areas.length} area${areas.length === 1 ? '' : 's'} allocated · no trip yet`
-              : 'No trip yet'}
-          {trace?.kind === 'snapped' ? ' · snapped route' : ''}
-        </Text>
-        <TouchableOpacity onPress={onRefresh} style={{ padding: 4 }} accessibilityLabel="Refresh">
-          {refreshing
-            ? <ActivityIndicator size="small" color={badgeLive ? C.green : C.muted} />
-            : <Text style={{ color: badgeLive ? C.green : C.muted, fontSize: 16 }}>↻</Text>}
-        </TouchableOpacity>
-      </View>
-
       {banner}
       {legend}
 
@@ -1521,7 +1550,11 @@ export default function MapScreen() {
           </Text>
         </View>
       )}
+    </>
+  );
 
+  return (
+    <View style={s.root}>
       {/* DriverMap — native MapLibre; Expo Go (no native module) gets a build-needed notice. */}
       <View style={s.mapWrap}>
         <DriverMap
@@ -1630,35 +1663,46 @@ export default function MapScreen() {
         </Modal>
       </View>
 
+      {/* The stats sheet. Collapsed it is a strip: what the session is doing, and one line of
+          detail. Pulled up it holds the whole picture — figures, notices, legend, history. */}
+      <BottomSheet ref={sheetRef} peek={SHEET_PEEK} expanded={sheetExpanded} header={sheetHeader}>
+        {sheetBody}
+      </BottomSheet>
     </View>
   );
 }
 
 const s = StyleSheet.create({
+  /* Clips the sheet's off-screen half at the screen edge. Without it the sheet's elevation would
+     paint the white body straight over the tab bar on Android. */
+  root:      { flex: 1, overflow: 'hidden' },
   center:    { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 28 },
   loadText:  { marginTop: 12, color: C.muted, fontSize: 14 },
 
-  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 12, paddingVertical: 10, backgroundColor: C.bg },
+  /* ---- stats sheet ---- */
+  sheetStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
+  sheetContext:   { fontSize: 11.5, color: '#64748b', marginTop: 6 },
+
+  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   statCard:  { flexGrow: 1, flexBasis: '22%', alignItems: 'center', backgroundColor: C.surface, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 6, borderWidth: 1, borderColor: C.border },
   statV:     { fontSize: 14, fontWeight: '800', color: C.text },
   statK:     { fontSize: 9, color: C.muted, marginTop: 3, textTransform: 'uppercase', letterSpacing: 0.4 },
 
-  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 6, backgroundColor: C.greenBg, borderBottomWidth: 1, borderBottomColor: '#a7f3d0' },
-  liveDot:   { width: 7, height: 7, borderRadius: 4, backgroundColor: C.green },
-  liveText:  { flex: 1, fontSize: 12, color: C.green, fontWeight: '600' },
-  lastBadge: { backgroundColor: '#f8fafc', borderBottomColor: '#e2e8f0' },
-  lastDot:   { backgroundColor: '#94a3b8' },
-  lastText:  { color: '#64748b' },
+  /* The live/ended dot and line live in the sheet's collapsed strip now. */
+  liveDot:  { width: 7, height: 7, borderRadius: 4, backgroundColor: C.green },
+  liveText: { flex: 1, fontSize: 12, color: C.green, fontWeight: '600' },
+  lastDot:  { backgroundColor: '#94a3b8' },
+  lastText: { color: '#64748b' },
 
-  banner:     { paddingHorizontal: 14, paddingVertical: 6, gap: 2, backgroundColor: C.warnBg, borderBottomWidth: 1, borderBottomColor: C.warnEdge },
+  banner:     { marginBottom: 8, paddingHorizontal: 10, paddingVertical: 8, gap: 3, backgroundColor: C.warnBg, borderWidth: 1, borderColor: C.warnEdge, borderRadius: 10 },
   bannerText: { fontSize: 11, lineHeight: 15, color: C.warn },
 
-  legend:     { flexDirection: 'row', flexWrap: 'wrap', gap: 14, paddingHorizontal: 14, paddingVertical: 6, backgroundColor: C.surface, borderBottomWidth: 1, borderBottomColor: C.border },
+  legend:     { flexDirection: 'row', flexWrap: 'wrap', gap: 14, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, borderRadius: 10, marginBottom: 8 },
   legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   legendDot:  { width: 22, height: 4, borderRadius: 2 },
   legendText: { fontSize: 11, color: C.muted },
 
-  historyRow:  { paddingHorizontal: 14, paddingVertical: 5, backgroundColor: C.bg, borderBottomWidth: 1, borderBottomColor: C.border },
+  historyRow:  { paddingHorizontal: 10, paddingVertical: 7, backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, borderRadius: 10, marginBottom: 8 },
   historyText: { fontSize: 11, color: '#4b5563', fontWeight: '600' },
 
   mapWrap:   { flex: 1 },
@@ -1666,7 +1710,7 @@ const s = StyleSheet.create({
   /* ---- markers ---- */
   ctrlBtnFlag: { backgroundColor: '#fef2f2', borderColor: '#fecaca' },
   markerCard: {
-    position: 'absolute', left: 12, right: 60, bottom: 14,
+    position: 'absolute', left: 12, right: 60, bottom: SHEET_PEEK + 10,
     backgroundColor: 'rgba(255,255,255,0.98)', borderRadius: 12, padding: 12,
     borderWidth: 1, borderColor: '#e2e8f0',
     shadowColor: '#0f172a', shadowOpacity: 0.2, shadowRadius: 8,
@@ -1709,7 +1753,7 @@ const s = StyleSheet.create({
   },
   placeStick: { width: 3, height: 22, backgroundColor: '#0f172a', borderRadius: 2, opacity: 0.75 },
   placeBar: {
-    position: 'absolute', left: 12, right: 60, bottom: 14,
+    position: 'absolute', left: 12, right: 60, bottom: SHEET_PEEK + 10,
     backgroundColor: 'rgba(255,255,255,0.98)', borderRadius: 12, padding: 12,
     borderWidth: 1, borderColor: '#e2e8f0',
     shadowColor: '#0f172a', shadowOpacity: 0.2, shadowRadius: 8,
@@ -1757,9 +1801,10 @@ const s = StyleSheet.create({
   panelStateOn: { color: '#7c3aed' },
 
   /* Emptiness as a note OVER the map, never instead of it. Bottom-left so it does not collide with
-     the control stack on the right, and pointerEvents:none so it can never swallow a map gesture. */
+     the control stack on the right, and pointerEvents:none so it can never swallow a map gesture.
+     Lifted clear of the sheet's collapsed strip, which is invisible state that still covers it. */
   hintPill: {
-    position: 'absolute', left: 10, bottom: 10,
+    position: 'absolute', left: 10, bottom: SHEET_PEEK + 10,
     maxWidth: '72%',
     backgroundColor: 'rgba(15,23,42,0.82)',
     borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7,

@@ -4,11 +4,12 @@ const ctrl = require('../controllers/tracking.controller');
 const { authenticate, requireRole } = require('../middleware/auth');
 
 /**
- * my-roads is the one route here that is genuinely expensive: up to 20,000 documents read out of a
- * 654k-link collection, simplified, and gzipped into ~2.5 MB of JSON, all on a single-process API
- * that is also carrying live ingest. A client stuck in a retry loop — a bad release, a driver
- * force-quitting the map over and over — would starve the ingest path and take live tracking down
- * for the whole fleet, so the cap is here rather than in the app where it can be shipped away.
+ * my-roads is the one route here that is genuinely expensive: an entire area's links read out of a
+ * 654k-link collection — unbounded since the 20,000-link cap was removed — simplified, and gzipped
+ * into megabytes of JSON, all on a single-process API that is also carrying live ingest. A client
+ * stuck in a retry loop — a bad release, a driver force-quitting the map over and over — would
+ * starve the ingest path and take live tracking down for the whole fleet, so the cap is here rather
+ * than in the app where it can be shipped away.
  *
  * Keyed by driver, NOT by IP: mobile carriers put thousands of handsets behind one NAT address, so
  * the default IP key would have one busy driver lock out every other driver on the same network.

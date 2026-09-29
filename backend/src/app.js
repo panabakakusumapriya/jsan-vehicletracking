@@ -77,6 +77,10 @@ function createApp() {
         // drive, excluded from coverage attribution and from every report, and answers 'skipped'.
         // See services/tripNoise.js.
         parkedJitter: true,
+        // my-roads serves an area's ENTIRE link set — the old 20,000-link cap and its `truncated`
+        // flag are gone, and the geometry tag is 'g0full' so phones holding a clipped copy refetch
+        // once. A partial network shown as if it were whole is the failure this removes.
+        uncappedRoads: true,
       },
     })
   );

@@ -228,8 +228,8 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
 
   const loadedRef = useRef(false);
   const pendingFitRef = useRef<[number, number, number, number] | null>(null);
-  // Padding keeps the polygon clear of the stats header, the control stack on the right and the
-  // legend at the bottom.
+  // Padding keeps the polygon clear of the control stack on the right, the status bar above it,
+  // and the stats sheet's collapsed strip at the bottom (80 pt tall; this leaves it 40 to spare).
   const fitNow = useCallback((bbox: [number, number, number, number]) => {
     cameraRef.current?.fitBounds(bbox, {
       padding: { top: 70, right: 70, bottom: 120, left: 30 },

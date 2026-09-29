@@ -26,17 +26,24 @@ const { simplifyPath } = require('../utils/geo');
  * The whole design assumes the CLIENT CACHES the result against `version` and only re-fetches when
  * that string moves. Fetching this on every map pan would be indefensible whatever the encoding.
  *
- * Measured, worst case (20,000 links): ~1.7-2.5 MB of JSON, ~230 KB on the wire. That second
- * number only exists because myRoads in tracking.controller.js gzips it explicitly — this app has
- * no compression middleware, so nothing here is compressed by default. If that call is ever
- * reverted to a plain res.json, every driver silently starts paying ten times the mobile data.
+ * Measured at the 20,000-link mark: ~1.7-2.5 MB of JSON, ~230 KB on the wire. Nothing is clipped
+ * any more (see below), so a very large area costs proportionally more — that is the deliberate
+ * trade against showing a driver a map with streets missing from it. The on-the-wire figure only
+ * exists because myRoads in tracking.controller.js gzips it explicitly — this app has no
+ * compression middleware, so nothing here is compressed by default. If that call is ever reverted
+ * to a plain res.json, every driver silently starts paying ten times the mobile data.
  */
 
-// The worst real area in the first delivery holds ~21,500 links, so this cap does bite — which is
-// exactly why `truncated` is in the contract rather than the cap being silently generous. A phone
-// that is handed a partial network must be able to say so, rather than showing a driver a map with
-// streets quietly missing from it.
-const MAX_LINKS = 20000;
+/**
+ * There is deliberately NO cap on how many links one area may serve.
+ *
+ * There used to be one (20,000, with a `truncated` flag in the contract). The worst real area in
+ * the first delivery holds ~21,500 links, so the cap did bite: a driver was shown a network with
+ * streets quietly missing from it — exactly the failure this endpoint exists to prevent. The
+ * client draws roads as a handful of GeoJSON layers rather than one view per link, so the ceiling
+ * bought no safety on the phone; it only bought a lie. A larger area now simply costs more to
+ * transfer, and that is the trade the map demands.
+ */
 
 /**
  * No simplification. This used to drop vertices at a 4 m tolerance, which was defensible while
@@ -192,22 +199,19 @@ function coverageChecksum(linkIds) {
  *   1. the assignment          2. the active version
  *   3. the area's links        4. the area's coverage ledger
  * (3) and (4) do not depend on each other, so they run together. Marking coverage per link with a
- * lookup per link would be up to 20,000 round trips for one map draw; instead the whole area's
- * ledger arrives once and the join happens in memory against a Set.
+ * lookup per link would be tens of thousands of round trips for one map draw; instead the whole
+ * area's ledger arrives once and the join happens in memory against a Set.
  */
 async function getDriverRoads({ driverId, projectIds, areaId }) {
   const networkVersionId = await authoriseArea(driverId, projectIds, areaId);
   if (!networkVersionId) return null;
 
   const [rows, coverage] = await Promise.all([
-    // MAX_LINKS + 1 rather than a separate countDocuments: one extra document is all it takes to
-    // learn the area overflowed, and counting is not free on a collection of 654k links.
-    //
-    // -_id because nothing downstream uses it; at 20,000 rows that alone is ~240 KB of ObjectId
-    // moved out of Mongo for no reason. Served by the {networkVersionId, areaId} index.
+    // No limit: every link in the area is served. -_id because nothing downstream uses it; on a
+    // 20,000-link area that alone is ~240 KB of ObjectId moved out of Mongo for no reason. Served
+    // by the {networkVersionId, areaId} index.
     RoadLink.find({ networkVersionId, areaId })
       .select('linkId funcClass geometry.coordinates -_id')
-      .limit(MAX_LINKS + 1)
       .lean(),
 
     // The whole area's ledger in one query, on the cov_version_area_len index. firstAt comes along
@@ -226,11 +230,8 @@ async function getDriverRoads({ driverId, projectIds, areaId }) {
     if (ms > newestCoverMs) newestCoverMs = ms;
   }
 
-  const truncated = rows.length > MAX_LINKS;
-  const page = truncated ? rows.slice(0, MAX_LINKS) : rows;
-
   const links = [];
-  for (const l of page) {
+  for (const l of rows) {
     const line = compactLine(l.geometry && l.geometry.coordinates);
     if (!line) continue;
     links.push([l.linkId, l.funcClass, coveredIds.has(l.linkId) ? 1 : 0, line]);
@@ -266,7 +267,6 @@ async function getDriverRoads({ driverId, projectIds, areaId }) {
   return {
     areaId: String(areaId),
     version,
-    truncated,
     count: links.length,
     links,
   };
@@ -323,8 +323,13 @@ async function getDriverRoadsVersion({ driverId, projectIds, areaId }) {
  * on-device matcher then measures its 11 m buffer against, until that area's coverage happened
  * to change. Folding the format into the key makes a format change a one-time refetch for every
  * client, which is exactly the intent. Change this whenever what compactLine emits changes.
+ *
+ * `g0full`: the format is unchanged since the last bump — this bump marks a change in the SERVED
+ * SET rather than the shape. Dropping the 20,000-link cap means every phone that cached a clipped
+ * area must fetch the whole one exactly once, and nothing else in the key moves when a delivery
+ * simply has more links than the old ceiling allowed.
  */
-const GEOMETRY_TAG = `g${SIMPLIFY_TOLERANCE_METERS}`;
+const GEOMETRY_TAG = 'g0full';
 
 /** The one place a version string is assembled — getDriverRoads and the probe must agree. */
 function buildVersion(networkVersionId, coveredCount, newestCoverMs, coveredIds) {
@@ -341,7 +346,7 @@ function buildVersion(networkVersionId, coveredCount, newestCoverMs, coveredIds)
  * Short-lived memo of each area's version, shared by every driver working it.
  *
  * Without it the probe is not actually cheap: computing the key means reading the area's whole
- * coverage ledger — up to 20,000 rows — which is the same scan my-roads does. A crew of ten on
+ * coverage ledger — one row per covered link — which is the same scan my-roads does. A crew of ten on
  * one polygon, each probing every few minutes, would repeat that scan dozens of times an hour
  * for an answer that is identical between them. A minute of staleness is invisible next to
  * attribution latency, which is itself minutes.
@@ -384,6 +389,6 @@ module.exports = {
   getDriverRoadsVersion,
   clearVersionMemo,
   compactLine,
-  MAX_LINKS,
+  GEOMETRY_TAG,
   SIMPLIFY_TOLERANCE_METERS,
 };
