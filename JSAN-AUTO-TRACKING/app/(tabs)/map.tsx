@@ -347,10 +347,9 @@ export default function MapScreen() {
   /**
    * Opening camera, read once. Changing it later must not re-mount the map.
    *
-   * The driver's CURRENT position wins: a shift starts wherever the vehicle is, and opening on
-   * the assigned polygon (or yesterday's pan) framed a place the driver may be an hour away
-   * from. The polygon is still drawn — it slides into view as they approach it. Last-known
-   * position is used because it answers instantly; the live dot corrects within seconds.
+   * This is only where the map STARTS, before the areas list has arrived: the driver's current
+   * position (it answers instantly), else yesterday's pan. As soon as the areas are in, the
+   * camera moves to the area they are working — see frameActiveArea.
    */
   const [locReady, setLocReady] = useState(false);
   const startPosRef = useRef<[number, number] | null>(null);
