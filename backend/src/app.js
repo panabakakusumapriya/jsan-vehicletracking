@@ -67,6 +67,12 @@ function createApp() {
         // networkVersionId the assignment happened to be recorded against — so re-importing the
         // network no longer silently strands every assignment on a superseded version.
         versionIndependentAssignments: true,
+        // Area lists, allowed roads and trip crediting resolve across every delivery that still
+        // holds a live assignment or a coverage row, not just the project's active version — so
+        // importing (and activating) a newer network for one ground no longer blanks drivers
+        // assigned against another. Sibling of versionIndependentAssignments, which fixed the
+        // same class of stranding WITHIN one delivery.
+        liveNetworkVersions: true,
       },
     })
   );
