@@ -1,6 +1,6 @@
 const AreaAssignment = require('../models/AreaAssignment');
 const WorkArea = require('../models/WorkArea');
-const NetworkVersion = require('../models/NetworkVersion');
+const { liveNetworkVersions, resolveAssignedAreas } = require('./liveNetworks');
 const User = require('../models/User');
 const { bboxOf, bboxUnion, bboxPad, pointInPolygon } = require('../utils/geo');
 
@@ -12,15 +12,16 @@ const { bboxOf, bboxUnion, bboxPad, pointInPolygon } = require('../utils/geo');
  * would change its numbers every time the roster changed. AreaAssignment is append-only precisely
  * so this question stays answerable.
  *
- * Areas are matched by areaCode against the ACTIVE network version, the same rule myAreas and
+ * Areas are matched by areaCode against the project's LIVE deliveries, the same rule myAreas and
  * authoriseArea use — a re-import mints new WorkArea ids and would otherwise strand every
- * assignment (see the comments on those two).
+ * assignment, and a project can hold several deliveries of different ground at once (see
+ * liveNetworks.js).
  */
 
 const D = Math.PI / 180;
 
-/** Active network version(s) the trip could be measured against. */
-async function activeVersionsForTrip(trip) {
+/** Live network version(s) the trip could be measured against, best-ranked first. */
+async function liveVersionsForTrip(trip) {
   const projectIds = [];
   if (trip.projectId) projectIds.push(String(trip.projectId));
   else {
@@ -30,9 +31,38 @@ async function activeVersionsForTrip(trip) {
     for (const p of driver?.projectIds || []) projectIds.push(String(p));
   }
   if (!projectIds.length) return [];
-  return NetworkVersion.find({ projectId: { $in: projectIds }, status: 'active' })
-    .select('_id projectId')
-    .lean();
+  return liveNetworkVersions(projectIds);
+}
+
+/**
+ * Which live delivery was this trip actually driven in?
+ *
+ * Asked of the ground first: the delivery whose polygons the route passes through most. Only one
+ * delivery can take a trip — the ledger is keyed per version — and choosing by assignment alone put
+ * a Victorian trip on the Queensland network whenever the driver also held a Queensland area,
+ * crediting nothing. Ties keep the better-ranked delivery, so where a re-delivery overlaps an older
+ * copy of the same ground, the current copy wins. A route that touches no polygon at all falls back
+ * to the delivery holding the driver's areas, then to the best-ranked one.
+ */
+async function pickVersion(versions, areas, samplePoints) {
+  if (versions.length === 1) return versions[0];
+  if (samplePoints.length) {
+    const hits = await Promise.all(
+      versions.map((v) =>
+        WorkArea.countDocuments({
+          networkVersionId: v._id,
+          geometry: { $geoIntersects: { $geometry: { type: 'MultiPoint', coordinates: samplePoints } } },
+        }).catch(() => 0)
+      )
+    );
+    let best = -1;
+    hits.forEach((n, i) => {
+      if (n > 0 && (best < 0 || n > hits[best])) best = i;
+    });
+    if (best >= 0) return versions[best];
+  }
+  const holding = versions.find((v) => areas.some((a) => String(a.networkVersionId) === String(v._id)));
+  return holding || versions[0];
 }
 
 /** Full geometry as a list of polygons, each a list of rings (outer first), plus a bbox. */
@@ -45,12 +75,12 @@ function prepareArea(a) {
 }
 
 /**
- * Returns { networkVersionId, projectId, areas } or null when the trip's project has no active
+ * Returns { networkVersionId, projectId, areas } or null when the trip's project has no live
  * network at all. `areas` is empty when the driver held no polygon during the trip — the caller
  * treats the two cases differently (no_network vs. unassigned), so they are kept apart here.
  */
-async function assignedAreasForTrip(trip) {
-  const versions = await activeVersionsForTrip(trip);
+async function assignedAreasForTrip(trip, samplePoints = []) {
+  const versions = await liveVersionsForTrip(trip);
   if (!versions.length) return null;
 
   const startedAt = new Date(trip.startedAt);
@@ -63,25 +93,8 @@ async function assignedAreasForTrip(trip) {
     .select('areaId areaCode')
     .lean();
 
-  let areas = [];
-  if (assignments.length) {
-    const codes = [...new Set(assignments.map((a) => a.areaCode).filter(Boolean))];
-    const legacyIds = assignments.filter((a) => !a.areaCode).map((a) => a.areaId);
-    areas = await WorkArea.find({
-      networkVersionId: { $in: versions.map((v) => v._id) },
-      $or: [{ areaCode: { $in: codes } }, { _id: { $in: legacyIds } }],
-    })
-      .select('_id areaCode name networkVersionId geometry bbox')
-      .lean();
-  }
-
-  // A driver on several projects with no project stamped on the trip: measure against the network
-  // their assignments live in, and only fall back to the first active version when they hold none.
-  let version = versions[0];
-  if (versions.length > 1) {
-    const holding = versions.find((v) => areas.some((a) => String(a.networkVersionId) === String(v._id)));
-    if (holding) version = holding;
-  }
+  const areas = await resolveAssignedAreas(versions, assignments, '_id name geometry bbox');
+  const version = await pickVersion(versions, areas, samplePoints);
 
   return {
     networkVersionId: version._id,

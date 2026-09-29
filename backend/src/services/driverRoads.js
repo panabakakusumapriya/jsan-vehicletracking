@@ -2,7 +2,7 @@ const RoadLink = require('../models/RoadLink');
 const LinkCoverage = require('../models/LinkCoverage');
 const AreaAssignment = require('../models/AreaAssignment');
 const WorkArea = require('../models/WorkArea');
-const NetworkVersion = require('../models/NetworkVersion');
+const { liveNetworkVersions } = require('./liveNetworks');
 const { simplifyPath } = require('../utils/geo');
 
 /**
@@ -90,15 +90,14 @@ function compactLine(coords) {
 }
 
 /**
- * Is this driver actually holding this area right now, on the version in force, for a project they
+ * Is this driver actually holding this area right now, in a delivery still in use, for a project they
  * are still a member of?
  *
  * All three halves are load-bearing. `releasedAt: null` alone would let a driver keep pulling an
  * area they handed over months ago, because AreaAssignment is append-only history and the old row
- * never disappears. The active-version check alone would not know who is holding it. And an
- * assignment written against a version that has since been superseded is history too — the geometry
- * it points at is no longer today's job, so this fails closed rather than serving a superseded
- * network as if it were current.
+ * never disappears. The live-delivery check alone would not know who is holding it. And an area in a
+ * delivery nobody works from any more (a superseded re-delivery of the same ground, with no ledger
+ * and no live assignment) is history — this fails closed rather than serving it as current.
  *
  * The project-membership check exists because nothing releases an AreaAssignment when a driver is
  * moved between projects — PATCH /api/users rewrites `projectIds` and leaves the assignment rows
@@ -132,12 +131,12 @@ async function authoriseArea(driverId, projectIds, areaId) {
     .lean();
   if (!area) return null;
 
-  const version = await NetworkVersion.findOne({
-    _id: area.networkVersionId,
-    status: 'active',
-  })
-    .select('_id projectId')
-    .lean();
+  // The area must sit in a delivery the driver's project is working from — the active one or a
+  // superseded one still in use (liveNetworks.js). Active-only refused every road in a project
+  // whose newest import was a different region, while myAreas listed the areas regardless.
+  const version = (await liveNetworkVersions(projectIds)).find(
+    (v) => String(v._id) === String(area.networkVersionId)
+  );
   if (!version) return null;
 
   const assignment = await AreaAssignment.findOne({

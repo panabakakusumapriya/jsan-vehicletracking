@@ -254,15 +254,33 @@ const TRIP_FIELDS =
   'mapMatchStatus cleanedDistanceMeters';
 
 /**
+ * Up to ~`n` [lon, lat] points spread along the route, ends included — enough to tell which
+ * delivery's polygons it ran through, and small enough to send as one MultiPoint query.
+ */
+function routeSample(steps, n = 24) {
+  if (!steps.length) return [];
+  const stride = Math.max(1, Math.floor(steps.length / n));
+  const out = [];
+  for (let i = 0; i < steps.length; i += stride) out.push([steps[i].a.lon, steps[i].a.lat]);
+  const last = steps[steps.length - 1].b;
+  out.push([last.lon, last.lat]);
+  return out.filter(
+    ([x, y]) => Number.isFinite(x) && Number.isFinite(y) && Math.abs(x) <= 180 && Math.abs(y) <= 90
+  );
+}
+
+/**
  * Resolve the assignment, walk the route, split it by area and match it to links. Returns
  * { ctx: null } when the project has no active network, { ctx, steps: [] } when the trip has no
  * usable geometry, and the full picture otherwise. Nothing here writes.
  */
 async function analyseTrip(trip) {
-  const ctx = await assignedAreasForTrip(trip);
+  // Walked first: where the route went is what decides which of the project's live deliveries
+  // the trip is measured against (see pickVersion in assignedAreas.js).
+  const steps = walkTrip(trip);
+  const ctx = await assignedAreasForTrip(trip, routeSample(steps));
   if (!ctx) return { ctx: null };
 
-  const steps = walkTrip(trip);
   if (!steps.length) return { ctx, steps, index: null, covered: new Map(), split: null };
 
   const index = routeIndex(steps);

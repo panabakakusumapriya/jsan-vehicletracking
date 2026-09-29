@@ -2,9 +2,8 @@ const Trip = require('../models/Trip');
 const User = require('../models/User');
 const LocationPoint = require('../models/LocationPoint');
 const RejectedPoint = require('../models/RejectedPoint');
-const NetworkVersion = require('../models/NetworkVersion');
 const AreaAssignment = require('../models/AreaAssignment');
-const WorkArea = require('../models/WorkArea');
+const { liveNetworkVersions, resolveAssignedAreas } = require('../services/liveNetworks');
 const { releaseLinks } = require('../services/linkCoverage');
 const asyncHandler = require('../utils/asyncHandler');
 const { haversineMeters, simplifyPath } = require('../utils/geo');
@@ -918,11 +917,10 @@ exports.myAreas = asyncHandler(async (req, res) => {
   const projectIds = (driver.projectIds || []).map(String);
   if (!projectIds.length) return res.json({ areas: [], updatedAt: null });
 
-  const activeVersions = await NetworkVersion.find({
-    projectId: { $in: projectIds },
-    status: 'active',
-  }).select('_id label projectId');
-  if (!activeVersions.length) return res.json({ areas: [], updatedAt: null });
+  // Every delivery the project is working from, not only the active one — see liveNetworks.js for
+  // the import that stranded a whole project's drivers when this read the active version alone.
+  const liveVersions = await liveNetworkVersions(projectIds);
+  if (!liveVersions.length) return res.json({ areas: [], updatedAt: null });
 
   const assignments = await AreaAssignment.find({
     driverId: driver._id,
@@ -931,27 +929,22 @@ exports.myAreas = asyncHandler(async (req, res) => {
   if (!assignments.length) return res.json({ areas: [], updatedAt: null });
 
   /**
-   * Resolve assignments by AREA CODE against the active version, not by networkVersionId.
+   * Resolve assignments by AREA CODE against the live deliveries, not by networkVersionId.
    *
    * An AreaAssignment stores the version it was made against. Re-importing the network mints a new
    * version with new WorkArea _ids, so every existing assignment instantly pointed at a superseded
    * version and silently vanished from the driver's app — with nothing in the UI to explain why.
-   * That happened repeatedly here: five versions, and both live assignments stranded.
    *
    * `areaCode` is the CUSTOMER's identifier (an ABS SA2 code) and is stable across deliveries, so
    * matching on it means "Wallan is assigned to this driver" survives any number of re-imports.
    * The stored networkVersionId is kept as history — it records which delivery the decision was
    * made against — but it is no longer what entitlement depends on.
    */
-  const activeIds = activeVersions.map((v) => v._id);
-  const codes = [...new Set(assignments.map((a) => a.areaCode).filter(Boolean))];
-  const legacyIds = assignments.filter((a) => !a.areaCode).map((a) => a.areaId);
-
-  const areas = await WorkArea.find({
-    networkVersionId: { $in: activeIds },
-    // Rows predating the areaCode snapshot fall back to the raw id.
-    $or: [{ areaCode: { $in: codes } }, { _id: { $in: legacyIds } }],
-  }).select('areaCode name parentName priority targetMeters targetLinks outline bbox');
+  const areas = await resolveAssignedAreas(
+    liveVersions,
+    assignments,
+    'name parentName priority targetMeters targetLinks outline bbox'
+  );
 
   // Keyed by code so the stamp follows the area across versions, with an id fallback for legacy.
   const assignedAtByCode = new Map(
