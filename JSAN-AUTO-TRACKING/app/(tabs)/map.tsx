@@ -36,6 +36,8 @@ import {
 import { COVER_TTL_MS, loadCover, saveCover } from '@/src/lib/localSnapStore';
 import * as Location from 'expo-location';
 import { decodeRouteShapeLines } from '@/src/lib/polyline';
+import { pickActiveArea } from '@/src/lib/activeArea';
+import { useFocusEffect } from 'expo-router';
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -1136,13 +1138,61 @@ export default function MapScreen() {
     setMapError('No navigation app is available on this device.');
   }, []);
 
-  /** Where "Navigate" goes: the centre of the first allocated area. */
+  /** Best answer to "where is the driver": a recent live fix, else the fix the screen opened with. */
+  const driverPosRef = useRef<() => [number, number] | null>(() => null);
+  driverPosRef.current = () =>
+    liveFix && Date.now() - liveFixAtRef.current < 120_000 ? liveFix : startPosRef.current;
+
+  /**
+   * Open on the driver's area, every time the Maps tab is opened.
+   *
+   * The screen used to open on the driver's current position and leave the polygon to "slide into
+   * view as they approach it". In practice that meant a driver opening the map saw somebody else's
+   * suburb — or nothing — and had to hunt for the job. Now the tab frames the area they are
+   * working (see pickActiveArea): the one they are standing in, else the nearest, else the newest.
+   *
+   * Follow-mode is kept on only when they are INSIDE that area, where riding along with the car
+   * keeps the patch on screen. Outside it, following would drag the camera straight back off the
+   * polygon on the next fix; the my-location button still resumes it on demand.
+   *
+   * Armed on focus and spent on the first successful frame, so a background refresh of the areas
+   * list never yanks the camera away from where the driver has since panned.
+   */
+  const frameOnFocusRef = useRef(true);
+  const frameActiveArea = useCallback(() => {
+    if (!frameOnFocusRef.current || placingRef.current) return;
+    const map = mapRef.current;
+    if (!map) return;
+    const pos = driverPosRef.current();
+    const pick = pickActiveArea(areasRef.current, pos);
+    if (!pick) return;
+    frameOnFocusRef.current = false;
+    map.fitArea(pick.bbox);
+    followRef.current = pick.inside;
+    lastPanPosRef.current = pick.inside ? pos : null;
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      frameOnFocusRef.current = true;
+      frameActiveArea();
+    }, [frameActiveArea])
+  );
+  // The first open usually beats both the areas request and the map itself — try again as each lands.
+  const mapMounted = prefsReady && locReady;
+  useEffect(() => {
+    if (areas.length && mapMounted) frameActiveArea();
+  }, [areas, mapMounted, frameActiveArea]);
+
+  /** Where "Navigate" goes: the centre of the area the driver is working, as framed above. */
   const navTarget = useMemo(() => {
-    const withBox = areas.find((a) => a.bbox && a.bbox.length === 4);
-    if (!withBox || !withBox.bbox) return null;
-    const [w, sN, e, n] = withBox.bbox;
-    return { lon: (w + e) / 2, lat: (sN + n) / 2, name: withBox.name };
-  }, [areas]);
+    const pick = pickActiveArea(areas, driverPosRef.current());
+    if (!pick) return null;
+    const [w, sN, e, n] = pick.bbox;
+    return { lon: (w + e) / 2, lat: (sN + n) / 2, name: pick.area.name };
+    // liveFix: re-aim as the driver moves between areas.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [areas, liveFix]);
 
   /**
    * Map controls. Deliberately an overlay on the map rather than a separate screen: a driver

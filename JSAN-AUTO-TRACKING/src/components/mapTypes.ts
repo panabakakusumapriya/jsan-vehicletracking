@@ -164,4 +164,6 @@ export interface MapGLHandle {
   flyTo(center: [number, number], zoom?: number): void;
   /** Pan to [lon, lat] at the CURRENT zoom — what follow-mode uses every fix. */
   panTo(center: [number, number]): void;
+  /** Frame a [west, south, east, north] box — the driver's area, clear of the on-map controls. */
+  fitArea(bbox: [number, number, number, number]): void;
 }

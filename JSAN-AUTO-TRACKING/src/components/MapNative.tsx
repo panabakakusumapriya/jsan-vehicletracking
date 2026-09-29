@@ -226,6 +226,23 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
     [onCamera]
   );
 
+  const loadedRef = useRef(false);
+  const pendingFitRef = useRef<[number, number, number, number] | null>(null);
+  // Padding keeps the polygon clear of the stats header, the control stack on the right and the
+  // legend at the bottom.
+  const fitNow = useCallback((bbox: [number, number, number, number]) => {
+    cameraRef.current?.fitBounds(bbox, {
+      padding: { top: 70, right: 70, bottom: 120, left: 30 },
+      duration: 700,
+    });
+  }, []);
+  const onLoaded = useCallback(() => {
+    loadedRef.current = true;
+    const box = pendingFitRef.current;
+    pendingFitRef.current = null;
+    if (box) fitNow(box);
+  }, [fitNow]);
+
   useImperativeHandle(ref, () => ({
     zoomIn: () => {
       mapRef.current?.getZoom().then((z) => cameraRef.current?.zoomTo(z + 1, { duration: 220 })).catch(() => {});
@@ -249,7 +266,16 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
     panTo: (center: [number, number]) => {
       cameraRef.current?.easeTo({ center, duration: 700 });
     },
-  }), []);
+    fitArea: (bbox: [number, number, number, number]) => {
+      // Asked for before the map has loaded (the usual case on open): held, and applied the
+      // moment it has — a camera command sent to a map that is still loading is simply lost.
+      if (!loadedRef.current) {
+        pendingFitRef.current = bbox;
+        return;
+      }
+      fitNow(bbox);
+    },
+  }), [fitNow]);
 
   const failedRef = useRef(false);
   const onFail = useCallback(() => {
@@ -269,6 +295,7 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
         touchPitch={false}
         onRegionDidChange={onRegionDidChange}
         onDidFailLoadingMap={onFail}
+        onDidFinishLoadingMap={onLoaded}
         logo={false}
       >
         <Camera ref={cameraRef} initialViewState={initialView} />
