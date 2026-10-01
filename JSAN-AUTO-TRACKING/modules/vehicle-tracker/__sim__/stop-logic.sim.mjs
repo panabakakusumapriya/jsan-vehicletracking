@@ -37,6 +37,17 @@ const MAX_ACCURACY_M = 100;
 const TRIP_ACTIVE_MAX_ACCURACY_M = 50;
 const STOP_CLOCK_MOVE_M = 30;
 const FIX_INTERVAL_MS = 2_000;
+// GPS-jump vetoes and confinement (2026-10-01 field case, trip 6abe7d98) — see TrackingService.kt.
+const DOPPLER_CONFIRM_KMH = 5.0;
+const DOPPLER_CONFIRM_FIXES = 2;
+const JUMP_IMPLIED_KMH = 5.0;
+const JUMP_DOPPLER_MAX_KMH = 1.5;
+const CONFINE_WINDOW_MS = 5 * 60 * 1000;
+const CONFINE_RADIUS_M = 40;
+const CONFINE_DOPPLER_MAX_KMH = 3.0;
+// SIM_NO_VETOES=1 runs the engine WITHOUT these rules — to show the field scenarios below fail
+// on the old logic, i.e. that they really reproduce the bug.
+const VETOES = process.env.SIM_NO_VETOES !== '1';
 
 function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
   let tripId = null;
@@ -50,6 +61,33 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
   // Drift orbits its anchor and never accumulates; a crawl walks away from it.
   let stopAnchorPos = 0;
   let hasStopAnchor = false;
+  let stopAnchorTime = 0;
+  let anchorMaxDoppler = -1;
+  let watchDopplerSeen = false;
+  let watchDopplerMovingFixes = 0;
+  /** In-trip fixes of the last CONFINE_WINDOW_MS: { now, pos, doppler }. */
+  let confineWindow = [];
+  function anchorStartWatch(now, pos, doppler) {
+    startWatchPos = pos;
+    startWatchTime = now;
+    watchDopplerSeen = doppler !== null;
+    watchDopplerMovingFixes = doppler !== null && doppler >= DOPPLER_CONFIRM_KMH ? 1 : 0;
+  }
+  function setStopAnchor(now, pos, doppler) {
+    stopAnchorPos = pos;
+    hasStopAnchor = true;
+    stopAnchorTime = now;
+    anchorMaxDoppler = doppler ?? -1;
+  }
+  function isConfined(now) {
+    if (confineWindow.length < 4) return false;
+    if (now - confineWindow[0].now < CONFINE_WINDOW_MS * 0.9) return false;
+    const c = confineWindow.reduce((a, f) => a + f.pos, 0) / confineWindow.length;
+    if (confineWindow.some((f) => Math.abs(f.pos - c) > CONFINE_RADIUS_M)) return false;
+    const withDoppler = confineWindow.filter((f) => f.doppler !== null);
+    const moving = withDoppler.filter((f) => f.doppler >= CONFINE_DOPPLER_MAX_KMH).length;
+    return moving * 10 <= withDoppler.length;
+  }
   let endPoint = null; // position of the last "ended" marker, null if none was written
   // Activity Recognition state: verdicts land on transitions, with a timestamp.
   let lastActivity = null;
@@ -65,7 +103,7 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
   const fmt = (ms) =>
     `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
 
-  function startTrip(now, pos, gate) {
+  function startTrip(now, pos, gate, startDoppler = null) {
     tripId = `T${now}`;
     // Flush the buffered approach BEFORE the start point — original timestamps, so the trip
     // begins where the movement began, not where the gate finally recognised it.
@@ -80,8 +118,8 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
     lastRecordedAtMs = now;
     hasLastRecorded = true;
     lastMovedMs = now;
-    stopAnchorPos = pos;
-    hasStopAnchor = true;
+    setStopAnchor(now, pos, startDoppler);
+    confineWindow = [];
     startWatchPos = null;
     points.push({ now, pos });
     events.push(`${fmt(now)} START (${gate}, ${flushed} pre-start points flushed)`);
@@ -95,15 +133,22 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
     hasLastRecorded = false;
     lastMovedMs = 0;
     hasStopAnchor = false;
+    stopAnchorTime = 0;
+    anchorMaxDoppler = -1;
+    confineWindow = [];
     startWatchPos = null;
+    watchDopplerSeen = false;
+    watchDopplerMovingFixes = 0;
     buffer = [];
   }
 
   /** One GPS fix. `still` = AR's STILL flag; `activity` = 'vehicle' | 'foot' | null. */
   function processFix(now, {
     pos, accuracy, speedKmh, still, activity, vehicleConfirmed = false,
-    gaitUsable = true, runningOnFoot = false, arSaysVehicle = false,
+    gaitUsable = true, runningOnFoot = false, arSaysVehicle = false, hasSpeed = true,
   }) {
+    // The receiver's own Doppler reading; null on handsets that report none (see dopplerKmh).
+    const doppler = hasSpeed ? speedKmh : null;
     if (arSaysVehicle) arSaysVehicleAt = now;
     // Transition semantics: the receiver writes lastActivity when a movement verdict LANDS,
     // i.e. when it changes to a non-null kind.
@@ -130,9 +175,12 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
       }
 
       if (startWatchPos === null) {
-        startWatchPos = pos;
-        startWatchTime = now;
+        anchorStartWatch(now, pos, doppler);
         return;
+      }
+      if (doppler !== null) {
+        watchDopplerSeen = true;
+        if (doppler >= DOPPLER_CONFIRM_KMH) watchDopplerMovingFixes++;
       }
       const distFromWatch = Math.abs(pos - startWatchPos);
       const speedGateReach = distFromWatch >= Math.max(TRIP_START_DISTANCE_M, accuracy * 1.5);
@@ -140,8 +188,10 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
       if (speedGateReach || vehicleGateReach) {
         const elapsedSec = Math.max(0.1, (now - startWatchTime) / 1000);
         const avgSpeedKmh = (distFromWatch / elapsedSec) * 3.6;
+        const dopplerAgrees = !VETOES || !watchDopplerSeen || watchDopplerMovingFixes >= DOPPLER_CONFIRM_FIXES;
         const fastStart = speedGateReach &&
           avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
+          dopplerAgrees &&
           (vehicleConfirmed || speedKmh >= 20 || (gaitUsable && !runningOnFoot));
         const footRecently = lastActivity === 'foot' && now - lastActivityAt < FOOT_VETO_MS;
         // Live confidence from the continuous activity feed, NOT a transition edge that could be
@@ -159,14 +209,18 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
           accuracy <= TRIP_START_VEHICLE_MAX_ACCURACY_M &&
           speedKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH;
         if (fastStart || slowStart || vehicleStart) {
-          startTrip(now, pos, fastStart ? 'fast' : slowStart ? 'slow' : 'vehicle');
+          startTrip(now, pos, fastStart ? 'fast' : slowStart ? 'slow' : 'vehicle', doppler);
+        } else if (
+          VETOES && speedGateReach && avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
+          watchDopplerSeen && watchDopplerMovingFixes === 0
+        ) {
+          anchorStartWatch(now, pos, doppler); // a jump Doppler contradicts: spend it
         } else if (
           speedGateReach &&
           avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH &&
           !(vehicleConfirmed && speedKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH)
         ) {
-          startWatchPos = pos;
-          startWatchTime = now;
+          anchorStartWatch(now, pos, doppler);
         }
         // between the gates: keep the watch anchored — a crawl keeps accumulating
       }
@@ -178,8 +232,8 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
       lastRecordedAtMs = now;
       hasLastRecorded = true;
       lastMovedMs = now;
-      stopAnchorPos = pos;
-      hasStopAnchor = true;
+      setStopAnchor(now, pos, doppler);
+      confineWindow = [];
       return;
     }
 
@@ -190,12 +244,21 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
     // from unbounded creep. Doppler speed counts only when the position agrees — a stationary
     // receiver does invent a few km/h out of nothing.
     const netFromStopAnchor = hasStopAnchor ? Math.abs(pos - stopAnchorPos) : Infinity;
-    const travelled = netFromStopAnchor >= Math.max(STOP_CLOCK_MOVE_M, accuracy * 2);
-    const corroboratedSpeed = speedKmh >= RECORD_MOVING_SPEED_KMH && netFromStopAnchor >= accuracy;
+    // Vetoes: a Doppler-contradicted JUMP, and CONFINEMENT — see TrackingService.kt.
+    confineWindow.push({ now, pos, doppler });
+    while (confineWindow.length && now - confineWindow[0].now > CONFINE_WINDOW_MS) confineWindow.shift();
+    const vehicleNow = vehicleConfirmed;
+    const confined = VETOES && !vehicleNow && isConfined(now);
+    if (doppler !== null) anchorMaxDoppler = Math.max(anchorMaxDoppler, doppler);
+    const sinceAnchorSec = Math.max(1, (now - stopAnchorTime) / 1000);
+    const impliedKmh = (netFromStopAnchor / sinceAnchorSec) * 3.6;
+    const gpsJump = VETOES && !vehicleNow && anchorMaxDoppler >= 0 && anchorMaxDoppler < JUMP_DOPPLER_MAX_KMH &&
+      impliedKmh >= JUMP_IMPLIED_KMH;
+    const travelled = !confined && !gpsJump && netFromStopAnchor >= Math.max(STOP_CLOCK_MOVE_M, accuracy * 2);
+    const corroboratedSpeed = !confined && speedKmh >= RECORD_MOVING_SPEED_KMH && netFromStopAnchor >= accuracy;
     if (travelled || corroboratedSpeed) {
       lastMovedMs = now;
-      stopAnchorPos = pos;
-      hasStopAnchor = true;
+      setStopAnchor(now, pos, doppler);
     }
 
     const distFromLast = Math.abs(pos - lastRecordedPos);
@@ -544,6 +607,116 @@ all &= run('22. The 96 m fix: one junk fix 72 m off a parked car must not invent
     console.log(`  ended at ${at !== null ? (at / 60000).toFixed(1) : '—'} min (stop was at 2.0 min)`);
     return ends(e) === 1 && worst <= 30 && at >= 11.8 * 60_000 && at <= 12.4 * 60_000;
   },
+});
+
+// ── GPS jumps on a phone that never moved: the 2026-10-01 field case (trip 6abe7d98) ─────────────
+//
+// What the handset actually recorded after "starting a trip" on a desk: time (s), distance from
+// the first fix (m), Doppler (km/h), reported accuracy (m). Every position within 38 m, Doppler ~0
+// throughout but for one 24.7 km/h spike that arrived WITH a 36 m jump.
+const FIELD_JITTER = [
+  [0, 0, 0, 11.9], [22, 31.1, 0, 4.1], [32, 30.2, 1.85, 9.1], [41, 7.9, 0.39, 14.1],
+  [49, 19.1, 0.29, 10.1], [61, 23.9, 0.72, 7.1], [73, 28.1, 0.34, 5.1], [83, 34.8, 0, 3.8],
+  [126, 21.9, 0, 5.1], [167, 14.7, 0, 6], [187, 8.4, 0.12, 7.9], [227, 19.2, 0, 1.7],
+  [307, 28.6, 0, 2.1], [344, 37.3, 4.3, 3.4], [356, 3.1, 24.7, 11.5], [364, 37.9, 0, 4],
+  [401, 37.5, 0.22, 5.1],
+];
+const CYCLE_S = 410;
+
+/**
+ * Feed an explicit fix list. Between listed fixes the receiver keeps reporting the last position
+ * every FIX_INTERVAL_MS — but with a STILL Doppler reading (0): a speed spike is one fix's reading,
+ * not something the receiver repeats for as long as the position happens to hold.
+ * `fixes`: [{ t (ms), pos, doppler, accuracy, hasSpeed?, vehicleConfirmed?, gaitUsable? }].
+ */
+function replay(name, { fixes, durationMs, assertFn }) {
+  const e = makeEngine(TRIP_END_NO_MOVE_MS);
+  let k = 0;
+  let cur = fixes[0];
+  for (let now = 0; now <= durationMs; now += FIX_INTERVAL_MS) {
+    let fresh = false;
+    while (k < fixes.length && fixes[k].t <= now) { cur = fixes[k++]; fresh = true; }
+    if (cur && cur.t <= now) {
+      e.processFix(now, {
+        pos: cur.pos, accuracy: cur.accuracy ?? 8, speedKmh: fresh ? (cur.doppler ?? 0) : (cur.holdDoppler ?? 0),
+        still: false, activity: null, hasSpeed: cur.hasSpeed ?? true,
+        vehicleConfirmed: cur.vehicleConfirmed ?? false, gaitUsable: cur.gaitUsable ?? true,
+      });
+    }
+    if (now % TICK_INTERVAL_MS === 0) e.tick(now);
+  }
+  const ok = assertFn(e);
+  console.log(`\n=== ${name} ===`);
+  e.events.forEach((x) => console.log('  ' + x));
+  console.log(`  points recorded: ${e.points.length}`);
+  console.log(`  RESULT: ${ok ? 'PASS ✅' : 'FAIL ❌'}`);
+  return ok;
+}
+
+/** The field jitter, repeated from `fromS` for `cycles` cycles, centred on `at` metres. */
+function fieldJitter(fromS, cycles, at = 0, extra = {}) {
+  const out = [];
+  for (let c = 0; c < cycles; c++) {
+    for (const [t, d, dop, acc] of FIELD_JITTER) {
+      out.push({ t: (fromS + c * CYCLE_S + t) * 1000, pos: at + d, doppler: dop, accuracy: acc, ...extra });
+    }
+  }
+  return out;
+}
+
+all &= replay('23. FIELD BUG (trip 6abe7d98): log in on a desk — a 35 m warm-up jump in 4 s at 0 km/h Doppler, then 20 min of the recorded jitter — NO trip', {
+  durationMs: 21 * 60_000,
+  // The login moment: GPS converging, a fix lands 35 m off four seconds after the first.
+  fixes: [{ t: 0, pos: 0, doppler: 0, accuracy: 12 }, { t: 4_000, pos: 35, doppler: 0, accuracy: 6 },
+          ...fieldJitter(10, 3)],
+  assertFn: (e) => starts(e) === 0 && e.tripId === null,
+});
+
+all &= replay('24. FIELD BUG: a real trip parks, then the same jitter for 25 min — the trip ENDS (it used to run on forever)', {
+  durationMs: 28 * 60_000,
+  fixes: [
+    // 3 min at 30 km/h with Doppler, then parked at 1500 m with the recorded jitter.
+    ...Array.from({ length: 90 }, (_, i) => ({ t: i * 2000, pos: (30 / 3.6) * i * 2, doppler: 30, accuracy: 6 })),
+    ...fieldJitter(180, 4, 1500),
+  ],
+  assertFn: (e) => {
+    const at = endAtMs(e);
+    console.log(`  ended at ${at !== null ? (at / 60000).toFixed(1) : '—'} min (parked at 3.0 min)`);
+    return starts(e) === 1 && ends(e) === 1 && at !== null && at <= 3 * 60_000 + 16 * 60_000;
+  },
+});
+
+all &= replay('25. Depot: 7 min of the field jitter, then a real pull-away at 30 km/h — trip starts, route covers the pull-away', {
+  durationMs: 9 * 60_000,
+  // The pull-away begins after the recorded jitter ends (the list is fed in order).
+  fixes: [
+    ...fieldJitter(0, 1),
+    ...Array.from({ length: 60 }, (_, i) => ({ t: 420_000 + i * 2000, pos: 40 + (30 / 3.6) * i * 2, doppler: 30, accuracy: 6 })),
+  ],
+  assertFn: (e) => {
+    // The start watch averages from a minutes-old anchor after a long park, so the gate itself can
+    // take a minute (unchanged from before) — the pre-start buffer is what makes that harmless: the
+    // recorded route must still begin within seconds of the real pull-away.
+    const firstDriven = e.points.find((pt) => pt.now >= 420_000);
+    console.log(`  first recorded point after pull-away: ${firstDriven ? ((firstDriven.now - 420_000) / 1000).toFixed(0) + ' s' : '—'}`);
+    return starts(e) === 1 && !!firstDriven && firstDriven.now - 420_000 <= 10_000;
+  },
+});
+
+all &= replay('26. Handset with NO Doppler at all: a real pull-away still starts the trip (old behaviour kept)', {
+  durationMs: 3 * 60_000,
+  fixes: Array.from({ length: 90 }, (_, i) => ({ t: i * 2000, pos: (30 / 3.6) * i * 2, doppler: 30, hasSpeed: false, accuracy: 6 })),
+  assertFn: (e) => starts(e) === 1,
+});
+
+all &= replay('27. Jam crawl at 2 km/h with Doppler reading ZERO and no sensor verdict — the trip must NOT end', {
+  durationMs: 20 * 60_000,
+  fixes: [
+    ...Array.from({ length: 30 }, (_, i) => ({ t: i * 2000, pos: (30 / 3.6) * i * 2, doppler: 30, accuracy: 6 })),
+    // 2 km/h of real creep from 500 m, with a receiver that reports 0 km/h throughout.
+    ...Array.from({ length: 570 }, (_, i) => ({ t: 60_000 + i * 2000, pos: 500 + (2 / 3.6) * i * 2, doppler: 0, accuracy: 6 })),
+  ],
+  assertFn: (e) => starts(e) === 1 && ends(e) === 0 && e.tripId !== null,
 });
 
 console.log(`\n${all ? 'ALL VEHICLE-GATE SCENARIOS PASS' : 'SOME VEHICLE-GATE SCENARIOS FAILED'}`);

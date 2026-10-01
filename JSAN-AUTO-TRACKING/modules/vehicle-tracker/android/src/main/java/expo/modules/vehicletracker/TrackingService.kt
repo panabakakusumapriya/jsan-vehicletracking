@@ -246,6 +246,45 @@ class TrackingService : Service() {
         const val STOP_CLOCK_MOVE_M         = 30f
 
         /**
+         * GPS JUMPS vs. real movement — the Doppler witness.
+         *
+         * Field case (trip 6abe7d98, hyd-test2, 2026-10-01): the driver logged in and never moved,
+         * yet a trip started and then ran for 10+ minutes. Every fix's Doppler speed read ~0; only
+         * the POSITION moved — jumps of 31-38 m with a reported accuracy of 4-12 m. Two holes let
+         * that through: the fast start gate's "nothing walking" evidence is just as true of a phone
+         * on a desk, and the stop clock read a 38 m jump as travel because the reported accuracy
+         * understated the real error.
+         *
+         * Doppler speed is measured by the receiver from the satellite carrier shift, independently
+         * of the position fix, and at a genuine 10 km/h it registers. It only collapses to zero
+         * below ~2-3 km/h — so "the position moved fast but Doppler says still" is a contradiction
+         * that marks a jump, while "slow displacement, zero Doppler" is a crawl and stays travel.
+         * Handsets that report no Doppler at all (hasSpeed false) keep the old behaviour.
+         *
+         * START: the fast gate also needs DOPPLER_CONFIRM_FIXES fixes at DOPPLER_CONFIRM_KMH since
+         * the watch anchored (two, not one: a lone 24.7 km/h spike rode in with one of the jumps).
+         * STOP: a displacement implying JUMP_IMPLIED_KMH+ while Doppler stayed under
+         * JUMP_DOPPLER_MAX_KMH is not travel, unless the motion sensors say "vehicle".
+         */
+        const val DOPPLER_CONFIRM_KMH   = 5.0
+        const val DOPPLER_CONFIRM_FIXES = 2
+        const val JUMP_IMPLIED_KMH      = 5.0
+        const val JUMP_DOPPLER_MAX_KMH  = 1.5
+
+        /**
+         * CONFINEMENT — the other half of the same field case. Some of its jitter was slow (35 m
+         * drifted over 83 s implies 1.5 km/h), which Doppler cannot tell from a jam crawl. Space
+         * can: a crawl keeps moving away, drift circles one spot. When every fix of the last
+         * CONFINE_WINDOW_MS sits within CONFINE_RADIUS_M of their centroid, Doppler never reached
+         * CONFINE_DOPPLER_MAX_KMH and the sensors do not say "vehicle", nothing in that window
+         * counts as travel. A crawl only stays inside that circle below ~1 km/h for five minutes,
+         * and a jam with the engine running classifies as a vehicle anyway.
+         */
+        const val CONFINE_WINDOW_MS       = 5 * 60 * 1000L
+        const val CONFINE_RADIUS_M        = 40f
+        const val CONFINE_DOPPLER_MAX_KMH = 3.0
+
+        /**
          * Hard cap on one trip's length. Anything past this is a forgotten session, not a
          * drive — end it so the server can snap it, and let the next movement start a fresh
          * trip. Mirrored server-side (TRIP_MAX_DURATION_HOURS) as a backstop for old builds.
@@ -416,6 +455,9 @@ class TrackingService : Service() {
     private var startWatchPos: Location? = null
     /** Wall-clock time when startWatchPos was captured (for avg-speed calculation). */
     private var startWatchTime: Long = 0L
+    /** Since the watch anchored: did any fix carry Doppler, and how many said DOPPLER_CONFIRM_KMH+. */
+    private var watchDopplerSeen: Boolean = false
+    private var watchDopplerMovingFixes: Int = 0
 
     // ── In-trip recording state ───────────────────────────────────────────────
     /** Last recorded position — distance checks use this. */
@@ -436,6 +478,12 @@ class TrackingService : Service() {
     private var stopAnchorLat: Double = 0.0
     private var stopAnchorLon: Double = 0.0
     private var hasStopAnchor: Boolean = false
+    /** When the stop anchor was set, and the highest Doppler seen since (-1 = none reported). */
+    private var stopAnchorElapsedMs: Long = 0L
+    private var anchorMaxDopplerKmh: Double = -1.0
+    /** In-trip fixes of the last CONFINE_WINDOW_MS, for the confinement test. */
+    private data class WindowFix(val elapsedMs: Long, val lat: Double, val lon: Double, val dopplerKmh: Double?)
+    private val confineWindow = ArrayDeque<WindowFix>()
     /** Throttles the server keep-alive heartbeat while parked. */
     private var lastHeartbeatMs: Long = 0L
     private var tripStartedElapsedMs: Long = 0L
@@ -725,6 +773,9 @@ class TrackingService : Service() {
         // points into a closed trip and the driver disappeared from Live tracking entirely.
 
         val speedKmh = computeSpeedKmh(location)   // updates lastLocation
+        // The receiver's OWN speed reading, never the position-derived fallback computeSpeedKmh
+        // uses: the jump vetoes below need a witness that does not move when the position jumps.
+        val dopplerKmh: Double? = if (location.hasSpeed() && location.speed >= 0f) location.speed * 3.6 else null
         addSpeed(speedKmh)                             // feed rolling 3-speed window
         // Both speeds, because the fix's own Doppler reading is the one that fails at a crawl.
         val groundKmh = groundSpeedKmh(location, now)
@@ -793,9 +844,12 @@ class TrackingService : Service() {
 
             // ── IDLE: watch for a vehicle-speed movement to start a trip ────
             if (startWatchPos == null) {
-                startWatchPos  = location
-                startWatchTime = now
+                anchorStartWatch(location, now, dopplerKmh)
                 return
+            }
+            if (dopplerKmh != null) {
+                watchDopplerSeen = true
+                if (dopplerKmh >= DOPPLER_CONFIRM_KMH) watchDopplerMovingFixes++
             }
 
             val distFromWatch = startWatchPos!!.distanceTo(location)
@@ -842,8 +896,15 @@ class TrackingService : Service() {
                 // this fast enough to be driving" but "is this phone in a vehicle". When the
                 // sensors say it is, TRIP_START_VEHICLE_DISTANCE_M of movement at barely above
                 // a standstill starts the trip — 1 km/h of creep included.
+                //
+                // FAST also needs the receiver's Doppler to agree, when it reports one: at 10 km/h+
+                // Doppler registers, so displacement at that pace with Doppler near zero is a GPS
+                // jump (see DOPPLER_CONFIRM_KMH — a phone on a desk after login started a trip
+                // this way, because "nothing walking" is true of a desk too).
+                val dopplerAgrees = !watchDopplerSeen || watchDopplerMovingFixes >= DOPPLER_CONFIRM_FIXES
                 val fastStart = speedGateReach &&
                     avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
+                    dopplerAgrees &&
                     (
                         vehicleConfirmed ||
                         avgSpeedKmh >= 20.0 ||
@@ -879,9 +940,8 @@ class TrackingService : Service() {
                     lastRecordedAtMs = now
                     hasLastRecorded  = true
                     lastMovedMs      = now
-                    stopAnchorLat    = rawLat
-                    stopAnchorLon    = rawLon
-                    hasStopAnchor    = true
+                    setStopAnchor(rawLat, rawLon, now, dopplerKmh)
+                    confineWindow.clear()
                     lastHeartbeatMs  = now
                     startWatchPos    = null
                     recentSpeeds.clear()
@@ -934,6 +994,12 @@ class TrackingService : Service() {
                     updateNotification("Trip started ($gate) • ${speedKmh.roundToInt()} km/h")
                     applyCadence(now)
                     triggerUpload()
+                } else if (speedGateReach && avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
+                           watchDopplerSeen && watchDopplerMovingFixes == 0) {
+                    // Fast-gate displacement that the receiver's Doppler flatly contradicts: a GPS
+                    // jump. Re-anchor at the jumped-to fix so the jump is spent, not carried into
+                    // the next measurement. A real pull-away shows Doppler within a fix or two.
+                    anchorStartWatch(location, now, dopplerKmh)
                 } else if (speedGateReach && avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH &&
                            !(vehicleConfirmed && recentKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH)) {
                     // Slower than any crawl worth calling driving — drift, not a trip. Re-anchor
@@ -941,8 +1007,7 @@ class TrackingService : Service() {
                     // moving right now: on a fuzzy fix the vehicle gate needs more than 30 m
                     // (accuracy * 2), so re-anchoring at 30 m would throw the creep's accumulated
                     // ground away just short of the gate, every time, forever.
-                    startWatchPos  = location
-                    startWatchTime = now
+                    anchorStartWatch(location, now, dopplerKmh)
                 }
                 // Between the gates: a genuine crawl. Deliberately NOT re-anchored — the old
                 // reset here is why a jammed street never started a trip: every 30 m the average
@@ -964,9 +1029,8 @@ class TrackingService : Service() {
                 lastRecordedAtMs = now
                 hasLastRecorded = true
                 lastMovedMs     = now
-                stopAnchorLat   = rawLat
-                stopAnchorLon   = rawLon
-                hasStopAnchor   = true
+                setStopAnchor(rawLat, rawLon, now, dopplerKmh)
+                confineWindow.clear()
                 return
             }
 
@@ -993,14 +1057,31 @@ class TrackingService : Service() {
             // hold a trip open; pairing it with "and the fix has left its own error circle" keeps
             // the fast, obvious case instant while costing a genuine crawl only the seconds it
             // takes to cover the displacement floor.
-            val travelled = netFromStopAnchor >= maxOf(STOP_CLOCK_MOVE_M, accuracy * 2f)
-            val corroboratedSpeed =
+            //
+            // Two vetoes on top, both from the 2026-10-01 field case (see DOPPLER_CONFIRM_KMH and
+            // CONFINE_WINDOW_MS): a displacement the receiver's Doppler contradicts is a JUMP, and
+            // a phone whose fixes have circled one spot for five minutes is not travelling however
+            // far any single fix strays. Neither applies while the sensors say "vehicle" — a jam
+            // with the engine running keeps every witness it had.
+            confineWindow.addLast(WindowFix(now, rawLat, rawLon, dopplerKmh))
+            while (confineWindow.isNotEmpty() && now - confineWindow.first().elapsedMs > CONFINE_WINDOW_MS) {
+                confineWindow.removeFirst()
+            }
+            val vehicleNow = motion.isVehicle(now)
+            val confined = !vehicleNow && isConfined(now)
+            if (dopplerKmh != null) anchorMaxDopplerKmh = maxOf(anchorMaxDopplerKmh, dopplerKmh)
+            val sinceAnchorSec = ((now - stopAnchorElapsedMs) / 1000.0).coerceAtLeast(1.0)
+            val impliedKmh = (netFromStopAnchor / sinceAnchorSec) * 3.6
+            val gpsJump = !vehicleNow &&
+                anchorMaxDopplerKmh >= 0.0 && anchorMaxDopplerKmh < JUMP_DOPPLER_MAX_KMH &&
+                impliedKmh >= JUMP_IMPLIED_KMH
+            val travelled = !confined && !gpsJump &&
+                netFromStopAnchor >= maxOf(STOP_CLOCK_MOVE_M, accuracy * 2f)
+            val corroboratedSpeed = !confined &&
                 speedKmh >= RECORD_MOVING_SPEED_KMH && netFromStopAnchor >= accuracy
             if (travelled || corroboratedSpeed) {
                 lastMovedMs   = now
-                stopAnchorLat = rawLat
-                stopAnchorLon = rawLon
-                hasStopAnchor = true
+                setStopAnchor(rawLat, rawLon, now, dopplerKmh)
             }
 
             // Recording is decided by MOVEMENT, and movement has three witnesses, any one of
@@ -1087,6 +1168,39 @@ class TrackingService : Service() {
                 Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
                 Math.sin(dLon / 2).let { it * it }
         return (2 * R * Math.asin(Math.sqrt(a).coerceAtMost(1.0))).toFloat()
+    }
+
+    /** (Re)anchor the trip-start watch here, and restart its Doppler tally from this fix. */
+    private fun anchorStartWatch(location: Location, now: Long, dopplerKmh: Double?) {
+        startWatchPos  = location
+        startWatchTime = now
+        watchDopplerSeen = dopplerKmh != null
+        watchDopplerMovingFixes = if (dopplerKmh != null && dopplerKmh >= DOPPLER_CONFIRM_KMH) 1 else 0
+    }
+
+    /** Move the stop-clock anchor here; the jump test measures implied speed and Doppler from it. */
+    private fun setStopAnchor(lat: Double, lon: Double, now: Long, dopplerKmh: Double?) {
+        stopAnchorLat = lat
+        stopAnchorLon = lon
+        hasStopAnchor = true
+        stopAnchorElapsedMs = now
+        anchorMaxDopplerKmh = dopplerKmh ?: -1.0
+    }
+
+    /**
+     * Has this phone circled one spot for the whole confinement window? See CONFINE_WINDOW_MS.
+     * Doppler is judged by its share, not its maximum: a lone spike rides in with GPS jumps (one
+     * read 24.7 km/h in the field case), while a vehicle creeping away would show it on many fixes.
+     */
+    private fun isConfined(now: Long): Boolean {
+        if (confineWindow.size < 4) return false
+        if (now - confineWindow.first().elapsedMs < CONFINE_WINDOW_MS * 9 / 10) return false
+        val lat = confineWindow.sumOf { it.lat } / confineWindow.size
+        val lon = confineWindow.sumOf { it.lon } / confineWindow.size
+        if (confineWindow.any { haversineMeters(lat, lon, it.lat, it.lon) > CONFINE_RADIUS_M }) return false
+        val withDoppler = confineWindow.mapNotNull { it.dopplerKmh }
+        val moving = withDoppler.count { it >= CONFINE_DOPPLER_MAX_KMH }
+        return moving * 10 <= withDoppler.size
     }
 
     /**
@@ -1214,12 +1328,17 @@ class TrackingService : Service() {
         hasLastRecorded = false
         lastMovedMs     = 0L
         hasStopAnchor   = false
+        stopAnchorElapsedMs = 0L
+        anchorMaxDopplerKmh = -1.0
+        confineWindow.clear()
         lastHeartbeatMs = 0L
         groundRefLoc    = null
         groundRefMs     = 0L
         lastGroundKmh   = null
         startWatchPos   = null
         startWatchTime  = 0L
+        watchDopplerSeen = false
+        watchDopplerMovingFixes = 0
         recentSpeeds.clear()
         preStartBuffer.clear()
         triggerUpload()
