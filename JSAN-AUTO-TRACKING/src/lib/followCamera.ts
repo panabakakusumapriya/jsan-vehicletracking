@@ -31,6 +31,12 @@ const PAN_AWAY_DEG = 8e-4;
 const PAN_STEP_DEG = 5e-5;
 const MIN_TRAVEL_M = 20;
 const DEFAULT_ACCURACY_M = 15;
+/** GPS heading is trusted from this speed up; below it the receiver's bearing wanders. */
+const HEADING_MIN_KMH = 5;
+/** With no usable heading, the course between two positions this far apart (or 1.5x the error). */
+const COURSE_MIN_M = 12;
+/** Direction changes smaller than this do not turn the camera — GPS heading wobbles a few degrees. */
+const BEARING_STEP_DEG = 8;
 
 export type LonLat = [number, number];
 
@@ -44,6 +50,12 @@ export interface FollowState {
   /** Consecutive moving fixes. */
   streak: number;
   prev: { lon: number; lat: number; at: number } | null;
+  /** Direction of travel, degrees clockwise from north; null until the vehicle has shown one. */
+  heading: number | null;
+  /** Where the last computed course was measured from (no-heading handsets). */
+  courseFrom: { lon: number; lat: number } | null;
+  /** The bearing the camera was last turned to; changes under BEARING_STEP_DEG are ignored. */
+  camBearing: number | null;
 }
 
 export interface Fix {
@@ -51,14 +63,16 @@ export interface Fix {
   lat: number;
   speedKmh?: number | null;
   accuracy?: number | null;
+  /** GPS bearing of travel, degrees from north; null when the receiver has none. */
+  heading?: number | null;
 }
 
 export type FollowAction =
   | { kind: 'none' }
-  /** Already following: move to the vehicle at the current zoom. */
-  | { kind: 'pan'; center: LonLat }
+  /** Already following: move to the vehicle at the current zoom, facing `bearing` (null = as is). */
+  | { kind: 'pan'; center: LonLat; bearing: number | null }
   /** Taking the vehicle back after a suspension: move there, lifting a zoomed-out view. */
-  | { kind: 'resume'; center: LonLat };
+  | { kind: 'resume'; center: LonLat; bearing: number | null };
 
 export const createFollow = (): FollowState => ({
   following: true,
@@ -66,7 +80,37 @@ export const createFollow = (): FollowState => ({
   lastTouchAt: -Infinity,
   streak: 0,
   prev: null,
+  heading: null,
+  courseFrom: null,
+  camBearing: null,
 });
+
+const norm = (deg: number) => ((deg % 360) + 360) % 360;
+/** Smallest angle between two bearings, 0..180. */
+export const bearingDelta = (a: number, b: number) => {
+  const d = Math.abs(norm(a) - norm(b));
+  return d > 180 ? 360 - d : d;
+};
+
+/**
+ * Fold a new direction reading into the running one. Small differences are averaged (GPS heading
+ * wobbles a few degrees either side of the road's true line, and following that wobble twitches the
+ * map); a change of 30° or more is a real turn and is taken at once, so corners stay instant.
+ */
+function blendHeading(prev: number | null, next: number): number {
+  if (prev === null) return norm(next);
+  let d = norm(next) - prev;
+  if (d > 180) d -= 360;
+  if (d <= -180) d += 360;
+  return Math.abs(d) >= 30 ? norm(next) : norm(prev + d * 0.5);
+}
+
+/** Initial course from a to b, degrees clockwise from north. */
+function courseBetween(a: { lon: number; lat: number }, b: { lon: number; lat: number }): number {
+  const dx = (b.lon - a.lon) * Math.cos((b.lat * Math.PI) / 180);
+  const dy = b.lat - a.lat;
+  return norm((Math.atan2(dx, dy) * 180) / Math.PI);
+}
 
 function metresBetween(a: { lon: number; lat: number }, b: { lon: number; lat: number }): number {
   const dx = (b.lon - a.lon) * 111_320 * Math.cos((b.lat * Math.PI) / 180);
@@ -86,6 +130,7 @@ export function onFix(s: FollowState, fix: Fix, now: number, placing: boolean): 
   }
   s.prev = { lon: fix.lon, lat: fix.lat, at: now };
   s.streak = kmh >= MOVING_KMH || travelled ? s.streak + 1 : 0;
+  trackHeading(s, fix, kmh);
 
   // Placement needs a still map; nothing moves the camera until the pin is dropped.
   if (placing) return { kind: 'none' };
@@ -95,17 +140,54 @@ export function onFix(s: FollowState, fix: Fix, now: number, placing: boolean): 
     if (s.streak >= 2 && now - s.lastTouchAt >= FOLLOW_RESUME_MS) {
       s.following = true;
       s.lastPan = center;
-      return { kind: 'resume', center };
+      return { kind: 'resume', center, bearing: turnCamera(s, true) };
     }
     return { kind: 'none' };
   }
 
   const lp = s.lastPan;
-  if (lp && Math.abs(lp[0] - fix.lon) <= PAN_STEP_DEG && Math.abs(lp[1] - fix.lat) <= PAN_STEP_DEG) {
+  const before = s.camBearing;
+  const bearing = turnCamera(s, false);
+  const turned = bearing !== null && bearing !== before;
+  // A U-turn on the spot barely moves the vehicle — the turn alone is reason to move the camera.
+  if (!turned && lp && Math.abs(lp[0] - fix.lon) <= PAN_STEP_DEG && Math.abs(lp[1] - fix.lat) <= PAN_STEP_DEG) {
     return { kind: 'none' };
   }
   s.lastPan = center;
-  return { kind: 'pan', center };
+  return { kind: 'pan', center, bearing };
+}
+
+/**
+ * Keep the direction of travel up to date. GPS heading when the vehicle is genuinely driving (the
+ * receiver's bearing is noise at a standstill); otherwise the course between positions far enough
+ * apart to mean something — and only while moving, so a parked phone's slow drift never turns the
+ * map. A stopped vehicle keeps the last heading it had, which is the way it is still facing.
+ */
+function trackHeading(s: FollowState, fix: Fix, kmh: number): void {
+  const gps = typeof fix.heading === 'number' && Number.isFinite(fix.heading) ? fix.heading : null;
+  if (gps !== null && kmh >= HEADING_MIN_KMH) {
+    s.heading = blendHeading(s.heading, gps);
+    s.courseFrom = { lon: fix.lon, lat: fix.lat };
+    return;
+  }
+  if (!s.courseFrom) { s.courseFrom = { lon: fix.lon, lat: fix.lat }; return; }
+  const acc = typeof fix.accuracy === 'number' && Number.isFinite(fix.accuracy) ? fix.accuracy : DEFAULT_ACCURACY_M;
+  const moving = kmh >= HEADING_MIN_KMH || s.streak >= 1;
+  if (!moving) return;
+  if (metresBetween(s.courseFrom, fix) >= Math.max(COURSE_MIN_M, acc * 1.5)) {
+    s.heading = blendHeading(s.heading, courseBetween(s.courseFrom, fix));
+    s.courseFrom = { lon: fix.lon, lat: fix.lat };
+  }
+}
+
+/** The bearing to send the camera to: the heading, unless it is within BEARING_STEP_DEG of where
+ *  the camera already faces. `force` = always answer (resuming a camera that has been elsewhere). */
+function turnCamera(s: FollowState, force: boolean): number | null {
+  if (s.heading === null) return s.camBearing;
+  if (force || s.camBearing === null || bearingDelta(s.heading, s.camBearing) >= BEARING_STEP_DEG) {
+    s.camBearing = s.heading;
+  }
+  return s.camBearing;
 }
 
 /** The driver moved the map by hand (pan or pinch); `center` is where the camera settled. */

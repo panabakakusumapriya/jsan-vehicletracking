@@ -333,6 +333,27 @@ export default function MapScreen() {
   );
 
   /**
+   * Heading-up: while following, the map turns so the direction of travel points up the screen —
+   * through every turn and U-turn, the way a navigation app does. A ref as well as the pref,
+   * because the GPS listener is registered once and would otherwise keep the first value.
+   */
+  const headingUpRef = useRef(prefs.headingUp);
+  headingUpRef.current = prefs.headingUp;
+  /** The bearing to hand the camera, or undefined to leave its rotation alone. */
+  const camBearing = (b: number | null): number | undefined =>
+    headingUpRef.current && b !== null ? b : undefined;
+  const setHeadingUp = useCallback((on: boolean) => {
+    updatePrefs({ headingUp: on });
+    if (on) {
+      // Face the way the vehicle is going now, rather than at the next fix that moves.
+      const f = followRef.current;
+      if (f.following && f.lastPan && f.heading !== null) mapRef.current?.panTo(f.lastPan, f.heading);
+    } else {
+      mapRef.current?.rotateTo(0); // north back up
+    }
+  }, [updatePrefs]);
+
+  /**
    * Camera persistence. Written straight to storage WITHOUT going through React state — the
    * opening camera is read exactly once at mount, so state has nothing to react to, and a
    * per-pan setState would re-render the whole screen for a value only the disk cares about.
@@ -873,8 +894,8 @@ export default function MapScreen() {
 
         // Follow the drive (see src/lib/followCamera.ts for when it lets go and takes back).
         const cam = followOnFix(followRef.current, e, Date.now(), placingRef.current);
-        if (cam.kind === 'pan') mapRef.current?.panTo(cam.center);
-        else if (cam.kind === 'resume') mapRef.current?.followTo(cam.center);
+        if (cam.kind === 'pan') mapRef.current?.panTo(cam.center, camBearing(cam.bearing));
+        else if (cam.kind === 'resume') mapRef.current?.followTo(cam.center, camBearing(cam.bearing));
 
         // Live breadcrumb: draw the road AS IT IS DRIVEN, no upload + poll round trip. Trip
         // fixes only — idle fixes would sketch the walk to the car. ~12 m gate (1e-4 deg is
@@ -1173,7 +1194,7 @@ export default function MapScreen() {
     if (pos && isDriving(followRef.current, Date.now())) {
       frameOnFocusRef.current = false;
       startFollowing(followRef.current, pos);
-      map.followTo(pos);
+      map.followTo(pos, camBearing(followRef.current.heading));
       return;
     }
     const pick = pickActiveArea(areasRef.current, pos);
@@ -1262,6 +1283,10 @@ export default function MapScreen() {
           <TouchableOpacity style={s.panelRow} onPress={() => updatePrefs({ showRoads: !prefs.showRoads })}>
             <Text style={s.panelLabel}>Roads</Text>
             <Text style={[s.panelState, prefs.showRoads && s.panelStateOn]}>{prefs.showRoads ? 'ON' : 'OFF'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={s.panelRow} onPress={() => setHeadingUp(!prefs.headingUp)}>
+            <Text style={s.panelLabel}>Rotate with driving direction</Text>
+            <Text style={[s.panelState, prefs.headingUp && s.panelStateOn]}>{prefs.headingUp ? 'ON' : 'OFF'}</Text>
           </TouchableOpacity>
           {/* Cycles Off → 7 d → 30 d → 90 d. A window, not a toggle, because "everything I have ever
               driven" is megabytes on a metered plan and a month is what a driver actually asks for. */}

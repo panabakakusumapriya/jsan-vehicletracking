@@ -211,5 +211,123 @@ const count = (actions, kind) => actions.filter((a) => a.kind === kind).length;
   check('a fix with no position does nothing and does not throw', r.kind === 'none' && s.prev === null);
 }
 
+/* ───────────────────────── heading-up: the map turns with the vehicle ───────────────────────── */
+
+/**
+ * Drive a path of legs: each leg is { bearing (deg from north), metres, kmh, heading? }.
+ * `heading` overrides what the GPS reports (null = this handset reports none). Fix every 2 s.
+ */
+function path(s, legs, { t0 = 0, start = [0, 0], everyS = 2 } = {}) {
+  const out = [];
+  let [x, y] = start;
+  let t = t0;
+  for (const leg of legs) {
+    const step = (leg.kmh / 3.6) * everyS;
+    const n = Math.max(1, Math.round(leg.metres / Math.max(step, 0.5)));
+    const rad = (leg.bearing * Math.PI) / 180;
+    for (let i = 0; i < n; i++) {
+      x += Math.sin(rad) * step;
+      y += Math.cos(rad) * step;
+      const gps = 'heading' in leg ? (typeof leg.heading === 'function' ? leg.heading(i) : leg.heading) : leg.bearing;
+      out.push({ t, ...onFix(s, { ...at(x, y), speedKmh: leg.kmh, heading: gps, accuracy: 6 }, t, false) });
+      t += everyS * 1000;
+    }
+  }
+  return { actions: out, t, end: [x, y] };
+}
+const lastBearing = (actions) => [...actions].reverse().find((a) => a.kind !== 'none')?.bearing ?? null;
+const near = (a, b, tol = 3) => a !== null && Math.min(Math.abs(a - b), 360 - Math.abs(a - b)) <= tol;
+
+// 15 ─ Driving east: the map faces east.
+{
+  const s = createFollow();
+  const { actions } = path(s, [{ bearing: 90, metres: 300, kmh: 40 }]);
+  check('driving east, every camera move faces east (90°)',
+    actions.filter((a) => a.kind === 'pan').every((a) => near(a.bearing, 90)), `last ${lastBearing(actions)}`);
+}
+
+// 16 ─ A right turn: east, then south.
+{
+  const s = createFollow();
+  path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  const turn = path(s, [{ bearing: 180, metres: 100, kmh: 30 }], { t0: 20_000, start: [200, 0] });
+  const first = turn.actions.findIndex((a) => near(a.bearing, 180));
+  check('turning right onto a southbound road, the map turns to face south',
+    first >= 0 && first <= 1, first >= 0 ? `facing south from fix #${first} of the new road` : 'never turned');
+}
+
+// 17 ─ A U-turn: east, slow round, west.
+{
+  const s = createFollow();
+  path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  const u = path(s, [
+    { bearing: 0, metres: 8, kmh: 10 },
+    { bearing: 270, metres: 200, kmh: 35 },
+  ], { t0: 20_000, start: [200, 0] });
+  check('after a U-turn the map faces the new direction (west, 270°)', near(lastBearing(u.actions), 270),
+    `ended at ${lastBearing(u.actions)}`);
+}
+
+// 18 ─ A U-turn on the spot still turns the camera even though the car barely moved.
+{
+  const s = createFollow();
+  path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  const t = 30_000;
+  const p = at(200, 0);
+  const r = onFix(s, { ...p, speedKmh: 8, heading: 270, accuracy: 6 }, t, false);
+  check('a heading flip with almost no movement still moves the camera to face it', r.kind === 'pan' && near(r.bearing, 270),
+    `${r.kind} ${r.bearing ?? ''}`);
+}
+
+// 19 ─ GPS heading wobble does not twitch the map.
+{
+  const s = createFollow();
+  const { actions } = path(s, [{ bearing: 90, metres: 400, kmh: 50, heading: (i) => 90 + (i % 2 ? 4 : -4) }]);
+  const bearings = new Set(actions.filter((a) => a.kind === 'pan').map((a) => a.bearing));
+  check('±4° of GPS heading noise leaves the map facing one way, not twitching', bearings.size === 1, `${[...bearings]}`);
+}
+
+// 20 ─ Handsets with no GPS heading: the course comes from the positions.
+{
+  const s = createFollow();
+  const { actions } = path(s, [{ bearing: 0, metres: 200, kmh: 40, heading: null }]);
+  check('with no GPS heading, driving north still turns the map north (from the positions)',
+    near(lastBearing(actions), 0, 4), `ended at ${lastBearing(actions)}`);
+}
+
+// 21 ─ Parked: wobbling fixes with random headings never spin the map.
+{
+  const s = createFollow();
+  path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  const before = s.camBearing;
+  let spun = false;
+  for (let i = 0; i < 40; i++) {
+    const p = at(200 + (i % 2 ? 3 : -3), i % 3 ? 3 : -3);
+    const r = onFix(s, { ...p, speedKmh: 0.5, heading: (i * 97) % 360, accuracy: 10 }, 30_000 + i * 5000, false);
+    if (r.kind !== 'none' && r.bearing !== before) spun = true;
+  }
+  check('parked with GPS jitter and random headings, the map keeps facing the way the car stopped',
+    !spun && s.camBearing === before, `camBearing ${s.camBearing}`);
+}
+
+// 22 ─ Creeping below 5 km/h: the receiver's heading is not trusted.
+{
+  const s = createFollow();
+  path(s, [{ bearing: 90, metres: 100, kmh: 30 }]);
+  const r = onFix(s, { ...at(101, 0), speedKmh: 2, heading: 200, accuracy: 6 }, 20_000, false);
+  check('a 200° heading at 2 km/h does not turn the map', r.kind === 'none' || near(r.bearing, 90));
+}
+
+// 23 ─ Taking the car back after a touch faces the way it is going.
+{
+  const s = createFollow();
+  const d = path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  onGesture(s, [LON0 + 0.02, LAT0], d.t);
+  const after = path(s, [{ bearing: 180, metres: 300, kmh: 40 }], { t0: d.t + 1000, start: d.end });
+  const resume = after.actions.find((a) => a.kind === 'resume');
+  check('when following resumes, the camera comes back facing the current direction (south)',
+    Boolean(resume) && near(resume.bearing, 180), resume ? `${resume.bearing}` : 'no resume');
+}
+
 console.log(failed ? `\n${failed} FOLLOW-CAMERA SCENARIO(S) FAILED` : '\nALL FOLLOW-CAMERA SCENARIOS PASS');
 process.exit(failed ? 1 : 0);

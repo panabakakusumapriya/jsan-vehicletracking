@@ -236,6 +236,8 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
   const fitNow = useCallback((bbox: [number, number, number, number]) => {
     cameraRef.current?.fitBounds(bbox, {
       padding: { top: 70, right: 70, bottom: 120, left: 30 },
+      // The area is read as a plan — north up, whatever way the map was turned while driving.
+      bearing: 0,
       duration: 700,
     });
   }, []);
@@ -266,8 +268,10 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
       if (zoom === undefined) cameraRef.current?.easeTo({ center, duration: 500 });
       else cameraRef.current?.easeTo({ center, zoom, duration: 500 });
     },
-    panTo: (center: [number, number]) => {
-      cameraRef.current?.easeTo({ center, duration: 700 });
+    panTo: (center: [number, number], bearing?: number) => {
+      // Bearing rides in the same ease as the pan, so a turn is one smooth move rather than a
+      // slide followed by a spin. MapLibre takes the short way round.
+      cameraRef.current?.easeTo(bearing === undefined ? { center, duration: 700 } : { center, bearing, duration: 700 });
     },
     fitArea: (bbox: [number, number, number, number]) => {
       // Asked for before the map has loaded (the usual case on open): held, and applied the
@@ -278,13 +282,19 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
       }
       fitNow(bbox);
     },
-    followTo: (center: [number, number]) => {
+    followTo: (center: [number, number], bearing?: number) => {
       // Following wins over a frame still waiting for the map to load — applying it afterwards
       // would throw the camera back off the vehicle the driver is now following.
       pendingFitRef.current = null;
       mapRef.current?.getZoom()
-        .then((z) => cameraRef.current?.easeTo({ center, zoom: Math.max(z, FOLLOW_MIN_ZOOM), duration: 600 }))
-        .catch(() => cameraRef.current?.easeTo({ center, zoom: FOLLOW_MIN_ZOOM, duration: 600 }));
+        .then((z) => cameraRef.current?.easeTo({ center, zoom: Math.max(z, FOLLOW_MIN_ZOOM), duration: 600, ...(bearing === undefined ? {} : { bearing }) }))
+        .catch(() => cameraRef.current?.easeTo({ center, zoom: FOLLOW_MIN_ZOOM, duration: 600, ...(bearing === undefined ? {} : { bearing }) }));
+    },
+    rotateTo: (bearing: number) => {
+      // easeTo insists on a centre; zoomTo to the zoom we are already at turns the map in place.
+      mapRef.current?.getZoom()
+        .then((z) => cameraRef.current?.zoomTo(z, { bearing, duration: 500 }))
+        .catch(() => {});
     },
   }), [fitNow]);
 
