@@ -102,6 +102,8 @@ export interface MapGLProps {
   trace?: MapGLTrace | null;
   /** Live position, [lon, lat]. */
   vehicle?: [number, number] | null;
+  /** Which way the vehicle faces, degrees clockwise from north — turns the car icon. Null = north. */
+  vehicleHeading?: number | null;
   /** Route history. Re-derived only when `version` changes. */
   history?: MapGLHistory | null;
   showHistory?: boolean;

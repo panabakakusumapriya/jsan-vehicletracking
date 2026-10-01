@@ -41,7 +41,7 @@ import * as Location from 'expo-location';
 import { decodeRouteShapeLines } from '@/src/lib/polyline';
 import { pickActiveArea } from '@/src/lib/activeArea';
 import {
-  createFollow, isDriving, isFollowing, onFix as followOnFix, onGesture as followOnGesture, setFollowMe,
+  bearingDelta, createFollow, isDriving, isFollowing, onFix as followOnFix, onGesture as followOnGesture, setFollowMe,
   startFollowing, suspendForFraming, type FollowState,
 } from '@/src/lib/followCamera';
 import { useFocusEffect } from 'expo-router';
@@ -182,6 +182,8 @@ export default function MapScreen() {
    *  freshness lives in the ref, updated on every event without causing a render. The `vehicle`
    *  memo combines the two. */
   const [liveFix, setLiveFix] = useState<[number, number] | null>(null);
+  /** Which way the car icon faces: the follow camera's steadied heading, so car and map agree. */
+  const [vehicleHeading, setVehicleHeading] = useState<number | null>(null);
   const liveFixAtRef = useRef(0);
 
   /**
@@ -921,6 +923,11 @@ export default function MapScreen() {
         if (cam.kind === 'pan') mapRef.current?.panTo(cam.center, camBearing(cam.bearing));
         else if (cam.kind === 'resume') mapRef.current?.followTo(cam.center, camBearing(cam.bearing));
         syncFollowUi(); // a resume hides the Follow Me button
+        // Turn the car icon with the vehicle. Under 3° is invisible, so it costs no render.
+        const h = followRef.current.heading;
+        if (h !== null) {
+          setVehicleHeading((prev) => (prev !== null && bearingDelta(prev, h) < 3 ? prev : Math.round(h)));
+        }
 
         // Live breadcrumb: draw the road AS IT IS DRIVEN, no upload + poll round trip. Trip
         // fixes only — idle fixes would sketch the walk to the car. ~12 m gate (1e-4 deg is
@@ -1653,6 +1660,7 @@ export default function MapScreen() {
           areas={areas}
           trace={trace}
           vehicle={vehicle}
+          vehicleHeading={vehicleHeading}
           history={historyLines}
           showHistory={prefs.historyDays > 0}
           markers={markersLayer}

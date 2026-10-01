@@ -4,6 +4,7 @@ import type { NativeSyntheticEvent } from 'react-native';
 import {
   Camera,
   GeoJSONSource,
+  Images,
   Layer,
   Map as MLMap,
   type CameraRef,
@@ -11,6 +12,15 @@ import {
   type ViewStateChangeEvent,
 } from '@maplibre/maplibre-react-native';
 import type { MapGLArea, MapGLHandle, MapGLProps, MapGLTrail } from './mapTypes';
+
+/**
+ * The vehicle: a car rendered from the 3D model the admin panel replays trips with
+ * (scripts/render-car-sprite.mjs — "Car" by Google, via Poly Pizza, CC-BY). MapLibre Native has no
+ * 3D-model layer, so the car is pre-rendered top-down with lighting and drawn as a symbol rotated
+ * to the vehicle's heading — the same technique every ride-hailing and fleet app uses. The image
+ * points north, so icon-rotate is the compass heading as-is. Registered once, at module scope.
+ */
+const MAP_IMAGES = { 'vehicle-car': require('../../assets/images/vehicle-car.png') };
 
 /**
  * MapNative — the driver map on @maplibre/maplibre-react-native (native MapLibre).
@@ -113,6 +123,7 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
     areas = [],
     trace = null,
     vehicle = null,
+    vehicleHeading = null,
     history = null,
     showHistory = true,
     style,
@@ -181,7 +192,15 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
     const line = (trail as MapGLTrail | null)?.line ?? [];
     return multiLineFC(line.length >= 2 ? [line] : []);
   }, [trail]);
-  const vehicleFC = useMemo(() => pointFC(vehicle), [vehicle]);
+  // The heading rides on the point as a property, so turning the car is a data change, not a
+  // re-styled layer. Rounded to whole degrees: finer turns are invisible, and each change is a
+  // new feature collection handed to the native side.
+  const headingDeg = typeof vehicleHeading === 'number' && Number.isFinite(vehicleHeading) ? Math.round(vehicleHeading) : 0;
+  const vehicleFC = useMemo<GeoJSON.FeatureCollection>(() => {
+    const fc = pointFC(vehicle);
+    if (fc.features[0]) fc.features[0].properties = { heading: headingDeg };
+    return fc;
+  }, [vehicle, headingDeg]);
   const markersFC = useMemo<GeoJSON.FeatureCollection>(() => ({
     type: 'FeatureCollection',
     features: (markers?.points ?? [])
@@ -424,13 +443,32 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
           />
         </GeoJSONSource>
 
-        {/* The driver — always on top */}
+        {/* The driver — always on top: the car, facing the way it is driving */}
+        <Images images={MAP_IMAGES} />
         <GeoJSONSource id="vehicle" data={vehicleFC}>
+          {/* A small dot under the car: hidden by its body, and the fallback that keeps the
+              vehicle visible should the image ever fail to load. */}
           <Layer
             type="circle" id="vehicle-dot"
             paint={{
-              'circle-radius': 7, 'circle-color': COLOR_VEHICLE,
-              'circle-stroke-width': 3, 'circle-stroke-color': '#ffffff',
+              'circle-radius': 4, 'circle-color': COLOR_VEHICLE,
+              'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff',
+            }}
+          />
+          <Layer
+            type="symbol" id="vehicle-car"
+            layout={{
+              'icon-image': 'vehicle-car',
+              // Bigger as the map zooms in, like every navigation app — legible from a suburb view,
+              // never covering the street it is on.
+              'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 0.16, 14, 0.22, 17, 0.3, 20, 0.4] as unknown as number,
+              'icon-rotate': ['get', 'heading'] as unknown as number,
+              // Rotation and tilt are relative to the MAP, so the car keeps pointing along the road
+              // whether the map is north-up or turned with the driving direction.
+              'icon-rotation-alignment': 'map',
+              'icon-pitch-alignment': 'map',
+              'icon-allow-overlap': true,
+              'icon-ignore-placement': true,
             }}
           />
         </GeoJSONSource>
