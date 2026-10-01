@@ -11,7 +11,8 @@
     "lint": "expo lint",
     "sim:snap": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON src/lib/__sim__/local-snap.sim.mjs",
     "sim:areas": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON src/lib/__sim__/active-area.sim.mjs",
-    "sim": "npm run sim:snap && npm run sim:areas && node modules/vehicle-tracker/__sim__/stop-logic.sim.mjs && node modules/vehicle-tracker/__sim__/motion-classifier.sim.mjs"
+    "sim": "npm run sim:snap && npm run sim:areas && npm run sim:follow && node modules/vehicle-tracker/__sim__/stop-logic.sim.mjs && node modules/vehicle-tracker/__sim__/motion-classifier.sim.mjs",
+    "sim:follow": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON src/lib/__sim__/follow-camera.sim.mjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

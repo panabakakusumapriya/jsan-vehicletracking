@@ -166,4 +166,7 @@ export interface MapGLHandle {
   panTo(center: [number, number]): void;
   /** Frame a [west, south, east, north] box — the driver's area, clear of the on-map controls. */
   fitArea(bbox: [number, number, number, number]): void;
+  /** Start following the vehicle at [lon, lat]: eases there, lifting a zoomed-out view (a whole
+   *  suburb framed) to street level, and leaving a zoom the driver chose closer than that alone. */
+  followTo(center: [number, number]): void;
 }

@@ -35,6 +35,9 @@ const COLOR_OUTSIDE = '#f59e0b';
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 
+/** Street level: close enough to read which street the car is on while following it. */
+const FOLLOW_MIN_ZOOM = 15.5;
+
 function multiLineFC(lines: [number, number][][]): GeoJSON.FeatureCollection {
   if (!lines.length) return EMPTY_FC;
   return {
@@ -274,6 +277,14 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
         return;
       }
       fitNow(bbox);
+    },
+    followTo: (center: [number, number]) => {
+      // Following wins over a frame still waiting for the map to load — applying it afterwards
+      // would throw the camera back off the vehicle the driver is now following.
+      pendingFitRef.current = null;
+      mapRef.current?.getZoom()
+        .then((z) => cameraRef.current?.easeTo({ center, zoom: Math.max(z, FOLLOW_MIN_ZOOM), duration: 600 }))
+        .catch(() => cameraRef.current?.easeTo({ center, zoom: FOLLOW_MIN_ZOOM, duration: 600 }));
     },
   }), [fitNow]);
 

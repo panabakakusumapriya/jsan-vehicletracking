@@ -40,6 +40,10 @@ import { COVER_TTL_MS, loadCover, saveCover } from '@/src/lib/localSnapStore';
 import * as Location from 'expo-location';
 import { decodeRouteShapeLines } from '@/src/lib/polyline';
 import { pickActiveArea } from '@/src/lib/activeArea';
+import {
+  createFollow, isDriving, onFix as followOnFix, onGesture as followOnGesture,
+  startFollowing, suspendForFraming, type FollowState,
+} from '@/src/lib/followCamera';
 import { useFocusEffect } from 'expo-router';
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
@@ -99,6 +103,7 @@ const SHEET_PEEK = 80;
 const FAILED_AREA_RETRY_MS = 15 * 60_000;
 
 interface Point { lat: number; lon: number; speedKmh: number; recordedAt: string }
+
 interface Trip {
   _id: string;
   status: string;
@@ -180,13 +185,12 @@ export default function MapScreen() {
   const liveFixAtRef = useRef(0);
 
   /**
-   * FOLLOW MODE: the camera rides along with the driver, at whatever zoom THEY chose —
-   * panning never touches the zoom. A real pan-away suspends it (the driver is looking at
-   * something); a pinch does not (they are choosing their working zoom). The my-location
-   * button resumes it. Placement mode pauses it — the pin needs a still map.
+   * FOLLOW MODE: the camera rides along with the vehicle while it drives, and takes it back by
+   * itself after the driver has looked elsewhere. The rules live in src/lib/followCamera.ts,
+   * where they are exercised through simulated drives; this screen only feeds it fixes and
+   * gestures and moves the camera as told. Placement mode pauses it — the pin needs a still map.
    */
-  const followRef = useRef(true);
-  const lastPanPosRef = useRef<[number, number] | null>(null);
+  const followRef = useRef<FollowState>(createFollow());
   const placingRef = useRef(false);
   /** Last native upload failure. Each event replaces the object, re-arming the 90 s expiry timer
    *  beside the listener that sets it. */
@@ -867,17 +871,10 @@ export default function MapScreen() {
         // injection for a dot that has not moved.
         setLiveFix((prev) => (prev && prev[0] === e.lon && prev[1] === e.lat ? prev : [e.lon, e.lat]));
 
-        // Follow the drive: pan (never zoom) to each fix that actually moved, unless the
-        // driver panned away or is placing a marker.
-        if (followRef.current && !placingRef.current) {
-          const lp = lastPanPosRef.current;
-          const movedForPan = !lp
-            || Math.abs(lp[0] - e.lon) > 5e-5 || Math.abs(lp[1] - e.lat) > 5e-5;
-          if (movedForPan) {
-            lastPanPosRef.current = [e.lon, e.lat];
-            mapRef.current?.panTo([e.lon, e.lat]);
-          }
-        }
+        // Follow the drive (see src/lib/followCamera.ts for when it lets go and takes back).
+        const cam = followOnFix(followRef.current, e, Date.now(), placingRef.current);
+        if (cam.kind === 'pan') mapRef.current?.panTo(cam.center);
+        else if (cam.kind === 'resume') mapRef.current?.followTo(cam.center);
 
         // Live breadcrumb: draw the road AS IT IS DRIVEN, no upload + poll round trip. Trip
         // fixes only — idle fixes would sketch the walk to the car. ~12 m gate (1e-4 deg is
@@ -1067,7 +1064,7 @@ export default function MapScreen() {
     }
     setPlacing(null);
     placingRef.current = false;
-    followRef.current = true;
+    startFollowing(followRef.current, followRef.current.lastPan);
     if (!pos) { setMarkerNote('No GPS position yet — cannot drop a marker.'); return; }
     await dropAt(cat, pos);
   }, [placing, dropAt]);
@@ -1089,23 +1086,18 @@ export default function MapScreen() {
     }
   }, [markers]);
 
-  /** What a real pan-away looks like vs a pinch: the centre leaving the followed position
-   *  by ~80 m+. Pinch keeps the centre put, so following (and the chosen zoom) survive it. */
+  /** A hand on the map: a pan-away suspends following, a pinch does not (followCamera.ts). */
   const onUserPan = useCallback((center: [number, number]) => {
-    const p = lastPanPosRef.current;
-    if (!p) return;
-    if (Math.abs(p[0] - center[0]) > 8e-4 || Math.abs(p[1] - center[1]) > 8e-4) {
-      followRef.current = false;
-    }
+    followOnGesture(followRef.current, center, Date.now());
   }, []);
 
   /** The my-location button: land on where the phone IS — at the driver's CURRENT zoom —
    *  and resume follow-mode. */
   const goToMyLocation = useCallback(async () => {
-    followRef.current = true;
+    startFollowing(followRef.current, followRef.current.lastPan);
     // Fresh native fix — instant. Otherwise one honest GPS read (the Expo Go path).
     if (liveFix && Date.now() - liveFixAtRef.current < 30_000) {
-      lastPanPosRef.current = liveFix;
+      startFollowing(followRef.current, liveFix);
       mapRef.current?.flyTo(liveFix);
       return;
     }
@@ -1117,7 +1109,7 @@ export default function MapScreen() {
         const pos: [number, number] = [fix.coords.longitude, fix.coords.latitude];
         liveFixAtRef.current = Date.now();
         setLiveFix(pos);
-        lastPanPosRef.current = pos;
+        startFollowing(followRef.current, pos);
         mapRef.current?.flyTo(pos);
         return;
       }
@@ -1162,8 +1154,12 @@ export default function MapScreen() {
    * working (see pickActiveArea): the one they are standing in, else the nearest, else the newest.
    *
    * Follow-mode is kept on only when they are INSIDE that area, where riding along with the car
-   * keeps the patch on screen. Outside it, following would drag the camera straight back off the
-   * polygon on the next fix; the my-location button still resumes it on demand.
+   * keeps the patch on screen. Outside it following is suspended, and resumes by itself the moment
+   * the vehicle is moving (see FOLLOW MODE) — the area is the answer to "where is my job" at the
+   * depot, the car is the answer once they are driving.
+   *
+   * Opened MID-DRIVE, the car wins outright: framing the suburb only to snap back to the vehicle on
+   * the next fix a second later would be a zoom-out-zoom-in for nothing.
    *
    * Armed on focus and spent on the first successful frame, so a background refresh of the areas
    * list never yanks the camera away from where the driver has since panned.
@@ -1174,12 +1170,20 @@ export default function MapScreen() {
     const map = mapRef.current;
     if (!map) return;
     const pos = driverPosRef.current();
+    if (pos && isDriving(followRef.current, Date.now())) {
+      frameOnFocusRef.current = false;
+      startFollowing(followRef.current, pos);
+      map.followTo(pos);
+      return;
+    }
     const pick = pickActiveArea(areasRef.current, pos);
     if (!pick) return;
     frameOnFocusRef.current = false;
     map.fitArea(pick.bbox);
-    followRef.current = pick.inside;
-    lastPanPosRef.current = pick.inside ? pos : null;
+    // Standing in the area: riding along keeps it on screen. Elsewhere: hold the frame, and let
+    // the first moving fixes take the vehicle back (a frame is not a touch).
+    if (pick.inside) startFollowing(followRef.current, pos);
+    else suspendForFraming(followRef.current);
   }, []);
 
   useFocusEffect(
@@ -1626,7 +1630,7 @@ export default function MapScreen() {
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
               <TouchableOpacity
                 style={s.placeCancel}
-                onPress={() => { setPlacing(null); placingRef.current = false; followRef.current = true; }}
+                onPress={() => { setPlacing(null); placingRef.current = false; startFollowing(followRef.current, followRef.current.lastPan); }}
               >
                 <Text style={s.placeCancelTxt}>Cancel</Text>
               </TouchableOpacity>
