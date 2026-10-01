@@ -84,6 +84,9 @@ function createApp() {
         // Hotel stays booked for drivers are recorded (dates, nights, cost, reference,
         // confirmation files) — /api/hotels/bookings. Admin side only.
         hotelBookings: true,
+        // Network imports can join rows that share an area code into one MultiPolygon area
+        // (ImportJob.joinAreaParts) — HERE Admin4 deliveries split a town into many pieces.
+        joinAreaParts: true,
       },
     })
   );

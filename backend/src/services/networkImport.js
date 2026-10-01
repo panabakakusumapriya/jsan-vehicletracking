@@ -14,6 +14,7 @@ const shapefile = require('../utils/shapefile');
 const {
   lineLength,
   bboxOf,
+  bboxUnion,
   midpointOf,
   pointInPolygon,
   simplifyGeometry,
@@ -394,6 +395,8 @@ async function buildReport(job, layers, onProgress = () => {}) {
   const seenCodes = new Map();
   const duplicateCodes = [];
   const conflictingCodes = [];
+  /** code -> how many rows were joined into it (joinAreaParts only). */
+  const joinedParts = new Map();
   let emptyAreaGeometry = 0;
 
   // Reusing the active version's areas: pull them from the database instead of parsing.
@@ -412,9 +415,31 @@ async function buildReport(job, layers, onProgress = () => {}) {
       const areaSqm = mapping.areaSqm ? Number(attrs[mapping.areaSqm] ?? 0) || null : null;
 
       if (code && seenCodes.has(code)) {
-        duplicateCodes.push(code);
         const first = seenCodes.get(code);
         const vertices = countVertices(geometry);
+        const outerOf = (g) => (g.type === 'Polygon' ? g.coordinates[0] : g.coordinates[0][0]);
+        const sameShape = first.vertices === vertices && first.bboxKey === JSON.stringify(bboxOf(outerOf(geometry)));
+
+        /**
+         * One area, delivered as several rows. HERE's Admin4 layer cuts a town into pieces — islands,
+         * coastal slivers, parts split by a harbour — and gives every piece the town's AREA_ID:
+         * Auckland's delivery is 693 rows for 58 places, and the city alone is 154. Keeping only the
+         * first row, as for a merged file's copies below, would keep one piece of each town and turn
+         * the roads in all the others into orphans. With joinAreaParts the pieces become one
+         * MultiPolygon area. A true copy (same shape) is still just dropped.
+         */
+        if (job.joinAreaParts && !sameShape) {
+          const target = areas[first.index];
+          const parts = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.coordinates);
+          target.geometry = { type: 'MultiPolygon', coordinates: [...parts(target.geometry), ...parts(geometry)] };
+          for (const polygon of parts(geometry)) target.bbox = bboxUnion(target.bbox, bboxOf(polygon[0]));
+          if (target.areaSqm != null && areaSqm != null) target.areaSqm += areaSqm;
+          first.vertices += vertices;
+          joinedParts.set(code, (joinedParts.get(code) || 1) + 1);
+          return;
+        }
+
+        duplicateCodes.push(code);
         // Same code, different shape or different band: dropping one of these silently would
         // quietly pick a winner for something the customer needs to resolve.
         if (first.priority !== priority || first.areaSqm !== areaSqm || first.vertices !== vertices) {
@@ -422,10 +447,13 @@ async function buildReport(job, layers, onProgress = () => {}) {
         }
         return; // first occurrence wins; the denominator counts this area once
       }
-      if (code) {
-        seenCodes.set(code, { priority, areaSqm, vertices: countVertices(geometry) });
-      }
       const outer = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates[0][0];
+      if (code) {
+        seenCodes.set(code, {
+          priority, areaSqm, vertices: countVertices(geometry),
+          bboxKey: JSON.stringify(bboxOf(outer)), index: areas.length,
+        });
+      }
 
       const row = priorityTally.get(priority) || { areas: 0, areaSqm: 0 };
       row.areas++;
@@ -448,6 +476,16 @@ async function buildReport(job, layers, onProgress = () => {}) {
     { onProgress: (n) => onProgress('boundary', n) }
   );
 
+  if (joinedParts.size) {
+    const biggest = [...joinedParts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+    const nameOf = (code) => areas.find((a) => a.code === code)?.name || code;
+    warnings.push({
+      code: 'JOINED_AREA_PARTS',
+      message:
+        `${joinedParts.size} area(s) arrived in several pieces and were joined into one area each, e.g. ` +
+        `${biggest.map(([c, n]) => `${nameOf(c)} (${n} pieces)`).join(', ')}.`,
+    });
+  }
   if (duplicateCodes.length) {
     warnings.push({
       code: 'DUPLICATE_AREA_CODE',

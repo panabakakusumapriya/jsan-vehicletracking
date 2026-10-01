@@ -1786,6 +1786,25 @@ function ReportView({
           </span>
         </label>
       )}
+
+      {/* Offered whenever area codes repeat: either the file is a merge of several layers (copies —
+          keep the first), or each row is a PIECE of one area (HERE Admin4 — join them). Only the
+          operator knows which; changing it re-checks the files. */}
+      {(job.joinAreaParts || report.warnings.some((w) => w.code === 'DUPLICATE_AREA_CODE' || w.code === 'JOINED_AREA_PARTS')) && (
+        <label className="cov-toggle">
+          <input
+            type="checkbox"
+            disabled={!canEdit}
+            checked={Boolean(job.joinAreaParts)}
+            onChange={(e) => onPatch({ joinAreaParts: e.target.checked })}
+          />
+          <span>
+            Rows that share an area code are <b>pieces of one area</b> (islands, slivers, split
+            parts) — join them into one area. Leave off when the file is several layers merged
+            together and the repeats are copies. Changing this re-checks the files.
+          </span>
+        </label>
+      )}
     </div>
   );
 }

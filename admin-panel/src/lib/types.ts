@@ -573,6 +573,8 @@ export interface ImportJob {
   files: { boundary: ImportFileInfo; network: ImportFileInfo };
   mapping: ColumnMapping;
   includeOrphanLinks: boolean;
+  /** Join rows sharing an area code into one MultiPolygon area — see backend models/ImportJob.js. */
+  joinAreaParts?: boolean;
   report: ImportReport | null;
   progress: { phase: string | null; done: number; total: number };
   networkVersionId: string | null;

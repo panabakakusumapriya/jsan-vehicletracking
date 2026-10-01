@@ -305,6 +305,17 @@ async function updateJob(req, res) {
   if (typeof req.body.includeOrphanLinks === 'boolean') {
     job.includeOrphanLinks = req.body.includeOrphanLinks;
   }
+  // Joining pieces changes how many areas the delivery HAS, so the standing report is wrong the
+  // moment this flips — re-check rather than let someone approve a stale one.
+  if (typeof req.body.joinAreaParts === 'boolean' && req.body.joinAreaParts !== job.joinAreaParts) {
+    job.joinAreaParts = req.body.joinAreaParts;
+    if (job.files?.boundary?.name || job.files?.network?.name) {
+      job.status = 'queued';
+      job.report = null;
+      job.error = null;
+      job.progress = { phase: 'queued', done: 0, total: 0 };
+    }
+  }
   if (req.body.mapping && typeof req.body.mapping === 'object') {
     for (const [key, value] of Object.entries(req.body.mapping)) {
       if (key in job.mapping) job.mapping[key] = value ? String(value) : null;

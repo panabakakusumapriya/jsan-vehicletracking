@@ -81,6 +81,14 @@ const importJobSchema = new mongoose.Schema(
     includeOrphanLinks: { type: Boolean, default: false },
 
     /**
+     * Rows sharing an area code but with DIFFERENT shapes are pieces of one area (HERE Admin4:
+     * islands, slivers, harbour-split parts all carry the town's AREA_ID) — join them into one
+     * MultiPolygon instead of keeping the first piece. Off by default: in a file merged from
+     * several layers (the QLD P2+P3 delivery) a repeated code is a copy, and first-wins is right.
+     */
+    joinAreaParts: { type: Boolean, default: false },
+
+    /**
      * Run straight through upload -> parse -> commit without waiting for a human.
      *
      * On by default, because the normal case is "load the customer's files and show me them" and
