@@ -47,6 +47,8 @@ export interface MapPrefs {
   historyDays: HistoryDays;
   /** While following, turn the map so the direction of travel points up the screen. */
   headingUp: boolean;
+  /** Follow Me: the camera keeps the vehicle on screen while it drives. Off = pan and zoom freely. */
+  followMe: boolean;
   /** Last camera position, [lon, lat]. Undefined until the driver has moved the map once. */
   center?: [number, number];
   zoom?: number;
@@ -58,6 +60,7 @@ export const DEFAULT_PREFS: MapPrefs = {
   showRoads: true,
   historyDays: 30,
   headingUp: true,
+  followMe: true,
 };
 
 const ROOT_DIR_NAME = 'jsan-map';
@@ -111,6 +114,7 @@ function coerce(raw: unknown): MapPrefs {
     showAreas: typeof p.showAreas === 'boolean' ? p.showAreas : DEFAULT_PREFS.showAreas,
     showRoads: typeof p.showRoads === 'boolean' ? p.showRoads : DEFAULT_PREFS.showRoads,
     headingUp: typeof p.headingUp === 'boolean' ? p.headingUp : DEFAULT_PREFS.headingUp,
+    followMe: typeof p.followMe === 'boolean' ? p.followMe : DEFAULT_PREFS.followMe,
     historyDays: HISTORY_OPTIONS.includes(p.historyDays as HistoryDays)
       ? (p.historyDays as HistoryDays)
       : DEFAULT_PREFS.historyDays,

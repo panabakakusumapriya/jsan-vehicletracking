@@ -41,7 +41,7 @@ import * as Location from 'expo-location';
 import { decodeRouteShapeLines } from '@/src/lib/polyline';
 import { pickActiveArea } from '@/src/lib/activeArea';
 import {
-  createFollow, isDriving, onFix as followOnFix, onGesture as followOnGesture,
+  createFollow, isDriving, isFollowing, onFix as followOnFix, onGesture as followOnGesture, setFollowMe,
   startFollowing, suspendForFraming, type FollowState,
 } from '@/src/lib/followCamera';
 import { useFocusEffect } from 'expo-router';
@@ -352,6 +352,30 @@ export default function MapScreen() {
       mapRef.current?.rotateTo(0); // north back up
     }
   }, [updatePrefs]);
+
+  /**
+   * 📍 FOLLOW ME — whether the camera tracks the vehicle at all; 🧭 heading-up above is only which
+   * way it faces. `followingUi` mirrors the follow state for the screen: the Follow Me button shows
+   * while the camera is NOT following (the driver panned away, or the area was framed), and the
+   * my-location arrow turns blue while it is. Synced through a ref so a GPS fix that changes nothing
+   * costs no render.
+   */
+  const [followingUi, setFollowingUi] = useState(true);
+  const followingUiRef = useRef(true);
+  const syncFollowUi = useCallback(() => {
+    const v = isFollowing(followRef.current);
+    if (v !== followingUiRef.current) {
+      followingUiRef.current = v;
+      setFollowingUi(v);
+    }
+  }, []);
+  // The saved setting into the follow state — at load, and whenever it changes.
+  useEffect(() => {
+    const f = followRef.current;
+    f.enabled = prefs.followMe;
+    if (!prefs.followMe) f.following = false;
+    syncFollowUi();
+  }, [prefs.followMe, syncFollowUi]);
 
   /**
    * Camera persistence. Written straight to storage WITHOUT going through React state — the
@@ -896,6 +920,7 @@ export default function MapScreen() {
         const cam = followOnFix(followRef.current, e, Date.now(), placingRef.current);
         if (cam.kind === 'pan') mapRef.current?.panTo(cam.center, camBearing(cam.bearing));
         else if (cam.kind === 'resume') mapRef.current?.followTo(cam.center, camBearing(cam.bearing));
+        syncFollowUi(); // a resume hides the Follow Me button
 
         // Live breadcrumb: draw the road AS IT IS DRIVEN, no upload + poll round trip. Trip
         // fixes only — idle fixes would sketch the walk to the car. ~12 m gate (1e-4 deg is
@@ -957,7 +982,7 @@ export default function MapScreen() {
       if (coverSaveTimerRef.current) clearTimeout(coverSaveTimerRef.current);
       coverSaveTimerRef.current = null;
     };
-  }, [refreshLiveCovered, scheduleCoverSave]);
+  }, [refreshLiveCovered, scheduleCoverSave, syncFollowUi]);
 
   // The notice owns its own lifetime. Failures re-fire on every failed flush (~10-30 s), each
   // replacing the event object and re-arming this timer — the banner stays up exactly while
@@ -1086,9 +1111,10 @@ export default function MapScreen() {
     setPlacing(null);
     placingRef.current = false;
     startFollowing(followRef.current, followRef.current.lastPan);
+    syncFollowUi();
     if (!pos) { setMarkerNote('No GPS position yet — cannot drop a marker.'); return; }
     await dropAt(cat, pos);
-  }, [placing, dropAt]);
+  }, [placing, dropAt, syncFollowUi]);
 
   /** Markers in the map's layer shape; the id doubles as the tap key back into `markers`. */
   const markersLayer = useMemo<MapGLMarkers>(() => ({
@@ -1110,16 +1136,28 @@ export default function MapScreen() {
   /** A hand on the map: a pan-away suspends following, a pinch does not (followCamera.ts). */
   const onUserPan = useCallback((center: [number, number]) => {
     followOnGesture(followRef.current, center, Date.now());
-  }, []);
+    syncFollowUi();
+  }, [syncFollowUi]);
 
-  /** The my-location button: land on where the phone IS — at the driver's CURRENT zoom —
-   *  and resume follow-mode. */
+  /**
+   * The my-location arrow and the Follow Me button: back to where the phone IS. With Follow Me on,
+   * following resumes and the camera comes back at street level facing the direction of travel;
+   * with it off, the map just shows the vehicle once and stays the driver's to move.
+   */
   const goToMyLocation = useCallback(async () => {
-    startFollowing(followRef.current, followRef.current.lastPan);
+    const f = followRef.current;
+    const land = (pos: [number, number]) => {
+      if (f.enabled) {
+        startFollowing(f, pos);
+        mapRef.current?.followTo(pos, camBearing(f.heading));
+      } else {
+        mapRef.current?.flyTo(pos);
+      }
+      syncFollowUi();
+    };
     // Fresh native fix — instant. Otherwise one honest GPS read (the Expo Go path).
     if (liveFix && Date.now() - liveFixAtRef.current < 30_000) {
-      startFollowing(followRef.current, liveFix);
-      mapRef.current?.flyTo(liveFix);
+      land(liveFix);
       return;
     }
     try {
@@ -1130,13 +1168,22 @@ export default function MapScreen() {
         const pos: [number, number] = [fix.coords.longitude, fix.coords.latitude];
         liveFixAtRef.current = Date.now();
         setLiveFix(pos);
-        startFollowing(followRef.current, pos);
-        mapRef.current?.flyTo(pos);
+        land(pos);
         return;
       }
     } catch { /* fall back to whatever the map already knows */ }
     mapRef.current?.recenter();
-  }, [liveFix]);
+  }, [liveFix, syncFollowUi]);
+
+  /** The Follow Me setting itself (Layers). On: take the vehicle now. Off: hand the map over. */
+  const setFollowMeOn = useCallback((on: boolean) => {
+    updatePrefs({ followMe: on });
+    const f = followRef.current;
+    const pos = driverPosRef.current();
+    setFollowMe(f, on, pos);
+    if (on && pos) mapRef.current?.followTo(pos, camBearing(f.heading));
+    syncFollowUi();
+  }, [updatePrefs, syncFollowUi]);
 
   /**
    * Hand the driver off to real turn-by-turn navigation.
@@ -1191,10 +1238,14 @@ export default function MapScreen() {
     const map = mapRef.current;
     if (!map) return;
     const pos = driverPosRef.current();
-    if (pos && isDriving(followRef.current, Date.now())) {
+    const f = followRef.current;
+    // Mid-drive with Follow Me on: the car, not the area. With Follow Me off the driver has taken
+    // the camera, so the tab opens on their area and leaves it there.
+    if (pos && f.enabled && isDriving(f, Date.now())) {
       frameOnFocusRef.current = false;
-      startFollowing(followRef.current, pos);
-      map.followTo(pos, camBearing(followRef.current.heading));
+      startFollowing(f, pos);
+      map.followTo(pos, camBearing(f.heading));
+      syncFollowUi();
       return;
     }
     const pick = pickActiveArea(areasRef.current, pos);
@@ -1203,9 +1254,10 @@ export default function MapScreen() {
     map.fitArea(pick.bbox);
     // Standing in the area: riding along keeps it on screen. Elsewhere: hold the frame, and let
     // the first moving fixes take the vehicle back (a frame is not a touch).
-    if (pick.inside) startFollowing(followRef.current, pos);
-    else suspendForFraming(followRef.current);
-  }, []);
+    if (pick.inside) startFollowing(f, pos);
+    else suspendForFraming(f);
+    syncFollowUi();
+  }, [syncFollowUi]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1246,7 +1298,8 @@ export default function MapScreen() {
             driver's thumb already knows. The Google-Maps handoff below gets signposts instead:
             two arrow-ish buttons is how "center on me" opens another app. */}
         <TouchableOpacity style={s.ctrlBtn} onPress={goToMyLocation} accessibilityLabel="Go to my location">
-          <FontAwesome name="location-arrow" size={17} color="#0f172a" />
+          {/* Blue while the camera is following the vehicle — the at-a-glance "Follow Me is on". */}
+          <FontAwesome name="location-arrow" size={17} color={prefs.followMe && followingUi ? '#2563eb' : '#0f172a'} />
         </TouchableOpacity>
         <TouchableOpacity
           style={[s.ctrlBtn, s.ctrlBtnFlag]}
@@ -1284,8 +1337,12 @@ export default function MapScreen() {
             <Text style={s.panelLabel}>Roads</Text>
             <Text style={[s.panelState, prefs.showRoads && s.panelStateOn]}>{prefs.showRoads ? 'ON' : 'OFF'}</Text>
           </TouchableOpacity>
+          <TouchableOpacity style={s.panelRow} onPress={() => setFollowMeOn(!prefs.followMe)}>
+            <Text style={s.panelLabel}>📍 Follow Me</Text>
+            <Text style={[s.panelState, prefs.followMe && s.panelStateOn]}>{prefs.followMe ? 'ON' : 'OFF'}</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={s.panelRow} onPress={() => setHeadingUp(!prefs.headingUp)}>
-            <Text style={s.panelLabel}>Rotate with driving direction</Text>
+            <Text style={s.panelLabel}>🧭 Rotate with driving direction</Text>
             <Text style={[s.panelState, prefs.headingUp && s.panelStateOn]}>{prefs.headingUp ? 'ON' : 'OFF'}</Text>
           </TouchableOpacity>
           {/* Cycles Off → 7 d → 30 d → 90 d. A window, not a toggle, because "everything I have ever
@@ -1606,6 +1663,15 @@ export default function MapScreen() {
           onUnsupported={setMapError}
         />
         {controls}
+        {/* 📍 Follow Me: the driver moved the map away (or it is showing their area) — one tap brings
+            the camera back to the vehicle and following resumes. While driving it also comes back on
+            its own 10 s after the last touch; this is the immediate, visible way. */}
+        {prefs.followMe && !followingUi && !placing && !tappedMarker && (
+          <TouchableOpacity style={s.followPill} onPress={goToMyLocation} accessibilityLabel="Follow Me — back to the vehicle">
+            <FontAwesome name="location-arrow" size={15} color="#ffffff" />
+            <Text style={s.followPillText}>Follow Me</Text>
+          </TouchableOpacity>
+        )}
         {hint && (
           <View style={s.hintPill} pointerEvents="none">
             <Text style={s.hintText}>{hint}</Text>
@@ -1655,7 +1721,7 @@ export default function MapScreen() {
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
               <TouchableOpacity
                 style={s.placeCancel}
-                onPress={() => { setPlacing(null); placingRef.current = false; startFollowing(followRef.current, followRef.current.lastPan); }}
+                onPress={() => { setPlacing(null); placingRef.current = false; startFollowing(followRef.current, followRef.current.lastPan); syncFollowUi(); }}
               >
                 <Text style={s.placeCancelTxt}>Cancel</Text>
               </TouchableOpacity>
@@ -1734,6 +1800,17 @@ const s = StyleSheet.create({
   historyText: { fontSize: 11, color: '#4b5563', fontWeight: '600' },
 
   mapWrap:   { flex: 1 },
+
+  /* ---- Follow Me ---- */
+  followPill: {
+    position: 'absolute', alignSelf: 'center', bottom: SHEET_PEEK + 14,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 18, paddingVertical: 11, borderRadius: 24,
+    backgroundColor: '#2563eb',
+    shadowColor: '#0f172a', shadowOpacity: 0.3, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 }, elevation: 6,
+  },
+  followPillText: { fontSize: 14.5, fontWeight: '800', color: '#ffffff' },
 
   /* ---- markers ---- */
   ctrlBtnFlag: { backgroundColor: '#fef2f2', borderColor: '#fecaca' },

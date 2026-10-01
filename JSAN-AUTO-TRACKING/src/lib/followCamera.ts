@@ -5,7 +5,11 @@
  * the rules can be driven through whole simulated drives in src/lib/__sim__/follow-camera.sim.mjs
  * instead of only on the road.
  *
- * The rules:
+ * Two separate settings, as in any navigation app: 📍 FOLLOW ME decides whether the camera tracks
+ * the vehicle at all (off = the driver pans and zooms freely, and nothing ever moves the map), and
+ * 🧭 ROTATE WITH DRIVING DIRECTION decides only which way the map faces while it does.
+ *
+ * The rules, with Follow Me on:
  *   - Following, every fix that actually moved pans the camera to it. Panning never changes zoom.
  *   - A real pan-away (the centre dragged ~80 m+) suspends it; a pinch does not.
  *   - While the vehicle is DRIVING, a suspension is temporary: once the map has gone untouched for
@@ -41,6 +45,9 @@ const BEARING_STEP_DEG = 8;
 export type LonLat = [number, number];
 
 export interface FollowState {
+  /** The driver's Follow Me setting. Off = the map is theirs: nothing moves it, nothing resumes. */
+  enabled: boolean;
+  /** Following right now (Follow Me on and not suspended by a pan or a frame). */
   following: boolean;
   /** Where the camera was last sent while following; null = no followed position yet. */
   lastPan: LonLat | null;
@@ -75,6 +82,7 @@ export type FollowAction =
   | { kind: 'resume'; center: LonLat; bearing: number | null };
 
 export const createFollow = (): FollowState => ({
+  enabled: true,
   following: true,
   lastPan: null,
   lastTouchAt: -Infinity,
@@ -132,8 +140,9 @@ export function onFix(s: FollowState, fix: Fix, now: number, placing: boolean): 
   s.streak = kmh >= MOVING_KMH || travelled ? s.streak + 1 : 0;
   trackHeading(s, fix, kmh);
 
-  // Placement needs a still map; nothing moves the camera until the pin is dropped.
-  if (placing) return { kind: 'none' };
+  // Placement needs a still map; nothing moves the camera until the pin is dropped. Follow Me
+  // off: the driver pans and zooms freely — the fix still fed speed and heading above.
+  if (placing || !s.enabled) return { kind: 'none' };
   const center: LonLat = [fix.lon, fix.lat];
 
   if (!s.following) {
@@ -200,6 +209,18 @@ export function onGesture(s: FollowState, center: LonLat, now: number): void {
   if (Math.abs(p[0] - center[0]) > PAN_AWAY_DEG || Math.abs(p[1] - center[1]) > PAN_AWAY_DEG) {
     s.following = false;
   }
+}
+
+/** Is the camera following the vehicle right now? The Follow Me button shows when it is not. */
+export function isFollowing(s: FollowState): boolean {
+  return s.enabled && s.following;
+}
+
+/** The Follow Me setting. On: follow from the given position at once. Off: stop, and stay stopped. */
+export function setFollowMe(s: FollowState, on: boolean, from: LonLat | null): void {
+  s.enabled = on;
+  if (on) startFollowing(s, from);
+  else s.following = false;
 }
 
 /** Is the vehicle driving right now, as far as the last fixes say? */

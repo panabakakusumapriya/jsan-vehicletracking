@@ -12,6 +12,7 @@
 
 import {
   createFollow, onFix, onGesture, isDriving, startFollowing, suspendForFraming, FOLLOW_RESUME_MS,
+  setFollowMe, isFollowing,
 } from '../followCamera.ts';
 
 const LAT0 = -38.03;
@@ -327,6 +328,43 @@ const near = (a, b, tol = 3) => a !== null && Math.min(Math.abs(a - b), 360 - Ma
   const resume = after.actions.find((a) => a.kind === 'resume');
   check('when following resumes, the camera comes back facing the current direction (south)',
     Boolean(resume) && near(resume.bearing, 180), resume ? `${resume.bearing}` : 'no resume');
+}
+
+/* ───────────────────────── 📍 Follow Me: the setting, and its button ───────────────────────── */
+
+// 24 ─ Follow Me OFF: the map is the driver's — a whole drive moves nothing, nothing resumes.
+{
+  const s = createFollow();
+  setFollowMe(s, false, null);
+  const { actions } = path(s, [{ bearing: 90, metres: 600, kmh: 45 }, { bearing: 180, metres: 300, kmh: 40 }]);
+  check('Follow Me off: a 900 m drive with a turn never moves or rotates the map', count(actions, 'none') === actions.length,
+    `${actions.length - count(actions, 'none')} camera moves`);
+  check('and the Follow Me button stays hidden (the setting is off, nothing to resume)', !isFollowing(s) && !s.enabled);
+}
+
+// 25 ─ Switching Follow Me back on mid-drive takes the car at once, already facing the right way.
+{
+  const s = createFollow();
+  setFollowMe(s, false, null);
+  const d = path(s, [{ bearing: 90, metres: 300, kmh: 45 }, { bearing: 0, metres: 200, kmh: 40 }]);
+  const here = at(...d.end);
+  setFollowMe(s, true, [here.lon, here.lat]);
+  check('switching Follow Me on follows straight away', isFollowing(s));
+  const next = path(s, [{ bearing: 0, metres: 60, kmh: 40 }], { t0: d.t, start: d.end });
+  check('and the next moves pan to the car facing north — heading was tracked while it was off',
+    next.actions.filter((a) => a.kind === 'pan').length >= 2 && near(lastBearing(next.actions), 0, 4),
+    `bearing ${lastBearing(next.actions)}`);
+}
+
+// 26 ─ The button: shown after a drag, gone when following resumes.
+{
+  const s = createFollow();
+  const d = path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  check('while following, no Follow Me button', isFollowing(s));
+  onGesture(s, [LON0 + 0.02, LAT0], d.t);
+  check('after dragging the map away, the Follow Me button shows', !isFollowing(s) && s.enabled);
+  startFollowing(s, [at(...d.end).lon, at(...d.end).lat]);   // the button's tap
+  check('tapping it resumes following and hides it again', isFollowing(s));
 }
 
 console.log(failed ? `\n${failed} FOLLOW-CAMERA SCENARIO(S) FAILED` : '\nALL FOLLOW-CAMERA SCENARIOS PASS');
