@@ -1378,6 +1378,21 @@ export default function MapScreen() {
               ))}
             </>
           )}
+
+          {/* Credits the licences ask for: the car model is CC BY (see scripts/render-car-sprite.mjs),
+              and OpenStreetMap's ODbL requires its notice wherever its data is shown. */}
+          <View style={s.credits}>
+            <Text style={s.creditsTitle}>Credits</Text>
+            <Text style={s.creditsText}>Car model: “Car” by Google, via Poly Pizza (CC BY)</Text>
+            <Text style={s.creditsText}>Map tiles: OpenFreeMap</Text>
+            <Text
+              style={[s.creditsText, s.creditsLink]}
+              onPress={() => Linking.openURL('https://www.openstreetmap.org/copyright')}
+              accessibilityRole="link"
+            >
+              Map data © OpenStreetMap contributors
+            </Text>
+          </View>
         </View>
       )}
     </View>
@@ -1910,6 +1925,11 @@ const s = StyleSheet.create({
     paddingVertical: 7,
   },
   panelLabel:   { fontSize: 13.5, color: '#0f172a', fontWeight: '600' },
+  // Capped so the small print wraps instead of widening the whole Layers panel across the map.
+  credits:      { marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#e2e8f0', gap: 2, maxWidth: 230 },
+  creditsTitle: { fontSize: 10.5, fontWeight: '800', color: '#94a3b8', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 2 },
+  creditsText:  { fontSize: 10.5, color: '#64748b', lineHeight: 14 },
+  creditsLink:  { color: '#2563eb' },
   panelState:   { fontSize: 12, fontWeight: '800', color: '#94a3b8' },
   panelStateOn: { color: '#7c3aed' },
 
