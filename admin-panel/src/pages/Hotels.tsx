@@ -5,6 +5,9 @@ import { api } from '../lib/api';
 import { MapAutoResize } from '../lib/MapAutoResize';
 import { dt } from '../lib/format';
 import { NearbyIcon, nearbyPlacePin, nearbyDriverPin } from '../lib/NearbyUI';
+import { HotelBookingModal } from '../components/HotelBookingModal';
+import { HotelBookingsTab } from '../components/HotelBookingsTab';
+import { dayLabel, todayIso, type BookingHotel, type HotelBooking } from '../lib/hotelBookings';
 
 // Imported hotel locations around the selected driver, with a synced map and list.
 
@@ -114,6 +117,13 @@ export function Hotels() {
   const [focusId, setFocusId] = useState<string | null>(null);
   const markerRefs = useRef<Record<string, LeafletMarker | null>>({});
 
+  const [tab, setTab] = useState<'find' | 'bookings'>('find');
+  // The booking form, opened from a hotel (prefilled) or empty for one booked some other way.
+  const [recording, setRecording] = useState<{ hotel: Partial<BookingHotel> | null } | null>(null);
+  const [bookingsKey, setBookingsKey] = useState(0);
+  // Where the driver being searched around is already staying, so nobody double-books them.
+  const [stay, setStay] = useState<{ booking: HotelBooking; current: boolean } | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -163,6 +173,37 @@ export function Hotels() {
     return pts.length ? pts : null;
   }, [anchor, mapped, data?.search]);
 
+  useEffect(() => {
+    const id = data?.selected?._id;
+    if (!id) { setStay(null); return; }
+    let live = true;
+    const base = `/api/hotels/bookings?driverId=${id}&today=${todayIso(0)}`;
+    Promise.all([
+      api.get<{ bookings: HotelBooking[] }>(`${base}&when=current`),
+      api.get<{ bookings: HotelBooking[] }>(`${base}&when=upcoming`),
+    ])
+      .then(([cur, next]) => {
+        if (!live) return;
+        if (cur.bookings[0]) setStay({ booking: cur.bookings[0], current: true });
+        else if (next.bookings[0]) setStay({ booking: next.bookings[0], current: false });
+        else setStay(null);
+      })
+      .catch(() => { if (live) setStay(null); });
+    return () => { live = false; };
+  }, [data?.selected?._id, bookingsKey]);
+
+  const hotelDraft = (p: HotelPlace): Partial<BookingHotel> => ({
+    // Only a real directory id is kept; anything else is just a name on a booking.
+    hotelLocationId: typeof p.id === 'string' && /^[a-f\d]{24}$/i.test(p.id) ? p.id : null,
+    name: p.name,
+    address: p.address,
+    city: p.city,
+    phone: p.phone,
+    category: p.category,
+    lat: p.lat,
+    lon: p.lon,
+  });
+
   const focusPlace = (id: string) => {
     setFocusId(id);
     const m = markerRefs.current[id];
@@ -181,7 +222,7 @@ export function Hotels() {
             Hotels, motels, hostels and guest houses near a driver&apos;s last reported position
           </p>
         </div>
-        <div className="nearby-controls">
+        {tab === 'find' && <div className="nearby-controls">
           <label className="nearby-field"><span><NearbyIcon kind="driver" size={13} /> Driver</span>
           <select className="input" style={{ width: 180, margin: 0 }} value={driverId} onChange={e => setDriverId(e.target.value)}>
             {located.length === 0 && <option value="">No drivers in last 48 hours</option>}
@@ -200,8 +241,34 @@ export function Hotels() {
           <button className="btn" onClick={search} disabled={loading}>
             <NearbyIcon kind="search" size={17} /> {loading ? 'Searching…' : 'Search'}
           </button>
-        </div>
+        </div>}
       </div>
+
+      <div className="cov-tabs">
+        <button className={tab === 'find' ? 'active' : ''} onClick={() => setTab('find')}>Find hotels</button>
+        <button className={tab === 'bookings' ? 'active' : ''} onClick={() => setTab('bookings')}>Bookings</button>
+      </div>
+
+      {tab === 'bookings' && <HotelBookingsTab reloadKey={bookingsKey} />}
+
+      {tab === 'find' && <>
+      {/* Where the selected driver is already booked in, before anyone books them again. */}
+      {selected && stay && (
+        <div className="hb-stay">
+          <NearbyIcon kind="hotel" size={16} />
+          <span>
+            <strong>{selected.name}</strong>
+            {stay.current ? ' is staying at ' : ' is booked into '}
+            <strong>{stay.booking.hotel.name}</strong>
+            {stay.current
+              ? ` until ${dayLabel(stay.booking.checkOut)}`
+              : ` from ${dayLabel(stay.booking.checkIn)} to ${dayLabel(stay.booking.checkOut)}`}
+            {` · ${stay.booking.nights} night${stay.booking.nights === 1 ? '' : 's'}`}
+            {stay.booking.bookingReference ? ` · ref ${stay.booking.bookingReference}` : ''}
+          </span>
+          <button className="cov-link" onClick={() => setTab('bookings')}>View bookings</button>
+        </div>
+      )}
 
       {/* Secondary status line */}
       <div className="nearby-status">
@@ -357,9 +424,19 @@ export function Hotels() {
                           target="_blank"
                           rel="noopener noreferrer"
                           aria-label={`Book now: search for ${p.name} on Booking.com (opens in a new tab)`}
+                          // Booking.com opens in the new tab; the form opens here, ready for
+                          // the dates and reference once they come back.
+                          onClick={() => setRecording({ hotel: hotelDraft(p) })}
                         >
                           Book now <span aria-hidden="true">&#8599;</span>
                         </a>
+                        <button
+                          type="button"
+                          className="hb-record-link"
+                          onClick={() => setRecording({ hotel: hotelDraft(p) })}
+                        >
+                          Booked by phone? Record it
+                        </button>
 
                       </div>
                     </Popup>
@@ -431,6 +508,16 @@ export function Hotels() {
             {data!.unplaced.map(d => d.name).join(' · ')}
           </div>
         </details>
+      )}
+      </>}
+
+      {recording && (
+        <HotelBookingModal
+          driverId={selected ? String(selected._id) : null}
+          hotel={recording.hotel}
+          onClose={() => setRecording(null)}
+          onSaved={() => { setRecording(null); setBookingsKey((n) => n + 1); }}
+        />
       )}
     </div>
   );

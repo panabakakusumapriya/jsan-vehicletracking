@@ -1474,3 +1474,59 @@ select.input { cursor: pointer; }
   margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line);
   font-size: 11.5px; color: var(--muted); line-height: 1.45;
 }
+
+/* ---- Hotel bookings (pages/Hotels.tsx, components/HotelBooking*.tsx) ---- */
+.hb-section { padding: 2px 0 6px; }
+.hb-section + .hb-section { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 4px; }
+.hb-section-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.hb-section-head > span {
+  font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+}
+.hb-section-head small { font-size: 12px; color: var(--muted); }
+.hb-hint { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+.hb-nights {
+  grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin: -2px 0 12px; padding: 8px 12px; border-radius: 9px;
+  background: var(--brand-light); color: var(--text-2); font-size: 13px;
+}
+.hb-nights strong { color: var(--brand); font-size: 15px; }
+.hb-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; height: 38px; cursor: pointer; }
+.hb-files { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.hb-file {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px;
+}
+.hb-file > :first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.hb-file.pending { border-style: dashed; }
+.hb-file .muted { font-size: 12px; white-space: nowrap; }
+.hb-file-x {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  width: 24px; height: 24px; border-radius: 6px; font-size: 12px;
+}
+.hb-file-x:hover { background: var(--panel-2); color: var(--red); }
+
+.hb-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+
+/* The selected driver's current or next stay, above the search results. */
+.hb-stay {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 10px 14px; border-radius: 10px;
+  background: var(--green-bg); border: 1px solid rgba(5,150,105,0.25);
+  color: var(--text-2); font-size: 13px;
+}
+.hb-stay .cov-link { margin-left: auto; }
+
+/* Under the popup's Book now: for bookings made some other way. */
+.hb-record-link {
+  display: block; width: 100%; margin-top: 6px; padding: 4px 0;
+  background: none; border: none; cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--brand); text-align: center;
+}
+.hb-record-link:hover { text-decoration: underline; }
+
+@media (max-width: 700px) {
+  .hb-toolbar .input { width: 100% !important; }
+  .hb-toolbar > div:last-child { margin-left: 0 !important; }
+}

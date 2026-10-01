@@ -81,6 +81,9 @@ function createApp() {
         // flag are gone, and the geometry tag is 'g0full' so phones holding a clipped copy refetch
         // once. A partial network shown as if it were whole is the failure this removes.
         uncappedRoads: true,
+        // Hotel stays booked for drivers are recorded (dates, nights, cost, reference,
+        // confirmation files) — /api/hotels/bookings. Admin side only.
+        hotelBookings: true,
       },
     })
   );

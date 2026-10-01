@@ -28,10 +28,11 @@ const pipe = promisify(pipeline);
 
 const BUCKET = 'importUploads';
 
-function bucket() {
+/** `name` picks a bucket; the default is the import archives' own, so existing callers are unchanged. */
+function bucket(name = BUCKET) {
   const db = mongoose.connection?.db;
   if (!db) throw new Error('fileStore: no database connection');
-  return new mongoose.mongo.GridFSBucket(db, { bucketName: BUCKET });
+  return new mongoose.mongo.GridFSBucket(db, { bucketName: name });
 }
 
 /**
@@ -40,7 +41,7 @@ function bucket() {
  * The hash is computed on the way past rather than by re-reading the stored file: these are up to
  * ~100 MB and reading them twice on an already slow container is pure latency.
  */
-async function putStream(source, { filename, metadata = {} } = {}) {
+async function putStream(source, { filename, metadata = {}, bucketName = BUCKET, contentType } = {}) {
   const hash = crypto.createHash('sha256');
   let bytes = 0;
   const tap = new PassThrough();
@@ -51,7 +52,7 @@ async function putStream(source, { filename, metadata = {} } = {}) {
     bytes += chunk.length;
   });
 
-  const upload = bucket().openUploadStream(filename, { metadata });
+  const upload = bucket(bucketName).openUploadStream(filename, { metadata: contentType ? { ...metadata, contentType } : metadata });
   const finished = new Promise((resolve, reject) => {
     upload.on('error', reject);
     upload.on('finish', resolve);
@@ -90,10 +91,10 @@ async function exists(id) {
  * Permanently remove a stored file. Only ever called from an explicit user-initiated delete — the
  * artifact sweep deliberately does NOT touch these, because they are the customer's originals.
  */
-async function remove(id) {
+async function remove(id, bucketName = BUCKET) {
   if (!id) return;
   try {
-    await bucket().delete(toObjectId(id));
+    await bucket(bucketName).delete(toObjectId(id));
   } catch {
     /* already gone, or never stored */
   }
@@ -103,4 +104,9 @@ function toObjectId(id) {
   return typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id;
 }
 
-module.exports = { putStream, downloadTo, exists, remove, BUCKET };
+/** A readable stream of a stored file, for sending it straight back to a browser. */
+function openDownload(id, bucketName = BUCKET) {
+  return bucket(bucketName).openDownloadStream(toObjectId(id));
+}
+
+module.exports = { putStream, downloadTo, exists, remove, openDownload, BUCKET };

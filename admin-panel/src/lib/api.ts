@@ -141,7 +141,9 @@ export const viewerTimeZone = (): string => {
 export function uploadRaw<T>(
   path: string,
   file: File,
-  onProgress?: (percent: number, loaded: number, total: number) => void
+  onProgress?: (percent: number, loaded: number, total: number) => void,
+  /** Defaults to a zip — the network imports this was written for. */
+  contentType = 'application/zip'
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -149,7 +151,7 @@ export function uploadRaw<T>(
 
     const token = tokenStore.get();
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-    xhr.setRequestHeader('Content-Type', 'application/zip');
+    xhr.setRequestHeader('Content-Type', contentType);
     // The filename travels in a header because the body is the file itself, with nothing
     // left to carry it.
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name).replace(/%20/g, ' '));
