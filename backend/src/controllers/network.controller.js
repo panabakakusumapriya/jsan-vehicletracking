@@ -282,6 +282,7 @@ async function uploadLayer(req, res) {
    */
   const ready = Boolean(job.files.boundary?.name || job.files.network?.name);
   job.status = ready ? 'queued' : 'draft';
+  job.claimToken = null; // handed back to whichever runner claims it next
   if (ready) job.progress = { phase: 'queued', done: 0, total: 0 };
   await job.save();
 
@@ -311,6 +312,7 @@ async function updateJob(req, res) {
     job.joinAreaParts = req.body.joinAreaParts;
     if (job.files?.boundary?.name || job.files?.network?.name) {
       job.status = 'queued';
+      job.claimToken = null;
       job.report = null;
       job.error = null;
       job.progress = { phase: 'queued', done: 0, total: 0 };
@@ -340,6 +342,7 @@ async function validateJob(req, res) {
   }
 
   job.status = 'queued';
+  job.claimToken = null;
   job.error = null;
   job.progress = { phase: 'queued', done: 0, total: 0 };
   await job.save();
@@ -362,6 +365,7 @@ async function commitJob(req, res) {
   }
 
   job.status = 'committing';
+  job.claimToken = null;
   job.error = null;
   job.progress = { phase: 'queued', done: 0, total: 0 };
   await job.save();

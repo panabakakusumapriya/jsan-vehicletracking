@@ -89,6 +89,19 @@ const importJobSchema = new mongoose.Schema(
     joinAreaParts: { type: Boolean, default: false },
 
     /**
+     * Which runner owns this job right now, and when it last showed signs of life.
+     *
+     * Every API process runs the import runner, and the old claim (set startedAt, THEN flip the
+     * status) let two processes take the same queued job — and a job that parsed straight into its
+     * commit sat in 'committing', which is exactly what other runners look for. Auckland's import
+     * was committed three times in parallel during a deploy's container overlap. A runner now takes
+     * a job only by writing its own token in the claiming update, and nobody takes a claimed job
+     * until its heartbeat is RUNNER_STALE_MS old (the owner died mid-job).
+     */
+    claimToken: { type: String, default: null },
+    claimedAt: { type: Date, default: null },
+
+    /**
      * Run straight through upload -> parse -> commit without waiting for a human.
      *
      * On by default, because the normal case is "load the customer's files and show me them" and

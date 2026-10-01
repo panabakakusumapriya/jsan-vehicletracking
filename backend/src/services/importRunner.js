@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const ImportJob = require('../models/ImportJob');
 const NetworkVersion = require('../models/NetworkVersion');
 // Required for their side effect of registering the schemas the commit path writes through — a
@@ -24,6 +25,9 @@ const networkImport = require('./networkImport');
 let timer = null;
 let running = false;
 
+/** A claim with no heartbeat for this long belongs to a runner that died mid-job. */
+const RUNNER_STALE_MS = 10 * 60 * 1000;
+
 /** Throttled progress writes — a job document update per 25k features is plenty for a UI. */
 function progressWriter(job) {
   let lastWrite = 0;
@@ -33,7 +37,8 @@ function progressWriter(job) {
     lastWrite = now;
     ImportJob.updateOne(
       { _id: job._id },
-      { $set: { 'progress.phase': phase, 'progress.done': done, 'progress.total': total } }
+      // claimedAt doubles as the owner's heartbeat — see ImportJob.claimToken.
+      { $set: { 'progress.phase': phase, 'progress.done': done, 'progress.total': total, claimedAt: new Date() } }
     ).catch(() => {});
   };
 }
@@ -69,6 +74,7 @@ async function finishCommit(job, layers, areas, mapping, report, onProgress) {
         completedAt: new Date(),
         'progress.phase': 'loaded',
         error: null,
+        claimToken: null,
       },
     }
   );
@@ -100,6 +106,7 @@ async function runParse(job) {
           'progress.done': report.totals.links,
           'progress.total': report.totals.links,
           error: null,
+          claimToken: null,
         },
       }
     );
@@ -138,9 +145,16 @@ async function runCommit(job) {
 
 /** Claim one job and run whichever phase its status calls for. */
 async function tick() {
+  // Claimed in ONE update, by token: no other runner takes a job while it is owned — including a
+  // job this runner parsed straight into its commit, which sits in 'committing' meanwhile.
+  const token = `${process.pid}-${crypto.randomUUID()}`;
+  const now = new Date();
   const job = await ImportJob.findOneAndUpdate(
-    { status: { $in: ['queued', 'committing'] } },
-    { $set: { startedAt: new Date() } },
+    {
+      status: { $in: ['queued', 'committing'] },
+      $or: [{ claimToken: null }, { claimedAt: { $lt: new Date(now.getTime() - RUNNER_STALE_MS) } }],
+    },
+    { $set: { startedAt: now, claimToken: token, claimedAt: now } },
     { sort: { createdAt: 1 }, new: true }
   );
   if (!job) return null;
@@ -157,7 +171,7 @@ async function tick() {
   } catch (err) {
     await ImportJob.updateOne(
       { _id: job._id },
-      { $set: { status: 'failed', error: err.message, completedAt: new Date() } }
+      { $set: { status: 'failed', error: err.message, completedAt: new Date(), claimToken: null } }
     ).catch(() => {});
     if (job.networkVersionId) {
       await NetworkVersion.updateOne(

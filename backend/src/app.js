@@ -87,6 +87,9 @@ function createApp() {
         // Network imports can join rows that share an area code into one MultiPolygon area
         // (ImportJob.joinAreaParts) — HERE Admin4 deliveries split a town into many pieces.
         joinAreaParts: true,
+        // An import job is claimed by exactly one runner (ImportJob.claimToken); a deploy's overlapping
+        // containers can no longer commit the same delivery several times.
+        atomicImportClaims: true,
       },
     })
   );
