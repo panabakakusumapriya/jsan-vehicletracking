@@ -99,6 +99,8 @@ function createApp() {
         coverageReset: true,
         // The coverage map shows where each driver left off (GET …/driver-positions).
         driverPositions: true,
+        // Coverage reads accept several deliveries ('id~id') and deliveries carry a region.
+        regionFilter: true,
       },
     })
   );
