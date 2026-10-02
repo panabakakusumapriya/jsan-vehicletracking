@@ -612,6 +612,28 @@ export interface NetworkVersion {
   activatedBy?: { _id: string; name: string } | null;
   activatedAt: string | null;
   createdAt: string;
+  /** Where the delivery is ("Australia") — what the coverage page filters by. Null until detected. */
+  region?: string | null;
+  /** 'auto' was read from the ground; 'manual' was typed by a manager and is never re-detected. */
+  regionSource?: 'auto' | 'manual' | null;
+  /** The project is working from this delivery (see backend services/liveNetworks.js). */
+  live?: boolean;
+}
+
+/** One delivery's figures, as the summary reports them for the By-region / By-delivery table. */
+export interface DeliveryBreakdown {
+  versionId: string;
+  label: string;
+  region: string | null;
+  status: NetworkVersionStatus;
+  createdAt: string;
+  areas: number;
+  links: number;
+  targetMeters: number;
+  coveredMeters: number;
+  coveredLinks: number;
+  completedAreas: number;
+  assignedAreas: number;
 }
 
 export interface CoverageBand {
@@ -634,6 +656,8 @@ export interface CoverageSummary {
   /** Areas currently in a driver's hands, counted by areaCode. */
   assignedAreas?: number;
   totalAreas?: number;
+  /** One row per delivery in view. */
+  byDelivery?: DeliveryBreakdown[];
   byPriority: CoverageBand[];
   byFuncClass: CoverageBand[];
 }

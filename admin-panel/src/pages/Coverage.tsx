@@ -5,6 +5,7 @@ import { CoverageMap } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
+import { NameDeliveriesModal } from '../components/NameDeliveriesModal';
 import { api, uploadRaw } from '../lib/api';
 import { PIN_RANK, pinAlpha, statusText, whereText, type DriverPin } from '../lib/driverPins';
 import { sessionDt } from '../lib/format';
@@ -17,6 +18,7 @@ import type {
   ColumnMapping,
   CoverageArea,
   CoverageSummary,
+  DeliveryBreakdown,
   DriverPosition,
   ImportJob,
   ImportReport,
@@ -47,6 +49,45 @@ const isoDay = (offsetDays: number) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 const mb = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`;
+
+/** A delivery with no region yet (detection found no positioned area). */
+const UNPLACED = 'Not placed';
+const regionOf = (v: { region?: string | null }) => v.region || UNPLACED;
+
+/**
+ * What a delivery is called in the filter. The customer's import name when it is unique; when two
+ * live deliveries share it — three of PRJ-025's do — their size and date, so they can be told apart.
+ */
+function deliveryNamer(deliveries: NetworkVersion[]) {
+  const counts = new Map<string, number>();
+  for (const v of deliveries) counts.set(v.label, (counts.get(v.label) || 0) + 1);
+  return (v: NetworkVersion) =>
+    (counts.get(v.label) || 0) > 1
+      ? `${v.label} — ${v.counts.areas.toLocaleString()} areas, ${new Date(v.createdAt).toLocaleDateString(undefined, {
+          day: 'numeric',
+          month: 'short',
+        })}`
+      : v.label;
+}
+
+/** The filter, remembered per project in this browser. Storage can be unavailable; never required. */
+const FILTER_KEY = (projectId: string) => `jsan-cov-filter:${projectId}`;
+function readFilter(projectId: string): { region: string; delivery: string } {
+  try {
+    const raw = localStorage.getItem(FILTER_KEY(projectId));
+    const parsed = raw ? JSON.parse(raw) : null;
+    return { region: String(parsed?.region || ''), delivery: String(parsed?.delivery || '') };
+  } catch {
+    return { region: '', delivery: '' };
+  }
+}
+function writeFilter(projectId: string, value: { region: string; delivery: string }) {
+  try {
+    localStorage.setItem(FILTER_KEY(projectId), JSON.stringify(value));
+  } catch {
+    /* private window, blocked storage: the filter just is not remembered */
+  }
+}
 
 /** The pill on a driver's card: is the drive still open, and if so, what is the vehicle doing. */
 const POSITION_PILL: Record<DriverPosition['state'], { tone: string; label: string }> = {
@@ -246,6 +287,19 @@ export function Coverage() {
   const [versionId, setVersionId] = useState('');
   const [tab, setTab] = useState<'progress' | 'imports'>('progress');
   const [error, setError] = useState<string | null>(null);
+  /** Region filter: '' = everything. `delivery` narrows further to one delivery in that region. */
+  const [filter, setFilter] = useState<{ region: string; delivery: string }>({ region: '', delivery: '' });
+  const [naming, setNaming] = useState(false);
+
+  // Each project remembers its own filter.
+  useEffect(() => {
+    if (projectId) setFilter(readFilter(projectId));
+  }, [projectId]);
+  const pickFilter = (region: string, delivery = '') => {
+    const next = { region, delivery };
+    setFilter(next);
+    if (projectId) writeFilter(projectId, next);
+  };
 
   useEffect(() => {
     api
@@ -274,7 +328,40 @@ export function Coverage() {
 
   useEffect(loadVersions, [loadVersions]);
 
-  const version = versions.find((v) => v._id === versionId) || null;
+  const primaryVersion = versions.find((v) => v._id === versionId) || null;
+
+  /**
+   * The deliveries the project works from, grouped by region. An older re-delivery of the same
+   * ground is not live, and offering it would show a copy with nothing on it. (`live` absent means
+   * an older API: take everything, as before.)
+   */
+  const liveVersions = useMemo(() => versions.filter((v) => v.live !== false), [versions]);
+  const regions = useMemo(() => {
+    const map = new Map<string, NetworkVersion[]>();
+    for (const v of liveVersions) map.set(regionOf(v), [...(map.get(regionOf(v)) || []), v]);
+    return [...map.entries()]
+      .map(([name, list]) => ({ name, versions: list }))
+      .sort((a, b) => Number(a.name === UNPLACED) - Number(b.name === UNPLACED) || a.name.localeCompare(b.name));
+  }, [liveVersions]);
+  const nameOf = useMemo(() => deliveryNamer(liveVersions), [liveVersions]);
+
+  // A remembered filter that no longer fits (renamed region, delivery retired) quietly means "all".
+  const region = regions.find((r) => r.name === filter.region) || null;
+  const delivery = region?.versions.find((v) => v._id === filter.delivery) || null;
+  const inScope = delivery ? [delivery] : region ? region.versions : null;
+
+  /**
+   * What every read on the page is scoped to. The whole project; one delivery's id; or several
+   * deliveries' ids joined with '~', which the API reads as exactly those deliveries — so the map,
+   * the numbers and the tables all narrow together without each needing to know about regions.
+   */
+  const scopeId = !inScope
+    ? projectId
+    : inScope.length === 1
+      ? inScope[0]._id
+      : inScope.map((v) => v._id).sort().join('~');
+  const scopeLabel = delivery ? `${region!.name} · ${nameOf(delivery)}` : region ? region.name : null;
+  const version = inScope ? inScope.find((v) => v.status === 'active') || inScope[0] : primaryVersion;
 
   return (
     <div>
@@ -291,11 +378,7 @@ export function Coverage() {
               <option key={p._id} value={p._id}>{p.name}</option>
             ))}
           </select>
-          {versions.length > 1 && (
-            <span style={{ color: 'var(--muted)', fontSize: 12.5 }}>
-              {versions.length} deliveries · showing all
-            </span>
-          )}
+
         </div>
       </div>
 
@@ -308,9 +391,81 @@ export function Coverage() {
         </button>
       </div>
 
+      {/* Region filter: the project's deliveries grouped by where they are. Only worth showing
+          when there is something to choose between. */}
+      {tab === 'progress' && liveVersions.length > 1 && (
+        <div className="cov-filter">
+          <span className="cov-filter-k">Showing</span>
+          <div className="cov-chips" role="radiogroup" aria-label="Region">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!region}
+              className={!region ? 'on' : ''}
+              onClick={() => pickFilter('')}
+            >
+              All regions
+            </button>
+            {regions.map((r) => (
+              <button
+                key={r.name}
+                type="button"
+                role="radio"
+                aria-checked={region?.name === r.name}
+                className={region?.name === r.name ? 'on' : ''}
+                onClick={() => pickFilter(r.name)}
+                title={`${r.versions.length} deliver${r.versions.length === 1 ? 'y' : 'ies'}`}
+              >
+                {r.name}
+                {r.versions.length > 1 && <em>{r.versions.length}</em>}
+              </button>
+            ))}
+          </div>
+          {region && region.versions.length > 1 && (
+            <select
+              className="input cov-filter-select"
+              aria-label="Delivery"
+              value={delivery?._id || ''}
+              onChange={(e) => pickFilter(region.name, e.target.value)}
+            >
+              <option value="">All {region.versions.length} deliveries in {region.name}</option>
+              {region.versions.map((v) => (
+                <option key={v._id} value={v._id}>{nameOf(v)}</option>
+              ))}
+            </select>
+          )}
+          {canEdit && (
+            <button type="button" className="cov-link cov-filter-edit" onClick={() => setNaming(true)}>
+              Name deliveries…
+            </button>
+          )}
+        </div>
+      )}
+
+      {naming && (
+        <NameDeliveriesModal
+          deliveries={liveVersions}
+          onClose={() => setNaming(false)}
+          onSaved={() => {
+            setNaming(false);
+            loadVersions();
+          }}
+        />
+      )}
+
       {tab === 'progress' &&
         (version ? (
-          <ProgressTab version={version} scopeId={projectId} onChanged={loadVersions} canEdit={canEdit} />
+          <ProgressTab
+            version={version}
+            scopeId={scopeId}
+            scopeLabel={scopeLabel}
+            onChanged={loadVersions}
+            canEdit={canEdit}
+            deliveries={liveVersions}
+            nameOf={nameOf}
+            filterRegion={region?.name || ''}
+            onPickFilter={pickFilter}
+          />
         ) : (
           <div className="card empty-state">
             <h3 style={{ margin: '0 0 6px' }}>No target network yet</h3>
@@ -334,8 +489,13 @@ export function Coverage() {
 function ProgressTab({
   version,
   scopeId,
+  scopeLabel,
   onChanged,
   canEdit,
+  deliveries,
+  nameOf,
+  filterRegion,
+  onPickFilter,
 }: {
   /** The newest delivery — used only for actions that target one, like Make active. */
   version: NetworkVersion;
@@ -345,8 +505,15 @@ function ProgressTab({
    * project holding two states shows both at once.
    */
   scopeId: string;
+  /** "New Zealand", "Australia · Victoria" — null when the whole project is in view. */
+  scopeLabel: string | null;
   onChanged: () => void;
   canEdit: boolean;
+  /** The project's live deliveries, for naming the rows of the By-region table. */
+  deliveries: NetworkVersion[];
+  nameOf: (v: NetworkVersion) => string;
+  filterRegion: string;
+  onPickFilter: (region: string, delivery?: string) => void;
 }) {
   const [summary, setSummary] = useState<CoverageSummary | null>(null);
   const [areas, setAreas] = useState<CoverageArea[]>([]);
@@ -576,10 +743,13 @@ function ProgressTab({
       .catch(() => setCoverageDrivers([]));
   }, [scopeId, reloadKey]);
 
-  // A different project is a different crew: nothing from the last one may linger on the map.
+  // A different project — or region — is a different crew and different areas: nothing picked in
+  // the last one may linger on the map.
   useEffect(() => {
     setPositions([]);
     setPinDriverId(null);
+    setSelectedIds([]);
+    setFocusAreaId(null);
   }, [scopeId]);
 
   useEffect(() => {
@@ -911,6 +1081,69 @@ function ProgressTab({
   // Completing an area releases its holder, so the two counts do not overlap.
   const openCount = Math.max(0, totalAreas - completedCount - assignedCount);
   const donePct = pct(covered, target);
+
+  /**
+   * The figures split by where they are. Everything in view and more than one region: a row per
+   * region, which picks it. One region (or a project in one place) holding several deliveries: a
+   * row per delivery, which picks that. A single delivery in view: no table — the page is it.
+   */
+  const breakdown = useMemo(() => {
+    const rows = summary?.byDelivery || [];
+    if (rows.length < 2) return null;
+    const byId = new Map(deliveries.map((v) => [v._id, v]));
+    const regionFor = (d: DeliveryBreakdown) => regionOf(byId.get(d.versionId) || d);
+    type Row = Omit<DeliveryBreakdown, 'versionId' | 'label' | 'region' | 'status' | 'createdAt'> & {
+      key: string;
+      name: string;
+      sub: string;
+      pick: () => void;
+    };
+    const blank = { areas: 0, links: 0, targetMeters: 0, coveredMeters: 0, coveredLinks: 0, completedAreas: 0, assignedAreas: 0 };
+    const add = (acc: Row, d: DeliveryBreakdown) => {
+      for (const k of Object.keys(blank) as (keyof typeof blank)[]) acc[k] += d[k];
+    };
+
+    const regionNames = new Set(rows.map(regionFor));
+    if (!filterRegion && regionNames.size > 1) {
+      const groups = new Map<string, Row>();
+      const deliveriesIn = new Map<string, number>();
+      for (const d of rows) {
+        const name = regionFor(d);
+        const acc = groups.get(name) || { ...blank, key: name, name, sub: '', pick: () => onPickFilter(name) };
+        add(acc, d);
+        groups.set(name, acc);
+        deliveriesIn.set(name, (deliveriesIn.get(name) || 0) + 1);
+      }
+      return {
+        title: 'By region',
+        hint: 'Where the work is. Pick a region to see only its areas, drivers and figures.',
+        rows: [...groups.values()]
+          .map((r) => {
+            const n = deliveriesIn.get(r.name) || 0;
+            return { ...r, sub: `${n} deliver${n === 1 ? 'y' : 'ies'}` };
+          })
+          .sort((a, b) => b.targetMeters - a.targetMeters),
+      };
+    }
+    return {
+      title: 'By delivery',
+      hint: 'Each import the customer sent. Pick one to see only its areas.',
+      rows: rows
+        .map((d) => {
+          const v = byId.get(d.versionId);
+          const row: Row = {
+            ...blank,
+            key: d.versionId,
+            name: v ? nameOf(v) : d.label,
+            sub: `${regionFor(d)} · imported ${new Date(d.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`,
+            pick: () => onPickFilter(regionFor(d), d.versionId),
+          };
+          add(row, d);
+          return row;
+        })
+        .sort((a, b) => b.targetMeters - a.targetMeters),
+    };
+  }, [summary, deliveries, nameOf, filterRegion, onPickFilter]);
   const maxCrewMeters = Math.max(1, ...driverViz.legend.map((d) => d.meters));
 
   /**
@@ -1157,7 +1390,7 @@ function ProgressTab({
 
   return (
     <>
-      {version.status !== 'active' && canEdit && (
+      {version.status !== 'active' && version.live === false && canEdit && (
         <div className="card cov-notice">
           <div>
             <strong>This version is not active.</strong>{' '}
@@ -1174,7 +1407,7 @@ function ProgressTab({
           number and two bars, not a row of equal-weight tiles. */}
       <div className="card cov-hero">
         <div className="cov-hero-main">
-          <div className="cov-eyebrow">Network driven</div>
+          <div className="cov-eyebrow">Network driven{scopeLabel ? ` · ${scopeLabel}` : ''}</div>
           <div className="cov-hero-figure">
             <span className="cov-hero-pct">{donePct.toFixed(1)}<small>%</small></span>
             <span className="cov-hero-of">
@@ -1503,6 +1736,47 @@ function ProgressTab({
         )}
       </div>
 
+      {breakdown && (
+        <div className="card cov-breakdown">
+          <h3 className="cov-h3">{breakdown.title}</h3>
+          <p className="cov-sub">{breakdown.hint}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>{breakdown.title === 'By region' ? 'Region' : 'Delivery'}</th>
+                <th>Areas</th>
+                <th>Target</th>
+                <th>Driven</th>
+                <th style={{ width: '26%' }}>Progress</th>
+                <th>Signed off</th>
+                <th>With a driver</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdown.rows.map((r) => (
+                <tr key={r.key} className="cov-row-clickable" onClick={r.pick} title={`Show only ${r.name}`}>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{r.name}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{r.sub}</div>
+                  </td>
+                  <td>{r.areas.toLocaleString()}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{km(r.targetMeters)} km</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{km(r.coveredMeters)} km</td>
+                  <td>
+                    <div className="cov-cell">
+                      <Bar value={r.coveredMeters} total={r.targetMeters} tone="green" />
+                      <span className="cov-pct">{pct(r.coveredMeters, r.targetMeters).toFixed(1)}%</span>
+                    </div>
+                  </td>
+                  <td>{r.completedAreas.toLocaleString()}</td>
+                  <td>{r.assignedAreas.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <div className="cov-split">
         <div className="card">
           <h3 className="cov-h3">By priority</h3>
@@ -1577,7 +1851,7 @@ function ProgressTab({
             />
             <select className="input" value={priority} onChange={(e) => setPriority(e.target.value)} style={{ width: 'auto' }}>
               <option value="">All priorities</option>
-              {version.byPriority.map((b) => (
+              {(summary?.byPriority || version.byPriority).map((b) => (
                 <option key={b.priority} value={b.priority}>P{b.priority}</option>
               ))}
             </select>

@@ -158,7 +158,11 @@ function assert(cond, msg) {
   /* ── either id works, and the rows are ordered ── */
   const byVersion = await ask(boss, version._id);
   rows = await ask();
-  assert(byVersion.length === rows.length && rows.length === 3, 'asking by delivery or by project gives the same three drivers');
+  assert(rows.length === 3, 'the whole project: three drivers');
+  // One delivery (the region filter) is narrower: a drive counts when it was on THAT ground. Sam's
+  // open drive is 35 km off it, and Mona's stamped drive too — so she shows at her earlier one.
+  assert(byVersion.map((x) => x.name).sort().join() === 'mona,ravi' && of(byVersion, mona).trip.id === String(here._id),
+    'one delivery: only drivers whose last drive was on its ground, at that drive');
   assert(rows.map((x) => x.state).join() === 'stopped,ended,ended' && new Date(rows[1].at) > new Date(rows[2].at), 'open trips first, then the most recent');
 
   /* ── the route leading up to the pin ── */

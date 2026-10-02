@@ -33,7 +33,8 @@ const { driversWithLiveApp } = require('./tripLifecycle');
  */
 
 const TRIP_FIELDS =
-  'driverId projectId status startedAt endedAt lastLocation distanceMeters cleanedDistanceMeters mapMatchStatus';
+  'driverId projectId status startedAt endedAt lastLocation distanceMeters cleanedDistanceMeters mapMatchStatus ' +
+  'assignedNetworkVersionId';
 /** Unstamped trips looked at per driver, newest first, when placing them by geography. */
 const UNSTAMPED_LOOKBACK = 12;
 /** How far outside the project's work areas an unstamped trip may end and still count. ~25 km. */
@@ -92,8 +93,33 @@ function groundTester(scope) {
   };
 }
 
+/**
+ * Narrowed to some of the project's deliveries (the coverage page's region filter): the newest
+ * drive measured against one of them, or — not measured yet, or never — that ended on their
+ * ground. A driver who has since moved to the other side of the Tasman is still shown here at
+ * where they last worked here.
+ */
+async function lastDriveIn(driverId, scope, onGround) {
+  const ours = new Set(scope.versionIds.map(String));
+  const recent = await Trip.find({ ...HAS_FIX, driverId, projectId: { $in: [scope.projectId, null] } })
+    .sort({ startedAt: -1 })
+    .limit(UNSTAMPED_LOOKBACK)
+    .select(TRIP_FIELDS)
+    .lean();
+  for (const trip of recent) {
+    if (trip.assignedNetworkVersionId) {
+      if (ours.has(String(trip.assignedNetworkVersionId))) return trip;
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    if (await onGround(trip.lastLocation.lon, trip.lastLocation.lat)) return trip;
+  }
+  return null;
+}
+
 /** The driver's last real drive on this project, or null. */
 async function lastDrive(driverId, scope, onGround) {
+  if (!scope.isProject) return lastDriveIn(driverId, scope, onGround);
   const [stamped, unstamped] = await Promise.all([
     Trip.findOne({ ...HAS_FIX, driverId, projectId: scope.projectId })
       .sort({ startedAt: -1 })

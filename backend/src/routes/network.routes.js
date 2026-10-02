@@ -1,5 +1,15 @@
 const router = require('express').Router();
-const ctrl = require('../controllers/network.controller');
+const asyncHandler = require('../utils/asyncHandler');
+
+// Every handler wrapped, so an error thrown inside one reaches the error middleware as a response.
+// Most of these handlers call assertProjectAccess, which THROWS a 403 — unwrapped, that rejection
+// went nowhere and the request simply hung until the client gave up.
+const ctrl = Object.fromEntries(
+  Object.entries(require('../controllers/network.controller')).map(([name, fn]) => [
+    name,
+    typeof fn === 'function' ? asyncHandler(fn) : fn,
+  ])
+);
 const { authenticate, requireRole } = require('../middleware/auth');
 
 router.use(authenticate);
@@ -92,5 +102,7 @@ router.post(
 );
 
 router.delete('/versions/:id', requireRole('admin'), ctrl.deleteVersion);
+// Name a delivery and say where it is — what the coverage page's region filter reads.
+router.patch('/versions/:id', requireRole('admin', 'manager'), ctrl.updateVersion);
 
 module.exports = router;

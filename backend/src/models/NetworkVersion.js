@@ -84,6 +84,15 @@ const networkVersionSchema = new mongoose.Schema(
     activatedAt: { type: Date, default: null },
     activatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     notes: { type: String, default: null },
+
+    /**
+     * Where this delivery is — "Australia", "New Zealand" — which the coverage page filters and
+     * totals by. Detected from the time zone under its work areas (services/deliveryRegions.js),
+     * because the customer's import name cannot be relied on to say: every PRJ-025 delivery was
+     * named the same. A manager may rename it (to a state, say); 'manual' is never re-detected.
+     */
+    region: { type: String, default: null, trim: true },
+    regionSource: { type: String, enum: ['auto', 'manual', null], default: null },
   },
   { timestamps: true }
 );

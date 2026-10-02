@@ -20,6 +20,8 @@ const networkImport = require('../services/networkImport');
 const workAreaSplit = require('../services/workAreaSplit');
 const coverageReset = require('../services/coverageReset');
 const driverPositions = require('../services/driverPositions');
+const { ensureRegions } = require('../services/deliveryRegions');
+const { liveNetworkVersions } = require('../services/liveNetworks');
 const { kickImportRunner } = require('../services/importRunner');
 const shapefile = require('../utils/shapefile');
 const { simplifyGeometry, bboxUnion } = require('../utils/geo');
@@ -66,8 +68,44 @@ function assertProjectAccess(user, projectId) {
  * live assignment. Older re-deliveries of the same ground carry neither, so they drop out and
  * their duplicate areas never double-count.
  */
+/** At most this many deliveries in one "v1~v2~…" scope. A project has a handful. */
+const MAX_SCOPE_VERSIONS = 20;
+
+/**
+ * A scope of several deliveries of one project — "everything in Australia" — written as their
+ * ids joined with '~' in the same `:id` position. The panel's region filter sends this, so every
+ * read on the page (summary, areas, map, tracks, drivers) narrows to the region with no endpoint
+ * having to know about regions. All ids must be versions of the same project; anything else is
+ * treated as not found rather than half-answered.
+ */
+async function resolveVersionSet(raw) {
+  const ids = [...new Set(raw.split('~').map(asObjectId))];
+  if (!ids.length || ids.length > MAX_SCOPE_VERSIONS || ids.some((id) => !id)) return null;
+  const versions = await NetworkVersion.find({ _id: { $in: ids } }).sort({ createdAt: -1 }).lean();
+  if (versions.length !== ids.length) return null;
+  const projectId = versions[0].projectId;
+  if (versions.some((v) => String(v.projectId) !== String(projectId))) return null;
+  return {
+    projectId,
+    versionIds: versions.map((v) => v._id),
+    versions,
+    primary: versions.find((v) => v.status === 'active') || versions[0],
+    isProject: false,
+    totals: versions.reduce(
+      (acc, v) => ({
+        areas: acc.areas + (v.counts?.areas || 0),
+        links: acc.links + (v.counts?.links || 0),
+        targetMeters: acc.targetMeters + (v.targetMeters || 0),
+      }),
+      { areas: 0, links: 0, targetMeters: 0 }
+    ),
+  };
+}
+
 async function resolveNetworkScope(req) {
-  const id = asObjectId(req.params.id);
+  const raw = String(req.params.id || '');
+  if (raw.includes('~')) return resolveVersionSet(raw);
+  const id = asObjectId(raw);
   if (!id) return null;
 
   const version = await NetworkVersion.findById(id).select('projectId status label counts targetMeters byPriority byFuncClass activatedAt createdAt');
@@ -120,7 +158,7 @@ async function resolveNetworkScope(req) {
  * programme's. Version-scoped reads keep the single delivery's array untouched.
  */
 function mergeBands(scope, version, field, key) {
-  const sources = scope.isProject && scope.versions ? scope.versions : [version];
+  const sources = scope.versions && scope.versions.length ? scope.versions : [version];
   const merged = new Map();
   for (const v of sources) {
     for (const raw of v[field] || []) {
@@ -426,7 +464,56 @@ async function listVersions(req, res) {
     .populate('createdBy', 'name')
     .populate('activatedBy', 'name');
 
-  res.json({ versions });
+  /**
+   * `live`: the deliveries the project is working from — the same rule the coverage page and the
+   * phones use (services/liveNetworks.js). An older re-delivery of the same ground is not live,
+   * and offering it in the region filter would show a copy of Victoria with nothing on it.
+   */
+  const projectIds = [...new Set(versions.map((v) => String(v.projectId?._id || v.projectId)))];
+  const live = new Set((await liveNetworkVersions(projectIds)).map((v) => String(v._id)));
+  await ensureRegions(versions.filter((v) => live.has(String(v._id))));
+
+  res.json({
+    versions: versions.map((v) => ({ ...v.toObject(), live: live.has(String(v._id)) })),
+  });
+}
+
+/**
+ * PATCH /versions/:id   { label?, region? }
+ *
+ * Name a delivery, and say where it is. The customer's import name is often the project code
+ * repeated (three PRJ-025 deliveries are all "PRJ-025-HE-DRIVE-AUSGNZ network"), which makes
+ * the coverage page's delivery filter unreadable until someone calls them Victoria, Queensland.
+ * An empty region hands it back to detection.
+ */
+async function updateVersion(req, res) {
+  try {
+    const version = await NetworkVersion.findById(asObjectId(req.params.id) || null);
+    if (!version) return res.status(404).json({ error: 'Network version not found' });
+    assertProjectAccess(req.user, version.projectId);
+
+    const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
+    if (req.body.label !== undefined) {
+      const label = clean(req.body.label);
+      if (!label) return res.status(400).json({ error: 'A delivery needs a name' });
+      if (label.length > 120) return res.status(400).json({ error: 'Keep the name under 120 characters' });
+      version.label = label;
+    }
+    if (req.body.region !== undefined) {
+      const region = clean(req.body.region);
+      if (region.length > 60) return res.status(400).json({ error: 'Keep the region under 60 characters' });
+      version.region = region || null;
+      version.regionSource = region ? 'manual' : null;
+    }
+    await version.save();
+    if (!version.region) await ensureRegions([version]);
+    return res.json({ version });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    // eslint-disable-next-line no-console
+    console.error('[update version]', err);
+    return res.status(500).json({ error: 'The delivery could not be saved' });
+  }
 }
 
 /**
@@ -447,12 +534,13 @@ async function versionSummary(req, res) {
     { $match: { networkVersionId: { $in: scope.versionIds } } },
     {
       $group: {
-        _id: { priority: '$priority', funcClass: '$funcClass' },
+        _id: { v: '$networkVersionId', priority: '$priority', funcClass: '$funcClass' },
         meters: { $sum: '$lengthMeters' },
         links: { $sum: 1 },
       },
     },
   ]);
+  const coveredByVersion = new Map();
 
   const coveredByPriority = new Map();
   const coveredByFuncClass = new Map();
@@ -462,6 +550,10 @@ async function versionSummary(req, res) {
   for (const row of rows) {
     coveredMeters += row.meters;
     coveredLinks += row.links;
+    const v = coveredByVersion.get(String(row._id.v)) || { meters: 0, links: 0 };
+    v.meters += row.meters;
+    v.links += row.links;
+    coveredByVersion.set(String(row._id.v), v);
     const p = coveredByPriority.get(row._id.priority) || { meters: 0, links: 0 };
     p.meters += row.meters;
     p.links += row.links;
@@ -474,15 +566,37 @@ async function versionSummary(req, res) {
 
   const projectId = version.projectId?._id || version.projectId;
   const cycleId = await cycleIdFor(projectId);
-  const [completedAreas, assignedAreaCodes] = await Promise.all([
-    AreaCompletion.countDocuments({
-      projectId,
-      coverageCycleId: cycleId,
-      status: 'completed',
-    }),
+  const sources = scope.versions && scope.versions.length ? scope.versions : [scope.primary];
+  const [completedCodes, assignedCodes, codesByVersion] = await Promise.all([
+    AreaCompletion.distinct('areaCode', { projectId, coverageCycleId: cycleId, status: 'completed' }),
     // By areaCode, so an area held through an older version's row still counts as assigned.
     AreaAssignment.distinct('areaCode', { projectId, releasedAt: null }),
+    // Which areas each delivery in view holds — the counts below are of THESE areas, so a filter
+    // to New Zealand does not report Australia's sign-offs.
+    Promise.all(sources.map((v) => WorkArea.distinct('areaCode', { networkVersionId: v._id }))),
   ]);
+  const completedSet = new Set(completedCodes);
+  const assignedSet = new Set(assignedCodes);
+  const inView = new Set(codesByVersion.flat());
+  const countIn = (codes, set) => codes.reduce((n, c) => n + (set.has(c) ? 1 : 0), 0);
+  const completedAreas = countIn([...inView], completedSet);
+  const assignedAreaCodes = [...inView].filter((c) => assignedSet.has(c));
+
+  /** One row per delivery in view, for the page's By-region and By-delivery tables. */
+  const byDelivery = sources.map((v, i) => ({
+    versionId: String(v._id),
+    label: v.label,
+    region: v.region || null,
+    status: v.status,
+    createdAt: v.createdAt,
+    areas: v.counts?.areas || 0,
+    links: v.counts?.links || 0,
+    targetMeters: v.targetMeters || 0,
+    coveredMeters: coveredByVersion.get(String(v._id))?.meters || 0,
+    coveredLinks: coveredByVersion.get(String(v._id))?.links || 0,
+    completedAreas: countIn(codesByVersion[i], completedSet),
+    assignedAreas: countIn(codesByVersion[i], assignedSet),
+  }));
 
   return res.json({
     version,
@@ -498,6 +612,7 @@ async function versionSummary(req, res) {
       completedAreas,
       assignedAreas: assignedAreaCodes.length,
       totalAreas: scope.totals ? scope.totals.areas : version.counts.areas,
+      byDelivery,
       byPriority: mergeBands(scope, version, 'byPriority', 'priority').map((band) => ({
         ...(band.toObject ? band.toObject() : band),
         coveredMeters: coveredByPriority.get(band.priority)?.meters || 0,
@@ -1657,16 +1772,38 @@ async function versionTracks(req, res) {
 
   const limit = Math.min(Number(req.query.limit) || TRACKS_DEFAULT_LIMIT, TRACKS_MAX_LIMIT);
 
+  /**
+   * Narrowed to some of the project's deliveries (the region filter): a drive belongs here when
+   * it was measured against one of them. A drive not yet measured — still with the matcher, or
+   * never attributed — is placed by where it ended, inside the deliveries' combined extent.
+   */
+  let drawable = { cleanedRouteShapes: { $exists: true, $ne: [] } };
+  let waiting = { cleanedRouteShapes: { $in: [null, []] } };
+  if (!scope.isProject) {
+    const inBox = await endedWithin(scope);
+    drawable = {
+      ...drawable,
+      $or: [
+        { assignedNetworkVersionId: { $in: scope.versionIds } },
+        { assignedNetworkVersionId: null, ...inBox },
+        // Neither measured nor positioned: nothing says where it was, so it is shown rather than
+        // silently dropped. (None in production at the time of writing — every drive has a fix.)
+        { assignedNetworkVersionId: null, 'lastLocation.lat': { $not: { $type: 'number' } } },
+      ],
+    };
+    waiting = { ...waiting, $or: [inBox, { 'lastLocation.lat': { $not: { $type: 'number' } } }] };
+  }
+
   const [rows, pendingSnap] = await Promise.all([
     // Any trip that HAS a cleaned route, however it got one: the matcher for recorded drives,
     // the derivation from covered roads for imported days. Both are snapped geometry.
-    Trip.find({ ...filter, cleanedRouteShapes: { $exists: true, $ne: [] } })
+    Trip.find({ ...filter, ...drawable })
       .select('driverId startedAt endedAt cleanedRouteShapes cleanedDistanceMeters effectiveUkmMeters')
       .sort({ startedAt: -1 })
       .limit(limit + 1)
       .lean(),
     // Everything in the window the matcher has not finished with. Counted, never drawn.
-    Trip.countDocuments({ ...filter, cleanedRouteShapes: { $in: [null, []] } }),
+    Trip.countDocuments({ ...filter, ...waiting }),
   ]);
 
   const truncated = rows.length > limit;
@@ -1743,6 +1880,33 @@ async function versionDriverRoute(req, res) {
     console.error('[driver route]', err);
     return res.status(500).json({ error: 'That route could not be loaded' });
   }
+}
+
+/** Degrees around a scope's extent within which a drive still counts as on its ground. ~25 km. */
+const GROUND_PAD_DEG = 0.25;
+
+/**
+ * A Trip filter: last fix inside the (padded) extent of the scope's work areas. Matches nothing
+ * when the deliveries have no positioned area at all.
+ */
+async function endedWithin(scope) {
+  const [box] = await WorkArea.aggregate([
+    { $match: { networkVersionId: { $in: scope.versionIds }, 'bbox.3': { $exists: true } } },
+    {
+      $group: {
+        _id: null,
+        w: { $min: { $arrayElemAt: ['$bbox', 0] } },
+        s: { $min: { $arrayElemAt: ['$bbox', 1] } },
+        e: { $max: { $arrayElemAt: ['$bbox', 2] } },
+        n: { $max: { $arrayElemAt: ['$bbox', 3] } },
+      },
+    },
+  ]);
+  if (!box) return { _id: null };
+  return {
+    'lastLocation.lat': { $gte: box.s - GROUND_PAD_DEG, $lte: box.n + GROUND_PAD_DEG },
+    'lastLocation.lon': { $gte: box.w - GROUND_PAD_DEG, $lte: box.e + GROUND_PAD_DEG },
+  };
 }
 
 /* ---- completion: a manager's verdict that an area is finished ---- */
@@ -2018,6 +2182,7 @@ module.exports = {
   deleteJob,
   importPreviewGeoJson,
   listVersions,
+  updateVersion,
   versionSummary,
   versionAreas,
   versionAreasGeoJson,
