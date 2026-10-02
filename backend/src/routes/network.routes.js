@@ -60,6 +60,18 @@ router.post(
   requireRole('admin', 'manager'),
   ctrl.reopenArea
 );
+// An area too big for one driver, cut into zones of a size the manager chooses — and put back.
+router.post(
+  '/versions/:id/areas/:areaId/split',
+  requireRole('admin', 'manager'),
+  ctrl.splitArea
+);
+router.post(
+  '/versions/:id/areas/:areaId/join',
+  requireRole('admin', 'manager'),
+  ctrl.joinArea
+);
+
 router.delete('/versions/:id', requireRole('admin'), ctrl.deleteVersion);
 
 module.exports = router;

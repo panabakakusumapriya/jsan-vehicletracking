@@ -543,6 +543,16 @@ export interface ImportReport {
     matchedAreas: number;
   };
   totals: { areas: number; links: number; targetMeters: number; orphanMeters: number };
+  /** Areas of this delivery that the project had already split into zones. */
+  split?: {
+    code: string;
+    name: string;
+    meters: number;
+    links: number;
+    /** False when the ground changed too much for the old zones to be reused. */
+    kept: boolean;
+    zones: { code: string; name: string; meters: number; links: number }[];
+  }[];
   errors: ImportIssue[];
   warnings: ImportIssue[];
 }
@@ -575,6 +585,8 @@ export interface ImportJob {
   includeOrphanLinks: boolean;
   /** Join rows sharing an area code into one MultiPolygon area — see backend models/ImportJob.js. */
   joinAreaParts?: boolean;
+  /** Areas split into zones earlier in this project stay split when the customer re-delivers them. */
+  keepAreaSplits?: boolean;
   report: ImportReport | null;
   progress: { phase: string | null; done: number; total: number };
   networkVersionId: string | null;
@@ -626,11 +638,31 @@ export interface CoverageSummary {
   byFuncClass: CoverageBand[];
 }
 
+/** On a zone: the area it was cut from. See backend/src/services/workAreaSplit.js. */
+export interface AreaSplitOrigin {
+  code: string;
+  name: string;
+  zones: number | null;
+}
+
+/** What POST …/areas/:id/split answers: the zones it would make (apply false) or made. */
+export interface AreaSplitResult {
+  parent: { _id: string; code: string; name: string; km: number; links: number };
+  options: { minKm: number; maxKm: number; absorbRemainder: boolean };
+  /** 'osm', or "none — why" when the zones could only be numbered. */
+  namesFrom: string | null;
+  unplacedLinks: number;
+  zones: { _id?: string; code: string; name: string; km: number; links: number }[];
+  applied: boolean;
+  alreadySplit?: boolean;
+}
+
 export interface CoverageArea {
   _id: string;
   areaCode: string;
   name: string;
   parentName: string | null;
+  splitFrom?: AreaSplitOrigin | null;
   priority: number;
   areaSqKm: number | null;
   targetMeters: number;
@@ -654,6 +686,7 @@ export interface AreaCoverageDetail {
     areaCode: string;
     name: string;
     parentName: string | null;
+    splitFrom?: AreaSplitOrigin | null;
     priority: number;
     targetMeters: number;
     targetLinks: number;

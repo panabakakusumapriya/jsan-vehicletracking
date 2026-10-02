@@ -90,6 +90,10 @@ function createApp() {
         // An import job is claimed by exactly one runner (ImportJob.claimToken); a deploy's overlapping
         // containers can no longer commit the same delivery several times.
         atomicImportClaims: true,
+        // An area with too much road for one driver can be split into zones of a chosen size from
+        // the panel, and joined back (POST …/areas/:areaId/split|join; services/workAreaSplit.js).
+        // A later delivery of the same ground keeps the zones (ImportJob.keepAreaSplits).
+        areaSplit: true,
       },
     })
   );

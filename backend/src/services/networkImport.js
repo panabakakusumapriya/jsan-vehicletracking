@@ -11,6 +11,7 @@ const RoadLink = require('../models/RoadLink');
 const { extract } = require('../utils/unzip');
 const fileStore = require('../utils/fileStore');
 const shapefile = require('../utils/shapefile');
+const workAreaSplit = require('./workAreaSplit');
 const {
   lineLength,
   bboxOf,
@@ -353,7 +354,7 @@ function tally(map, key, links, meters) {
 /**
  * Read both layers and produce the report the operator approves. Writes nothing.
  */
-async function buildReport(job, layers, onProgress = () => {}) {
+async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
   const errors = [];
   const warnings = [];
 
@@ -617,6 +618,71 @@ async function buildReport(job, layers, onProgress = () => {}) {
     }
   }
 
+  /* ---- areas this project has already split stay split ---- */
+  /**
+   * A manager can cut an area that is too big for one driver into zones (the panel's "Split into
+   * zones"; services/workAreaSplit.js). The customer's next delivery knows nothing about that and
+   * brings the area back whole. Left alone, that would undo the split and strand every assignment
+   * and sign-off made on a zone — they are keyed by area code. So the zones are carried into this
+   * version as they are, same codes and polygons, and from here on they ARE the areas.
+   *
+   * An import never splits anything by itself: the size of a zone is a manager's call.
+   * Not for a roads-only import: its areas already exist, zones included.
+   */
+  let split = [];
+  if (job.keepAreaSplits !== false && layers.network && !roadsOnly && areas.length) {
+    /** The links of the areas concerned, read again: the first pass kept no geometry. */
+    const linksOf = async (wanted) => {
+      const out = new Map([...wanted].map((index) => [index, []]));
+      const seen = new Set();
+      let read = 0;
+      for (const { attrs, parts } of shapefile.features(layers.network.chosen)) {
+        read++;
+        if (read % YIELD_EVERY === 0) {
+          onProgress('zones', read);
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        // The same links the pass above counted: no empty geometry, no second copy of an id.
+        if (!parts.length || parts[0].length < 2) continue;
+        const id = mapping.linkId ? String(attrs[mapping.linkId] ?? '').trim() : '';
+        if (id) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+        }
+        const index = locate(midpointOf(parts[0]));
+        if (wanted.has(index)) out.get(index).push({ coords: parts[0], meters: lineLength(parts[0]) });
+      }
+      return out;
+    };
+    const result = await workAreaSplit.carrySplitsForward({ areas, linksOf, projectId: job.projectId, deps });
+    split = result.splits;
+    const kept = split.filter((row) => row.kept);
+    if (kept.length) {
+      areas.length = 0;
+      areas.push(...result.areas);
+      orphanLinks += result.unplacedLinks;
+      orphanMeters += result.unplacedMeters;
+      warnings.push({
+        code: 'AREA_SPLITS_KEPT',
+        message:
+          `${kept.length} area(s) were split into zones earlier in this project and stay split: ` +
+          `${kept.slice(0, 3).map((row) => `${row.name} (${row.zones.length} zones)`).join(', ')}` +
+          `${kept.length > 3 ? ', …' : ''}. The zones keep their codes, so drivers and sign-offs stay attached.`,
+      });
+    }
+    const changed = split.filter((row) => !row.kept);
+    if (changed.length) {
+      warnings.push({
+        code: 'AREA_SPLITS_DROPPED',
+        message:
+          `${changed.map((row) => row.name).slice(0, 3).join(', ')} was split into zones earlier, but more ` +
+          `than 1% of its roads now fall outside those zones, so it is imported whole. Split it again ` +
+          `from the map after the import.`,
+      });
+    }
+  }
+
   if (multiPartLinks) {
     errors.push({
       code: 'MULTIPART_LINKS',
@@ -770,6 +836,8 @@ async function buildReport(job, layers, onProgress = () => {}) {
       targetMeters: job.includeOrphanLinks ? totalMeters : totalMeters - orphanMeters,
       orphanMeters,
     },
+    // Areas that were cut into zones, and the zones each became. Empty when none were.
+    split,
     errors,
     warnings,
   };

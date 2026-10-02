@@ -8,6 +8,7 @@ import { useAuth } from '../lib/auth';
 import type {
   AreaAssignment,
   AreaCoverageDetail,
+  AreaSplitResult,
   ColumnMapping,
   CoverageArea,
   CoverageSummary,
@@ -481,6 +482,42 @@ function ProgressTab({
     }
   };
 
+  /** The area being split into zones, while its dialog is open. */
+  const [splitting, setSplitting] = useState<AreaCoverageDetail['area'] | null>(null);
+
+  /**
+   * Put a split area back together — from the card of any one of its zones.
+   *
+   * The way to change the zone size: join, then split again. The server refuses while a zone is
+   * in a driver's hands or signed off, and says which.
+   */
+  const joinZones = async () => {
+    if (!detail?.area.splitFrom) return;
+    const { name, zones } = detail.area.splitFrom;
+    const ok = window.confirm(
+      `Join ${zones ? `all ${zones} zones` : 'the zones'} of ${name} back into one area?\n\n` +
+      'The zones are removed and the area returns as it was. Roads already driven stay driven. ' +
+      'You can then split it again at a different size.'
+    );
+    if (!ok) return;
+    setDetailBusy(true);
+    setDetailError(null);
+    try {
+      const r = await api.post<{ area: { _id: string } }>(
+        `/api/network/versions/${scopeId}/areas/${detail.area._id}/join`,
+        {}
+      );
+      setSelectedIds(r.area?._id ? [r.area._id] : []);
+      loadAssignments();
+      setReloadKey((n) => n + 1);
+      onChanged();
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : 'The zones could not be joined');
+    } finally {
+      setDetailBusy(false);
+    }
+  };
+
   const loadAssignments = useCallback(() => {
     api
       .get<{ assignments: AreaAssignment[] }>(`/api/network/versions/${scopeId}/assignments`)
@@ -815,6 +852,18 @@ function ProgressTab({
                 Assign driver…
               </button>
             )}
+            {/* Too much road for one driver? Cut it into zones of a chosen size. Only while nobody
+                holds it: an assignment is keyed by the area's code, which is about to change. */}
+            {canEdit && !shownDone && !shownDetail.area.splitFrom && shownDetail.assignments.length === 0 && (
+              <button className="btn-ghost" disabled={detailBusy} onClick={() => setSplitting(shownDetail.area)}>
+                Split into zones…
+              </button>
+            )}
+            {canEdit && shownDetail.area.splitFrom && (
+              <button className="btn-ghost" disabled={detailBusy} onClick={joinZones}>
+                Join zones back…
+              </button>
+            )}
             {shownDetail.area.bbox && shownDetail.area.bbox.length === 4 && (
               <a
                 className="cov-pop-link"
@@ -833,6 +882,8 @@ function ProgressTab({
             {shownDone
               ? 'Completed areas cannot be assigned to another driver without an override.'
               : 'Completing releases the driver and takes these roads off their phone.'}
+            {shownDetail.area.splitFrom &&
+              ` One of ${shownDetail.area.splitFrom.zones ?? 'the'} zones ${shownDetail.area.splitFrom.name} was split into.`}
           </div>
         </>
       )}
@@ -1292,6 +1343,22 @@ function ProgressTab({
           </tbody>
         </table>
       </div>
+
+      {splitting && (
+        <SplitZonesModal
+          scopeId={scopeId}
+          area={splitting}
+          onClose={() => setSplitting(null)}
+          onDone={(result) => {
+            setSplitting(null);
+            // The area is gone; land on its first zone so the map does not show an empty card.
+            setSelectedIds(result.zones[0]?._id ? [result.zones[0]._id] : []);
+            loadAssignments();
+            setReloadKey((n) => n + 1);
+            onChanged();
+          }}
+        />
+      )}
 
       {assigning && assigning.length > 0 && (
         <AssignDriversModal
@@ -1805,7 +1872,241 @@ function ReportView({
           </span>
         </label>
       )}
+      {/* A re-delivery brings back, whole, an area this project has already split into zones.
+          Kept split by default — the zones are what drivers are assigned to. */}
+      {(job.keepAreaSplits === false || (report.split?.length ?? 0) > 0) && (
+        <label className="cov-toggle">
+          <input
+            type="checkbox"
+            disabled={!canEdit}
+            checked={job.keepAreaSplits !== false}
+            onChange={(e) => onPatch({ keepAreaSplits: e.target.checked })}
+          />
+          <span>
+            Keep areas that were <b>split into zones</b> earlier in this project split
+            {report.split?.length
+              ? ` (${report.split.map((s) => `${s.name}: ${s.zones.length} zones`).slice(0, 3).join(', ')})`
+              : ''}
+            . The zones keep their codes, so drivers and sign-offs stay attached. Untick to import
+            those areas whole, as delivered. Changing this re-checks the files.
+          </span>
+        </label>
+      )}
     </div>
+  );
+}
+
+/* ================================================================= splitting */
+
+/**
+ * How many zones a length of road makes at a given size, and how big they come out — the same
+ * rule as backend/src/services/areaSplit.js#zonePlan, so the dialog can answer as the numbers are
+ * typed. The server's preview is still what counts.
+ */
+function zonePlan(totalKm: number, minKm: number, maxKm: number, absorb: boolean) {
+  const middle = (minKm + maxKm) / 2;
+  const fewest = Math.max(1, Math.ceil(totalKm / maxKm - 1e-9));
+  const most = Math.floor(totalKm / minKm + 1e-9);
+  if (most >= fewest) {
+    let best = fewest;
+    for (let k = fewest; k <= most; k++) {
+      if (Math.abs(totalKm / k - middle) < Math.abs(totalKm / best - middle)) best = k;
+    }
+    return { count: best, each: totalKm / best, leftover: null as number | null };
+  }
+  if (absorb || most < 1) {
+    const count = Math.max(1, most);
+    return { count, each: totalKm / count, leftover: null };
+  }
+  return { count: most + 1, each: middle, leftover: totalKm - most * middle };
+}
+
+/**
+ * Cut one area into zones a driver can finish.
+ *
+ * One area goes to one driver, and a customer's file can hand over an area nobody could cover —
+ * Auckland arrived as a single 4,408 km polygon. The manager says how much road a zone should
+ * hold; the server cuts the area into that many compact, connected pieces, named after the
+ * suburbs inside them, and the pieces replace the area on the map.
+ *
+ * Two steps on purpose: Preview shows the zones that would be made (and writes nothing), and only
+ * then does the Split button appear. Changing a number throws the preview away.
+ */
+function SplitZonesModal({
+  scopeId,
+  area,
+  onClose,
+  onDone,
+}: {
+  scopeId: string;
+  area: AreaCoverageDetail['area'];
+  onClose: () => void;
+  onDone: (result: AreaSplitResult) => void;
+}) {
+  const [minKm, setMinKm] = useState('250');
+  const [maxKm, setMaxKm] = useState('300');
+  const [absorb, setAbsorb] = useState(true);
+  const [preview, setPreview] = useState<AreaSplitResult | null>(null);
+  const [busy, setBusy] = useState<'preview' | 'split' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const totalKm = area.targetMeters / 1000;
+  const lo = Number(minKm);
+  const hi = Number(maxKm);
+  const valid = Number.isFinite(lo) && Number.isFinite(hi) && lo >= 5 && hi >= lo;
+  const plan = valid ? zonePlan(totalKm, lo, hi, absorb) : null;
+
+  const change = (fn: () => void) => {
+    fn();
+    setPreview(null);
+    setError(null);
+  };
+
+  const run = async (apply: boolean) => {
+    if (!valid) return;
+    setBusy(apply ? 'split' : 'preview');
+    setError(null);
+    try {
+      const result = await api.post<AreaSplitResult>(
+        `/api/network/versions/${scopeId}/areas/${area._id}/split`,
+        { minKm: lo, maxKm: hi, absorbRemainder: absorb, apply }
+      );
+      if (apply) onDone(result);
+      else setPreview(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The area could not be split');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const fmt = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+
+  return (
+    <Modal title={`Split into zones · ${area.name}`} onClose={busy ? () => {} : onClose}>
+      <p className="cov-sub" style={{ marginTop: 0 }}>
+        {area.areaCode} · {km(area.targetMeters)} km across {area.targetLinks.toLocaleString()} roads.
+        One area goes to one driver — say how much road a zone should hold and the area is cut
+        into zones of that size, each in one piece and named after the suburbs inside it.
+      </p>
+
+      <div className="form-grid">
+        <label className="field">
+          <span>Each zone, from (km)</span>
+          <input
+            className="input"
+            type="number"
+            min={5}
+            step={10}
+            value={minKm}
+            disabled={busy !== null}
+            onChange={(e) => change(() => setMinKm(e.target.value))}
+          />
+        </label>
+        <label className="field">
+          <span>to (km)</span>
+          <input
+            className="input"
+            type="number"
+            min={5}
+            step={10}
+            value={maxKm}
+            disabled={busy !== null}
+            onChange={(e) => change(() => setMaxKm(e.target.value))}
+          />
+        </label>
+      </div>
+
+      <label className="cov-toggle" style={{ marginTop: 4 }}>
+        <input
+          type="checkbox"
+          checked={absorb}
+          disabled={busy !== null}
+          onChange={(e) => change(() => setAbsorb(e.target.checked))}
+        />
+        <span>
+          If a small part is left over, <b>add it to the neighbouring zones</b> — they may then run
+          a little over the maximum. Untick to keep the leftover as a smaller zone of its own.
+        </span>
+      </label>
+
+      {!valid && (
+        <div className="cov-issue warn" style={{ marginTop: 12 }}>
+          Enter the size as two numbers, smallest first — for example 250 to 300. For one exact
+          size, put the same number in both.
+        </div>
+      )}
+      {plan && !preview && (
+        <p className="cov-sub" style={{ marginTop: 12 }}>
+          {plan.count < 2
+            ? `${fmt(totalKm)} km is not enough for two zones of this size — ask for smaller zones${absorb && totalKm > hi ? ', or untick the box above' : ''}.`
+            : plan.leftover !== null
+              ? `That makes ${plan.count} zones: ${plan.count - 1} of about ${fmt(plan.each)} km and a leftover of about ${fmt(plan.leftover)} km.`
+              : `That makes ${plan.count} zones of about ${fmt(plan.each)} km each${plan.each > hi + 0.5 ? ' — the leftover shared out among them' : ''}.`}
+        </p>
+      )}
+
+      {preview && (
+        <>
+          <p className="cov-sub" style={{ marginTop: 12 }}>
+            <b>{preview.zones.length} zones</b>, {fmt(Math.min(...preview.zones.map((z) => z.km)))}–
+            {fmt(Math.max(...preview.zones.map((z) => z.km)))} km each.
+            {preview.namesFrom?.startsWith('none') &&
+              ' The place names could not be fetched just now, so the zones are numbered only.'}
+            {/* Water, or a gap in the customer's network, can leave a part of the area that
+                does not divide any closer — the North Shore is three zones of 277 km whatever
+                size is asked for. Say so rather than let the range look ignored. */}
+            {(() => {
+              const off = preview.zones.filter((z) => z.km < lo - 1 || z.km > Math.max(hi, plan?.each ?? hi) * 1.06);
+              return off.length
+                ? ` ${off.length} of them fall outside the size asked for: that part of the area is cut off from the rest (water, or roads missing from the delivery) and does not divide any closer.`
+                : '';
+            })()}
+          </p>
+          <div className="cov-driver-list" style={{ maxHeight: 260 }}>
+            <table className="table" style={{ width: '100%' }}>
+              <tbody>
+                {preview.zones.map((z) => (
+                  <tr key={z.code}>
+                    <td style={{ padding: '6px 8px' }}>{z.name}</td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>{fmt(z.km)} km</td>
+                    <td style={{ padding: '6px 8px', textAlign: 'right', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
+                      {z.links.toLocaleString()} roads
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="cov-sub" style={{ marginTop: 10 }}>
+            Splitting replaces {area.name} with these zones. Roads already driven stay driven. To
+            change the size later, pick any zone and use “Join zones back”.
+          </p>
+        </>
+      )}
+
+      {busy && (
+        <p className="cov-sub" style={{ marginTop: 12 }}>
+          <span className="cov-spinner" />{' '}
+          {busy === 'preview' ? 'Working out the zones… this can take half a minute.' : 'Splitting… do not close this window.'}
+        </p>
+      )}
+      {error && <div className="cov-issue error" style={{ marginTop: 10 }}>{error}</div>}
+
+      <div className="modal-actions">
+        <button className="btn-ghost" disabled={busy !== null} onClick={onClose}>Cancel</button>
+        {!preview && (
+          <button className="btn" disabled={busy !== null || !valid || (plan?.count ?? 0) < 2} onClick={() => run(false)}>
+            {busy === 'preview' ? 'Working…' : 'Preview zones'}
+          </button>
+        )}
+        {preview && (
+          <button className="btn" disabled={busy !== null} onClick={() => run(true)}>
+            {busy === 'split' ? 'Splitting…' : `Split into ${preview.zones.length} zones`}
+          </button>
+        )}
+      </div>
+    </Modal>
   );
 }
 

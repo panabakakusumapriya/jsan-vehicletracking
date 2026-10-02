@@ -89,6 +89,13 @@ const importJobSchema = new mongoose.Schema(
     joinAreaParts: { type: Boolean, default: false },
 
     /**
+     * An area a manager has split into zones (services/workAreaSplit.js) arrives whole again in the
+     * customer's next delivery. On: the zones are carried into the new version, codes and all, so
+     * assignments and sign-offs made on them survive. Off: the delivery is imported as it comes.
+     */
+    keepAreaSplits: { type: Boolean, default: true },
+
+    /**
      * Which runner owns this job right now, and when it last showed signs of life.
      *
      * Every API process runs the import runner, and the old claim (set startedAt, THEN flip the

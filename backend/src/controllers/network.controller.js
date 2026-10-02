@@ -17,6 +17,7 @@ const { compactLine } = require('../services/driverRoads');
 const { sendCompressed } = require('../utils/compressedJson');
 
 const networkImport = require('../services/networkImport');
+const workAreaSplit = require('../services/workAreaSplit');
 const { kickImportRunner } = require('../services/importRunner');
 const shapefile = require('../utils/shapefile');
 const { simplifyGeometry, bboxUnion } = require('../utils/geo');
@@ -318,6 +319,17 @@ async function updateJob(req, res) {
       job.progress = { phase: 'queued', done: 0, total: 0 };
     }
   }
+  // Keeping an earlier split changes how many areas the delivery has, as joining does: re-check.
+  if (typeof req.body.keepAreaSplits === 'boolean' && req.body.keepAreaSplits !== job.keepAreaSplits) {
+    job.keepAreaSplits = req.body.keepAreaSplits;
+    if (job.files?.boundary?.name || job.files?.network?.name) {
+      job.status = 'queued';
+      job.claimToken = null;
+      job.report = null;
+      job.error = null;
+      job.progress = { phase: 'queued', done: 0, total: 0 };
+    }
+  }
   if (req.body.mapping && typeof req.body.mapping === 'object') {
     for (const [key, value] of Object.entries(req.body.mapping)) {
       if (key in job.mapping) job.mapping[key] = value ? String(value) : null;
@@ -525,12 +537,13 @@ async function versionAreas(req, res) {
   const q = String(req.query.q || '').trim();
   if (q) {
     const literal = { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-    filter.$or = [{ name: literal }, { areaCode: literal }, { parentName: literal }];
+    // …or a suburb inside a zone: "Ponsonby" finds "Auckland 05 – Newmarket, Grey Lynn, Ponsonby".
+    filter.$or = [{ name: literal }, { areaCode: literal }, { parentName: literal }, { 'props.places.name': literal }];
   }
 
   const [areas, covered] = await Promise.all([
     WorkArea.find(filter)
-      .select('areaCode name parentName priority areaSqm targetMeters targetLinks bbox')
+      .select('areaCode name parentName priority areaSqm targetMeters targetLinks bbox props.splitFrom props.zones')
       .sort({ priority: 1, targetMeters: -1 })
       // A project spanning two states has more areas than one delivery does.
       .limit(scope.isProject ? 3000 : 1000),
@@ -565,12 +578,80 @@ async function versionAreas(req, res) {
         coveredMeters: hit?.meters || 0,
         coveredLinks: hit?.links || 0,
         bbox: a.bbox,
+        // Set on a zone: the area it was cut from, and how many zones that area became.
+        splitFrom: a.props?.splitFrom
+          ? { code: a.props.splitFrom.code, name: a.props.splitFrom.name, zones: a.props.zones || null }
+          : null,
         completed: !!done,
         completedAt: done ? done.completedAt : null,
         completedByName: done ? done.completedByName : null,
       };
     }),
   });
+}
+
+/**
+ * POST /versions/:id/areas/:areaId/split   { minKm, maxKm, absorbRemainder, apply }
+ *
+ * An area with more road than one driver can cover, cut into zones of the size the manager typed
+ * in. `apply: false` (the default) answers with the zones it WOULD make and writes nothing — the
+ * panel shows that list and asks; `apply: true` makes them. See services/workAreaSplit.js.
+ */
+async function splitArea(req, res) {
+  try {
+    const scope = await resolveNetworkScope(req);
+    if (!scope) return res.status(404).json({ error: 'Network version not found' });
+    assertProjectAccess(req.user, scope.projectId);
+    const area = await WorkArea.findOne({
+      _id: asObjectId(req.params.areaId) || null,
+      networkVersionId: { $in: scope.versionIds },
+    }).select('networkVersionId');
+    if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
+
+    const result = await workAreaSplit.splitCommittedArea({
+      versionId: area.networkVersionId,
+      areaId: area._id,
+      options: workAreaSplit.optionsFrom(req.body || {}),
+      apply: req.body?.apply === true,
+      userId: req.user._id,
+    });
+    return res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    // eslint-disable-next-line no-console
+    console.error('[split area]', err);
+    return res.status(500).json({ error: 'The area could not be split — nothing was changed that a second attempt will not finish' });
+  }
+}
+
+/**
+ * POST /versions/:id/areas/:areaId/join — `areaId` is any one zone of a split area.
+ *
+ * The zones go and the area comes back as it was, so it can be split again at another size.
+ */
+async function joinArea(req, res) {
+  try {
+    const scope = await resolveNetworkScope(req);
+    if (!scope) return res.status(404).json({ error: 'Network version not found' });
+    assertProjectAccess(req.user, scope.projectId);
+    const area = await WorkArea.findOne({
+      _id: asObjectId(req.params.areaId) || null,
+      networkVersionId: { $in: scope.versionIds },
+    }).select('networkVersionId');
+    if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
+
+    const result = await workAreaSplit.joinSplitArea({
+      versionId: area.networkVersionId,
+      areaId: area._id,
+      userId: req.user._id,
+    });
+    return res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    // eslint-disable-next-line no-console
+    console.error('[join area]', err);
+    return res.status(500).json({ error: 'The zones could not be joined — a second attempt will finish it' });
+  }
 }
 
 /**
@@ -1685,7 +1766,7 @@ async function areaCoverage(req, res) {
   const area = await WorkArea.findOne({
     _id: asObjectId(req.params.areaId) || null,
     networkVersionId: { $in: scope.versionIds },
-  }).select('name parentName areaCode priority targetMeters targetLinks bbox networkVersionId');
+  }).select('name parentName areaCode priority targetMeters targetLinks bbox networkVersionId props.splitFrom props.zones');
   if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
 
   const cycleId = await cycleIdFor(version.projectId);
@@ -1718,6 +1799,10 @@ async function areaCoverage(req, res) {
       areaCode: area.areaCode,
       name: area.name,
       parentName: area.parentName,
+      // Set on a zone: the area it was cut from, and how many zones that area became.
+      splitFrom: area.props?.splitFrom
+        ? { code: area.props.splitFrom.code, name: area.props.splitFrom.name, zones: area.props.zones || null }
+        : null,
       priority: area.priority,
       targetMeters: area.targetMeters,
       targetLinks: area.targetLinks,
@@ -1853,6 +1938,8 @@ module.exports = {
   areaCoverage,
   completeArea,
   reopenArea,
+  splitArea,
+  joinArea,
   versionTracks,
   versionAssignedLinks,
   versionCoverageDrivers,
