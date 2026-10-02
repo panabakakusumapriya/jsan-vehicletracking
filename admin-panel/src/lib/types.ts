@@ -702,6 +702,8 @@ export interface AreaCoverageDetail {
   assignedPct: number;
   byDriver: { driverId: string | null; name: string; meters: number; links: number }[];
   assignments: { driverId: string; driverName: string | null; assignedAt: string }[];
+  /** When this area's driven data was last wiped by a manager; null if never. */
+  lastCleared?: { at: string; byName: string | null; links: number; meters: number } | null;
   completion: {
     status: 'completed' | 'reopened';
     completedAt: string | null;

@@ -94,6 +94,9 @@ function createApp() {
         // the panel, and joined back (POST …/areas/:areaId/split|join; services/workAreaSplit.js).
         // A later delivery of the same ground keeps the zones (ImportJob.keepAreaSplits).
         areaSplit: true,
+        // A manager can clear an area's driven data (POST …/areas/:areaId/clear-coverage); driving
+        // from before the clear is never counted again, whatever is recalculated later.
+        coverageReset: true,
       },
     })
   );

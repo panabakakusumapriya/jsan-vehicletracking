@@ -60,6 +60,13 @@ router.post(
   requireRole('admin', 'manager'),
   ctrl.reopenArea
 );
+// Wipe an area's driven data so it can be driven again from zero (services/coverageReset.js).
+router.post(
+  '/versions/:id/areas/:areaId/clear-coverage',
+  requireRole('admin', 'manager'),
+  ctrl.clearAreaCoverage
+);
+
 // An area too big for one driver, cut into zones of a size the manager chooses — and put back.
 router.post(
   '/versions/:id/areas/:areaId/split',

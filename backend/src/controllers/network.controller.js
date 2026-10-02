@@ -18,6 +18,7 @@ const { sendCompressed } = require('../utils/compressedJson');
 
 const networkImport = require('../services/networkImport');
 const workAreaSplit = require('../services/workAreaSplit');
+const coverageReset = require('../services/coverageReset');
 const { kickImportRunner } = require('../services/importRunner');
 const shapefile = require('../utils/shapefile');
 const { simplifyGeometry, bboxUnion } = require('../utils/geo');
@@ -1818,7 +1819,49 @@ async function areaCoverage(req, res) {
     byDriver: breakdown.byDriver,
     assignments,
     completion: completion || null,
+    // When this area's driven data was last wiped, and by whom — null if it never was.
+    lastCleared: await coverageReset.lastReset(version.projectId, area.areaCode),
   });
+}
+
+/**
+ * POST /versions/:id/areas/:areaId/clear-coverage   { confirm: true, note? }
+ *
+ * Wipe the area's driven data: every road goes back to "to drive", here and on the driver's phone.
+ * For handing an area to a driver afresh — a trial run, a re-drive — when the fleet-wide ledger
+ * would otherwise open it already blue. See services/coverageReset.js for what goes and what stays.
+ *
+ * `confirm: true` is required in the body: this destroys recorded progress, and a stray POST
+ * must not be enough.
+ */
+async function clearAreaCoverage(req, res) {
+  try {
+    const scope = await resolveNetworkScope(req);
+    if (!scope) return res.status(404).json({ error: 'Network version not found' });
+    assertProjectAccess(req.user, scope.projectId);
+    if (req.body?.confirm !== true) {
+      return res.status(400).json({ error: 'Send confirm: true to clear an area\'s driven data' });
+    }
+    const area = await WorkArea.findOne({
+      _id: asObjectId(req.params.areaId) || null,
+      networkVersionId: { $in: scope.versionIds },
+    }).select('networkVersionId');
+    if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
+
+    const result = await coverageReset.clearAreaCoverage({
+      versionId: area.networkVersionId,
+      areaId: area._id,
+      userId: req.user._id,
+      userName: req.user.name,
+      note: req.body?.note,
+    });
+    return res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    // eslint-disable-next-line no-console
+    console.error('[clear coverage]', err);
+    return res.status(500).json({ error: 'The driven data could not be cleared — try again' });
+  }
 }
 
 /**
@@ -1940,6 +1983,7 @@ module.exports = {
   reopenArea,
   splitArea,
   joinArea,
+  clearAreaCoverage,
   versionTracks,
   versionAssignedLinks,
   versionCoverageDrivers,

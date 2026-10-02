@@ -2,6 +2,7 @@ const Trip = require('../models/Trip');
 const RoadLink = require('../models/RoadLink');
 const LinkCoverage = require('../models/LinkCoverage');
 const NetworkVersion = require('../models/NetworkVersion');
+const CoverageReset = require('../models/CoverageReset');
 const User = require('../models/User');
 const env = require('../config/env');
 const { bboxOf, bboxPad, bearing, bearingDelta, haversine, Grid } = require('../utils/geo');
@@ -312,6 +313,39 @@ async function ledgerFor(networkVersionId, linkIds) {
   return found;
 }
 
+/**
+ * The covered links a trip may still claim: all of them, less any whose driven data a manager has
+ * cleared SINCE this trip drove them (models/CoverageReset.js).
+ *
+ * This is what makes a clear permanent. The ledger is derived, so re-attributing an old trip — a
+ * re-match, the catch-up sweep, a full rebuild — would otherwise hand it back the very roads that
+ * were wiped, and the area would turn blue again on its own. Driving after the clear is untouched.
+ */
+async function withoutCleared(projectId, covered) {
+  if (!covered.size) return covered;
+  const ids = [...covered.keys()];
+  const clearedAt = new Map();
+  for (let i = 0; i < ids.length; i += BULK_CHUNK) {
+    const rows = await CoverageReset.find({ projectId, linkIds: { $in: ids.slice(i, i + BULK_CHUNK) } })
+      .select('resetAt linkIds')
+      .lean();
+    for (const row of rows) {
+      const at = new Date(row.resetAt).getTime();
+      for (const linkId of row.linkIds) {
+        if (covered.has(linkId) && at > (clearedAt.get(linkId) || 0)) clearedAt.set(linkId, at);
+      }
+    }
+  }
+  if (!clearedAt.size) return covered;
+  const allowed = new Map();
+  for (const [linkId, hit] of covered) {
+    const at = clearedAt.get(linkId);
+    if (at && new Date(hit.observedAt).getTime() <= at) continue;
+    allowed.set(linkId, hit);
+  }
+  return allowed;
+}
+
 /** Is (aAt, aTrip) strictly earlier than (bAt, bTrip)? Same tie-break as globalUkm. */
 function earlierThan(aAt, aTrip, bAt, bTrip) {
   const d = new Date(aAt).getTime() - new Date(bAt).getTime();
@@ -325,7 +359,10 @@ function earlierThan(aAt, aTrip, bAt, bTrip) {
  * pass. Plus one this ledger needs that the global one does not: links this trip USED to own but
  * no longer covers (its route was re-matched) are released. Returns the displaced trip ids.
  */
-async function claimLinks(trip, ctx, covered) {
+async function claimLinks(trip, ctx, matched) {
+  // Roads cleared after this trip drove them are not this trip's to claim — and since they are
+  // then absent from `covered`, the release at the end drops any row it still held for them.
+  const covered = await withoutCleared(ctx.projectId, matched);
   const displaced = new Set();
   const base = (linkId) => ({ networkVersionId: ctx.networkVersionId, linkId });
 

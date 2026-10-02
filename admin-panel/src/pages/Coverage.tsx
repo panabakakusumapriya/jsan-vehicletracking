@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { CoverageMap } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
+import { ClearCoverageModal } from '../components/ClearCoverageModal';
 import { api, uploadRaw } from '../lib/api';
 import type { ApiError } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -484,6 +485,8 @@ function ProgressTab({
 
   /** The area being split into zones, while its dialog is open. */
   const [splitting, setSplitting] = useState<AreaCoverageDetail['area'] | null>(null);
+  /** The area whose driven data is about to be cleared, while its "are you sure?" is open. */
+  const [clearing, setClearing] = useState<AreaCoverageDetail | null>(null);
 
   /**
    * Put a split area back together — from the card of any one of its zones.
@@ -864,6 +867,13 @@ function ProgressTab({
                 Join zones back…
               </button>
             )}
+            {/* Hand the area over afresh: the ledger is fleet-wide, so a second driver would open
+                it already blue. Asks first — this wipes recorded progress. */}
+            {canEdit && !shownDone && shownDetail.coveredLinks > 0 && (
+              <button className="btn-danger" disabled={detailBusy} onClick={() => setClearing(shownDetail)}>
+                Clear driven data…
+              </button>
+            )}
             {shownDetail.area.bbox && shownDetail.area.bbox.length === 4 && (
               <a
                 className="cov-pop-link"
@@ -884,6 +894,8 @@ function ProgressTab({
               : 'Completing releases the driver and takes these roads off their phone.'}
             {shownDetail.area.splitFrom &&
               ` One of ${shownDetail.area.splitFrom.zones ?? 'the'} zones ${shownDetail.area.splitFrom.name} was split into.`}
+            {shownDetail.lastCleared &&
+              ` Driven data cleared ${new Date(shownDetail.lastCleared.at).toLocaleDateString()}${shownDetail.lastCleared.byName ? ` by ${shownDetail.lastCleared.byName}` : ''}.`}
           </div>
         </>
       )}
@@ -1353,6 +1365,22 @@ function ProgressTab({
             setSplitting(null);
             // The area is gone; land on its first zone so the map does not show an empty card.
             setSelectedIds(result.zones[0]?._id ? [result.zones[0]._id] : []);
+            loadAssignments();
+            setReloadKey((n) => n + 1);
+            onChanged();
+          }}
+        />
+      )}
+
+      {clearing && (
+        <ClearCoverageModal
+          scopeId={scopeId}
+          detail={clearing}
+          onClose={() => setClearing(null)}
+          onDone={() => {
+            const areaId = clearing.area._id;
+            setClearing(null);
+            loadDetail(areaId);
             loadAssignments();
             setReloadKey((n) => n + 1);
             onChanged();
@@ -2014,6 +2042,14 @@ function AssignDriversModal({
         {km(areas.reduce((sum, a) => sum + a.targetMeters, 0))} km across{' '}
         {areas.reduce((sum, a) => sum + a.targetLinks, 0).toLocaleString()} links
       </p>
+      {areas.some((a) => a.coveredMeters > 0) && (
+        <div className="cov-issue warn" style={{ marginBottom: 10 }}>
+          {km(areas.reduce((sum, a) => sum + a.coveredMeters, 0))} km here is already marked driven —
+          coverage belongs to whoever drove a road first, so the driver will see those roads as done.
+          To have {areas.length === 1 ? 'it' : 'an area'} driven again from zero, use
+          {' '}<b>Clear driven data</b> on the area’s card first.
+        </div>
+      )}
       {areas.length > 1 && commonDrivers.length === 0 &&
         areas.some((a) => (driversByArea.get(a._id) || []).length > 0) && (
         <div className="cov-issue warn" style={{ marginBottom: 10 }}>

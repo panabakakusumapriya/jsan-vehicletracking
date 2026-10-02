@@ -1307,6 +1307,24 @@ select.input { cursor: pointer; }
 .cov-presets button.on { background: var(--brand); border-color: var(--brand); color: #fff; }
 .cov-presets button:disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* A primary button for something destructive: the confirm in "are you sure?" dialogs. */
+.btn.danger { background: var(--red); box-shadow: 0 2px 8px rgba(220,38,38,0.28); }
+.btn.danger:hover { background: #b91c1c; box-shadow: 0 4px 14px rgba(220,38,38,0.36); }
+.btn.danger:disabled { background: var(--red); opacity: 0.4; box-shadow: none; }
+
+/* Clear-driven-data dialog (components/ClearCoverageModal.tsx). */
+.clear-drivers { border: 1px solid var(--line); border-radius: 8px; }
+.clear-drivers > div {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13px;
+}
+.clear-drivers > div:last-child { border-bottom: none; }
+.clear-drivers .name { color: var(--text); font-weight: 600; }
+.clear-drivers .what { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.clear-list { margin: 6px 0 6px; padding-left: 18px; }
+.clear-list li { margin: 2px 0; }
+.cov-toggle.clear-sure { margin-top: 16px; color: var(--text); }
+
 /* Split-into-zones dialog (components/SplitZonesModal.tsx). */
 .split-picks { margin: 0 0 16px; }
 .split-picks-label {
@@ -1486,7 +1504,7 @@ select.input { cursor: pointer; }
 .cov-pop-done { margin-top: 10px; font-size: 12.5px; color: #047857; }
 
 .cov-pop-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-.cov-pop-actions .btn, .cov-pop-actions .btn-ghost { padding: 6px 12px; font-size: 12.5px; }
+.cov-pop-actions .btn, .cov-pop-actions .btn-ghost, .cov-pop-actions .btn-danger { padding: 6px 12px; font-size: 12.5px; }
 .cov-pop-link {
   margin-left: auto; font-size: 12.5px; font-weight: 600;
   color: var(--brand); text-decoration: none;
