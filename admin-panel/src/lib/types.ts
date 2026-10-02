@@ -682,6 +682,37 @@ export interface CoverageArea {
  * Everything the click-a-polygon panel shows: the area's totals, who holds it, and — the part
  * that makes cross-verification possible — the coverage split by whoever first drove each road.
  */
+/**
+ * Where a driver left off on a project — the last GPS fix of their last real drive there.
+ * GET /api/network/versions/:id/driver-positions; see backend/src/services/driverPositions.js.
+ */
+export interface DriverPosition {
+  driverId: string;
+  name: string;
+  lat: number;
+  lon: number;
+  heading: number | null;
+  speedKmh: number | null;
+  /** The fix's own time — not when the trip was closed, which can be much later. */
+  at: string;
+  /**
+   * moving / stopped / stale are an OPEN drive (under way, standing with the app alive, phone
+   * lost) — the live map's vocabulary. ended is a finished drive: this is where it stopped.
+   */
+  state: 'moving' | 'stopped' | 'stale' | 'ended';
+  trip: {
+    id: string;
+    status: 'active' | 'completed' | 'timed_out';
+    startedAt: string;
+    endedAt: string | null;
+    meters: number;
+    /** The matcher has been: the route can be drawn. */
+    snapped: boolean;
+  };
+  /** The work area the fix falls in; null when it is outside all of them. */
+  area: { _id: string; areaCode: string; name: string; parentName: string | null; mine: boolean } | null;
+}
+
 export interface AreaCoverageDetail {
   area: {
     _id: string;

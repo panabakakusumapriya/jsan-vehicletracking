@@ -19,6 +19,7 @@ const { sendCompressed } = require('../utils/compressedJson');
 const networkImport = require('../services/networkImport');
 const workAreaSplit = require('../services/workAreaSplit');
 const coverageReset = require('../services/coverageReset');
+const driverPositions = require('../services/driverPositions');
 const { kickImportRunner } = require('../services/importRunner');
 const shapefile = require('../utils/shapefile');
 const { simplifyGeometry, bboxUnion } = require('../utils/geo');
@@ -1697,6 +1698,53 @@ async function versionTracks(req, res) {
   }, 'tracks');
 }
 
+/* ---- where each driver left off, on the coverage map ---- */
+
+/**
+ * GET /versions/:id/driver-positions — one row per driver: the last GPS fix of their last real
+ * drive on this project, the work area it falls in, and whether they are still out there.
+ *
+ * The map shows what is driven and who holds what; this adds where the work actually stopped, so
+ * tomorrow can be planned from the map instead of from a phone call. See
+ * services/driverPositions.js for which trips count and why.
+ */
+async function versionDriverPositions(req, res) {
+  try {
+    const scope = await resolveNetworkScope(req);
+    if (!scope) return res.status(404).json({ error: 'Network version not found' });
+    assertProjectAccess(req.user, scope.projectId);
+    const positions = await driverPositions.lastPositions(scope);
+    // Never cached: the same URL answers differently a minute later, by design.
+    res.set('Cache-Control', 'no-store');
+    return res.json({ positions, serverTime: new Date().toISOString() });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    // eslint-disable-next-line no-console
+    console.error('[driver positions]', err);
+    return res.status(500).json({ error: 'Driver positions could not be loaded' });
+  }
+}
+
+/**
+ * GET /versions/:id/driver-positions/route?tripId= — the snapped route of one of those last
+ * drives, drawn when a pin is picked so the road leading up to it can be read.
+ */
+async function versionDriverRoute(req, res) {
+  try {
+    const scope = await resolveNetworkScope(req);
+    if (!scope) return res.status(404).json({ error: 'Network version not found' });
+    assertProjectAccess(req.user, scope.projectId);
+    const tripId = asObjectId(req.query.tripId);
+    if (!tripId) return res.status(400).json({ error: 'tripId is required' });
+    return await sendCompressed(req, res, await driverPositions.lastDriveRoute(scope, tripId), 'driver-route');
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    // eslint-disable-next-line no-console
+    console.error('[driver route]', err);
+    return res.status(500).json({ error: 'That route could not be loaded' });
+  }
+}
+
 /* ---- completion: a manager's verdict that an area is finished ---- */
 
 /**
@@ -1987,6 +2035,8 @@ module.exports = {
   versionTracks,
   versionAssignedLinks,
   versionCoverageDrivers,
+  versionDriverPositions,
+  versionDriverRoute,
   activateVersion,
   deleteVersion,
 };

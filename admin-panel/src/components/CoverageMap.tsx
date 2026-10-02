@@ -1,9 +1,10 @@
 import type { Layer, PickingInfo } from '@deck.gl/core';
 import { PathStyleExtension } from '@deck.gl/extensions';
-import { GeoJsonLayer, PathLayer } from '@deck.gl/layers';
+import { GeoJsonLayer, IconLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../lib/api';
 import { decodePolyline6 } from '../lib/polyline';
+import { PIN_SIZE, escapeHtml, pinIcon, type DriverPin } from '../lib/driverPins';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 
 /**
@@ -151,6 +152,11 @@ const DASHED_OUTLINE = new PathStyleExtension({ dash: true });
 /** Dash in pixels, matching lineWidthUnits. [] is deck.gl's "draw this one solid". */
 const DASH_PATTERN: [number, number] = [6, 4];
 const SOLID: [number, number] = [0, 0];
+/**
+ * A pin must be seen: no depth test, so nothing the basemap extrudes can stand in front of it.
+ * Same treatment as the trip markers and the replay vehicle.
+ */
+const ALWAYS_ON_TOP = { depthCompare: 'always', depthWriteEnabled: false } as const;
 
 export function CoverageMap({
   versionId,
@@ -180,6 +186,12 @@ export function CoverageMap({
   onTracksMeta,
   areaPopupId,
   areaPopup,
+  driverPins,
+  selectedPinId,
+  onPickPin,
+  pinPopup,
+  pinTrail,
+  focusPoint,
 }: {
   /** A committed version — shows coverage and lets road links load. */
   versionId?: string;
@@ -277,6 +289,21 @@ export function CoverageMap({
    */
   areaPopupId?: string | null;
   areaPopup?: ReactNode;
+  /**
+   * Where each driver left off: one pin per driver at the last fix of their last drive (or where
+   * they are right now, if that drive is still open). Drawn above everything else.
+   */
+  driverPins?: DriverPin[];
+  /** The picked pin's driver. Its card takes the place of the area card while it is picked. */
+  selectedPinId?: string | null;
+  /** A pin was clicked — or clicked again, which un-picks it (null). */
+  onPickPin?: (driverId: string | null) => void;
+  /** The card pinned beside the picked pin. */
+  pinPopup?: ReactNode;
+  /** The picked driver's last drive, drawn in their colour up to the pin. */
+  pinTrail?: { color: [number, number, number]; paths: [number, number][][] } | null;
+  /** Move the camera to this point. `nonce` changes per request, so asking twice still moves. */
+  focusPoint?: { lon: number; lat: number; nonce: number } | null;
   /** Reports what came back, so the page can show the count and how many are still snapping. */
   onTracksMeta?: (meta: { count: number; pendingSnap: number; truncated: boolean }) => void;
 }) {
@@ -474,6 +501,16 @@ export function CoverageMap({
   // moving, and the only other source of the viewport is the move event itself — without this,
   // ticking the box did nothing at all until you happened to pan.
   const lastView = useRef<{ bbox: [number, number, number, number] } | null>(null);
+  const lastZoom = useRef(0);
+
+  // "Show me where this driver is": go there, close enough to read the streets, and never
+  // further out than the reader already was.
+  useEffect(() => {
+    if (!focusPoint) return;
+    framed.current = true; // a whole-extent fit arriving late must not pull the camera back
+    const zoom = Math.max(lastZoom.current, 13.5);
+    requestAnimationFrame(() => mapRef.current?.flyTo([focusPoint.lon, focusPoint.lat], zoom));
+  }, [focusPoint]);
 
   const loadLinks = useCallback(
     (bbox: [number, number, number, number]) => {
@@ -504,8 +541,9 @@ export function CoverageMap({
   );
 
   const handleMoveEnd = useCallback(
-    (bbox: [number, number, number, number]) => {
+    (bbox: [number, number, number, number], zoom: number) => {
       lastView.current = { bbox };
+      lastZoom.current = zoom;
       loadLinks(bbox);
     },
     [loadLinks]
@@ -687,6 +725,26 @@ export function CoverageMap({
       );
     }
 
+    // The picked driver's last drive, up to their pin. Where the tracks are — under the roads —
+    // and wider than them, so it reads as a band behind the red and blue rather than repainting it.
+    if (pinTrail && pinTrail.paths.length) {
+      const trailColor: [number, number, number, number] = [...pinTrail.color, 215];
+      out.push(
+        new PathLayer<[number, number][]>({
+          id: 'last-drive',
+          data: pinTrail.paths,
+          getPath: (d) => d,
+          getColor: trailColor,
+          getWidth: 12,
+          widthUnits: 'meters',
+          widthMinPixels: 5,
+          widthMaxPixels: 14,
+          capRounded: true,
+          jointRounded: true,
+        })
+      );
+    }
+
     if (links.length) {
       out.push(
         new PathLayer<LinkRow>({
@@ -772,8 +830,62 @@ export function CoverageMap({
       );
     }
 
+    if (driverPins && driverPins.length) {
+      // A ring on the ground at the exact spot: green under whoever is moving right now, the
+      // driver's own colour under the picked pin.
+      const ringed = driverPins.filter((p) => p.state === 'moving' || p.driverId === selectedPinId);
+      if (ringed.length) {
+        out.push(
+          new ScatterplotLayer<DriverPin>({
+            id: 'driver-pin-rings',
+            data: ringed,
+            getPosition: (d) => [d.lon, d.lat],
+            getFillColor: (d) =>
+              d.state === 'moving' ? [5, 150, 105, 60] : [d.color[0], d.color[1], d.color[2], 55],
+            getLineColor: (d) =>
+              d.state === 'moving' ? [5, 150, 105, 230] : [d.color[0], d.color[1], d.color[2], 230],
+            stroked: true,
+            getLineWidth: 2,
+            lineWidthUnits: 'pixels',
+            getRadius: (d) => (d.driverId === selectedPinId ? 15 : 11),
+            radiusUnits: 'pixels',
+            parameters: ALWAYS_ON_TOP,
+            updateTriggers: { getRadius: [selectedPinId], getFillColor: [selectedPinId], getLineColor: [selectedPinId] },
+          })
+        );
+      }
+      out.push(
+        new IconLayer<DriverPin>({
+          id: 'driver-pins',
+          data: driverPins,
+          pickable: true,
+          getPosition: (d) => [d.lon, d.lat],
+          getIcon: (d) => pinIcon(d.name, d.color, d.state),
+          // Pixels, not metres: this map is read at the scale of a state, where a pin sized like
+          // a vehicle would be a speck. The same size at every zoom, a little larger when picked.
+          getSize: (d) => (d.driverId === selectedPinId ? PIN_SIZE * 1.2 : PIN_SIZE),
+          sizeUnits: 'pixels',
+          // The icon is full colour, so only the alpha is used: an old position is drawn fainter.
+          getColor: (d) => [255, 255, 255, d.alpha],
+          parameters: ALWAYS_ON_TOP,
+          updateTriggers: { getSize: [selectedPinId] },
+          onClick: (info: PickingInfo) => {
+            const pin = info.object as DriverPin | undefined;
+            if (!pin) return false;
+            onPickPin?.(pin.driverId === selectedPinId ? null : pin.driverId);
+            // Handled: the polygon underneath must not also take this click as a selection.
+            return true;
+          },
+        })
+      );
+    }
+
     return out;
   }, [
+    driverPins,
+    selectedPinId,
+    onPickPin,
+    pinTrail,
     areas,
     links,
     areaLinks,
@@ -797,6 +909,15 @@ export function CoverageMap({
   const getTooltip = useCallback((info: PickingInfo) => {
     const obj = info.object as (AreaFeature & LinkRow & TrackPath) | undefined;
     if (!obj) return null;
+
+    if ((obj as unknown as DriverPin).kind === 'pin') {
+      const pin = obj as unknown as DriverPin;
+      return {
+        html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${escapeHtml(pin.name)}</b><div>${escapeHtml(
+          pin.status
+        )}</div><div style="opacity:.7">${escapeHtml(pin.where)}</div></div>`,
+      };
+    }
 
     if (obj.tripId) {
       return {
@@ -893,13 +1014,24 @@ export function CoverageMap({
                 : `${links.length.toLocaleString()} roads in view · ${inviewDriven.toLocaleString()} driven`) + areaRoadsNote
             : '';
 
+  // One card at a time. A picked pin's card takes the place of the area's: the reader asked about
+  // the driver, and two callouts on one map end up on top of each other.
+  const pickedPin = (selectedPinId && driverPins?.find((p) => p.driverId === selectedPinId)) || null;
+  const pinCardOpen = Boolean(pickedPin && pinPopup);
+  const pinLon = pinCardOpen ? pickedPin!.lon : null;
+  const pinLat = pinCardOpen ? pickedPin!.lat : null;
+
   const popupBox = useMemo(() => {
+    // A pin is a point: a box with no extent, which the placement below handles like any other.
+    if (pinLon != null && pinLat != null) return [pinLon, pinLat, pinLon, pinLat];
     if (!areaPopupId || !areas) return null;
     const box = areas.features.find((f) => f.properties.areaId === areaPopupId)?.properties.bbox;
     return box && box.length === 4 ? box : null;
-  }, [areaPopupId, areas]);
+  }, [areaPopupId, areas, pinLon, pinLat]);
   const popupBoxRef = useRef(popupBox);
   popupBoxRef.current = popupBox;
+  const pinCardRef = useRef(pinCardOpen);
+  pinCardRef.current = pinCardOpen;
 
   /**
    * Pin the card beside the area. Written straight to the element's style because it runs on
@@ -930,9 +1062,11 @@ export function CoverageMap({
 
     const pw = el.offsetWidth;
     const ph = el.offsetHeight;
-    const GAP = 14;
+    // Beside a pin the card clears the teardrop, and points at its head rather than at its tip.
+    const forPin = pinCardRef.current;
+    const GAP = forPin ? 30 : 14;
     const EDGE = 10;
-    const anchorY = (north[1] + south[1]) / 2;
+    const anchorY = (north[1] + south[1]) / 2 - (forPin ? 28 : 0);
 
     // Right of the area first; the left if that would run off the map; otherwise whichever side
     // has more room, clamped inside the frame.
@@ -965,7 +1099,7 @@ export function CoverageMap({
     const ro = new ResizeObserver(() => placePopup());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [placePopup, popupBox, areaPopupId]);
+  }, [placePopup, popupBox, areaPopupId, pinCardOpen]);
 
   return (
     <div ref={wrapRef} className="cov-map" style={{ height }}>
@@ -980,10 +1114,16 @@ export function CoverageMap({
         onMove={placePopup}
       />
 
-      {areaPopupId && areaPopup && (
-        <div ref={popupRef} className="cov-area-pop" role="dialog" aria-label="Selected area">
-          {areaPopup}
+      {pinCardOpen ? (
+        <div key="pin" ref={popupRef} className="cov-area-pop" role="dialog" aria-label="Selected driver">
+          {pinPopup}
         </div>
+      ) : (
+        areaPopupId && areaPopup && (
+          <div key="area" ref={popupRef} className="cov-area-pop" role="dialog" aria-label="Selected area">
+            {areaPopup}
+          </div>
+        )
       )}
 
       <div className="cov-map-legend">
@@ -1039,6 +1179,11 @@ export function CoverageMap({
           </div>
         )}
         <div className="cov-legend-note">{linksHint}</div>
+        {driverPins && driverPins.length > 0 && (
+          <div className="cov-legend-note">
+            Pins: where each driver’s last drive ended · green dot = driving now
+          </div>
+        )}
         {onToggleSelect && (
           <div className="cov-legend-note">
             Click an area to select it · shift-click to add more

@@ -1415,6 +1415,22 @@ select.input { cursor: pointer; }
 .cov-crew-bar { grid-column: 2 / 4; height: 3px; border-radius: 99px; background: var(--line); overflow: hidden; }
 .cov-crew-bar span { display: block; height: 100%; border-radius: 99px; }
 .cov-crew-pill { position: absolute; top: 12px; right: 52px; z-index: 6; }
+/* Where the driver is up to, under their bar — and the button that goes there. */
+.cov-crew-item { position: relative; }
+.cov-crew-last {
+  grid-column: 2 / 4; padding-right: 22px;
+  font-size: 11px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cov-crew-last.moving { color: #047857; font-weight: 600; }
+.cov-crew-last.stale { color: #b45309; }
+.cov-crew-loc {
+  position: absolute; right: 5px; bottom: 3px;
+  width: 22px; height: 22px; display: grid; place-items: center;
+  border: none; border-radius: 6px; background: none; color: var(--muted); cursor: pointer;
+}
+.cov-crew-loc:hover { background: var(--brand-light); color: var(--brand); }
+.cov-layer-hint { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
 
 .cov-map-busy {
   position: absolute; bottom: 14px; right: 14px; z-index: 6;
@@ -1482,6 +1498,16 @@ select.input { cursor: pointer; }
 .cov-pill.gray  { background: #eef1f6; color: #52627a; }
 .cov-pill.blue  { background: var(--brand-light); color: var(--brand); }
 .cov-pill.green { background: var(--green-bg); color: #047857; }
+.cov-pill.amber { background: var(--amber-bg); color: #b45309; }
+/* A driver's card: when, where, which drive. */
+.cov-pop-facts {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px 14px;
+  margin: 12px 0 0; padding: 10px 12px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line); font-size: 12.5px;
+}
+.cov-pop-facts dt { color: var(--muted); }
+.cov-pop-facts dd { margin: 0; color: var(--text); font-weight: 600; min-width: 0; }
+.cov-pop-facts dd small { display: block; font-size: 11.5px; font-weight: 400; color: var(--muted); }
 .cov-pop-holder { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
 
 .cov-pop-progress {

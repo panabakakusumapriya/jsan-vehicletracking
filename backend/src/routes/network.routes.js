@@ -28,6 +28,18 @@ router.get('/versions/:id/links', ctrl.versionLinks);
 router.get('/versions/:id/assigned-links', ctrl.versionAssignedLinks);
 // Everyone with driven road on this network, for the map's driver legend.
 router.get('/versions/:id/coverage-drivers', ctrl.versionCoverageDrivers);
+// Where each driver left off: the last fix of their last drive, and that drive's route. People's
+// whereabouts, so the same roles as the live map — not every account on the project.
+router.get(
+  '/versions/:id/driver-positions',
+  requireRole('admin', 'manager', 'team_lead'),
+  ctrl.versionDriverPositions
+);
+router.get(
+  '/versions/:id/driver-positions/route',
+  requireRole('admin', 'manager', 'team_lead'),
+  ctrl.versionDriverRoute
+);
 // Snapped driven routes across the project, for the map's "Driven tracks" layer.
 router.get('/versions/:id/tracks', ctrl.versionTracks);
 router.post('/versions/:id/activate', requireRole('admin', 'manager'), ctrl.activateVersion);

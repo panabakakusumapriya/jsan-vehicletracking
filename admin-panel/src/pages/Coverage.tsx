@@ -1,10 +1,14 @@
 import { PageIcon } from '../components/AppIcon';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { CoverageMap } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
 import { api, uploadRaw } from '../lib/api';
+import { PIN_RANK, pinAlpha, statusText, whereText, type DriverPin } from '../lib/driverPins';
+import { sessionDt } from '../lib/format';
+import { decodePolyline6 } from '../lib/polyline';
 import type { ApiError } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import type {
@@ -13,6 +17,7 @@ import type {
   ColumnMapping,
   CoverageArea,
   CoverageSummary,
+  DriverPosition,
   ImportJob,
   ImportReport,
   NetworkVersion,
@@ -42,6 +47,16 @@ const isoDay = (offsetDays: number) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 const mb = (bytes: number) => `${(bytes / 1e6).toFixed(1)} MB`;
+
+/** The pill on a driver's card: is the drive still open, and if so, what is the vehicle doing. */
+const POSITION_PILL: Record<DriverPosition['state'], { tone: string; label: string }> = {
+  moving: { tone: 'green', label: 'Driving now' },
+  stopped: { tone: 'blue', label: 'Stopped · drive open' },
+  stale: { tone: 'amber', label: 'No signal' },
+  ended: { tone: 'gray', label: 'Drive ended' },
+};
+/** A pin for someone the palette has not met — cannot normally happen, must not crash if it does. */
+const PIN_FALLBACK: [number, number, number] = [71, 85, 105];
 
 /** HERE functional class, in the customer's terms rather than the number. */
 const FUNC_CLASS_LABEL: Record<string, string> = {
@@ -370,6 +385,21 @@ function ProgressTab({
   const [coverageDrivers, setCoverageDrivers] = useState<
     { driverId: string | null; name: string; links: number; meters: number }[]
   >([]);
+  /**
+   * Where each driver left off: the last fix of their last drive on this project, refreshed every
+   * minute. On by default — "where is the crew up to" is the question the map gets opened with.
+   */
+  const [showPositions, setShowPositions] = useState(true);
+  const [positions, setPositions] = useState<DriverPosition[]>([]);
+  /** When the positions were last read. Every "3 h ago" on the page is measured from it. */
+  const [clock, setClock] = useState(() => Date.now());
+  /** The driver whose pin is picked. Their card takes the place of the area card while it is. */
+  const [pinDriverId, setPinDriverId] = useState<string | null>(null);
+  const pinDriverRef = useRef(pinDriverId);
+  pinDriverRef.current = pinDriverId;
+  const [pinFocus, setPinFocus] = useState<{ lon: number; lat: number; nonce: number } | null>(null);
+  /** The picked driver's last drive, once fetched. Null while it loads. */
+  const [trail, setTrail] = useState<{ pending: boolean; paths: [number, number][][] } | null>(null);
   // Driven tracks are off by default: they are the heaviest layer on the map and the one a
   // manager turns ON to answer a specific question, rather than the backdrop they browse in.
   const [showTracks, setShowTracks] = useState(false);
@@ -414,6 +444,7 @@ function ProgressTab({
   const searchPickRef = useRef<CoverageArea | null>(null);
   const pickAreaFromSearch = useCallback((area: CoverageArea) => {
     searchPickRef.current = area;
+    setPinDriverId(null);
     setSelectedIds([area._id]);
     setFocusAreaId(area._id);
     setFocusNonce((n) => n + 1);
@@ -421,8 +452,16 @@ function ProgressTab({
 
   /** Plain click replaces the selection; shift/ctrl-click builds a cluster up one area at a time. */
   const toggleSelect = useCallback((areaId: string, additive: boolean) => {
+    // Clicking a polygon asks about the area, so a picked driver's card gives way to it. If that
+    // area was already the one selected, the click only brings its card back — it must not also
+    // deselect it.
+    const hadPin = pinDriverRef.current != null;
+    setPinDriverId(null);
     setSelectedIds((prev) => {
-      if (!additive) return prev.length === 1 && prev[0] === areaId ? [] : [areaId];
+      if (!additive) {
+        if (prev.length === 1 && prev[0] === areaId) return hadPin ? prev : [];
+        return [areaId];
+      }
       return prev.includes(areaId) ? prev.filter((id) => id !== areaId) : [...prev, areaId];
     });
   }, []);
@@ -537,6 +576,50 @@ function ProgressTab({
       .catch(() => setCoverageDrivers([]));
   }, [scopeId, reloadKey]);
 
+  // A different project is a different crew: nothing from the last one may linger on the map.
+  useEffect(() => {
+    setPositions([]);
+    setPinDriverId(null);
+  }, [scopeId]);
+
+  useEffect(() => {
+    if (!showPositions) {
+      setPositions([]);
+      setPinDriverId(null);
+      return undefined;
+    }
+    let alive = true;
+    const load = () => {
+      // A hidden tab asks for nothing; it catches up the moment it is looked at again.
+      if (document.hidden) return;
+      api
+        .get<{ positions: DriverPosition[] }>(`/api/network/versions/${scopeId}/driver-positions`)
+        .then((r) => {
+          if (!alive) return;
+          setPositions(r.positions || []);
+          setClock(Date.now());
+        })
+        // A refresh that fails keeps the last picture rather than blanking the map.
+        .catch(() => {});
+    };
+    load();
+    const timer = window.setInterval(load, 60_000);
+    document.addEventListener('visibilitychange', load);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', load);
+    };
+  }, [scopeId, showPositions, reloadKey]);
+
+  // Who has a position, as a string that changes only when the SET of drivers does. The pins
+  // refresh every minute, and the palette below must not be rebuilt — and every road on the map
+  // recoloured — along with them.
+  const positionDriversKey = useMemo(
+    () => positions.map((p) => `${p.driverId}\t${p.name}`).sort().join('\n'),
+    [positions]
+  );
+
   // areaId -> the drivers currently responsible for it. Built once per load rather than filtered
   // per row, so a 402-row table is not 402 passes over the assignment list.
   const driversByArea = useMemo(() => {
@@ -607,12 +690,19 @@ function ProgressTab({
      * import lands, and colouring only the holders left thousands of kilometres of real work
      * drawn in a default blue with nobody's name against it.
      */
+    // …and whoever has a position here: a driver's first day shows up as a pin before it shows
+    // up as coverage.
+    const positionDrivers = positionDriversKey
+      ? positionDriversKey.split('\n').map((row) => row.split('\t') as [string, string])
+      : [];
     const ids = [...new Set([
       ...assignments.map((a) =>
         typeof a.driverId === 'object' && a.driverId ? a.driverId._id : String(a.driverId)
       ),
       ...coverageDrivers.map((d) => d.driverId).filter((id): id is string => Boolean(id)),
+      ...positionDrivers.map(([id]) => id),
     ])].sort();
+    const nameFromPosition = new Map(positionDrivers);
     const colorFor = new Map(ids.map((id, i) => [id, PALETTE[i % PALETTE.length]]));
     const metersById = new Map(coverageDrivers.map((d) => [String(d.driverId), d.meters]));
     const nameFromCoverage = new Map(coverageDrivers.map((d) => [String(d.driverId), d.name]));
@@ -641,7 +731,7 @@ function ProgressTab({
     const legend = ids
       .map((id) => ({
         id,
-        name: nameFor.get(id) || nameFromCoverage.get(id) || 'Unknown',
+        name: nameFor.get(id) || nameFromCoverage.get(id) || nameFromPosition.get(id) || 'Unknown',
         color: colorFor.get(id)!,
         meters: metersById.get(id) || 0,
       }))
@@ -653,7 +743,7 @@ function ProgressTab({
     for (const [id, color] of colorFor) byDriver[id] = color;
 
     return { byArea, namesByArea, legend, byDriver };
-  }, [assignments, coverageDrivers]);
+  }, [assignments, coverageDrivers, positionDriversKey]);
 
   const selectedAreas = useMemo(
     () => areas.filter((a) => selectedIds.includes(a._id)),
@@ -680,6 +770,89 @@ function ProgressTab({
     }
     return ids;
   }, [driverFilter, assignments]);
+
+  const positionById = useMemo(() => new Map(positions.map((p) => [p.driverId, p])), [positions]);
+  const pinned = pinDriverId ? positionById.get(pinDriverId) ?? null : null;
+  const pinnedColor = pinned ? driverViz.byDriver[pinned.driverId] || PIN_FALLBACK : null;
+
+  // The picked driver is no longer among the positions (moved off the project): drop the pick.
+  useEffect(() => {
+    if (pinDriverId && positions.length && !positionById.has(pinDriverId)) setPinDriverId(null);
+  }, [pinDriverId, positions, positionById]);
+
+  /** The pins as the map draws them. A focused crew narrows them, like everything else. */
+  const driverPins = useMemo<DriverPin[]>(() => {
+    const wanted = driverFilter.length ? new Set(driverFilter) : null;
+    return positions
+      .filter((p) => !wanted || wanted.has(p.driverId) || p.driverId === pinDriverId)
+      .map((p) => ({
+        kind: 'pin' as const,
+        driverId: p.driverId,
+        name: p.name,
+        lon: p.lon,
+        lat: p.lat,
+        state: p.state,
+        color: driverViz.byDriver[p.driverId] || PIN_FALLBACK,
+        alpha: pinAlpha(p, clock),
+        status: statusText(p, clock),
+        where: whereText(p),
+      }))
+      // Later is drawn on top: finished drives underneath, whoever is out now above them, and the
+      // picked pin over everything.
+      .sort(
+        (a, b) =>
+          Number(a.driverId === pinDriverId) - Number(b.driverId === pinDriverId) ||
+          PIN_RANK[a.state] - PIN_RANK[b.state]
+      );
+  }, [positions, driverFilter, pinDriverId, driverViz.byDriver, clock]);
+
+  // The route of the picked driver's last drive. Keyed on the trip, not on the position, so the
+  // minute-by-minute refresh does not refetch it — only a new drive does, or the matcher finishing.
+  const pinnedTripId = pinned?.trip.id ?? null;
+  const pinnedSnapped = pinned?.trip.snapped ?? false;
+  useEffect(() => {
+    setTrail(null);
+    if (!pinnedTripId) return undefined;
+    let alive = true;
+    api
+      .get<{ pending: boolean; shapes: string[] }>(
+        `/api/network/versions/${scopeId}/driver-positions/route?tripId=${pinnedTripId}`
+      )
+      .then((r) => {
+        if (!alive) return;
+        setTrail({
+          pending: r.pending,
+          // A one-point chunk is not a line; deck.gl would draw nothing and warn.
+          paths: r.shapes.map(decodePolyline6).filter((path) => path.length > 1),
+        });
+      })
+      .catch(() => {
+        if (alive) setTrail({ pending: false, paths: [] });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [scopeId, pinnedTripId, pinnedSnapped]);
+
+  const pinTrail = useMemo(
+    () => (trail && trail.paths.length && pinnedColor ? { color: pinnedColor, paths: trail.paths } : null),
+    [trail, pinnedColor]
+  );
+
+  const onPickPin = useCallback((driverId: string | null) => setPinDriverId(driverId), []);
+  /** From the crew list: go to where this driver is, and open their card. */
+  const locateDriver = (p: DriverPosition) => {
+    setPinDriverId(p.driverId);
+    setPinFocus((prev) => ({ lon: p.lon, lat: p.lat, nonce: (prev?.nonce ?? 0) + 1 }));
+  };
+  /** From a driver's card: the area they stopped in, selected and framed like a search hit. */
+  const openAreaOf = (p: DriverPosition) => {
+    if (!p.area) return;
+    setPinDriverId(null);
+    setSelectedIds([p.area._id]);
+    setFocusAreaId(p.area._id);
+    setFocusNonce((n) => n + 1);
+  };
 
   // Every control lives ON the map, so fullscreen loses nothing — it takes the whole card along.
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -721,7 +894,8 @@ function ProgressTab({
     : null;
 
   /** Drawn layers, counted for the badge on the Layers button so a closed panel still says so. */
-  const layersOn = Number(showAreasLayer) + Number(roadScope !== 'off') + Number(showTracks);
+  const layersOn =
+    Number(showAreasLayer) + Number(roadScope !== 'off') + Number(showTracks) + Number(showPositions);
 
   /**
    * Denominators come from the SUMMARY, which is project-wide. `version` is only the newest
@@ -901,6 +1075,86 @@ function ProgressTab({
       )}
     </div>
   ) : null;
+
+  /**
+   * One pin picked = where that driver is up to: when and where the last drive stopped, whether
+   * that is their own patch, and the way to the trip itself. The route of that drive is drawn on
+   * the map behind it.
+   */
+  const pinCard = pinned ? (
+    <div className="cov-pop-card">
+      <div className="cov-pop-head">
+        <span
+          className="cov-crew-dot"
+          style={{ background: `rgb(${(pinnedColor || PIN_FALLBACK).join(',')})`, marginTop: 5, flexShrink: 0 }}
+        />
+        <div className="cov-pop-title">
+          <strong>{pinned.name}</strong>
+          <span>{statusText(pinned, clock)}</span>
+        </div>
+        <button type="button" className="cov-pop-x" aria-label="Close" onClick={() => setPinDriverId(null)}>✕</button>
+      </div>
+
+      <div className="cov-pop-status">
+        <span className={`cov-pill ${POSITION_PILL[pinned.state].tone}`}>{POSITION_PILL[pinned.state].label}</span>
+        {pinned.state === 'moving' && pinned.speedKmh != null && pinned.speedKmh >= 1 && (
+          <span className="cov-pop-holder">{Math.round(pinned.speedKmh)} km/h</span>
+        )}
+      </div>
+
+      <dl className="cov-pop-facts">
+        <dt>{pinned.state === 'ended' ? 'Left off' : 'Last seen'}</dt>
+        <dd>{sessionDt(pinned.at)}</dd>
+        <dt>Where</dt>
+        <dd>
+          {pinned.area ? (
+            <>
+              {pinned.area.name}
+              <small>{pinned.area.mine ? 'one of their own areas' : 'not an area they hold'}</small>
+            </>
+          ) : (
+            'Outside every work area'
+          )}
+        </dd>
+        <dt>{pinned.trip.endedAt ? 'Last drive' : 'This drive'}</dt>
+        <dd>
+          {km(pinned.trip.meters)} km
+          <small>started {sessionDt(pinned.trip.startedAt)}</small>
+        </dd>
+      </dl>
+
+      <div className="cov-pop-actions">
+        {pinned.area && (
+          <button className="btn-ghost" onClick={() => openAreaOf(pinned)}>Open this area</button>
+        )}
+        <Link className="cov-pop-link" to={`/trips/${pinned.trip.id}`} target="_blank" rel="noreferrer">
+          Trip ↗
+        </Link>
+        <a
+          className="cov-pop-link"
+          style={{ marginLeft: 4 }}
+          href={`https://www.google.com/maps?q=${pinned.lat.toFixed(6)},${pinned.lon.toFixed(6)}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Google Maps ↗
+        </a>
+      </div>
+
+      <div className="cov-pop-foot">
+        {!trail
+          ? 'Loading the route of this drive…'
+          : trail.paths.length
+            ? 'The band in their colour is the route of this drive, up to where it stopped.'
+            : trail.pending
+              ? pinned.trip.endedAt
+                ? 'The route of this drive is still being snapped to roads — it will appear here shortly.'
+                : 'The route is drawn once this drive has ended and been snapped to roads.'
+              : 'This drive has no snapped route to draw.'}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <>
       {version.status !== 'active' && canEdit && (
@@ -1090,6 +1344,19 @@ function ProgressTab({
                     />
                   </div>
                 </section>
+
+                <section>
+                  <header>
+                    <span>Drivers</span>
+                    <Switch checked={showPositions} onChange={setShowPositions} title="Where each driver left off">
+                      <span className="sr-only">Show where drivers left off</span>
+                    </Switch>
+                  </header>
+                  <p className="cov-layer-hint">
+                    A pin where each driver’s last drive ended — or where they are now, if they are
+                    still out. Refreshes every minute.
+                  </p>
+                </section>
               </div>
             )}
           </div>
@@ -1128,22 +1395,47 @@ function ProgressTab({
                   const on = driverFilter.includes(d.id);
                   const dim = driverFilter.length > 0 && !on;
                   const rgb = `rgb(${d.color.join(',')})`;
+                  const pos = positionById.get(d.id);
                   return (
-                    <button
-                      key={d.id}
-                      type="button"
-                      className={`cov-crew-row${on ? ' on' : ''}${dim ? ' dim' : ''}`}
-                      onClick={() => toggleDriver(d.id)}
-                      aria-pressed={on}
-                      title={on ? 'Stop focusing on this driver' : 'Focus the map on this driver'}
-                    >
-                      <span className="cov-crew-dot" style={{ background: rgb }} />
-                      <span className="cov-crew-name">{d.name}</span>
-                      <span className="cov-crew-km">{km(d.meters)} km</span>
-                      <span className="cov-crew-bar">
-                        <span style={{ width: `${(d.meters / maxCrewMeters) * 100}%`, background: rgb }} />
-                      </span>
-                    </button>
+                    <div key={d.id} className="cov-crew-item">
+                      <button
+                        type="button"
+                        className={`cov-crew-row${on ? ' on' : ''}${dim ? ' dim' : ''}`}
+                        onClick={() => toggleDriver(d.id)}
+                        aria-pressed={on}
+                        title={on ? 'Stop focusing on this driver' : 'Focus the map on this driver'}
+                      >
+                        <span className="cov-crew-dot" style={{ background: rgb }} />
+                        <span className="cov-crew-name">{d.name}</span>
+                        <span className="cov-crew-km">{km(d.meters)} km</span>
+                        <span className="cov-crew-bar">
+                          <span style={{ width: `${(d.meters / maxCrewMeters) * 100}%`, background: rgb }} />
+                        </span>
+                        {/* Where they are up to — the same words as their pin and their card. */}
+                        {pos && (
+                          <span className={`cov-crew-last ${pos.state}`}>
+                            {statusText(pos, clock)}
+                            {pos.area ? ` · ${pos.area.name}` : ''}
+                          </span>
+                        )}
+                      </button>
+                      {/* Its own button, beside the row rather than inside it: the row focuses the
+                          map on a driver's work, this goes to where the driver is. */}
+                      {pos && (
+                        <button
+                          type="button"
+                          className="cov-crew-loc"
+                          onClick={() => locateDriver(pos)}
+                          title={`Show where ${d.name} ${pos.state === 'ended' ? 'left off' : 'is'}`}
+                          aria-label={`Show where ${d.name} ${pos.state === 'ended' ? 'left off' : 'is'}`}
+                        >
+                          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                            <circle cx="8" cy="8" r="4.2" />
+                            <path d="M8 1v2.6M8 12.4V15M1 8h2.6M12.4 8H15" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -1182,6 +1474,12 @@ function ProgressTab({
           onTracksMeta={onTracksMeta}
           areaPopupId={singleAreaId}
           areaPopup={areaCard}
+          driverPins={driverPins}
+          selectedPinId={pinDriverId}
+          onPickPin={onPickPin}
+          pinPopup={pinCard}
+          pinTrail={pinTrail}
+          focusPoint={pinFocus}
         />
 
         {selectedIds.length > 1 && (

@@ -97,6 +97,8 @@ function createApp() {
         // A manager can clear an area's driven data (POST …/areas/:areaId/clear-coverage); driving
         // from before the clear is never counted again, whatever is recalculated later.
         coverageReset: true,
+        // The coverage map shows where each driver left off (GET …/driver-positions).
+        driverPositions: true,
       },
     })
   );

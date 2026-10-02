@@ -227,6 +227,11 @@ tripSchema.index(
   { unique: true, partialFilterExpression: { clientTripId: { $type: 'string' } } }
 );
 tripSchema.index({ driverId: 1, startedAt: -1 });
+// "This driver's newest trip on this project" — the coverage map's where-they-left-off pins
+// (services/driverPositions.js), asked once per driver on every refresh. With only the index above
+// that walks back through every trip the driver recorded for OTHER projects, reading each one
+// whole, before it reaches the first that belongs here.
+tripSchema.index({ driverId: 1, projectId: 1, startedAt: -1 });
 // The watchdog sweeps active trips by last-heartbeat every WATCHDOG_INTERVAL_SECONDS.
 tripSchema.index({ status: 1, 'lastLocation.recordedAt': 1 });
 // The map-matcher worker sweeps completed/timed_out trips awaiting a Valhalla match every
