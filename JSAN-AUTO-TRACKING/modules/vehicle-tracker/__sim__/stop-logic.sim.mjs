@@ -7,21 +7,20 @@
  *
  * Position is modelled as a 1-D scalar in METRES from an origin; "distance" is abs difference.
  *
+ * Trip START is StartGate (the 150 m rest circle), through its mirror in start-gate.mjs — the
+ * same class start-gate.sim.mjs exercises on its own, here wired into a whole trip.
+ *
  * Run: node modules/vehicle-tracker/__sim__/stop-logic.sim.mjs
  */
 
+import { StartGate, LegacyStart, Decision } from './start-gate.mjs';
+
 // ── Constants (must match TrackingService.kt) ──
-const TRIP_START_DISTANCE_M = 30;
-const TRIP_START_MIN_SPEED_KMH = 10.0;
-const TRIP_START_SLOW_DISTANCE_M = 100;
-const TRIP_START_SLOW_MIN_SPEED_KMH = 2.0;
-const TRIP_START_VEHICLE_DISTANCE_M = 20;
 const TRIP_START_VEHICLE_MIN_SPEED_KMH = 0.8;
-const TRIP_START_VEHICLE_MAX_ACCURACY_M = 25;
 const TRIP_START_MAX_ACCURACY_M = 50;
 const FOOT_VETO_MS = 10 * 60 * 1000;
 const ACTIVITY_FRESH_MS = 90_000;
-const PRE_START_BUFFER_MS = 5 * 60 * 1000;
+const PRE_START_BUFFER_MS = 30 * 60 * 1000;
 const PRE_START_BUFFER_MAX = 240;
 const PRE_START_BUFFER_SPACING_M = 5;
 const POINT_DISTANCE_M = 10;
@@ -39,20 +38,20 @@ const STOP_CLOCK_MOVE_M = 30;
 const FIX_INTERVAL_MS = 2_000;
 // GPS-jump vetoes and confinement (2026-10-01 field case, trip 6abe7d98) — see TrackingService.kt.
 const DOPPLER_CONFIRM_KMH = 5.0;
-const DOPPLER_CONFIRM_FIXES = 2;
+const DOPPLER_CREDIBLE_FIXES = 3;
 const JUMP_IMPLIED_KMH = 5.0;
 const JUMP_DOPPLER_MAX_KMH = 1.5;
 const CONFINE_WINDOW_MS = 5 * 60 * 1000;
 const CONFINE_RADIUS_M = 40;
 const CONFINE_DOPPLER_MAX_KMH = 3.0;
-// SIM_NO_VETOES=1 runs the engine WITHOUT these rules — to show the field scenarios below fail
-// on the old logic, i.e. that they really reproduce the bug.
+// SIM_NO_VETOES=1 runs the engine WITHOUT these rules and with the previous start gates — to show
+// the field scenarios below fail on the old logic, i.e. that they really reproduce the bug.
 const VETOES = process.env.SIM_NO_VETOES !== '1';
 
 function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
   let tripId = null;
-  let startWatchPos = null;
-  let startWatchTime = 0;
+  const gate = VETOES ? new StartGate() : new LegacyStart();
+  const at = (pos) => ({ x: pos, y: 0 });
   let lastRecordedPos = 0;
   let lastRecordedAtMs = 0;
   let hasLastRecorded = false;
@@ -63,16 +62,10 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
   let hasStopAnchor = false;
   let stopAnchorTime = 0;
   let anchorMaxDoppler = -1;
-  let watchDopplerSeen = false;
-  let watchDopplerMovingFixes = 0;
+  /** In-trip fixes at DOPPLER_CONFIRM_KMH+: this trip's Doppler has shown it can read motion. */
+  let tripDopplerMovingFixes = 0;
   /** In-trip fixes of the last CONFINE_WINDOW_MS: { now, pos, doppler }. */
   let confineWindow = [];
-  function anchorStartWatch(now, pos, doppler) {
-    startWatchPos = pos;
-    startWatchTime = now;
-    watchDopplerSeen = doppler !== null;
-    watchDopplerMovingFixes = doppler !== null && doppler >= DOPPLER_CONFIRM_KMH ? 1 : 0;
-  }
   function setStopAnchor(now, pos, doppler) {
     stopAnchorPos = pos;
     hasStopAnchor = true;
@@ -103,14 +96,30 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
   const fmt = (ms) =>
     `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
 
-  function startTrip(now, pos, gate, startDoppler = null) {
+  function startTrip(now, pos, gateName, startDoppler = null) {
     tripId = `T${now}`;
-    // Flush the buffered approach BEFORE the start point — original timestamps, so the trip
-    // begins where the movement began, not where the gate finally recognised it.
+    // Flush the buffered departure BEFORE the start point — original timestamps, so the trip
+    // begins where and when the vehicle did, not 150 m later where the gate recognised it.
+    // Exactly the service's flush: StartGate names the origin (the last fix it saw the phone
+    // standing at); every buffered fix after it is the departure.
+    const origin = gate.routeOrigin(buffer.map((b) => b.now), now);
+    gate.clear();
     let flushed = 0;
+    let prev = null;
+    if (origin.isRoutePoint) {
+      prev = { now: origin.elapsedMs, pos: origin.pos.x };
+      points.push(prev);
+      flushed++;
+    }
     for (const b of buffer) {
-      if (b.now < startWatchTime || b.now >= now) continue;
+      if (b.now <= origin.elapsedMs || b.now >= now) continue;
+      if (prev) {
+        const d = Math.abs(b.pos - prev.pos);
+        if (d < Math.max(8, (b.accuracy ?? 30) * 0.75)) continue; // stationary jitter
+        if ((d / (Math.max(1, b.now - prev.now) / 1000)) * 3.6 > MAX_PLAUSIBLE_SPEED_KMH) continue;
+      }
       points.push({ now: b.now, pos: b.pos });
+      prev = b;
       flushed++;
     }
     buffer = [];
@@ -120,14 +129,15 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
     lastMovedMs = now;
     setStopAnchor(now, pos, startDoppler);
     confineWindow = [];
-    startWatchPos = null;
+    tripDopplerMovingFixes = 0;
     points.push({ now, pos });
-    events.push(`${fmt(now)} START (${gate}, ${flushed} pre-start points flushed)`);
+    events.push(`${fmt(now)} START (${gateName}, ${flushed} pre-start points flushed)`);
   }
 
   function endTrip(now) {
-    // Mirrors the hasLastRecorded guard: no trustworthy position, no end marker.
-    if (hasLastRecorded) endPoint = lastRecordedPos;
+    // Mirrors the hasLastRecorded guard: no trustworthy position, no end marker. The phone
+    // rests where the trip ended: that is the next rest circle's centre.
+    if (hasLastRecorded) { endPoint = lastRecordedPos; gate.anchorAt(at(lastRecordedPos), now); } else gate.clear();
     events.push(`${fmt(now)} END (no movement for ${((now - lastMovedMs) / 60000).toFixed(1)}m)`);
     tripId = null;
     hasLastRecorded = false;
@@ -136,9 +146,6 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
     stopAnchorTime = 0;
     anchorMaxDoppler = -1;
     confineWindow = [];
-    startWatchPos = null;
-    watchDopplerSeen = false;
-    watchDopplerMovingFixes = 0;
     buffer = [];
   }
 
@@ -169,61 +176,24 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
       // Remember the idle path (spacing-gated so a parked phone appends nothing).
       const lastBuf = buffer[buffer.length - 1];
       if (!lastBuf || Math.abs(pos - lastBuf.pos) >= PRE_START_BUFFER_SPACING_M) {
-        buffer.push({ now, pos });
+        buffer.push({ now, pos, accuracy });
         while (buffer.length > PRE_START_BUFFER_MAX) buffer.shift();
         while (buffer.length && now - buffer[0].now > PRE_START_BUFFER_MS) buffer.shift();
       }
 
-      if (startWatchPos === null) {
-        anchorStartWatch(now, pos, doppler);
-        return;
-      }
-      if (doppler !== null) {
-        watchDopplerSeen = true;
-        if (doppler >= DOPPLER_CONFIRM_KMH) watchDopplerMovingFixes++;
-      }
-      const distFromWatch = Math.abs(pos - startWatchPos);
-      const speedGateReach = distFromWatch >= Math.max(TRIP_START_DISTANCE_M, accuracy * 1.5);
-      const vehicleGateReach = distFromWatch >= Math.max(TRIP_START_VEHICLE_DISTANCE_M, accuracy * 2);
-      if (speedGateReach || vehicleGateReach) {
-        const elapsedSec = Math.max(0.1, (now - startWatchTime) / 1000);
-        const avgSpeedKmh = (distFromWatch / elapsedSec) * 3.6;
-        const dopplerAgrees = !VETOES || !watchDopplerSeen || watchDopplerMovingFixes >= DOPPLER_CONFIRM_FIXES;
-        const fastStart = speedGateReach &&
-          avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
-          dopplerAgrees &&
-          (vehicleConfirmed || speedKmh >= 20 || (gaitUsable && !runningOnFoot));
-        const footRecently = lastActivity === 'foot' && now - lastActivityAt < FOOT_VETO_MS;
-        // Live confidence from the continuous activity feed, NOT a transition edge that could be
-        // ten minutes old. See ACTIVITY_FRESH_MS in TrackingService.kt: the stale form let a
-        // driver who had just parked and walked off open the slow gate on foot.
-        const activitySaysVehicle = arSaysVehicleAt !== null && now - arSaysVehicleAt <= ACTIVITY_FRESH_MS;
-        const slowStart =
-          speedGateReach &&
-          avgSpeedKmh >= TRIP_START_SLOW_MIN_SPEED_KMH &&
-          distFromWatch >= TRIP_START_SLOW_DISTANCE_M &&
-          !footRecently && (vehicleConfirmed || activitySaysVehicle);
-        const vehicleStart =
-          vehicleConfirmed &&
-          vehicleGateReach &&
-          accuracy <= TRIP_START_VEHICLE_MAX_ACCURACY_M &&
-          speedKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH;
-        if (fastStart || slowStart || vehicleStart) {
-          startTrip(now, pos, fastStart ? 'fast' : slowStart ? 'slow' : 'vehicle', doppler);
-        } else if (
-          VETOES && speedGateReach && avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
-          watchDopplerSeen && watchDopplerMovingFixes === 0
-        ) {
-          anchorStartWatch(now, pos, doppler); // a jump Doppler contradicts: spend it
-        } else if (
-          speedGateReach &&
-          avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH &&
-          !(vehicleConfirmed && speedKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH)
-        ) {
-          anchorStartWatch(now, pos, doppler);
-        }
-        // between the gates: keep the watch anchored — a crawl keeps accumulating
-      }
+      const footRecently = lastActivity === 'foot' && now - lastActivityAt < FOOT_VETO_MS;
+      // Live confidence from the continuous activity feed, NOT a transition edge that could be
+      // ten minutes old. See ACTIVITY_FRESH_MS in TrackingService.kt: the stale form let a
+      // driver who had just parked and walked off open the slow gate on foot.
+      const activitySaysVehicle = arSaysVehicleAt !== null && now - arSaysVehicleAt <= ACTIVITY_FRESH_MS;
+      const decision = gate.onFix({
+        now, pos: at(pos), accuracyM: accuracy, dopplerKmh: doppler, recentKmh: speedKmh,
+        vehicleConfirmed, activitySaysVehicle, footRecently, gaitUsable, runningOnFoot,
+      });
+      const gateName = decision === Decision.START_FAST ? 'fast'
+        : decision === Decision.START_SLOW ? 'slow'
+        : decision === Decision.START_VEHICLE ? 'vehicle' : null;
+      if (gateName) startTrip(now, pos, gateName, doppler);
       return;
     }
 
@@ -236,6 +206,7 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
       confineWindow = [];
       return;
     }
+    if (doppler !== null && doppler >= DOPPLER_CONFIRM_KMH) tripDopplerMovingFixes++;
 
     // ── Stop clock ──────────────────────────────────────────────────────────────────────
     // What keeps a trip alive is TRAVEL, not points: recorded points used to refresh
@@ -247,12 +218,15 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
     // Vetoes: a Doppler-contradicted JUMP, and CONFINEMENT — see TrackingService.kt.
     confineWindow.push({ now, pos, doppler });
     while (confineWindow.length && now - confineWindow[0].now > CONFINE_WINDOW_MS) confineWindow.shift();
-    const vehicleNow = vehicleConfirmed;
+    // Lifted by Play Services' live "in vehicle", NOT by the classifier's verdict — its
+    // ground-speed rule reads a wandering fix on a still phone as a creeping vehicle.
+    const vehicleNow = arSaysVehicleAt !== null && now - arSaysVehicleAt <= ACTIVITY_FRESH_MS;
     const confined = VETOES && !vehicleNow && isConfined(now);
     if (doppler !== null) anchorMaxDoppler = Math.max(anchorMaxDoppler, doppler);
     const sinceAnchorSec = Math.max(1, (now - stopAnchorTime) / 1000);
     const impliedKmh = (netFromStopAnchor / sinceAnchorSec) * 3.6;
-    const gpsJump = VETOES && !vehicleNow && anchorMaxDoppler >= 0 && anchorMaxDoppler < JUMP_DOPPLER_MAX_KMH &&
+    const gpsJump = VETOES && !vehicleNow && tripDopplerMovingFixes >= DOPPLER_CREDIBLE_FIXES &&
+      anchorMaxDoppler >= 0 && anchorMaxDoppler < JUMP_DOPPLER_MAX_KMH &&
       impliedKmh >= JUMP_IMPLIED_KMH;
     const travelled = !confined && !gpsJump && netFromStopAnchor >= Math.max(STOP_CLOCK_MOVE_M, accuracy * 2);
     const corroboratedSpeed = !confined && speedKmh >= RECORD_MOVING_SPEED_KMH && netFromStopAnchor >= accuracy;
@@ -266,16 +240,18 @@ function makeEngine(tripEndAfterMs = TRIP_END_NO_MOVE_MS) {
     // Fourth witness — see the record gate in TrackingService.kt. Below ~2 km/h with AR
     // reporting STILL, this is the only thing keeping recorded points close enough together to
     // survive the server's 45 s map-match split.
+    // (`!still` used to be a witness too; the service dropped it — "not known to be still" is
+    // not evidence of movement, and it minted a jitter point every 8 s on a parked vehicle.)
     const moving =
       displacementMoving ||
-      !still ||
       speedKmh >= RECORD_MOVING_SPEED_KMH ||
       (vehicleConfirmed && speedKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH);
     const dtMs = lastRecordedAtMs > 0 ? now - lastRecordedAtMs : Number.MAX_SAFE_INTEGER;
     const distTrigger = distFromLast >= POINT_DISTANCE_M;
     const timeTrigger =
       dtMs >= RECORD_MIN_INTERVAL_MS && distFromLast >= Math.max(RECORD_MIN_MOVE_M, accuracy * 0.5);
-    if (moving && (distTrigger || timeTrigger)) {
+    // Confined: the phone has circled one spot for five minutes — what passes now is jitter.
+    if (moving && !(VETOES && confined) && (distTrigger || timeTrigger)) {
       const dtSec = Math.max(1, dtMs) / 1000;
       if ((distFromLast / dtSec) * 3.6 > MAX_PLAUSIBLE_SPEED_KMH) return;
       lastRecordedPos = pos;
@@ -400,7 +376,7 @@ all &= run('4. Jam crawl 2 km/h for 20 min, AR says STILL and Doppler ~0 — den
 // transition edge (`activity: 'vehicle'`), but that verdict survives ten minutes past the driver
 // parking and walking away — which is how a 2-3 km/h walk was opening the slow gate in the
 // field. Scenario 17 now holds that negative case; these two keep testing the slow gate itself.
-all &= run('5. Slow start: creep from rest at 4 km/h in vehicle context — trip starts by ~100 m', {
+all &= run('5. Slow start: creep from rest at 4 km/h in vehicle context — trip starts on leaving the 150 m circle', {
   durationMs: 5 * 60 * 1000,
   phases: [{ from: 0, to: 5 * 60_000, speedKmh: 4, still: false, activity: 'vehicle',
              arSaysVehicle: true }],
@@ -447,12 +423,14 @@ all &= run('10. PRE-START CAPTURE: 3 km/h creep — the approach before the gate
              arSaysVehicle: true }],
   assertFn: (e) => {
     if (starts(e) !== 1) return false;
-    // 100 m at 3 km/h = 2 min before the gate fires. The flushed buffer must reach back to
-    // roughly when the creep began, and cover most of the pre-start ground.
+    // 150 m at 3 km/h = 3 min before the gate fires. The flushed buffer must reach back to
+    // where the creep began — the last fix within 20 m of the rest anchor, which itself
+    // settled a few metres into the creep — and cover the ground in between.
     const first = e.points[0];
     const startEvt = e.events.find((x) => x.includes('START'));
-    const preStart = e.points.filter((p, idx) => idx > 0 && p.now < e.points[e.points.length - 1].now && p.pos < 100).length;
-    return !!first && first.now <= 15_000 && preStart >= 10 && /\d+ pre-start points flushed/.test(startEvt) && !/\(slow, 0 /.test(startEvt);
+    const preStart = e.points.filter((p) => p.pos < 150).length;
+    console.log(`  route begins ${first.pos.toFixed(0)} m into the creep, ${preStart} points inside the circle`);
+    return !!first && first.pos <= 25 && preStart >= 10 && /\d+ pre-start points flushed/.test(startEvt) && !/\(slow, 0 /.test(startEvt);
   },
 });
 
@@ -470,13 +448,17 @@ all &= run('11. STALE foot verdict: brief walk, 12 min parked, then 4 km/h creep
   },
 });
 
-all &= run('12. Sensor-confirmed vehicle creeping at 1 km/h - starts and backfills route', {
-  durationMs: 4 * 60_000,
+all &= run('12. Sensor-confirmed vehicle creeping at 1 km/h - starts on leaving the circle (9 min) and backfills the route from its first metres', {
+  durationMs: 12 * 60_000,
   phases: [{
-    from: 0, to: 4 * 60_000, speedKmh: 1, accuracy: 8,
+    from: 0, to: 12 * 60_000, speedKmh: 1, accuracy: 8,
     activity: 'vehicle', vehicleConfirmed: true,
   }],
-  assertFn: (e) => starts(e) === 1 && e.tripId !== null && e.points.length >= 4,
+  assertFn: (e) => {
+    const first = e.points[0];
+    if (first) console.log(`  route begins ${first.pos.toFixed(0)} m into the creep`);
+    return starts(e) === 1 && e.tripId !== null && e.points.length >= 12 && first.pos <= 25;
+  },
 });
 
 all &= run('13. One km/h movement without vehicle confirmation - vehicle gate stays closed', {
@@ -506,10 +488,10 @@ all &= run('15. Ambiguous 11 km/h with no gait sensor or vehicle evidence - stay
   assertFn: (e) => starts(e) === 0,
 });
 
-all &= run('16. DENSITY: 1 km/h crawl for 8 min, AR says STILL — every gap must survive the 45 s map-match split', {
-  durationMs: 8 * 60_000,
+all &= run('16. DENSITY: 1 km/h crawl for 16 min, AR says STILL — every gap, flushed or recorded, must survive the 45 s map-match split', {
+  durationMs: 16 * 60_000,
   phases: [{
-    from: 0, to: 8 * 60_000, speedKmh: 1, accuracy: 12, still: true,
+    from: 0, to: 16 * 60_000, speedKmh: 1, accuracy: 12, still: true,
     activity: null, vehicleConfirmed: true,
   }],
   assertFn: (e) => {
@@ -694,16 +676,19 @@ all &= replay('25. Depot: 7 min of the field jitter, then a real pull-away at 30
     ...Array.from({ length: 60 }, (_, i) => ({ t: 420_000 + i * 2000, pos: 40 + (30 / 3.6) * i * 2, doppler: 30, accuracy: 6 })),
   ],
   assertFn: (e) => {
-    // The start watch averages from a minutes-old anchor after a long park, so the gate itself can
-    // take a minute (unchanged from before) — the pre-start buffer is what makes that harmless: the
-    // recorded route must still begin within seconds of the real pull-away.
+    // The gate only fires once the vehicle is 150 m out — the pre-start buffer is what makes
+    // that harmless: the recorded route must still begin within seconds of the real pull-away,
+    // and must NOT reach back into the seven minutes of jitter before it.
+    const firstPt = e.points[0];
+    console.log(`  route begins ${((420_000 - firstPt.now) / 1000).toFixed(0)} s before the pull-away`);
+    if (420_000 - firstPt.now > 60_000) return false;
     const firstDriven = e.points.find((pt) => pt.now >= 420_000);
     console.log(`  first recorded point after pull-away: ${firstDriven ? ((firstDriven.now - 420_000) / 1000).toFixed(0) + ' s' : '—'}`);
     return starts(e) === 1 && !!firstDriven && firstDriven.now - 420_000 <= 10_000;
   },
 });
 
-all &= replay('26. Handset with NO Doppler at all: a real pull-away still starts the trip (old behaviour kept)', {
+all &= replay('26. Handset with NO Doppler at all: a real pull-away still starts the trip', {
   durationMs: 3 * 60_000,
   fixes: Array.from({ length: 90 }, (_, i) => ({ t: i * 2000, pos: (30 / 3.6) * i * 2, doppler: 30, hasSpeed: false, accuracy: 6 })),
   assertFn: (e) => starts(e) === 1,
@@ -717,6 +702,28 @@ all &= replay('27. Jam crawl at 2 km/h with Doppler reading ZERO and no sensor v
     ...Array.from({ length: 570 }, (_, i) => ({ t: 60_000 + i * 2000, pos: 500 + (2 / 3.6) * i * 2, doppler: 0, accuracy: 6 })),
   ],
   assertFn: (e) => starts(e) === 1 && ends(e) === 0 && e.tripId !== null,
+});
+
+all &= replay('28. A trip ends; the phone then sits in the field jitter for 40 min, with a 24.7 km/h speed spike every cycle — NO second trip', {
+  durationMs: 55 * 60_000,
+  fixes: [
+    ...Array.from({ length: 90 }, (_, i) => ({ t: i * 2000, pos: (30 / 3.6) * i * 2, doppler: 30, accuracy: 6 })),
+    ...fieldJitter(180, 7, 1500),
+  ],
+  assertFn: (e) => starts(e) === 1 && ends(e) === 1 && e.tripId === null,
+});
+
+all &= replay('29. The same parked phone, and the classifier wrongly says VEHICLE throughout (its ground-speed rule, fed by the jitter) — still no second trip, and the first one still ends', {
+  durationMs: 55 * 60_000,
+  fixes: [
+    ...Array.from({ length: 90 }, (_, i) => ({ t: i * 2000, pos: (30 / 3.6) * i * 2, doppler: 30, accuracy: 6 })),
+    ...fieldJitter(180, 7, 1500, { vehicleConfirmed: true }),
+  ],
+  assertFn: (e) => {
+    const at = endAtMs(e);
+    console.log(`  ended at ${at !== null ? (at / 60000).toFixed(1) : '—'} min (parked at 3.0 min)`);
+    return starts(e) === 1 && ends(e) === 1 && e.tripId === null && at !== null && at <= 3 * 60_000 + 16 * 60_000;
+  },
 });
 
 console.log(`\n${all ? 'ALL VEHICLE-GATE SCENARIOS PASS' : 'SOME VEHICLE-GATE SCENARIOS FAILED'}`);

@@ -84,25 +84,13 @@ class TrackingService : Service() {
         private const val EXTRA_ACTIVITY_WAKE = "activityWake"
 
 
-        /** Distance the vehicle must travel from the watch position to start a trip. */
-        const val TRIP_START_DISTANCE_M     = 30f
-
-        /**
-         * Minimum average speed over the first TRIP_START_DISTANCE_M to confirm a
-         * vehicle trip (not walking/jogging).
+        /*
+         * TRIP START lives in StartGate.kt: a 150 m circle around where the phone rests, a
+         * confirmed exit from it, corroboration that the exit was travel and not the position
+         * jumping, and then the fast / slow / vehicle gates. The distances that used to be here
+         * (30 m at 10 km/h, 100 m at 2 km/h, 20 m for a confirmed vehicle) were all small enough
+         * for GPS noise on a parked phone to satisfy on its own.
          */
-        const val TRIP_START_MIN_SPEED_KMH  = 10.0
-
-        /**
-         * The congestion path into a trip. A queue crawling out of a gate never reaches
-         * 10 km/h over any 30 m stretch, so a watch that has accumulated this much ground at
-         * at least TRIP_START_SLOW_MIN_SPEED_KMH also starts a trip — but only while the
-         * activity model's last word was "in a vehicle", because 100 m at 3 km/h is also just
-         * a pedestrian. With no verdict stored (no Play Services), the slow gate stays closed
-         * and behaviour is exactly the old fast-gate-only one.
-         */
-        const val TRIP_START_SLOW_DISTANCE_M    = 100f
-        const val TRIP_START_SLOW_MIN_SPEED_KMH = 2.0
 
         /**
          * The slow gate is VETOED by a fresh on-foot verdict rather than REQUIRING a fresh
@@ -117,27 +105,25 @@ class TrackingService : Service() {
         const val FOOT_VETO_MS = 10 * 60 * 1000L
 
         /**
-         * The VEHICLE gate — the one that does not ask how fast you are going.
+         * The slowest movement that counts as a vehicle moving, once the sensors have said it is
+         * one: 1 km/h of creep is a trip if you are sitting in a car. Used by StartGate's VEHICLE
+         * gate (as VEHICLE_MIN_KMH) and by the in-trip record gate and stop clock here.
          *
-         * Both gates above are speed-shaped, and speed is a bad proxy for "this is a vehicle" on
-         * this fleet's roads: a survey crawl, a queue at a gate or a jam never averages
-         * TRIP_START_MIN_SPEED_KMH, and below TRIP_START_SLOW_MIN_SPEED_KMH nothing could start a
-         * trip at all. So when MotionClassifier has positively identified a VEHICLE from the
-         * sensors (gait absence, cadence, gyro, activity model, speed — see that file), the trip
-         * starts on movement alone: this much ground covered at barely more than walking pace.
-         *
-         * The distance floor is smaller than the fast gate's because the classifier has already
-         * ruled out the thing the distance was guarding against — a pedestrian. What remains to
-         * guard against is GPS drift, so the accuracy bar is TIGHTER than either other gate
-         * (drift scales with the error radius, and 20 m is inside a 50 m error radius), and the
-         * jitter floor scales at 2x rather than 1.5x.
-         *
-         * At 1 km/h this fires after ~72 s of creeping — and PRE_START_BUFFER then backfills the
-         * route from the first metre, so the trip still begins where the movement did.
+         * It used to be paired with a 20 m start distance. That pairing is what a phone on a
+         * desk defeated: MotionClassifier's "covering ground with no gait under it" rule takes
+         * its ground speed from the fixes, so a wandering fix on a still phone reads as a
+         * creeping vehicle, and 20 m of wander is ordinary. The verdict is still what lets a
+         * crawl start a trip — but only after the phone has left the 150 m rest circle.
          */
-        const val TRIP_START_VEHICLE_DISTANCE_M     = 20f
         const val TRIP_START_VEHICLE_MIN_SPEED_KMH  = 0.8
-        const val TRIP_START_VEHICLE_MAX_ACCURACY_M = 25f
+
+        /**
+         * How long GPS runs at the moving cadence after an idle fix shows outward progress or
+         * sits outside the rest circle (StartGate.wantsFastGps). Idle fixes otherwise arrive
+         * every 10 s, which at 60 km/h is 170 m between them — too coarse to confirm an exit
+         * promptly or to backfill the first stretch of the route with any detail.
+         */
+        const val DEPART_WATCH_MS = 30_000L
 
         /**
          * How often Play Services reports the ranked activity list WITH confidences. The
@@ -166,9 +152,11 @@ class TrackingService : Service() {
          * idle, good fixes are remembered here and flushed into the trip retroactively the
          * moment it starts — the trip then begins where the movement began, whichever gate
          * eventually recognised it. Spacing keeps a parked phone from filling it with jitter;
-         * the age window bounds it to the approach that actually led to this trip.
+         * the age window bounds it to the approach that actually led to this trip. Thirty
+         * minutes: leaving the 150 m rest circle takes nine at a 1 km/h crawl, and eighteen in a
+         * stop-go queue that moves a car length a minute.
          */
-        const val PRE_START_BUFFER_MS        = 5 * 60 * 1000L
+        const val PRE_START_BUFFER_MS        = 30 * 60 * 1000L
         const val PRE_START_BUFFER_MAX       = 240
         const val PRE_START_BUFFER_SPACING_M = 5f
 
@@ -261,13 +249,18 @@ class TrackingService : Service() {
          * that marks a jump, while "slow displacement, zero Doppler" is a crawl and stays travel.
          * Handsets that report no Doppler at all (hasSpeed false) keep the old behaviour.
          *
-         * START: the fast gate also needs DOPPLER_CONFIRM_FIXES fixes at DOPPLER_CONFIRM_KMH since
-         * the watch anchored (two, not one: a lone 24.7 km/h spike rode in with one of the jumps).
+         * START: see StartGate — a 150 m rest circle, with Doppler as one of two corroborators.
          * STOP: a displacement implying JUMP_IMPLIED_KMH+ while Doppler stayed under
-         * JUMP_DOPPLER_MAX_KMH is not travel, unless the motion sensors say "vehicle".
+         * JUMP_DOPPLER_MAX_KMH is not travel. Two conditions on that veto:
+         *  - it applies only once THIS trip has shown DOPPLER_CREDIBLE_FIXES moving readings, so
+         *    a handset whose speed field is stuck at zero cannot veto its own real driving;
+         *  - it is lifted by Play Services saying "in vehicle" — NOT by MotionClassifier, whose
+         *    ground-speed rule reads a wandering fix on a still phone as a creeping vehicle and
+         *    would lift the veto in exactly the case it exists for.
          */
         const val DOPPLER_CONFIRM_KMH   = 5.0
-        const val DOPPLER_CONFIRM_FIXES = 2
+        /** In-trip fixes at DOPPLER_CONFIRM_KMH+ before this trip's Doppler is trusted as a veto. */
+        const val DOPPLER_CREDIBLE_FIXES = 3
         const val JUMP_IMPLIED_KMH      = 5.0
         const val JUMP_DOPPLER_MAX_KMH  = 1.5
 
@@ -276,9 +269,9 @@ class TrackingService : Service() {
          * drifted over 83 s implies 1.5 km/h), which Doppler cannot tell from a jam crawl. Space
          * can: a crawl keeps moving away, drift circles one spot. When every fix of the last
          * CONFINE_WINDOW_MS sits within CONFINE_RADIUS_M of their centroid, Doppler never reached
-         * CONFINE_DOPPLER_MAX_KMH and the sensors do not say "vehicle", nothing in that window
-         * counts as travel. A crawl only stays inside that circle below ~1 km/h for five minutes,
-         * and a jam with the engine running classifies as a vehicle anyway.
+         * CONFINE_DOPPLER_MAX_KMH and Play Services does not say "in vehicle", nothing in that
+         * window counts as travel and no route point is recorded. A crawl only stays inside that
+         * circle below ~1 km/h for five minutes.
          */
         const val CONFINE_WINDOW_MS       = 5 * 60 * 1000L
         const val CONFINE_RADIUS_M        = 40f
@@ -315,10 +308,9 @@ class TrackingService : Service() {
          * battery saving — GPS is the single hungriest thing this service does.
          *
          * The cost is latency noticing that movement resumed: up to 10 s, which at 60 km/h is
-         * ~170 m of route missed at the start of a pull-away. Accepted because trip START is
-         * guarded separately by TRIP_START_DISTANCE_M, and ActivityTransitionReceiver fires an
-         * IN_VEHICLE transition that snaps us back to the moving cadence before this interval
-         * would.
+         * ~170 m between fixes at the start of a pull-away. Bounded by DEPART_WATCH_MS: the first
+         * idle fix that shows outward progress switches GPS to the moving cadence, so the exit
+         * from the rest circle is sampled every 2 s.
          */
         const val LOCATION_INTERVAL_STATIONARY_MS = 10_000L
         /** Low-power watch after the initial idle window; enough to feed motion fusion. */
@@ -358,7 +350,7 @@ class TrackingService : Service() {
         /**
          * How often an IDLE fix is emitted to JS while no trip is running. The driver's map dot
          * rides these events; before them it sat on the previous trip's endpoint until the
-         * trip-start gate (TRIP_START_DISTANCE_M at TRIP_START_MIN_SPEED_KMH) passed, the batch
+         * trip-start gate (StartGate) passed, the batch
          * uploaded and the poll returned — the reported "stale dot". JS-event only: nothing is
          * recorded or uploaded for an idle fix.
          */
@@ -450,14 +442,11 @@ class TrackingService : Service() {
 
     private val connectivityReceiver = ConnectivityReceiver()
 
-    // ── Trip-start watch state ────────────────────────────────────────────────
-    /** First GPS fix after entering idle — reference for measuring the start 50 m. */
-    private var startWatchPos: Location? = null
-    /** Wall-clock time when startWatchPos was captured (for avg-speed calculation). */
-    private var startWatchTime: Long = 0L
-    /** Since the watch anchored: did any fix carry Doppler, and how many said DOPPLER_CONFIRM_KMH+. */
-    private var watchDopplerSeen: Boolean = false
-    private var watchDopplerMovingFixes: Int = 0
+    // ── Trip-start state ──────────────────────────────────────────────────────
+    /** Where the phone rests and whether it has really left — see StartGate. */
+    private val startGate = StartGate()
+    /** GPS stays at the moving cadence until this elapsed time while a departure is suspected. */
+    private var departWatchUntilMs: Long = 0L
 
     // ── In-trip recording state ───────────────────────────────────────────────
     /** Last recorded position — distance checks use this. */
@@ -481,6 +470,8 @@ class TrackingService : Service() {
     /** When the stop anchor was set, and the highest Doppler seen since (-1 = none reported). */
     private var stopAnchorElapsedMs: Long = 0L
     private var anchorMaxDopplerKmh: Double = -1.0
+    /** Fixes at DOPPLER_CONFIRM_KMH+ seen in the current trip — see DOPPLER_CREDIBLE_FIXES. */
+    private var tripDopplerMovingFixes: Int = 0
     /** In-trip fixes of the last CONFINE_WINDOW_MS, for the confinement test. */
     private data class WindowFix(val elapsedMs: Long, val lat: Double, val lon: Double, val dopplerKmh: Double?)
     private val confineWindow = ArrayDeque<WindowFix>()
@@ -778,17 +769,20 @@ class TrackingService : Service() {
         val dopplerKmh: Double? = if (location.hasSpeed() && location.speed >= 0f) location.speed * 3.6 else null
         addSpeed(speedKmh)                             // feed rolling 3-speed window
         // Both speeds, because the fix's own Doppler reading is the one that fails at a crawl.
+        // The receiver's reading or nothing — NOT speedKmh, which on a handset with no reading
+        // of its own falls back to the distance between two consecutive fixes. Two noisy fixes
+        // 2 s apart read as 15-20 km/h on a phone going nowhere, and that told the classifier
+        // "vehicle" for a slow walk the gait detector had missed. groundKmh carries the real
+        // speed for those handsets, over a baseline long enough to mean something.
         val groundKmh = groundSpeedKmh(location, now)
-        motion.onGpsFix(speedKmh, groundKmh)
+        motion.onGpsFix(dopplerKmh ?: 0.0, groundKmh)
         /**
          * How fast the phone is moving RIGHT NOW, over the last 8-30 s.
          *
-         * Deliberately not avgSpeedKmh below, which is measured from the trip-start watch anchor
-         * and is only meaningful when that anchor is fresh. The anchor is set on the first idle
-         * fix and only re-anchored once 30 m has been covered, so after a long park it can be
-         * many minutes old — and 20 m spread over eight minutes averages to nothing. The vehicle
-         * gate would then never see a speed above its floor no matter how the vehicle was
-         * actually moving, which is the reverse of the bug it exists to fix.
+         * Deliberately not an average measured from the rest anchor, which after a long park is
+         * many minutes old — a creep spread over eight minutes averages to nothing, and the
+         * vehicle gate would then never see a speed above its floor no matter how the vehicle
+         * was actually moving.
          */
         val recentKmh = maxOf(speedKmh, groundKmh ?: 0.0)
         val tripId   = TrackingConfig.currentTripId(this)
@@ -807,11 +801,11 @@ class TrackingService : Service() {
                 TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, null, "idle", location.time, location))
             }
 
-            // A poor fix must not ARM or ADVANCE the trip-start watch: with 48 m error, the
-            // 30 m start distance is satisfied by jitter alone and a parked phone "starts
-            // driving". The dot above still moved — only the watch ignores the fix. The idle
-            // timeout still runs on this path: a phone parked in a bad-GPS garage must not
-            // hold the service alive forever just because its fixes are fuzzy.
+            // A poor fix must not count for or against a departure: it is neither a fix outside
+            // the rest circle nor one back inside it. The dot above still moved — only the start
+            // gate ignores the fix. The idle timeout still runs on this path: a phone parked in
+            // a bad-GPS garage must not hold the service alive forever just because its fixes
+            // are fuzzy.
             if (accuracy > TRIP_START_MAX_ACCURACY_M) {
                 if (idleStartedElapsedMs > 0L && now - idleStartedElapsedMs >= IDLE_TIMEOUT_MS) {
                     enterDormant(now)
@@ -842,180 +836,139 @@ class TrackingService : Service() {
                 }
             }
 
-            // ── IDLE: watch for a vehicle-speed movement to start a trip ────
-            if (startWatchPos == null) {
-                anchorStartWatch(location, now, dopplerKmh)
-                return
-            }
-            if (dopplerKmh != null) {
-                watchDopplerSeen = true
-                if (dopplerKmh >= DOPPLER_CONFIRM_KMH) watchDopplerMovingFixes++
-            }
-
-            val distFromWatch = startWatchPos!!.distanceTo(location)
-            val elapsedSec    = ((now - startWatchTime) / 1000.0).coerceAtLeast(0.1)
-            val avgSpeedKmh   = (distFromWatch / elapsedSec) * 3.6
+            // ── IDLE: has the phone really LEFT where it rests? ─────────────
+            // Everything about that question lives in StartGate: a 150 m circle around the rest
+            // anchor, a confirmed exit from it, corroboration that the exit was travel rather
+            // than the position jumping, and only then the fast / slow / vehicle gates.
 
             // What the sensors say the phone is DOING, independent of how fast it is going.
             val vehicleConfirmed = motion.isVehicle(now)
             if (vehicleConfirmed && dormant) {
                 // Promote sparse monitoring to road-quality GPS as soon as sensor fusion sees a
                 // vehicle, even when Play Services never emitted an IN_VEHICLE transition.
-                dormant = false
-                motion.setLowPower(false)
-                TrackingConfig.setIdleSince(this, wallNow)
-                idleStartedElapsedMs = now
-                applyCadence(now)
+                leaveDormant(now, wallNow)
             }
 
-            // Adaptive: a start distance must beat the fix's error radius with margin, or
-            // 40 m of jitter at 40 m accuracy reads as a 40 m drive.
-            val speedGateReach   = distFromWatch >= maxOf(TRIP_START_DISTANCE_M, accuracy * 1.5f)
-            val vehicleGateReach = distFromWatch >= maxOf(TRIP_START_VEHICLE_DISTANCE_M, accuracy * 2f)
+            // The foot veto still stands on its own: a fresh ON_FOOT shuts the slow gate even if
+            // something else claims a vehicle. FOOT_VETO_MS explains why it is short-lived.
+            val footRecently = TrackingConfig.lastActivity(this) == TrackingConfig.ACTIVITY_FOOT &&
+                wallNow - TrackingConfig.lastActivityAt(this) < FOOT_VETO_MS
 
-            if (speedGateReach || vehicleGateReach) {
-                // Three gates in.
-                //
-                // FAST is the original: a normal pull-away clears 10 km/h within the first 30 m.
-                // It now also wants a REASON to believe this is a vehicle, because a runner can
-                // hold that average over 30 m. Any of three will do, and the third is the usual
-                // one: the accelerometer is alive and sees nothing walking. Note what does NOT
-                // veto here — a "walking" verdict. At 10 km/h that verdict is wrong by
-                // construction, and must not be allowed to cost a trip.
-                //
-                // SLOW is for congestion, where no stretch ever reaches 10 km/h: enough
-                // accumulated ground at a crawl also counts, provided nothing recently said
-                // "on foot" AND something positively says "vehicle". That requirement was
-                // unaffordable before MotionClassifier existed — the only witness was Play
-                // Services, which goes quiet through exactly the crawls that need it, which is
-                // why this gate ran on a bare veto (see FOOT_VETO_MS) and measured 33 km against
-                // a reference app's 43. With a sensor verdict available in seconds, requiring
-                // one costs nothing and keeps pedestrians out.
-                //
-                // VEHICLE is the new one, and it asks a different question entirely: not "is
-                // this fast enough to be driving" but "is this phone in a vehicle". When the
-                // sensors say it is, TRIP_START_VEHICLE_DISTANCE_M of movement at barely above
-                // a standstill starts the trip — 1 km/h of creep included.
-                //
-                // FAST also needs the receiver's Doppler to agree, when it reports one: at 10 km/h+
-                // Doppler registers, so displacement at that pace with Doppler near zero is a GPS
-                // jump (see DOPPLER_CONFIRM_KMH — a phone on a desk after login started a trip
-                // this way, because "nothing walking" is true of a desk too).
-                val dopplerAgrees = !watchDopplerSeen || watchDopplerMovingFixes >= DOPPLER_CONFIRM_FIXES
-                val fastStart = speedGateReach &&
-                    avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
-                    dopplerAgrees &&
-                    (
-                        vehicleConfirmed ||
-                        avgSpeedKmh >= 20.0 ||
-                        (motion.hasUsableGaitWindow(now) && !motion.isRunningOnFoot(now))
+            val decision = startGate.onFix(
+                now = now,
+                timeMs = fixTimeMs,
+                lat = rawLat,
+                lon = rawLon,
+                accuracyM = accuracy.toDouble(),
+                dopplerKmh = dopplerKmh,
+                recentKmh = recentKmh,
+                vehicleConfirmed = vehicleConfirmed,
+                activitySaysVehicle = activitySaysVehicle(wallNow),
+                footRecently = footRecently,
+                gaitUsable = motion.hasUsableGaitWindow(now),
+                runningOnFoot = motion.isRunningOnFoot(now),
+            )
+
+            // A departure may be under way: sample fast so the exit is confirmed in seconds and
+            // the first stretch of road is buffered in detail. A real, sustained exit also ends
+            // the low-power watch — the phone is 150 m from where it was resting.
+            if (startGate.wantsFastGps) {
+                departWatchUntilMs = now + DEPART_WATCH_MS
+                applyCadence(now)
+            }
+            if (startGate.exitConfirmed && dormant) leaveDormant(now, wallNow)
+
+            val gate: String? = when (decision) {
+                StartGate.Decision.START_FAST -> "fast"
+                StartGate.Decision.START_SLOW -> "slow"
+                StartGate.Decision.START_VEHICLE -> "vehicle"
+                else -> null
+            }
+
+            if (gate != null) {
+                // ── START TRIP ───────────────────────────────────────────────
+                val newId = UUID.randomUUID().toString()
+                TrackingConfig.setCurrentTripId(this, newId)
+                TrackingConfig.setTripStartedAt(this, wallNow)
+                tripStartedElapsedMs = now
+                TrackingConfig.setIdleSince(this, 0L)
+                acquireWakeLock()
+
+                lastRecordedLat  = rawLat
+                lastRecordedLon  = rawLon
+                lastRecordedAtMs = now
+                hasLastRecorded  = true
+                lastMovedMs      = now
+                setStopAnchor(rawLat, rawLon, now, dopplerKmh)
+                confineWindow.clear()
+                tripDopplerMovingFixes = 0
+                lastHeartbeatMs  = now
+                departWatchUntilMs = 0L
+                recentSpeeds.clear()
+
+                // Flush the buffered departure BEFORE the start point, with original timestamps:
+                // the trip only becomes certain 150 m out, but the route — and the server's
+                // startedAt, the earliest point in the batch — must begin where and when the
+                // vehicle did. StartGate knows both (routeOrigin): the last fix it saw the phone
+                // standing at. Every buffered fix after that moment is the departure, and the
+                // origin fix itself opens the route when it immediately precedes them. It needs
+                // the anchor, so it is asked before the gate is cleared.
+                val origin = startGate.routeOrigin(
+                    LongArray(preStartBuffer.size) { i -> preStartBuffer[i].elapsedMs }, now
+                )
+                startGate.clear()
+
+                var previousBuffered: BufferedFix? = null
+                if (origin.isRoutePoint) {
+                    insertPoint(origin.lat, origin.lon, 0.0, newId, "active", origin.timeMs)
+                    previousBuffered = BufferedFix(
+                        lat = origin.lat, lon = origin.lon, speedKmh = 0.0,
+                        heading = null, accuracy = null, altitude = null,
+                        timeMs = origin.timeMs, elapsedMs = origin.elapsedMs,
                     )
-
-                // The foot veto still stands on its own: a fresh ON_FOOT shuts the slow gate
-                // even if something else claims a vehicle. FOOT_VETO_MS explains why it is
-                // deliberately short-lived.
-                val footRecently = TrackingConfig.lastActivity(this) == TrackingConfig.ACTIVITY_FOOT &&
-                    wallNow - TrackingConfig.lastActivityAt(this) < FOOT_VETO_MS
-                val slowStart = speedGateReach &&
-                    avgSpeedKmh >= TRIP_START_SLOW_MIN_SPEED_KMH &&
-                    distFromWatch >= TRIP_START_SLOW_DISTANCE_M &&
-                    !footRecently && (vehicleConfirmed || activitySaysVehicle(wallNow))
-
-                val vehicleStart = vehicleConfirmed &&
-                    vehicleGateReach &&
-                    accuracy <= TRIP_START_VEHICLE_MAX_ACCURACY_M &&
-                    recentKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH
-
-                if (fastStart || slowStart || vehicleStart) {
-                    // ── START TRIP ───────────────────────────────────────────
-                    val newId = UUID.randomUUID().toString()
-                    TrackingConfig.setCurrentTripId(this, newId)
-                    TrackingConfig.setTripStartedAt(this, wallNow)
-                    tripStartedElapsedMs = now
-                    TrackingConfig.setIdleSince(this, 0L)
-                    acquireWakeLock()
-
-                    lastRecordedLat  = rawLat
-                    lastRecordedLon  = rawLon
-                    lastRecordedAtMs = now
-                    hasLastRecorded  = true
-                    lastMovedMs      = now
-                    setStopAnchor(rawLat, rawLon, now, dopplerKmh)
-                    confineWindow.clear()
-                    lastHeartbeatMs  = now
-                    startWatchPos    = null
-                    recentSpeeds.clear()
-                    val gate = when {
-                        fastStart -> "fast"
-                        slowStart -> "slow"
-                        else      -> "vehicle"
-                    }
-
-                    // Flush the buffered approach BEFORE the start point: every good fix since
-                    // the watch anchored becomes part of the trip, with its original timestamp,
-                    // so the server's startedAt (the earliest point in the batch) is when the
-                    // movement began — not when the gate finally recognised it.
-                    var previousBuffered: BufferedFix? = null
-                    for (b in preStartBuffer) {
-                        if (b.elapsedMs < startWatchTime || b.elapsedMs >= now) continue
-                        val previous = previousBuffered
-                        if (previous != null) {
-                            val d = haversineMeters(previous.lat, previous.lon, b.lat, b.lon)
-                            val minMove = maxOf(8f, ((b.accuracy ?: 30.0) * 0.75).toFloat())
-                            if (d < minMove) continue // stationary jitter, not an approach leg
-                            val seconds = ((b.elapsedMs - previous.elapsedMs).coerceAtLeast(1L)) / 1000.0
-                            if ((d / seconds) * 3.6 > MAX_PLAUSIBLE_SPEED_KMH) continue
-                        }
-                        db.insert(QueuedPoint(
-                            clientId     = UUID.randomUUID().toString(),
-                            clientTripId = newId,
-                            lat          = b.lat,
-                            lon          = b.lon,
-                            speedKmh     = b.speedKmh,
-                            heading      = b.heading,
-                            accuracy     = b.accuracy,
-                            altitude     = b.altitude,
-                            batteryLevel = batteryLevel(),
-                            isMoving     = b.speedKmh > 1.0,
-                            recordedAt   = iso(b.timeMs),
-                            tripStatus   = "active",
-                        ))
-                        previousBuffered = b
-                    }
-                    preStartBuffer.clear()
-
-                    savePoint(rawLat, rawLon, location, speedKmh, newId, "active", wallNow)
-                    TrackerEvents.emit("onTripStart", mapOf(
-                        "tripId" to newId,
-                        "recordedAt" to iso(if (location.time > 0) location.time else wallNow)
-                    ))
-                    TrackerEvents.emit("onLocation",  locMap(rawLat, rawLon, speedKmh, newId, "active", location.time, location))
-                    emitState("tracking")
-                    updateNotification("Trip started ($gate) • ${speedKmh.roundToInt()} km/h")
-                    applyCadence(now)
-                    triggerUpload()
-                } else if (speedGateReach && avgSpeedKmh >= TRIP_START_MIN_SPEED_KMH &&
-                           watchDopplerSeen && watchDopplerMovingFixes == 0) {
-                    // Fast-gate displacement that the receiver's Doppler flatly contradicts: a GPS
-                    // jump. Re-anchor at the jumped-to fix so the jump is spent, not carried into
-                    // the next measurement. A real pull-away shows Doppler within a fix or two.
-                    anchorStartWatch(location, now, dopplerKmh)
-                } else if (speedGateReach && avgSpeedKmh < TRIP_START_SLOW_MIN_SPEED_KMH &&
-                           !(vehicleConfirmed && recentKmh >= TRIP_START_VEHICLE_MIN_SPEED_KMH)) {
-                    // Slower than any crawl worth calling driving — drift, not a trip. Re-anchor
-                    // so the watch measures fresh. The exception is a vehicle that is genuinely
-                    // moving right now: on a fuzzy fix the vehicle gate needs more than 30 m
-                    // (accuracy * 2), so re-anchoring at 30 m would throw the creep's accumulated
-                    // ground away just short of the gate, every time, forever.
-                    anchorStartWatch(location, now, dopplerKmh)
                 }
-                // Between the gates: a genuine crawl. Deliberately NOT re-anchored — the old
-                // reset here is why a jammed street never started a trip: every 30 m the average
-                // came in under 10 km/h and the accumulated distance was thrown away. Keeping the
-                // anchor lets the crawl keep building toward the slow gate.
-            } else {
-                // Nothing has moved far enough for any gate. The ticker checks this too, so the
-                // service still self-terminates when GPS goes quiet entirely.
+
+                for (b in preStartBuffer) {
+                    if (b.elapsedMs <= origin.elapsedMs || b.elapsedMs >= now) continue
+                    val previous = previousBuffered
+                    if (previous != null) {
+                        val d = haversineMeters(previous.lat, previous.lon, b.lat, b.lon)
+                        val minMove = maxOf(8f, ((b.accuracy ?: 30.0) * 0.75).toFloat())
+                        if (d < minMove) continue // stationary jitter, not an approach leg
+                        val seconds = ((b.elapsedMs - previous.elapsedMs).coerceAtLeast(1L)) / 1000.0
+                        if ((d / seconds) * 3.6 > MAX_PLAUSIBLE_SPEED_KMH) continue
+                    }
+                    db.insert(QueuedPoint(
+                        clientId     = UUID.randomUUID().toString(),
+                        clientTripId = newId,
+                        lat          = b.lat,
+                        lon          = b.lon,
+                        speedKmh     = b.speedKmh,
+                        heading      = b.heading,
+                        accuracy     = b.accuracy,
+                        altitude     = b.altitude,
+                        batteryLevel = batteryLevel(),
+                        isMoving     = b.speedKmh > 1.0,
+                        recordedAt   = iso(b.timeMs),
+                        tripStatus   = "active",
+                    ))
+                    previousBuffered = b
+                }
+                preStartBuffer.clear()
+
+                savePoint(rawLat, rawLon, location, speedKmh, newId, "active", wallNow)
+                TrackerEvents.emit("onTripStart", mapOf(
+                    "tripId" to newId,
+                    "recordedAt" to iso(if (location.time > 0) location.time else wallNow)
+                ))
+                TrackerEvents.emit("onLocation",  locMap(rawLat, rawLon, speedKmh, newId, "active", location.time, location))
+                emitState("tracking")
+                updateNotification("Trip started ($gate) • ${speedKmh.roundToInt()} km/h")
+                applyCadence(now)
+                triggerUpload()
+            } else if (!startGate.exitConfirmed) {
+                // Resting, or wandering inside the circle. The ticker checks the timeout too, so
+                // the service still drops to the low-power watch when GPS goes quiet entirely.
                 if (idleStartedElapsedMs > 0L && now - idleStartedElapsedMs >= IDLE_TIMEOUT_MS) {
                     enterDormant(now)
                 }
@@ -1033,6 +986,7 @@ class TrackingService : Service() {
                 confineWindow.clear()
                 return
             }
+            if (dopplerKmh != null && dopplerKmh >= DOPPLER_CONFIRM_KMH) tripDopplerMovingFixes++
 
             val distFromLast = haversineMeters(
                 lastRecordedLat, lastRecordedLon, rawLat, rawLon
@@ -1061,18 +1015,20 @@ class TrackingService : Service() {
             // Two vetoes on top, both from the 2026-10-01 field case (see DOPPLER_CONFIRM_KMH and
             // CONFINE_WINDOW_MS): a displacement the receiver's Doppler contradicts is a JUMP, and
             // a phone whose fixes have circled one spot for five minutes is not travelling however
-            // far any single fix strays. Neither applies while the sensors say "vehicle" — a jam
-            // with the engine running keeps every witness it had.
+            // far any single fix strays. Both are lifted by Play Services saying "in vehicle" —
+            // not by MotionClassifier, whose ground-speed rule sees a wandering fix on a still
+            // phone as a creeping vehicle and would lift them in exactly the case they exist for.
             confineWindow.addLast(WindowFix(now, rawLat, rawLon, dopplerKmh))
             while (confineWindow.isNotEmpty() && now - confineWindow.first().elapsedMs > CONFINE_WINDOW_MS) {
                 confineWindow.removeFirst()
             }
-            val vehicleNow = motion.isVehicle(now)
+            val vehicleNow = activitySaysVehicle(wallNow)
             val confined = !vehicleNow && isConfined(now)
             if (dopplerKmh != null) anchorMaxDopplerKmh = maxOf(anchorMaxDopplerKmh, dopplerKmh)
             val sinceAnchorSec = ((now - stopAnchorElapsedMs) / 1000.0).coerceAtLeast(1.0)
             val impliedKmh = (netFromStopAnchor / sinceAnchorSec) * 3.6
             val gpsJump = !vehicleNow &&
+                tripDopplerMovingFixes >= DOPPLER_CREDIBLE_FIXES &&
                 anchorMaxDopplerKmh >= 0.0 && anchorMaxDopplerKmh < JUMP_DOPPLER_MAX_KMH &&
                 impliedKmh >= JUMP_IMPLIED_KMH
             val travelled = !confined && !gpsJump &&
@@ -1131,7 +1087,9 @@ class TrackingService : Service() {
             val distTrigger = distFromLast >= POINT_DISTANCE_M
             val timeTrigger = dtMs >= RECORD_MIN_INTERVAL_MS &&
                 distFromLast >= maxOf(RECORD_MIN_MOVE_M, accuracy * 0.5f)
-            if (moving && (distTrigger || timeTrigger)) {
+            // Confined (see CONFINE_WINDOW_MS): the phone has circled one spot for five minutes, so
+            // whatever passes the triggers now is jitter, not road.
+            if (moving && !confined && (distTrigger || timeTrigger)) {
                 // Teleport guard: a jump implying an impossible speed is multipath, not a road.
                 if (lastRecordedAtMs > 0L) {
                     val dtSec = (dtMs.coerceAtLeast(1L)) / 1000.0
@@ -1170,12 +1128,14 @@ class TrackingService : Service() {
         return (2 * R * Math.asin(Math.sqrt(a).coerceAtMost(1.0))).toFloat()
     }
 
-    /** (Re)anchor the trip-start watch here, and restart its Doppler tally from this fix. */
-    private fun anchorStartWatch(location: Location, now: Long, dopplerKmh: Double?) {
-        startWatchPos  = location
-        startWatchTime = now
-        watchDopplerSeen = dopplerKmh != null
-        watchDopplerMovingFixes = if (dopplerKmh != null && dopplerKmh >= DOPPLER_CONFIRM_KMH) 1 else 0
+    /** Leave the low-power watch: full-rate GPS and sensors, and a fresh idle window. */
+    private fun leaveDormant(now: Long, wallNow: Long) {
+        if (!dormant) return
+        dormant = false
+        motion.setLowPower(false)
+        TrackingConfig.setIdleSince(this, wallNow)
+        idleStartedElapsedMs = now
+        applyCadence(now)
     }
 
     /** Move the stop-clock anchor here; the jump test measures implied speed and Doppler from it. */
@@ -1252,8 +1212,13 @@ class TrackingService : Service() {
             // where nothing else would drive it between GPS fixes.
             updateNotification("Waiting for movement… • " + motion.describe(now))
 
-            // Idle — check timeout so the service stops if nobody drives.
-            if (idleStartedElapsedMs > 0L && now - idleStartedElapsedMs >= IDLE_TIMEOUT_MS) {
+            // Idle — check timeout so the service stops if nobody drives. Not in the middle of
+            // a confirmed exit from the rest circle, though: that is a departure being judged,
+            // and the fix path would only wake the service again a second later. The exit only
+            // counts while fixes are still arriving (each one renews the depart watch), so a
+            // GPS that falls silent mid-exit cannot hold the service awake.
+            val exitPending = startGate.exitConfirmed && now < departWatchUntilMs
+            if (!exitPending && idleStartedElapsedMs > 0L && now - idleStartedElapsedMs >= IDLE_TIMEOUT_MS) {
                 enterDormant(now)
             }
             return
@@ -1325,6 +1290,13 @@ class TrackingService : Service() {
         dormant = false
         motion.setLowPower(false)
         releaseWakeLock()
+        // The vehicle is parked where its last point was recorded: that is the centre of the
+        // rest circle the NEXT trip has to leave. With no trustworthy position the first idle
+        // fix becomes the anchor instead.
+        if (hasLastRecorded) startGate.anchorAt(lastRecordedLat, lastRecordedLon, now, wallNow)
+        else startGate.clear()
+        departWatchUntilMs = 0L
+        tripDopplerMovingFixes = 0
         hasLastRecorded = false
         lastMovedMs     = 0L
         hasStopAnchor   = false
@@ -1335,10 +1307,6 @@ class TrackingService : Service() {
         groundRefLoc    = null
         groundRefMs     = 0L
         lastGroundKmh   = null
-        startWatchPos   = null
-        startWatchTime  = 0L
-        watchDopplerSeen = false
-        watchDopplerMovingFixes = 0
         recentSpeeds.clear()
         preStartBuffer.clear()
         triggerUpload()
@@ -1598,12 +1566,18 @@ class TrackingService : Service() {
         else -> HEARTBEAT_IDLE_MS
     }
 
-    /** Moving = a trip is open AND something moved within STATIONARY_AFTER_MS. */
+    /**
+     * Moving = a trip is open AND something moved within STATIONARY_AFTER_MS — or no trip is
+     * open but a departure is suspected (DEPART_WATCH_MS), which outranks the dormant watch so a
+     * real exit is confirmed in seconds rather than after three 30 s fixes.
+     */
     private fun applyCadence(now: Long) {
         val tripOpen = TrackingConfig.currentTripId(this) != null
         val movedRecently = lastMovedMs > 0L && now - lastMovedMs < STATIONARY_AFTER_MS
+        val departing = !tripOpen && now < departWatchUntilMs
         val wanted = when {
             tripOpen && movedRecently -> Cadence.MOVING
+            departing -> Cadence.MOVING
             !tripOpen && dormant -> Cadence.DORMANT
             else -> Cadence.STATIONARY
         }

@@ -11,7 +11,8 @@ because when the app is killed the JS runtime dies, so buffering + upload must b
 
 | Rule                                   | Where |
 |----------------------------------------|-------|
-| Auto-start from fused vehicle motion (including a **1 km/h crawl**) | `MotionClassifier` + `TrackingService` state machine |
+| Auto-start once the phone has **left a 150 m circle** around where it rests, and the exit looks like travel (including a **1 km/h crawl**) | `StartGate` + `MotionClassifier` |
+| GPS noise on a phone that is not moving can never start a trip | `StartGate` (nothing inside the circle counts, whatever the sensors say) |
 | Auto-stop after **10 min without recorded movement** | `TrackingService` (`TRIP_END_NO_MOVE_MS`) |
 | **10-min** idle → sparse low-power watch; promote on vehicle evidence | dormant cadence + motion fusion |
 | Survive app kill / swipe-away          | `START_STICKY` foreground service |
@@ -61,11 +62,15 @@ npx expo run:android        # prebuilds native project, compiles the Kotlin modu
 1. Log in as the driver (`driver@jsan.local` / `Driver@12345` after `npm run seed` in backend).
 2. Grant **Location → "Allow all the time"**, Activity recognition, and Notifications when asked.
 3. Home shows **"Ready — auto-tracking on"**. Now just move:
-   - Drive or ride normally → the speed gate starts a trip automatically.
+   - Drive or ride normally → a trip starts once the vehicle is about 150 m from where it was
+     resting (a few seconds at road speed). Moving the vehicle less than 150 m — across a yard,
+     to another bay — is deliberately not a trip.
    - Creep at about 1 km/h → accelerometer cadence, gyroscope, GPS displacement, and Android
      Activity Recognition distinguish a vehicle from walking before the low-speed gate starts it.
    - The buffered GPS approach is saved with its original timestamps, so the displayed route
-     begins where the vehicle started moving rather than where confirmation completed.
+     begins where (and when) the vehicle started moving, not 150 m later where the trip was
+     confirmed.
+   - Leave the phone on a desk for an hour → no trip, however much the blue dot wanders.
    - Stop for 10 min → the trip ends automatically; shorter traffic stops keep the same trip.
    - Turn off Wi-Fi/data → points buffer locally ("Queued offline" climbs); turn it back on →
      they upload and the counter drops to 0.
@@ -81,5 +86,9 @@ npx expo run:android        # prebuilds native project, compiles the Kotlin modu
 - ✅ TypeScript typecheck (`npx tsc --noEmit`)
 - ✅ `expo-doctor` 18/18
 - ✅ Native module discovered by Expo autolinking
+- ✅ Trip start/stop logic in simulation (`npm run sim`): `start-gate.sim.mjs` runs the start
+  rule through ~25 000 simulated hours of parked phones, relocating positions, walkers and real
+  departures; `stop-logic.sim.mjs` runs whole trips. Both mirror the Kotlin line for line —
+  change `StartGate.kt`, change `__sim__/start-gate.mjs`, run the sim.
 - ⏳ On-device runtime (auto start/stop, kill-survival) — requires a dev build on a physical
   Android device; cannot be exercised in a headless environment.
