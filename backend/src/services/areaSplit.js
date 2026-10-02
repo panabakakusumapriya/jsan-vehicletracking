@@ -26,9 +26,22 @@ const Delaunator = DelaunatorModule.default || DelaunatorModule;
  *  - CONTIGUOUS. A zone is built out of neighbouring suburbs and stays in one piece.
  *  - COMPACT. Among balanced answers, the one with the shortest boundaries wins, and a suburb is
  *    kept whole unless balance needs it cut.
- *  - REAL POLYGONS. Each zone gets the part of the parent polygon nearest to its own roads, so the
- *    zones tile the parent exactly — no gaps, no overlaps — and from here on they are ordinary
- *    work areas. Nothing downstream knows or cares that they were cut by us.
+ *  - REAL POLYGONS. Each zone gets the part of the parent polygon nearest to its own roads, with no
+ *    overlaps, and from here on they are ordinary work areas. Nothing downstream knows or cares
+ *    that they were cut by us.
+ *  - IN ONE PLACE. A customer's polygon is often many pieces of land — Auckland's is 154: the
+ *    isthmus, the North Shore, an outlying town, islands, harbour slivers — and only 6 of those
+ *    have a road on them. The first cut gave every piece to its nearest zone, so picking the
+ *    northernmost zone on the map lit up 72 pieces across the gulf, Little Barrier Island
+ *    included, and a driver's map opened 66 km wide. Now:
+ *      · a piece with no road on it belongs to no zone — there is nothing there to drive;
+ *      · pieces whose roads come within `detachedKm` of each other are cut up together;
+ *      · a piece further off than that is cut up by itself, and when it is too small to cut it
+ *        is a zone of its own (an outlying town, an island with a few roads);
+ *      · a far piece with under `strandedKm` of road — one wharf road on an island — is not
+ *        worth a zone or a ferry: its links are left outside the zones and reported.
+ *    Inside a piece, a pocket of a zone that ends up cut off from the rest of it is handed to
+ *    the zone around it.
  *
  * How
  * ---
@@ -55,11 +68,15 @@ const Delaunator = DelaunatorModule.default || DelaunatorModule;
  */
 
 /** OSM `place` values that name a part of a town, best first. `city` is the town itself: not a part. */
-const KIND_RANK = { town: 0, suburb: 1, village: 2, quarter: 3, neighbourhood: 4, hamlet: 5, locality: 6 };
+const KIND_RANK = {
+  town: 0, suburb: 1, village: 2, quarter: 3, neighbourhood: 4, hamlet: 5, locality: 6, island: 7, islet: 8,
+};
 /** Kinds a zone is named after when it has any; the rest only fill in. */
 const MAJOR_KIND_MAX = 2;
-/** Streets of two units within this of each other make the units neighbours. */
+/** Streets of two units within this of each other make the units neighbours… */
 const NEXT_DOOR_M = 250;
+/** …when the cost of cutting between them (0.1 per ~40 m of facing streets) reaches this. */
+const NEXT_DOOR_MIN = 1;
 
 const DEFAULTS = {
   minKm: 250,
@@ -78,6 +95,10 @@ const DEFAULTS = {
   sampleM: 40,
   /** Roads this close without meeting still share a border (it only breaks ties between cuts). */
   nearM: 400,
+  /** Pieces of the parent whose roads are further apart than this are cut up separately. */
+  detachedKm: 2,
+  /** A separate piece with less road than this gets no zone; its links stay outside the zones. */
+  strandedKm: 1,
 };
 
 const M_PER_DEG = 111194.92664455873; // metres per degree of latitude (R = 6371008.8 m)
@@ -228,6 +249,30 @@ function geometryAreaSqm(geometry) {
   return total;
 }
 
+/**
+ * The polygons of `polygons` (GeoJSON Polygon coordinate arrays) that hold at least one of
+ * `points` — for a zone, the pieces of ground that have one of its roads on them.
+ */
+function polygonsHolding(polygons, points) {
+  const boxes = polygons.map((polygon) => bboxOf(polygon[0]));
+  const held = new Uint8Array(polygons.length);
+  let left = polygons.length;
+  for (const pt of points) {
+    if (!left) break;
+    for (let i = 0; i < polygons.length; i++) {
+      if (held[i]) continue;
+      const b = boxes[i];
+      if (pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
+      if (pointInPolygon(pt, polygons[i])) {
+        held[i] = 1;
+        left--;
+        break;
+      }
+    }
+  }
+  return polygons.filter((_, i) => held[i]);
+}
+
 /* ------------------------------------------------------------------ how many zones */
 
 function resolveOptions(options = {}) {
@@ -283,22 +328,18 @@ function shouldSplit(totalKm, options) {
   return zonePlan(totalKm, options).count >= 2;
 }
 
-/* ------------------------------------------------------------------ the split */
+/* ------------------------------------------------------------------ one piece of ground */
 
 /**
- * @param area    { code, name, geometry (Polygon|MultiPolygon), priority?, props? }
- * @param links   [{ coords: [[lon, lat], ...], meters }] — the links INSIDE the area
- * @param places  [{ name, kind, lon, lat }] — OSM place points; may be empty (zones are then
- *                numbered but not named)
- * @returns { zones, linkZone, stats }
- *   zones[i]    { code, name, parentName, priority, geometry, bbox, areaSqm, targetMeters,
- *                 targetLinks, props }  — shaped like the areas networkImport builds
- *   linkZone    Int32Array: links[i] belongs to zones[linkZone[i]]
+ * Cut ONE piece of ground — land whose roads all lie near each other — into zones. splitArea
+ * below decides what the pieces are; this does the cutting.
+ *
+ * @returns { zones, linkZone, stats } — zones are numbered within the piece and carry `headline`
+ *          (the places to name them after) and `centre` ([lon, lat]); splitArea gives them
+ *          their final numbers, codes and names.
  */
-function splitArea({ area, links, places = [], options = {} }) {
-  const opt = resolveOptions(options);
+function splitPiece({ area, links, places, opt }) {
   const n = links.length;
-  if (!n) throw new Error('areaSplit: no links');
 
   /* ---- a local plane, in metres ---- */
   let box = null;
@@ -318,6 +359,61 @@ function splitArea({ area, links, places = [], options = {} }) {
       const b = parentBoxes[i];
       if (pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
       if (pointInPolygon(pt, parentPolygons[i])) return true;
+    }
+    return false;
+  };
+
+  /**
+   * The edge of the piece, bucketed, to answer "does this short hop leave the land?". Streets
+   * 150 m apart are the same neighbourhood — unless the 150 m is a creek. Te Atatū Peninsula and
+   * West Harbour face each other across one, with no bridge; counted as neighbours they were
+   * made one zone, in two polygons, with a 20 km drive between its halves.
+   */
+  const SHORE_CELL = 200;
+  const shore = new Map(); // "gx:gy" -> [x1, y1, x2, y2, ...]
+  for (const polygon of parentPolygons) {
+    for (const ring of polygon) {
+      for (let i = 1; i < ring.length; i++) {
+        const x1 = X(ring[i - 1][0]);
+        const y1 = Y(ring[i - 1][1]);
+        const x2 = X(ring[i][0]);
+        const y2 = Y(ring[i][1]);
+        const gx1 = Math.floor(Math.max(x1, x2) / SHORE_CELL);
+        const gy1 = Math.floor(Math.max(y1, y2) / SHORE_CELL);
+        for (let gx = Math.floor(Math.min(x1, x2) / SHORE_CELL); gx <= gx1; gx++) {
+          for (let gy = Math.floor(Math.min(y1, y2) / SHORE_CELL); gy <= gy1; gy++) {
+            const key = `${gx}:${gy}`;
+            let bucket = shore.get(key);
+            if (!bucket) {
+              bucket = [];
+              shore.set(key, bucket);
+            }
+            bucket.push(x1, y1, x2, y2);
+          }
+        }
+      }
+    }
+  }
+  const crossesShore = (ax, ay, bx, by) => {
+    const gx1 = Math.floor(Math.max(ax, bx) / SHORE_CELL);
+    const gy1 = Math.floor(Math.max(ay, by) / SHORE_CELL);
+    for (let gx = Math.floor(Math.min(ax, bx) / SHORE_CELL); gx <= gx1; gx++) {
+      for (let gy = Math.floor(Math.min(ay, by) / SHORE_CELL); gy <= gy1; gy++) {
+        const bucket = shore.get(`${gx}:${gy}`);
+        if (!bucket) continue;
+        for (let k = 0; k < bucket.length; k += 4) {
+          const cx1 = bucket[k];
+          const cy1 = bucket[k + 1];
+          const cx2 = bucket[k + 2];
+          const cy2 = bucket[k + 3];
+          const d1 = (bx - ax) * (cy1 - ay) - (by - ay) * (cx1 - ax);
+          const d2 = (bx - ax) * (cy2 - ay) - (by - ay) * (cx2 - ax);
+          if (d1 > 0 === d2 > 0) continue;
+          const d3 = (cx2 - cx1) * (ay - cy1) - (cy2 - cy1) * (ax - cx1);
+          const d4 = (cx2 - cx1) * (by - cy1) - (cy2 - cy1) * (bx - cx1);
+          if (d3 > 0 !== d4 > 0) return true;
+        }
+      }
     }
     return false;
   };
@@ -473,7 +569,10 @@ function splitArea({ area, links, places = [], options = {} }) {
         for (const node of [la[link], lb[link]]) {
           const near = reachedGrid.nearest(nodeX[node], nodeY[node]);
           if (near < 0) continue;
-          const d = (nodeX[near] - nodeX[node]) ** 2 + (nodeY[near] - nodeY[node]) ** 2;
+          let d = (nodeX[near] - nodeX[node]) ** 2 + (nodeY[near] - nodeY[node]) ** 2;
+          // Across water is further than it looks: prefer a junction on the same shore, found
+          // from another end of the piece, to a nearer one over the creek.
+          if (crossesShore(nodeX[node], nodeY[node], nodeX[near], nodeY[near])) d *= 25;
           if (d < bestD || (d === bestD && near < best)) {
             bestD = d;
             best = near;
@@ -709,6 +808,7 @@ function splitArea({ area, links, places = [], options = {} }) {
   }
   // Delaunay edges between sample points of different units: how close their roads run.
   const gaps = []; // [length, unitA, unitB]
+  const fences = new Map(); // "a:b" -> [a, b], pairs of units with streets a back fence apart
   for (let e = 0; e < halfedges.length; e++) {
     const o = halfedges[e];
     if (o < e) continue; // each pair once; -1 is the hull, which is guard points only
@@ -719,17 +819,23 @@ function splitArea({ area, links, places = [], options = {} }) {
     const b = lu[sLink[q]];
     if (a === b) continue;
     const length = Math.hypot(sx[p] - sx[q], sy[p] - sy[q]);
-    if (length <= NEXT_DOOR_M) {
+    const overLand = length <= opt.nearM && !crossesShore(sx[p], sy[p], sx[q], sy[q]);
+    if (length <= NEXT_DOOR_M && overLand) {
       // Streets a back fence apart. One such edge per ~40 m of shared border.
       addCost(a, b, 0.1);
-      if (!conn[a].has(b)) {
-        conn[a].set(b, centreGap(a, b));
-        conn[b].set(a, centreGap(a, b));
-      }
-    } else if (length <= opt.nearM && conn[a].has(b)) {
+      fences.set(`${Math.min(a, b)}:${Math.max(a, b)}`, [a, b]);
+    } else if (overLand && conn[a].has(b)) {
       addCost(a, b, 0.02);
     }
     gaps.push([length, Math.min(a, b), Math.max(a, b)]);
+  }
+  // Next door means a real frontage: ten such edges, about 400 m of streets facing each other.
+  // A corner of one unit brushing another across a creek the customer's polygon does not show is
+  // not that — and counting it let a peninsula be zoned with the suburb on the far bank.
+  for (const [a, b] of fences.values()) {
+    if (conn[a].has(b) || adj[a].get(b) < NEXT_DOOR_MIN) continue;
+    conn[a].set(b, centreGap(a, b));
+    conn[b].set(a, centreGap(a, b));
   }
   // Whatever is still cut off is tied to its nearest neighbour, shortest gaps first, until the
   // whole area is one piece.
@@ -1143,7 +1249,82 @@ function splitArea({ area, links, places = [], options = {} }) {
     }
   }
 
-  /* ---- 3c. order and name the zones ---- */
+  /* ---- 3c. no stray pockets ---- */
+  /**
+   * Units are neighbours when their streets run close by, which lets a zone hold a few streets
+   * that another zone's ground lies between it and — a second little polygon on the map. Two
+   * links are on the same ground when their sample points are Delaunay neighbours (their Voronoi
+   * cells touch); a zone's links that are NOT joined that way to the bulk of it, and are few,
+   * go to whichever zone surrounds them.
+   */
+  const lz = new Int32Array(n); // link -> zone
+  for (let i = 0; i < n; i++) lz[i] = zoneOf[lu[i]];
+  if (Z > 1) {
+    const pocketMaxM = 0.04 * meanTarget;
+    for (let pass = 0; pass < 4; pass++) {
+      const root = Int32Array.from({ length: n }, (_, i) => i);
+      const find = (x) => {
+        let r = x;
+        while (root[r] !== r) r = root[r];
+        while (root[x] !== r) {
+          const next = root[x];
+          root[x] = r;
+          x = next;
+        }
+        return r;
+      };
+      for (let e = 0; e < halfedges.length; e++) {
+        if (halfedges[e] < e) continue;
+        const a = sLink[triangles[e]];
+        const b = sLink[triangles[nextEdge(e)]];
+        if (a < 0 || b < 0 || a === b || lz[a] !== lz[b]) continue;
+        const ra = find(a);
+        const rb = find(b);
+        if (ra !== rb) root[Math.max(ra, rb)] = Math.min(ra, rb);
+      }
+      const groupM = new Float64Array(n);
+      for (let i = 0; i < n; i++) groupM[find(i)] += lm[i];
+      const bulk = new Int32Array(Z).fill(-1);
+      for (let i = 0; i < n; i++) {
+        const r = find(i);
+        if (bulk[lz[i]] < 0 || groupM[r] > groupM[bulk[lz[i]]]) bulk[lz[i]] = r;
+      }
+      const isPocket = (r, z) => r !== bulk[z] && groupM[r] <= pocketMaxM;
+      /** pocket -> how many of its cell borders are with each other zone */
+      const borders = new Map();
+      const count = (r, z) => {
+        let row = borders.get(r);
+        if (!row) {
+          row = new Float64Array(Z);
+          borders.set(r, row);
+        }
+        row[z]++;
+      };
+      for (let e = 0; e < halfedges.length; e++) {
+        if (halfedges[e] < e) continue;
+        const a = sLink[triangles[e]];
+        const b = sLink[triangles[nextEdge(e)]];
+        if (a < 0 || b < 0 || lz[a] === lz[b]) continue;
+        const ra = find(a);
+        const rb = find(b);
+        if (isPocket(ra, lz[a])) count(ra, lz[b]);
+        if (isPocket(rb, lz[b])) count(rb, lz[a]);
+      }
+      if (!borders.size) break;
+      const goes = new Map();
+      for (const [r, row] of borders) {
+        let to = 0;
+        for (let z = 1; z < Z; z++) if (row[z] > row[to]) to = z;
+        goes.set(r, to);
+      }
+      for (let i = 0; i < n; i++) {
+        const to = goes.get(find(i));
+        if (to !== undefined) lz[i] = to;
+      }
+    }
+  }
+
+  /* ---- 3d. order the zones, and find what to call them ---- */
   // North to south, then west to east: the numbers then read down the map.
   const zx = new Float64Array(Z);
   const zy = new Float64Array(Z);
@@ -1159,7 +1340,7 @@ function splitArea({ area, links, places = [], options = {} }) {
   const rank = new Int32Array(Z);
   order.forEach((z, i) => (rank[z] = i));
   const linkZone = new Int32Array(n);
-  for (let i = 0; i < n; i++) linkZone[i] = rank[zoneOf[lu[i]]];
+  for (let i = 0; i < n; i++) linkZone[i] = rank[lz[i]];
 
   // What each place weighs in each zone. A place headlines only the zone that holds most of it,
   // so two neighbouring zones are not both called after the suburb they share.
@@ -1193,6 +1374,8 @@ function splitArea({ area, links, places = [], options = {} }) {
     const headline = byPreference.slice(0, 3).map((p) => p.name);
     const number = String(i + 1).padStart(digits, '0');
     return {
+      headline,
+      centre: [lonOf(zx[z]), latOf(zy[z])],
       code: `${area.code}-${number}`,
       name: headline.length ? `${area.name} ${number} – ${headline.join(', ')}` : `${area.name} ${number}`,
       parentName: area.name,
@@ -1239,41 +1422,18 @@ function splitArea({ area, links, places = [], options = {} }) {
       cy[t] = sy[i] + (dx * cl - ex * bl) / d;
     }
   }
-  const siteZone = (s) => (sLink[s] < 0 ? -1 : linkZone[sLink[s]]);
-  /** Per zone: Voronoi vertex (a triangle) -> its two neighbours along the zone's boundary. */
-  const boundary = zones.map(() => new Map());
-  const addEdge = (z, a, b) => {
-    const map = boundary[z];
-    if (!map.has(a)) map.set(a, []);
-    if (!map.has(b)) map.set(b, []);
-    map.get(a).push(b);
-    map.get(b).push(a);
-  };
-  for (let e = 0; e < halfedges.length; e++) {
-    const o = halfedges[e];
-    if (o < e) continue;
-    const zp = siteZone(triangles[e]);
-    const zq = siteZone(triangles[nextEdge(e)]);
-    if (zp === zq) continue;
-    const t1 = Math.floor(e / 3);
-    const t2 = Math.floor(o / 3);
-    if (zp >= 0) addEdge(zp, t1, t2);
-    if (zq >= 0) addEdge(zq, t1, t2);
-  }
-
   /**
    * The parent may come in many pieces (Auckland: 154 — the mainland, islands, harbour slivers).
-   * A piece with no road in it is not divided: an island cut three ways by which shore is
-   * nearest is a strange thing to hand a driver. It goes whole to the zone whose roads are
-   * nearest. Only the pieces that hold roads are cut along the zone boundaries.
+   * Only the pieces that hold roads are cut along the zone boundaries; a piece with no road in
+   * it belongs to no zone at all.
    */
   const partOrder = parentPolygons
     .map((polygon, i) => ({ polygon, box: parentBoxes[i] }))
     .sort((p, q) => (q.box[2] - q.box[0]) * (q.box[3] - q.box[1]) - (p.box[2] - p.box[0]) * (p.box[3] - p.box[1]));
   const hasRoad = new Uint8Array(partOrder.length);
-  for (let s = 0; s < realSites; s++) {
-    if (s > 0 && sLink[s - 1] === sLink[s]) continue; // one probe per link
-    const pt = [lonOf(sx[s]), latOf(sy[s])];
+  /** Where the import will look to decide which area each link is in. */
+  const midpoints = links.map((link) => midpointOf(link.coords));
+  for (const pt of midpoints) {
     let found = 0; // the largest piece, unless a smaller one claims the point
     for (let i = 1; i < partOrder.length; i++) {
       const b = partOrder[i].box;
@@ -1286,101 +1446,181 @@ function splitArea({ area, links, places = [], options = {} }) {
     hasRoad[found] = 1;
   }
   const parentCoords = partOrder.filter((_, i) => hasRoad[i]).map((part) => part.polygon);
-  const wholeParts = zones.map(() => []);
-  {
-    const siteGrid = new PointGrid(500);
-    for (let s = 0; s < realSites; s++) siteGrid.add(sx[s], sy[s], s);
-    partOrder.forEach((part, i) => {
-      if (hasRoad[i]) return;
-      const ring = part.polygon[0];
-      let px = 0;
-      let py = 0;
-      for (const c of ring) {
-        px += X(c[0]);
-        py += Y(c[1]);
-      }
-      const near = siteGrid.nearest(px / ring.length, py / ring.length);
-      wholeParts[linkZone[sLink[near]]].push(part.polygon);
-    });
-  }
-  let midpointsOutside = 0;
-  zones.forEach((zone, z) => {
-    const map = boundary[z];
-    const visited = new Set();
-    const rings = [];
-    for (const start of [...map.keys()].sort((p, q) => p - q)) {
-      if (visited.has(start)) continue;
-      const ring = [];
-      let prev = -1;
-      let cur = start;
-      for (let guard = 0; guard <= map.size; guard++) {
-        visited.add(cur);
-        const lon = lonOf(cx[cur]);
-        const lat = latOf(cy[cur]);
-        const last = ring[ring.length - 1];
-        if (!last || last[0] !== lon || last[1] !== lat) ring.push([lon, lat]);
-        const nb = map.get(cur);
-        const next = nb[0] !== prev ? nb[0] : nb[1];
-        prev = cur;
-        cur = next;
-        if (cur === start) break;
-      }
-      if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
-      if (ring.length < 3) continue;
-      ring.push([ring[0][0], ring[0][1]]);
-      rings.push(ring);
+  const siteZone = (s) => (sLink[s] < 0 ? -1 : linkZone[sLink[s]]);
+  let boundary = [];
+  /** Polygons for every zone, from the links as they are assigned right now. */
+  const drawZones = () => {
+    /** Per zone: Voronoi vertex (a triangle) -> its two neighbours along the zone's boundary. */
+    boundary = zones.map(() => new Map());
+    const addEdge = (z, a, b) => {
+      const map = boundary[z];
+      if (!map.has(a)) map.set(a, []);
+      if (!map.has(b)) map.set(b, []);
+      map.get(a).push(b);
+      map.get(b).push(a);
+    };
+    for (let e = 0; e < halfedges.length; e++) {
+      const o = halfedges[e];
+      if (o < e) continue;
+      const zp = siteZone(triangles[e]);
+      const zq = siteZone(triangles[nextEdge(e)]);
+      if (zp === zq) continue;
+      const t1 = Math.floor(e / 3);
+      const t2 = Math.floor(o / 3);
+      if (zp >= 0) addEdge(zp, t1, t2);
+      if (zq >= 0) addEdge(zq, t1, t2);
     }
-    if (!rings.length) throw new Error(`areaSplit: zone ${zone.code} has no boundary`);
-    // Nested rings are holes, and holes in holes are land again: exclusive-or says exactly that.
-    const region = rings.length === 1 ? [[rings[0]]] : polygonClipping.xor(...rings.map((r) => [[r]]));
-    const clipped = polygonClipping.intersection(region, parentCoords);
 
-    const polygons = [];
-    for (const polygon of clipped) {
-      const out = [];
-      polygon.forEach((ring, index) => {
-        const clean = [];
-        for (const c of ring) {
-          const p = [Math.round(c[0] * 1e7) / 1e7, Math.round(c[1] * 1e7) / 1e7];
-          const last = clean[clean.length - 1];
-          if (!last || last[0] !== p[0] || last[1] !== p[1]) clean.push(p);
+    const zoneMidpoints = zones.map(() => []);
+    for (let i = 0; i < n; i++) zoneMidpoints[linkZone[i]].push(midpoints[i]);
+    zones.forEach((zone, z) => {
+      const map = boundary[z];
+      const visited = new Set();
+      const rings = [];
+      for (const start of [...map.keys()].sort((p, q) => p - q)) {
+        if (visited.has(start)) continue;
+        const ring = [];
+        let prev = -1;
+        let cur = start;
+        for (let guard = 0; guard <= map.size; guard++) {
+          visited.add(cur);
+          const lon = lonOf(cx[cur]);
+          const lat = latOf(cy[cur]);
+          const last = ring[ring.length - 1];
+          if (!last || last[0] !== lon || last[1] !== lat) ring.push([lon, lat]);
+          const nb = map.get(cur);
+          const next = nb[0] !== prev ? nb[0] : nb[1];
+          prev = cur;
+          cur = next;
+          if (cur === start) break;
         }
-        if (clean.length && (clean[0][0] !== clean[clean.length - 1][0] || clean[0][1] !== clean[clean.length - 1][1])) {
-          clean.push([clean[0][0], clean[0][1]]);
+        if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
+        if (ring.length < 3) continue;
+        ring.push([ring[0][0], ring[0][1]]);
+        rings.push(ring);
+      }
+      if (!rings.length) throw new Error(`areaSplit: zone ${zone.code} has no boundary`);
+      // Nested rings are holes, and holes in holes are land again: exclusive-or says exactly that.
+      const region = rings.length === 1 ? [[rings[0]]] : polygonClipping.xor(...rings.map((r) => [[r]]));
+      const clipped = polygonClipping.intersection(region, parentCoords);
+
+      const polygons = [];
+      for (const polygon of clipped) {
+        const out = [];
+        polygon.forEach((ring, index) => {
+          const clean = [];
+          for (const c of ring) {
+            const p = [Math.round(c[0] * 1e7) / 1e7, Math.round(c[1] * 1e7) / 1e7];
+            const last = clean[clean.length - 1];
+            if (!last || last[0] !== p[0] || last[1] !== p[1]) clean.push(p);
+          }
+          if (clean.length && (clean[0][0] !== clean[clean.length - 1][0] || clean[0][1] !== clean[clean.length - 1][1])) {
+            clean.push([clean[0][0], clean[0][1]]);
+          }
+          if (clean.length < 4) return;
+          const signed = ringArea(clean);
+          if (Math.abs(signed) * kx * M_PER_DEG < 1) return; // under a square metre: a clipping crumb
+          // GeoJSON winding: outer ring counter-clockwise, holes clockwise.
+          if ((index === 0) !== signed > 0) clean.reverse();
+          if (index === 0 || out.length) out.push(clean);
+        });
+        if (out.length) polygons.push(out);
+      }
+      // Keep the ground this zone's roads are on. What the cut leaves besides — a headland the
+      // coastline separates from the rest, with no road of this zone on it — is dropped.
+      const kept = polygonsHolding(polygons, zoneMidpoints[z]);
+      if (!kept.length) throw new Error(`areaSplit: zone ${zone.code} has no polygon inside ${area.name}`);
+      zone.geometry = kept.length === 1
+        ? { type: 'Polygon', coordinates: kept[0] }
+        : { type: 'MultiPolygon', coordinates: kept };
+      zone.bbox = kept.map((p) => bboxOf(p[0])).reduce((acc, b) => bboxUnion(acc, b));
+      zone.areaSqm = Math.round(geometryAreaSqm(zone.geometry));
+    });
+  };
+  drawZones();
+
+  /**
+   * The coastline can do what the cut did not. An inlet between a zone's streets leaves it a
+   * second polygon on the far bank — fine when that bank is its own (a peninsula), wrong when the
+   * few streets there sit against ANOTHER zone's ground and only water joins them to their own.
+   * A small polygon of a zone that touches another zone's polygon is handed to that zone, and
+   * the polygons are drawn again. Up to 2% of a zone's road goes regardless; up to 5% only if
+   * both zones stay in range. Anything bigger is a real second part of the zone and stays.
+   */
+  for (let pass = 0; pass < 3 && zones.length > 1; pass++) {
+    const polygonsOf = (zone) => (zone.geometry.type === 'Polygon' ? [zone.geometry.coordinates] : zone.geometry.coordinates);
+    const users = new Map(); // vertex -> the zones whose polygons use it
+    zones.forEach((zone, z) => {
+      for (const polygon of polygonsOf(zone)) {
+        for (const ring of polygon) {
+          for (const c of ring) {
+            const key = `${c[0]},${c[1]}`;
+            const at = users.get(key);
+            if (!at) users.set(key, [z]);
+            else if (!at.includes(z)) at.push(z);
+          }
         }
-        if (clean.length < 4) return;
-        const signed = ringArea(clean);
-        if (Math.abs(signed) * kx * M_PER_DEG < 1) return; // under a square metre: a clipping crumb
-        // GeoJSON winding: outer ring counter-clockwise, holes clockwise.
-        if ((index === 0) !== signed > 0) clean.reverse();
-        if (index === 0 || out.length) out.push(clean);
+      }
+    });
+    let handed = 0;
+    zones.forEach((zone, z) => {
+      const polygons = polygonsOf(zone);
+      if (polygons.length < 2) return;
+      const boxes = polygons.map((polygon) => bboxOf(polygon[0]));
+      const on = polygons.map(() => []);
+      for (let i = 0; i < n; i++) {
+        if (linkZone[i] !== z) continue;
+        const pt = midpoints[i];
+        for (let k = 0; k < polygons.length; k++) {
+          const b = boxes[k];
+          if (pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
+          if (pointInPolygon(pt, polygons[k])) {
+            on[k].push(i);
+            break;
+          }
+        }
+      }
+      const road = on.map((ids) => ids.reduce((sum, i) => sum + lm[i], 0));
+      let bulk = 0;
+      for (let k = 1; k < polygons.length; k++) if (road[k] > road[bulk]) bulk = k;
+      polygons.forEach((polygon, k) => {
+        if (k === bulk || !on[k].length || road[k] > 0.05 * meanTarget) return;
+        const touches = new Float64Array(zones.length);
+        for (const ring of polygon) {
+          for (const c of ring) for (const other of users.get(`${c[0]},${c[1]}`) || []) if (other !== z) touches[other]++;
+        }
+        let to = -1;
+        for (let o = 0; o < zones.length; o++) if (touches[o] > 0 && (to < 0 || touches[o] > touches[to])) to = o;
+        if (to < 0) return; // touches nobody: its own bit of ground, and it stays
+        if (road[k] > 0.02 * meanTarget &&
+          (zone.targetMeters - road[k] < lo[order[z]] || zones[to].targetMeters + road[k] > hi[order[to]])) return;
+        for (const i of on[k]) linkZone[i] = to;
+        zone.targetMeters -= road[k];
+        zones[to].targetMeters += road[k];
+        handed++;
       });
-      if (out.length) polygons.push(out);
+    });
+    if (!handed) break;
+    for (const zone of zones) {
+      zone.targetMeters = 0;
+      zone.targetLinks = 0;
     }
-    // The roadless pieces this zone was given, as they are (outer ring counter-clockwise).
-    for (const polygon of wholeParts[z]) {
-      polygons.push(polygon.map((ring, index) => {
-        const copy = ring.map((c) => [c[0], c[1]]);
-        if ((index === 0) !== ringArea(copy) > 0) copy.reverse();
-        return copy;
-      }));
+    for (let i = 0; i < n; i++) {
+      zones[linkZone[i]].targetLinks++;
+      zones[linkZone[i]].targetMeters += lm[i];
     }
-    if (!polygons.length) throw new Error(`areaSplit: zone ${zone.code} has no polygon inside ${area.name}`);
-    zone.geometry = polygons.length === 1
-      ? { type: 'Polygon', coordinates: polygons[0] }
-      : { type: 'MultiPolygon', coordinates: polygons };
-    zone.bbox = polygons.map((p) => bboxOf(p[0])).reduce((acc, b) => bboxUnion(acc, b));
-    zone.areaSqm = Math.round(geometryAreaSqm(zone.geometry));
-  });
+    drawZones();
+  }
 
   // The promise the import leans on: a link's midpoint lies in the polygon of its own zone —
   // checked with the very probe the import uses (utils/geo.midpointOf).
+  let midpointsOutside = 0;
   {
     const boxes = zones.map((zone) => zone.bbox);
     const polysOf = zones.map((zone) =>
       (zone.geometry.type === 'Polygon' ? [zone.geometry.coordinates] : zone.geometry.coordinates));
     for (let i = 0; i < n; i++) {
-      const pt = midpointOf(links[i].coords);
+      const pt = midpoints[i];
       const z = linkZone[i];
       const b = boxes[z];
       const inside = pt[0] >= b[0] && pt[0] <= b[2] && pt[1] >= b[1] && pt[1] <= b[3] &&
@@ -1412,6 +1652,176 @@ function splitArea({ area, links, places = [], options = {} }) {
   };
 }
 
+/* ------------------------------------------------------------------ the split */
+
+/**
+ * @param area    { code, name, geometry (Polygon|MultiPolygon), priority?, props? }
+ * @param links   [{ coords: [[lon, lat], ...], meters }] — the links INSIDE the area
+ * @param places  [{ name, kind, lon, lat }] — OSM place points; may be empty (zones are then
+ *                numbered but not named)
+ * @returns { zones, linkZone, stats }
+ *   zones[i]    { code, name, parentName, priority, geometry, bbox, areaSqm, targetMeters,
+ *                 targetLinks, props }  — shaped like the areas networkImport builds
+ *   linkZone    Int32Array: links[i] belongs to zones[linkZone[i]]; -1 for a link on a far piece
+ *               too small for a zone (see strandedKm), which belongs to none
+ */
+function splitArea({ area, links, places = [], options = {} }) {
+  const opt = resolveOptions(options);
+  const n = links.length;
+  if (!n) throw new Error('areaSplit: no links');
+
+  /* ---- which piece of the parent each link is on ---- */
+  const polygons = area.geometry.type === 'Polygon' ? [area.geometry.coordinates] : area.geometry.coordinates;
+  const parts = polygons
+    .map((polygon) => ({ polygon, box: bboxOf(polygon[0]) }))
+    .sort((p, q) => (q.box[2] - q.box[0]) * (q.box[3] - q.box[1]) - (p.box[2] - p.box[0]) * (p.box[3] - p.box[1]));
+  const midpoints = links.map((link) => midpointOf(link.coords));
+  const partOf = new Int32Array(n); // 0, the largest, unless a smaller one claims the midpoint
+  for (let i = 0; i < n; i++) {
+    const pt = midpoints[i];
+    for (let k = 1; k < parts.length; k++) {
+      const b = parts[k].box;
+      if (pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
+      if (pointInPolygon(pt, parts[k].polygon)) {
+        partOf[i] = k;
+        break;
+      }
+    }
+  }
+
+  /* ---- pieces whose roads run near each other are one piece of ground ---- */
+  const lat0 = midpoints[0][1];
+  const kx = M_PER_DEG * Math.cos((lat0 * Math.PI) / 180);
+  const px = midpoints.map((m) => (m[0] - midpoints[0][0]) * kx);
+  const py = midpoints.map((m) => (m[1] - lat0) * M_PER_DEG);
+  const reach = opt.detachedKm * 1000;
+  const group = Int32Array.from({ length: parts.length }, (_, k) => k);
+  const find = (x) => {
+    let r = x;
+    while (group[r] !== r) r = group[r];
+    while (group[x] !== r) {
+      const next = group[x];
+      group[x] = r;
+      x = next;
+    }
+    return r;
+  };
+  if (new Set(partOf).size > 1) {
+    const cells = new Map(); // "gx:gy" -> Map(part -> [link, ...])
+    for (let i = 0; i < n; i++) {
+      const key = `${Math.floor(px[i] / reach)}:${Math.floor(py[i] / reach)}`;
+      let here = cells.get(key);
+      if (!here) {
+        here = new Map();
+        cells.set(key, here);
+      }
+      if (!here.has(partOf[i])) here.set(partOf[i], []);
+      here.get(partOf[i]).push(i);
+    }
+    const within = (as, bs) => {
+      for (const a of as) for (const b of bs) if ((px[a] - px[b]) ** 2 + (py[a] - py[b]) ** 2 <= reach * reach) return true;
+      return false;
+    };
+    for (const [key, here] of cells) {
+      const [gx, gy] = key.split(':').map(Number);
+      // Each pair of neighbouring cells once: this cell, and the four "after" it.
+      for (const [dx, dy] of [[0, 0], [1, -1], [1, 0], [1, 1], [0, 1]]) {
+        const there = dx === 0 && dy === 0 ? here : cells.get(`${gx + dx}:${gy + dy}`);
+        if (!there) continue;
+        for (const [a, as] of here) {
+          for (const [b, bs] of there) {
+            if (a === b || find(a) === find(b)) continue;
+            if (within(as, bs)) group[Math.max(find(a), find(b))] = Math.min(find(a), find(b));
+          }
+        }
+      }
+    }
+  }
+  const pieceLinks = new Map(); // piece -> [link index]
+  for (let i = 0; i < n; i++) {
+    const g = find(partOf[i]);
+    if (!pieceLinks.has(g)) pieceLinks.set(g, []);
+    pieceLinks.get(g).push(i);
+  }
+  const pieceM = (ids) => ids.reduce((sum, i) => sum + (Number(links[i].meters) || 0), 0);
+  const pieceIds = [...pieceLinks.keys()].sort((a, b) => a - b);
+  let main = pieceIds[0];
+  for (const g of pieceIds) if (pieceM(pieceLinks.get(g)) > pieceM(pieceLinks.get(main))) main = g;
+
+  /* ---- cut each piece ---- */
+  const linkZone = new Int32Array(n).fill(-1);
+  const found = []; // { zone, from: [link index] in splitPiece's order, local zone index }
+  const stats = {
+    totalKm: pieceM(Array.from({ length: n }, (_, i) => i)) / 1000,
+    pieces: 0,
+    strandedLinks: 0,
+    strandedKm: 0,
+    units: 0,
+    places: 0,
+    midpointsOutside: 0,
+    leftover: false,
+    plannedKm: [],
+  };
+  for (const g of pieceIds) {
+    const ids = pieceLinks.get(g);
+    const meters = pieceM(ids);
+    if (g !== main && meters < opt.strandedKm * 1000) {
+      stats.strandedLinks += ids.length;
+      stats.strandedKm += meters / 1000;
+      continue;
+    }
+    const partIds = [...new Set(ids.map((i) => partOf[i]))].sort((a, b) => a - b);
+    const piece = splitPiece({
+      area: { ...area, geometry: { type: 'MultiPolygon', coordinates: partIds.map((k) => parts[k].polygon) } },
+      links: ids.map((i) => links[i]),
+      places,
+      opt,
+    });
+    stats.pieces++;
+    stats.units += piece.stats.units;
+    stats.places += piece.stats.places;
+    stats.midpointsOutside += piece.stats.midpointsOutside;
+    if (g === main) {
+      stats.leftover = piece.stats.leftover;
+      stats.plannedKm = piece.stats.plannedKm;
+    }
+    piece.zones.forEach((zone, z) => {
+      found.push({ zone, links: ids.filter((_, k) => piece.linkZone[k] === z) });
+    });
+  }
+
+  /* ---- number them down the map, and name them ---- */
+  found.sort((p, q) => q.zone.centre[1] - p.zone.centre[1] || p.zone.centre[0] - q.zone.centre[0]);
+  const digits = Math.max(2, String(found.length).length);
+  const zones = found.map(({ zone, links: mine }, i) => {
+    for (const link of mine) linkZone[link] = i;
+    const number = String(i + 1).padStart(digits, '0');
+    const { headline, centre, ...rest } = zone;
+    return {
+      ...rest,
+      code: `${area.code}-${number}`,
+      name: headline.length ? `${area.name} ${number} – ${headline.join(', ')}` : `${area.name} ${number}`,
+      props: { ...zone.props, zone: i + 1, zones: found.length },
+    };
+  });
+
+  const kms = zones.map((zone) => zone.targetMeters / 1000);
+  return {
+    zones,
+    linkZone,
+    stats: {
+      ...stats,
+      zones: zones.length,
+      minKm: Math.min(...kms),
+      maxKm: Math.max(...kms),
+      inRange: kms.filter((km) => km >= opt.minKm && km <= opt.maxKm).length,
+      named: zones.filter((zone) => zone.props.places.length).length,
+      parentAreaSqm: Math.round(geometryAreaSqm(area.geometry)),
+      zonesAreaSqm: zones.reduce((sum, zone) => sum + zone.areaSqm, 0),
+    },
+  };
+}
+
 module.exports = {
   DEFAULTS,
   KIND_RANK,
@@ -1419,5 +1829,6 @@ module.exports = {
   zonePlan,
   shouldSplit,
   splitArea,
+  polygonsHolding,
   geometryAreaSqm,
 };

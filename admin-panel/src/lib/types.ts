@@ -651,7 +651,9 @@ export interface AreaSplitResult {
   options: { minKm: number; maxKm: number; absorbRemainder: boolean };
   /** 'osm', or "none — why" when the zones could only be numbered. */
   namesFrom: string | null;
+  /** Roads on a detached scrap of the area too small to be a zone: left outside every area. */
   unplacedLinks: number;
+  unplacedKm?: number;
   zones: { _id?: string; code: string; name: string; km: number; links: number }[];
   applied: boolean;
   alreadySplit?: boolean;

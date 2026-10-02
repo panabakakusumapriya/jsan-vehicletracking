@@ -24,6 +24,9 @@ const { bboxOf, midpointOf, pointInPolygon, simplifyGeometry } = require('../uti
  *  - carrySplitsForward: a later delivery of the same ground arrives with the area whole again.
  *    The zones people have already assigned and signed off are kept, codes and all.
  *
+ * A zone is one polygon, in one place: the ground its own roads are on (see areaSplit.js for
+ * what happens to a customer polygon that is really 154 pieces of land).
+ *
  * A zone is an ordinary WorkArea. Its code is the parent's with a number ("23061376-07"), its
  * `parentName` is the parent's name and `props.splitFrom` says where it came from; nothing else
  * in the system treats it differently.
@@ -268,9 +271,11 @@ async function splitCommittedArea({
   const zoneList = planZones || zoneDocs.map((d) => ({ code: d.areaCode, name: d.name }));
   const perZone = zoneList.map(() => ({ meters: 0, links: 0 }));
   let unplaced = 0;
+  let unplacedMeters = 0;
   linkDocs.forEach((l, i) => {
     if (linkZone[i] < 0) {
       unplaced++;
+      unplacedMeters += l.lengthMeters;
       return;
     }
     perZone[linkZone[i]].meters += l.lengthMeters;
@@ -281,7 +286,10 @@ async function splitCommittedArea({
     options: { minKm: opt.minKm, maxKm: opt.maxKm, absorbRemainder: opt.absorbRemainder },
     namesFrom,
     stats,
+    // Roads given to no zone: on a detached scrap of the area too small to be a zone (an islet
+    // with one wharf road). They sit outside every area while the split stands.
     unplacedLinks: unplaced,
+    unplacedKm: unplacedMeters / 1000,
     zones: zoneList.map((zone, z) => ({
       code: zone.code,
       name: zone.name,
@@ -300,6 +308,11 @@ async function splitCommittedArea({
   record.splitBy = userId;
   record.splitAt = new Date();
   record.zoneCodes = zoneList.map((zone) => zone.code);
+  // Kept across a re-run: a second attempt only sees the links the first one left behind.
+  record.strandedLinkIds = [...new Set([
+    ...(record.strandedLinkIds || []),
+    ...linkDocs.filter((_, i) => linkZone[i] < 0).map((l) => l.linkId),
+  ])];
   record.markModified('parent');
   await record.save();
 
@@ -343,8 +356,8 @@ async function splitCommittedArea({
       );
     }
   }
-  // A link in no zone (only possible when finishing an earlier run over changed ground) becomes
-  // an orphan rather than staying attached to an area that is about to be deleted.
+  // A link in no zone — on a far scrap of the area too small for one — becomes an orphan rather
+  // than staying attached to an area that is about to be deleted.
   if (unplaced) {
     const ids = linkDocs.filter((_, i) => linkZone[i] < 0).map((l) => l._id);
     await RoadLink.updateMany({ _id: { $in: ids } }, { $set: { areaId: null, areaCode: null, priority: null } });
@@ -442,6 +455,21 @@ async function joinSplitArea({ versionId, areaId = null, areaCode = null, userId
     { $set: { areaId: parent._id, areaCode: parent.areaCode } }
   );
   await repointCoverage(version._id, zoneIds);
+  // …and the links the split left outside every area.
+  const stranded = record.strandedLinkIds || [];
+  for (let at = 0; at < stranded.length; at += UPDATE_CHUNK) {
+    const ids = stranded.slice(at, at + UPDATE_CHUNK);
+    // eslint-disable-next-line no-await-in-loop
+    await RoadLink.updateMany(
+      { networkVersionId: version._id, linkId: { $in: ids }, areaId: null },
+      { $set: { areaId: parent._id, areaCode: parent.areaCode, priority: parent.priority } }
+    );
+    // eslint-disable-next-line no-await-in-loop
+    await LinkCoverage.updateMany(
+      { networkVersionId: version._id, linkId: { $in: ids }, areaId: null },
+      { $set: { areaId: parent._id } }
+    );
+  }
   const [rollup] = await RoadLink.aggregate([
     { $match: { networkVersionId: version._id, areaId: parent._id } },
     { $group: { _id: null, meters: { $sum: '$lengthMeters' }, links: { $sum: 1 } } },
@@ -464,6 +492,7 @@ async function joinSplitArea({ versionId, areaId = null, areaCode = null, userId
   record.joinedBy = userId;
   record.joinedAt = new Date();
   record.zoneCodes = [];
+  record.strandedLinkIds = [];
   await record.save();
 
   return {

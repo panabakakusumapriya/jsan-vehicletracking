@@ -8,8 +8,10 @@
 // Rules under test:
 //   - the plan: how many zones a length of road makes, and what happens to the leftover
 //     (shared out among the zones, or kept as a smaller zone of its own);
-//   - the zones: in range, each in one piece, named, tiling the area exactly, every road in the
-//     zone whose polygon its midpoint falls in, the same answer every time;
+//   - the zones: in range, each ONE polygon in one place, named, never overlapping, every road
+//     in the zone whose polygon its midpoint falls in, the same answer every time;
+//   - a customer polygon that is really several pieces of land: land with no road is in no zone,
+//     an outlying piece is a zone of its own, a far islet with one road is left out;
 //   - boundaries follow barriers: a river with two bridges is where a two-zone split cuts;
 //   - in the database: links and coverage move to the zones, nothing is lost, a crashed run is
 //     finished by the next one, and joining restores the area byte for byte;
@@ -40,7 +42,7 @@ const at = (col, row, riverM = 0) => [LON0 + col * D_LON, LAT0 + (row + (row >= 
  * A grid town. With `riverM`, a river of that width runs between rows 19 and 20 and only the
  * streets at columns 5 and 30 cross it.
  */
-function town({ riverM = 0 } = {}) {
+function town({ riverM = 0, outliers = false } = {}) {
   const { lineLength } = require('../src/utils/geo');
   const links = [];
   const push = (a, b) => {
@@ -54,6 +56,7 @@ function town({ riverM = 0 } = {}) {
       push([col, row], [col, row + 1]);
     }
   }
+  const townLinks = links.length;
   const sw = at(-0.5, -0.5, riverM);
   const ne = at(N - 0.5, N - 0.5, riverM);
   const rect = (w, s, e, n) => [[[w, s], [e, s], [e, n], [w, n], [w, s]]];
@@ -64,14 +67,50 @@ function town({ riverM = 0 } = {}) {
     type: 'MultiPolygon',
     coordinates: [rect(sw[0], sw[1], ne[0], ne[1]), rect(iw[0], iw[1], ie[0], ie[1])],
   };
+  void townLinks;
   const names = ['Ashby', 'Brookfield', 'Carrow', 'Denholm', 'Eastleigh', 'Farndon', 'Glenmoor', 'Harwick',
     'Ingleby', 'Jesmond', 'Kirkby', 'Langholm', 'Marton', 'Norbury', 'Oakham', 'Penrith'];
   const places = names.map((name, i) => {
     const [lon, lat] = at(5 + (i % 4) * 10, 5 + Math.floor(i / 4) * 10, riverM);
     return { name, kind: 'suburb', lon, lat };
   });
+  /**
+   * `outliers`: three more pieces of the same customer polygon, each a separate ring —
+   *  - a hamlet 9 km east, with 3 km of streets and a name;
+   *  - an islet 12 km north-east, with one 200 m wharf road;
+   *  - a far shore 600 m across the water from the town's east side, with 4 km of streets.
+   */
+  const marks = {};
+  if (outliers) {
+    const piece = (name, col0, row0, cols, rows) => {
+      marks[name] = { from: links.length };
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols - 1; c++) push([col0 + c, row0 + r], [col0 + c + 1, row0 + r]);
+      for (let c = 0; c < cols; c++) for (let r = 0; r < rows - 1; r++) push([col0 + c, row0 + r], [col0 + c, row0 + r + 1]);
+      marks[name].to = links.length;
+      const w = at(col0 - 0.5, row0 - 0.5, riverM);
+      const e = at(col0 + cols - 0.5, row0 + rows - 0.5, riverM);
+      geometry.coordinates.push(rect(w[0], w[1], e[0], e[1]));
+      marks[name].centre = [(w[0] + e[0]) / 2, (w[1] + e[1]) / 2];
+    };
+    piece('hamlet', 130, 10, 4, 5); // 3.1 km of streets
+    piece('islet', 160, 60, 3, 1); // one 200 m road
+    piece('shore', N + 5.5, 15, 5, 5); // 4 km of streets, 600 m beyond the town's last street
+    const [lon, lat] = marks.hamlet.centre;
+    places.push({ name: 'Outpost', kind: 'village', lon, lat });
+  }
   const totalKm = links.reduce((s, l) => s + l.meters, 0) / 1000;
-  return { links, geometry, places, totalKm, bbox: [sw[0], sw[1], ie[0], ne[1]], island: [(iw[0] + ie[0]) / 2, (iw[1] + ie[1]) / 2] };
+  return {
+    links, geometry, places, totalKm, marks,
+    bbox: bboxOfAll(geometry), island: [(iw[0] + ie[0]) / 2, (iw[1] + ie[1]) / 2],
+  };
+}
+
+function bboxOfAll(geometry) {
+  const box = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const polygon of geometry.coordinates) for (const c of polygon[0]) {
+    box[0] = Math.min(box[0], c[0]); box[1] = Math.min(box[1], c[1]); box[2] = Math.max(box[2], c[0]); box[3] = Math.max(box[3], c[1]);
+  }
+  return box;
 }
 
 (async () => {
@@ -131,11 +170,11 @@ function town({ riverM = 0 } = {}) {
   }
   assert(probes > 10000 && exactlyOne === probes, `${probes} points across the town: each is in exactly one zone (no gaps, no overlaps)`);
   const parentArea = areaSplit.geometryAreaSqm(t.geometry);
-  assert(Math.abs(res.zones.reduce((s, z) => s + z.areaSqm, 0) - parentArea) / parentArea < 1e-4, 'the zones\' areas add up to the parent\'s');
+  const townArea = areaSplit.geometryAreaSqm({ type: 'Polygon', coordinates: t.geometry.coordinates[0] });
+  assert(Math.abs(res.zones.reduce((s, z) => s + z.areaSqm, 0) - townArea) / townArea < 1e-4, 'the zones\' areas add up to the town\'s');
   assert(zoneOfPoint(res.zones, at(-3, 5)).length === 0, 'a point outside the parent is in no zone');
-  assert(zoneOfPoint(res.zones, t.island).length === 1 &&
-    res.zones.filter((z) => polysOf(z.geometry).some((p) => p[0].length === 5 && pointInPolygon(t.island, p))).length === 1,
-  'the roadless island goes whole to one zone, not cut between them');
+  assert(res.zones.every((z) => z.geometry.type === 'Polygon'), 'every zone is ONE polygon');
+  assert(zoneOfPoint(res.zones, t.island).length === 0, 'the island with no road on it is in no zone — nothing lights up across the water when a zone is picked');
 
   // Each zone is one connected piece of road.
   const nodeKey = (p) => `${p[0]}:${p[1]}`;
@@ -173,6 +212,32 @@ function town({ riverM = 0 } = {}) {
   const sizes = apart.zones.map((z) => z.targetMeters / 1000).sort((a, b) => a - b);
   assert(apart.zones.length === 4 && sizes[0] < 25 && sizes.slice(1).every((km) => km > 92 && km < 108),
     `…kept apart: three zones of ~100 km and a leftover of ${sizes[0].toFixed(0)} km`);
+
+  /* ================================================================== a polygon in several pieces */
+  const far = town({ outliers: true });
+  const cut = areaSplit.splitArea({ area: { ...area, geometry: far.geometry }, links: far.links, places: far.places, options: opt });
+  const zoneOfRange = ({ from, to }) => [...new Set(Array.from(cut.linkZone.slice(from, to)))];
+  console.log(`   town + outliers: ${cut.zones.map((z) => `${z.code.slice(-2)}:${(z.targetMeters / 1000).toFixed(1)}`).join(' ')} km · stranded ${cut.stats.strandedLinks}`);
+  const hamletZone = zoneOfRange(far.marks.hamlet);
+  assert(hamletZone.length === 1 && hamletZone[0] >= 0 && cut.zones[hamletZone[0]].targetLinks === far.marks.hamlet.to - far.marks.hamlet.from,
+    'an outlying hamlet 9 km away is a zone of its own — its roads and nobody else\'s');
+  assert(cut.zones[hamletZone[0]].targetMeters < 4000 && / – Outpost$/.test(cut.zones[hamletZone[0]].name) && cut.zones[hamletZone[0]].geometry.type === 'Polygon',
+    `…however small, and named after the place on it: "${cut.zones[hamletZone[0]].name}", ${(cut.zones[hamletZone[0]].targetMeters / 1000).toFixed(1)} km`);
+  assert(cut.zones.length === 5 && cut.zones.filter((z) => z.targetMeters >= 70000 && z.targetMeters <= 90000).length === 4,
+    'the town is still cut into four zones of 70-90 km: the hamlet does not count towards them');
+  const isletZone = zoneOfRange(far.marks.islet);
+  assert(isletZone.length === 1 && isletZone[0] === -1 && cut.stats.strandedLinks === far.marks.islet.to - far.marks.islet.from && cut.stats.strandedKm < 0.3,
+    `a far islet with one 200 m road gets no zone: its ${cut.stats.strandedLinks} link(s) are left out and reported`);
+  assert(zoneOfPoint(cut.zones, far.marks.islet.centre).length === 0, '…and no zone\'s polygon reaches out to it');
+  const shoreZone = zoneOfRange(far.marks.shore);
+  assert(shoreZone.every((z) => z >= 0 && cut.zones[z].targetMeters >= 70000), 'a far shore 600 m across the water is cut up WITH the town: its streets join a town zone');
+  assert(cut.zones.reduce((s, z) => s + z.targetLinks, 0) + cut.stats.strandedLinks === far.links.length &&
+    far.links.every((l, i) => {
+      const hits = zoneOfPoint(cut.zones, midpointOf(l.coords));
+      return cut.linkZone[i] < 0 ? hits.length === 0 : hits.length === 1 && hits[0] === cut.linkZone[i];
+    }), 'every link is in exactly its own zone\'s polygon, or — the islet — in none');
+  assert(cut.zones.map((z) => z.code).join() === 'TOWN-01,TOWN-02,TOWN-03,TOWN-04,TOWN-05' && cut.zones.every((z) => z.props.zones === 5),
+    'the zones of all the pieces are numbered together, down the map');
 
   /* ================================================================== barriers */
   const rv = town({ riverM: 600 });
@@ -256,11 +321,11 @@ function town({ riverM = 0 } = {}) {
     geometry: t.geometry, bbox: t.bbox, areaSqm: parentArea, targetMeters: t.totalKm * 1000, targetLinks: t.links.length,
     props: { AREA_ID: 'TOWN' },
   });
-  const far = at(100, 100);
+  const villageAt = at(100, 100);
   const village = await WorkArea.create({
     projectId: project._id, networkVersionId: version._id, areaCode: 'VILLAGE', name: 'Far Village', priority: 2,
-    geometry: { type: 'Polygon', coordinates: [[[far[0], far[1]], [far[0] + 0.01, far[1]], [far[0] + 0.01, far[1] + 0.01], [far[0], far[1] + 0.01], [far[0], far[1]]]] },
-    bbox: [far[0], far[1], far[0] + 0.01, far[1] + 0.01], targetMeters: 100, targetLinks: 1,
+    geometry: { type: 'Polygon', coordinates: [[[villageAt[0], villageAt[1]], [villageAt[0] + 0.01, villageAt[1]], [villageAt[0] + 0.01, villageAt[1] + 0.01], [villageAt[0], villageAt[1] + 0.01], [villageAt[0], villageAt[1]]]] },
+    bbox: [villageAt[0], villageAt[1], villageAt[0] + 0.01, villageAt[1] + 0.01], targetMeters: 100, targetLinks: 1,
   });
   await RoadLink.insertMany([
     ...t.links.map((l) => ({
@@ -268,7 +333,7 @@ function town({ riverM = 0 } = {}) {
       geometry: { type: 'LineString', coordinates: l.coords }, lengthMeters: l.meters,
     })),
     { projectId: project._id, networkVersionId: version._id, linkId: 'V1', areaId: village._id, areaCode: 'VILLAGE', priority: 2,
-      geometry: { type: 'LineString', coordinates: [[far[0] + 0.001, far[1] + 0.001], [far[0] + 0.002, far[1] + 0.001]] }, lengthMeters: 100 },
+      geometry: { type: 'LineString', coordinates: [[villageAt[0] + 0.001, villageAt[1] + 0.001], [villageAt[0] + 0.002, villageAt[1] + 0.001]] }, lengthMeters: 100 },
   ]);
   const tripId = new mongoose.Types.ObjectId();
   const drove = t.links.filter((_, i) => i % 97 === 0);
@@ -374,6 +439,48 @@ function town({ riverM = 0 } = {}) {
   const final = await boss.as(request(app).post(url(parent._id, 'split'))).send({ minKm: 70, maxKm: 90, apply: true });
   assert(final.status === 200 && JSON.stringify(final.body.zones.map((z) => [z.code, z.name, z.links])) ===
     JSON.stringify(applied.body.zones.map((z) => [z.code, z.name, z.links])), 'back to 70-90 km gives the same four zones as the first time');
+
+  /* ================================================================== a left-out road, in the database */
+  const version2 = await NetworkVersion.create({
+    projectId: project._id, label: 'Town + outliers', status: 'superseded',
+    counts: { areas: 1, links: far.links.length, orphanLinks: 0 }, targetMeters: far.totalKm * 1000, orphanMeters: 0,
+    byPriority: [{ priority: 2, areas: 1, links: far.links.length, meters: far.totalKm * 1000 }],
+  });
+  const wide = await WorkArea.create({
+    projectId: project._id, networkVersionId: version2._id, areaCode: 'WIDE', name: 'Wide Town', priority: 2,
+    geometry: far.geometry, bbox: far.bbox, targetMeters: far.totalKm * 1000, targetLinks: far.links.length,
+  });
+  await RoadLink.insertMany(far.links.map((l) => ({
+    projectId: project._id, networkVersionId: version2._id, linkId: `W${l.linkId}`, areaId: wide._id, areaCode: 'WIDE', priority: 2,
+    geometry: { type: 'LineString', coordinates: l.coords }, lengthMeters: l.meters,
+  })));
+  const isletLink = `W${far.links[far.marks.islet.from].linkId}`;
+  await LinkCoverage.create({
+    projectId: project._id, networkVersionId: version2._id, linkId: isletLink, lengthMeters: 100, areaId: wide._id,
+    firstTripId: tripId, firstDriverId: driver.user._id, firstAt: new Date(),
+  });
+  const wideBefore = await WorkArea.findById(wide._id).lean();
+  const wideSplit = await workAreaSplit.splitCommittedArea({
+    versionId: version2._id, areaId: wide._id, options: workAreaSplit.optionsFrom({ minKm: 70, maxKm: 90 }), apply: true, places: far.places,
+  });
+  const strandedCount = far.marks.islet.to - far.marks.islet.from;
+  assert(wideSplit.applied && wideSplit.zones.length === 5 && wideSplit.unplacedLinks === strandedCount && wideSplit.unplacedKm < 0.3,
+    `splitting says what it left out: ${wideSplit.unplacedLinks} road(s), ${wideSplit.unplacedKm.toFixed(2)} km`);
+  const left = await RoadLink.findOne({ networkVersionId: version2._id, linkId: isletLink }).lean();
+  const v2 = await NetworkVersion.findById(version2._id).lean();
+  assert(left.areaId === null && left.areaCode === null && v2.counts.orphanLinks === strandedCount && v2.counts.areas === 5 &&
+    Math.abs(v2.targetMeters - (far.totalKm * 1000 - v2.orphanMeters)) < 1,
+  'the islet\'s road is outside every area now, counted with the version\'s other orphans and out of its target');
+  assert((await LinkCoverage.findOne({ networkVersionId: version2._id, linkId: isletLink }).lean()).areaId === null, '…its coverage row with it');
+  assert((await AreaSplit.findOne({ networkVersionId: version2._id, areaCode: 'WIDE' }).lean()).strandedLinkIds.length === strandedCount, 'the record remembers which roads those were');
+  const wideJoined = await workAreaSplit.joinSplitArea({ versionId: version2._id, areaCode: 'WIDE' });
+  const home = await RoadLink.findOne({ networkVersionId: version2._id, linkId: isletLink }).lean();
+  const v3 = await NetworkVersion.findById(version2._id).lean();
+  assert(wideJoined.joined && String(home.areaId) === String(wide._id) && home.areaCode === 'WIDE' && home.priority === 2 &&
+    v3.counts.orphanLinks === 0 && v3.counts.areas === 1 && Math.abs(v3.targetMeters - far.totalKm * 1000) < 1,
+  'joining brings the islet\'s road home: no orphans, the target as it was');
+  assert(String((await LinkCoverage.findOne({ networkVersionId: version2._id, linkId: isletLink }).lean()).areaId) === String(wide._id) &&
+    JSON.stringify(await WorkArea.findById(wide._id).lean()) === JSON.stringify(wideBefore), '…with its coverage, and the area byte for byte');
 
   /* ================================================================== the next delivery */
   const delivered = () => [

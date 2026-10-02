@@ -64,7 +64,9 @@ const log = (...a) => console.log(...a);
       for (const zone of result.zones) {
         log(`  ${zone.code}  ${zone.km.toFixed(1).padStart(7)} km  ${String(zone.links).padStart(6)} links  ${zone.name}`);
       }
-      if (result.unplacedLinks) log(`  ${result.unplacedLinks} link(s) fell in no zone and are now outside every area.`);
+      if (result.unplacedLinks) {
+        log(`  ${result.unplacedLinks} link(s), ${(result.unplacedKm || 0).toFixed(1)} km, are on detached scraps too small for a zone and ${result.applied ? 'are now' : 'would be'} outside every area.`);
+      }
     }
   } catch (err) {
     log(`Refused: ${err.message}`);

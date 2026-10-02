@@ -2050,7 +2050,7 @@ function SplitZonesModal({
         <>
           <p className="cov-sub" style={{ marginTop: 12 }}>
             <b>{preview.zones.length} zones</b>, {fmt(Math.min(...preview.zones.map((z) => z.km)))}–
-            {fmt(Math.max(...preview.zones.map((z) => z.km)))} km each.
+            {fmt(Math.max(...preview.zones.map((z) => z.km)))} km.
             {preview.namesFrom?.startsWith('none') &&
               ' The place names could not be fetched just now, so the zones are numbered only.'}
             {/* Water, or a gap in the customer's network, can leave a part of the area that
@@ -2059,7 +2059,7 @@ function SplitZonesModal({
             {(() => {
               const off = preview.zones.filter((z) => z.km < lo - 1 || z.km > Math.max(hi, plan?.each ?? hi) * 1.06);
               return off.length
-                ? ` ${off.length} of them fall outside the size asked for: that part of the area is cut off from the rest (water, or roads missing from the delivery) and does not divide any closer.`
+                ? ` ${off.length} of them fall outside the size asked for: a piece of the area that stands apart (an island, an outlying town, a shore cut off by water) is zoned by itself and does not divide any closer.`
                 : '';
             })()}
           </p>
@@ -2078,6 +2078,17 @@ function SplitZonesModal({
               </tbody>
             </table>
           </div>
+          {preview.unplacedLinks > 0 && (
+            <p className="cov-sub" style={{ marginTop: 10 }}>
+              {preview.unplacedLinks.toLocaleString()} road{preview.unplacedLinks === 1 ? '' : 's'} (
+              {(preview.unplacedKm ?? 0).toLocaleString(undefined, { maximumFractionDigits: 1 })} km) on small
+              detached pieces — an islet with a single road — are too little for a zone and are left out.
+            </p>
+          )}
+          <p className="cov-sub" style={{ marginTop: 10 }}>
+            Each zone is one piece of ground. Islands and outlying towns with roads become zones of
+            their own, whatever their size; land with no road on it is in no zone.
+          </p>
           <p className="cov-sub" style={{ marginTop: 10 }}>
             Splitting replaces {area.name} with these zones. Roads already driven stay driven. To
             change the size later, pick any zone and use “Join zones back”.

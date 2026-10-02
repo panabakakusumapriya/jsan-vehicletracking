@@ -40,6 +40,12 @@ const areaSplitSchema = new mongoose.Schema(
     /** The WorkArea document that was replaced, whole. Null until the split is applied. */
     parent: { type: mongoose.Schema.Types.Mixed, default: null },
     zoneCodes: { type: [String], default: [] },
+    /**
+     * Links of the area that were given to no zone: the odd road on a far-off islet, too little
+     * for a zone of its own (areaSplit's strandedKm). They sit outside every area while the split
+     * stands; joining puts them back on the area.
+     */
+    strandedLinkIds: { type: [String], default: [] },
 
     splitBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     splitAt: { type: Date, default: null },
