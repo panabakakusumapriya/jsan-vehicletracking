@@ -223,10 +223,12 @@ export function Drivers() {
           .card table th.sticky-col, .card table td.sticky-col { position: sticky; overflow: hidden; text-overflow: ellipsis; }
           .card table td.sticky-col { background: var(--panel); z-index: 1; }
           .card table th.sticky-col { background: #eff3f9; z-index: 4; }
-          .card table tbody tr:hover td.sticky-col { background: var(--brand-light); }
-          .card table .sl-1 { left: 0; width: 190px; min-width: 190px; max-width: 190px; }
-          .card table .sl-2 { left: 190px; width: 110px; min-width: 110px; max-width: 110px; }
-          .card table .sl-3 { left: 300px; width: 170px; min-width: 170px; max-width: 170px; box-shadow: 2px 0 4px -2px rgba(0,0,0,0.15); }
+          /* One hover colour across the whole row — pinned cells included, which paint their own
+             background and used to light up a different blue from the rest of the row. */
+          .card table tbody tr:hover td { background: #eef4fc; }
+          .card table .sl-1 { left: 0; width: 220px; min-width: 220px; max-width: 220px; }
+          .card table .sl-2 { left: 220px; width: 100px; min-width: 100px; max-width: 100px; }
+          .card table .sl-3 { left: 320px; width: 200px; min-width: 200px; max-width: 200px; box-shadow: 2px 0 4px -2px rgba(0,0,0,0.15); }
           .card table .sr-2 { right: 0; width: 100px; min-width: 100px; max-width: 100px; box-shadow: -2px 0 4px -2px rgba(0,0,0,0.15); }
         `}</style>
         <table>
