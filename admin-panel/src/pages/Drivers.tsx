@@ -1,5 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -35,6 +35,15 @@ export function Drivers() {
   const [query, setQuery] = useState('');
   /** A stat chip clicked as a filter: drivers holding a vehicle / a phone, or holding neither. */
   const [assetFilter, setAssetFilter] = useState<'' | 'vehicle' | 'mobile' | 'none'>('');
+  /**
+   * A new filter starts the list from the top. The table scrolls inside its own card, and without
+   * this a list scrolled halfway down stayed there after picking a project — the first matching
+   * drivers sat above the visible rows, so the table looked as if it had jumped up and emptied.
+   */
+  const tableRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (tableRef.current) tableRef.current.scrollTop = 0;
+  }, [projectFilter, countryFilter, statusFilter, assetFilter, query]);
 
   const load = () => {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
@@ -207,7 +216,7 @@ export function Drivers() {
         </div>
       </div>
 
-      <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
+      <div ref={tableRef} className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
         <style>{`
           .card table thead { position: sticky; top: 0; z-index: 3; }
           .card table td { white-space: nowrap; }
