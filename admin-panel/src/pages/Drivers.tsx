@@ -31,6 +31,10 @@ export function Drivers() {
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  /** Free text over name, driver ID, login email, plate, VID and phone — what people look a driver up by. */
+  const [query, setQuery] = useState('');
+  /** A stat chip clicked as a filter: drivers holding a vehicle / a phone, or holding neither. */
+  const [assetFilter, setAssetFilter] = useState<'' | 'vehicle' | 'mobile' | 'none'>('');
 
   const load = () => {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
@@ -85,54 +89,122 @@ export function Drivers() {
     drivers.filter(d => !projectFilter || d.project === projectFilter).map(d => d.country).filter(Boolean)
   )).sort() as string[];
 
-  const filtered = drivers.filter(d => {
-    if (projectFilter && d.project !== projectFilter) return false;
-    if (countryFilter && d.country !== countryFilter) return false;
-    if (statusFilter === 'active' && !d.active) return false;
-    if (statusFilter === 'inactive' && d.active) return false;
-    return true;
-  });
-
-  const active   = filtered.filter(d => d.active).length;
-  const inactive = filtered.length - active;
-
   // Everything this driver currently holds of one kind, newest first — the ledger is the
   // source of truth, not the single vehicleId/mobileDeviceId cache field (which only tracks
   // the most recent / "active" one).
   const vehiclesOf = (d: User) => itemsFor(openAssetIds(openAssignments, d._id, 'vehicle'), vehicles);
   const devicesOf = (d: User) => itemsFor(openAssetIds(openAssignments, d._id, 'mobile'), devices);
 
+  // Project / country / search narrow the population the chips count; status and assets are what
+  // the chips themselves pick, so each chip's number is what clicking it would show.
+  const q = query.trim().toLowerCase();
+  const inScope = drivers.filter(d => {
+    if (projectFilter && d.project !== projectFilter) return false;
+    if (countryFilter && d.country !== countryFilter) return false;
+    if (q) {
+      const hay = [
+        d.name, d.driverId, d.email, d.contact,
+        ...vehiclesOf(d).flatMap(v => [v.plateNumber, v.vid]),
+        ...devicesOf(d).flatMap(dev => [dev.imei, dev.label]),
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const hasVehicle = (d: User) => vehiclesOf(d).length > 0;
+  const hasMobile = (d: User) => devicesOf(d).length > 0;
+  const filtered = inScope.filter(d => {
+    if (statusFilter === 'active' && !d.active) return false;
+    if (statusFilter === 'inactive' && d.active) return false;
+    if (assetFilter === 'vehicle' && !hasVehicle(d)) return false;
+    if (assetFilter === 'mobile' && !hasMobile(d)) return false;
+    if (assetFilter === 'none' && (hasVehicle(d) || hasMobile(d))) return false;
+    return true;
+  });
+
+  const active = inScope.filter(d => d.active).length;
+  const inactive = inScope.length - active;
+  // Assets only mean something for drivers still working: an exited driver's were released.
+  const working = inScope.filter(d => d.active);
+  const withVehicle = working.filter(hasVehicle).length;
+  const withMobile = working.filter(hasMobile).length;
+  const withNothing = working.filter(d => !hasVehicle(d) && !hasMobile(d)).length;
+  /** Status chips: pick one, or click it again to let go. */
+  const pickStatus = (v: 'active' | 'inactive') => {
+    setAssetFilter('');
+    setStatusFilter(cur => (cur === v && !assetFilter ? '' : v));
+  };
+  /** Asset chips count working drivers, so picking one shows working drivers. */
+  const pickAsset = (v: 'vehicle' | 'mobile' | 'none') => {
+    const off = assetFilter === v;
+    setAssetFilter(off ? '' : v);
+    setStatusFilter(off ? '' : 'active');
+  };
+  const anyFilter = Boolean(projectFilter || countryFilter || statusFilter || assetFilter || q);
+  const clearAll = () => {
+    setProjectFilter(''); setCountryFilter(''); setStatusFilter(''); setAssetFilter(''); setQuery('');
+  };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title"><PageIcon name="users" />Drivers</h1>
-          <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            Manage driver accounts and assignments
-          </p>
+    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 56px - var(--topbar-h))' }}>
+      {/* One slim row: the title, the numbers (each one a filter), search, filters, Add. The table
+          is the page, so it gets the screen. */}
+      <div className="dr-bar">
+        <h1 className="dr-title" title="Manage driver accounts and assignments">
+          <PageIcon name="users" />Drivers
+        </h1>
+
+        <div className="dr-stats" role="group" aria-label="Driver counts — click one to filter">
+          <button type="button" className={`dr-stat${!statusFilter && !assetFilter ? ' on' : ''}`}
+            onClick={() => { setStatusFilter(''); setAssetFilter(''); }} title="Every driver matching the filters">
+            <b>{inScope.length}</b> Total
+          </button>
+          <button type="button" className={`dr-stat green${statusFilter === 'active' && !assetFilter ? ' on' : ''}`}
+            onClick={() => pickStatus('active')} title="Can sign in and drive">
+            <b>{active}</b> Active
+          </button>
+          <button type="button" className={`dr-stat red${statusFilter === 'inactive' ? ' on' : ''}`}
+            onClick={() => pickStatus('inactive')} title="Exited — cannot sign in; their vehicle and phone were released">
+            <b>{inactive}</b> Exited
+          </button>
+          <span className="dr-sep" aria-hidden="true" />
+          <button type="button" className={`dr-stat${assetFilter === 'vehicle' ? ' on' : ''}`}
+            onClick={() => pickAsset('vehicle')} title="Active drivers holding at least one vehicle">
+            <b>{withVehicle}</b> With vehicle
+          </button>
+          <button type="button" className={`dr-stat${assetFilter === 'mobile' ? ' on' : ''}`}
+            onClick={() => pickAsset('mobile')} title="Active drivers holding at least one phone">
+            <b>{withMobile}</b> With phone
+          </button>
+          {(withNothing > 0 || assetFilter === 'none') && (
+            <button type="button" className={`dr-stat amber${assetFilter === 'none' ? ' on' : ''}`}
+              onClick={() => pickAsset('none')} title="Active drivers holding neither a vehicle nor a phone">
+              <b>{withNothing}</b> No assets
+            </button>
+          )}
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <select className="input" style={{ width: 90, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
-            <option value="">Project</option>
+
+        <div className="dr-tools">
+          <input
+            className="input dr-search"
+            type="search"
+            placeholder="Search drivers…"
+            title="Name, driver ID, login email, contact, plate, VID or phone IMEI"
+            aria-label="Search drivers"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+          <select className="input dr-filter" aria-label="Project" value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
+            <option value="">All projects</option>
             {projects.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
-          <select className="input" style={{ width: 90, fontSize: 12, padding: '4px 6px' }} value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
-            <option value="">Country</option>
+          <select className="input dr-filter" aria-label="Country" value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
+            <option value="">All countries</option>
             {countries.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
-          <select className="input" style={{ width: 90, fontSize: 12, padding: '4px 6px' }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-            <option value="">Status</option>
-            <option value="active">Active</option>
-            <option value="inactive">Inactive</option>
-          </select>
-          <button className="btn" onClick={() => setShowAdd(true)}>+ Add driver</button>
+          {anyFilter && <button type="button" className="cov-link" onClick={clearAll}>Clear</button>}
+          <button className="btn dr-add" onClick={() => setShowAdd(true)}>+ Add driver</button>
         </div>
-      </div>
-
-      <div className="stat-row">
-        <div className="stat"><div className="v">{filtered.length}</div><div className="k">Total</div></div>
-        <div className="stat"><div className="v">{active}</div><div className="k">Active</div></div>
-        <div className="stat"><div className="v">{inactive}</div><div className="k">Inactive</div></div>
       </div>
 
       <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
@@ -254,6 +326,9 @@ export function Drivers() {
             })}
             {drivers.length === 0 && (
               <tr><td colSpan={29} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
+            )}
+            {drivers.length > 0 && filtered.length === 0 && (
+              <tr><td colSpan={29} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No driver matches these filters.</td></tr>
             )}
           </tbody>
         </table>
