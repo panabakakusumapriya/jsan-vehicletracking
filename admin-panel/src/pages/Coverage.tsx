@@ -1,5 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { CoverageMap } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
@@ -364,84 +364,84 @@ export function Coverage() {
   const scopeLabel = delivery ? `${region!.name} · ${nameOf(delivery)}` : region ? region.name : null;
   const version = inScope ? inScope.find((v) => v.status === 'active') || inScope[0] : primaryVersion;
 
-  return (
-    <div>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title"><PageIcon name="coverage" />Coverage</h1>
-          <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            Progress against the road network the customer requires driven
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select className="input" value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ width: 'auto' }}>
-            {projects.map((p) => (
-              <option key={p._id} value={p._id}>{p.name}</option>
-            ))}
-          </select>
-
-        </div>
-      </div>
-
-      {error && <div className="card" style={{ borderColor: 'var(--red)', color: 'var(--red)', marginBottom: 16 }}>{error}</div>}
-
-      <div className="cov-tabs">
-        <button className={tab === 'progress' ? 'active' : ''} onClick={() => setTab('progress')}>Work areas</button>
-        <button className={tab === 'imports' ? 'active' : ''} onClick={() => setTab('imports')}>
-          Network imports
-        </button>
-      </div>
-
-      {/* Region filter: the project's deliveries grouped by where they are. Only worth showing
-          when there is something to choose between. */}
-      {tab === 'progress' && liveVersions.length > 1 && (
-        <div className="cov-filter">
-          <span className="cov-filter-k">Showing</span>
-          <div className="cov-chips" role="radiogroup" aria-label="Region">
+  // Region filter: the project's deliveries grouped by where they are. Only worth showing when
+  // there is something to choose between. Drawn by ProgressTab, beside the stats.
+  const filterBar =
+    liveVersions.length > 1 ? (
+      <div className="cov-filter">
+        <div className="cov-chips" role="radiogroup" aria-label="Region">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!region}
+            className={!region ? 'on' : ''}
+            onClick={() => pickFilter('')}
+          >
+            All regions
+          </button>
+          {regions.map((r) => (
             <button
+              key={r.name}
               type="button"
               role="radio"
-              aria-checked={!region}
-              className={!region ? 'on' : ''}
-              onClick={() => pickFilter('')}
+              aria-checked={region?.name === r.name}
+              className={region?.name === r.name ? 'on' : ''}
+              onClick={() => pickFilter(r.name)}
+              title={`${r.versions.length} deliver${r.versions.length === 1 ? 'y' : 'ies'}`}
             >
-              All regions
+              {r.name}
+              {r.versions.length > 1 && <em>{r.versions.length}</em>}
             </button>
-            {regions.map((r) => (
-              <button
-                key={r.name}
-                type="button"
-                role="radio"
-                aria-checked={region?.name === r.name}
-                className={region?.name === r.name ? 'on' : ''}
-                onClick={() => pickFilter(r.name)}
-                title={`${r.versions.length} deliver${r.versions.length === 1 ? 'y' : 'ies'}`}
-              >
-                {r.name}
-                {r.versions.length > 1 && <em>{r.versions.length}</em>}
-              </button>
-            ))}
-          </div>
-          {region && region.versions.length > 1 && (
-            <select
-              className="input cov-filter-select"
-              aria-label="Delivery"
-              value={delivery?._id || ''}
-              onChange={(e) => pickFilter(region.name, e.target.value)}
-            >
-              <option value="">All {region.versions.length} deliveries in {region.name}</option>
-              {region.versions.map((v) => (
-                <option key={v._id} value={v._id}>{nameOf(v)}</option>
-              ))}
-            </select>
-          )}
-          {canEdit && (
-            <button type="button" className="cov-link cov-filter-edit" onClick={() => setNaming(true)}>
-              Name deliveries…
-            </button>
-          )}
+          ))}
         </div>
-      )}
+        {region && region.versions.length > 1 && (
+          <select
+            className="input cov-filter-select"
+            aria-label="Delivery"
+            value={delivery?._id || ''}
+            onChange={(e) => pickFilter(region.name, e.target.value)}
+          >
+            <option value="">All {region.versions.length} deliveries in {region.name}</option>
+            {region.versions.map((v) => (
+              <option key={v._id} value={v._id}>{nameOf(v)}</option>
+            ))}
+          </select>
+        )}
+        {canEdit && (
+          <button type="button" className="cov-link cov-filter-edit" onClick={() => setNaming(true)}>
+            Name deliveries…
+          </button>
+        )}
+      </div>
+    ) : null;
+
+  return (
+    <div>
+      {/* One slim row: what the page is, its two tabs, and which project. The map below is the
+          point of the page, so the chrome above it is kept to two short rows. */}
+      <div className="cov-topbar">
+        <h1 className="cov-topbar-title" title="Progress against the road network the customer requires driven">
+          <PageIcon name="coverage" />Coverage
+        </h1>
+        <div className="cov-tabs cov-topbar-tabs">
+          <button className={tab === 'progress' ? 'active' : ''} onClick={() => setTab('progress')}>Work areas</button>
+          <button className={tab === 'imports' ? 'active' : ''} onClick={() => setTab('imports')}>
+            Network imports
+          </button>
+        </div>
+        <select
+          className="input cov-topbar-project"
+          aria-label="Project"
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
+        >
+          {projects.map((p) => (
+            <option key={p._id} value={p._id}>{p.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {error && <div className="card" style={{ borderColor: 'var(--red)', color: 'var(--red)', marginBottom: 12 }}>{error}</div>}
 
       {naming && (
         <NameDeliveriesModal
@@ -466,6 +466,7 @@ export function Coverage() {
             nameOf={nameOf}
             filterRegion={region?.name || ''}
             onPickFilter={pickFilter}
+            filterBar={filterBar}
           />
         ) : (
           <div className="card empty-state">
@@ -497,6 +498,7 @@ function ProgressTab({
   nameOf,
   filterRegion,
   onPickFilter,
+  filterBar,
 }: {
   /** The newest delivery — used only for actions that target one, like Make active. */
   version: NetworkVersion;
@@ -515,6 +517,8 @@ function ProgressTab({
   nameOf: (v: NetworkVersion) => string;
   filterRegion: string;
   onPickFilter: (region: string, delivery?: string) => void;
+  /** The region chips, drawn on the same row as the stats. Null when there is one region. */
+  filterBar: ReactNode;
 }) {
   const [summary, setSummary] = useState<CoverageSummary | null>(null);
   const [areas, setAreas] = useState<CoverageArea[]>([]);
@@ -1025,6 +1029,29 @@ function ProgressTab({
     setFocusNonce((n) => n + 1);
   };
 
+  /**
+   * The map fills whatever the screen has left below the header rows, so it is seen whole without
+   * scrolling — on a laptop and on a big monitor alike. Measured against the page's scroll box
+   * (.content), and again whenever that box or the rows above the map change size.
+   */
+  const headRef = useRef<HTMLDivElement>(null);
+  const [mapHeight, setMapHeight] = useState(620);
+  useLayoutEffect(() => {
+    const card = mapRef.current;
+    const box = card?.closest('.content') as HTMLElement | null;
+    if (!card || !box) return undefined;
+    const measure = () => {
+      const top = card.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+      const fit = Math.max(440, Math.round(box.clientHeight - top - 20));
+      setMapHeight((prev) => (Math.abs(prev - fit) < 3 ? prev : fit));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(box);
+    if (headRef.current) ro.observe(headRef.current);
+    return () => ro.disconnect();
+  }, []);
+
   // Every control lives ON the map, so fullscreen loses nothing — it takes the whole card along.
   const [isFullscreen, setIsFullscreen] = useState(false);
   useEffect(() => {
@@ -1404,54 +1431,50 @@ function ProgressTab({
         </div>
       )}
 
-      {/* The headline is one question — how far along is the programme — so it gets one big
-          number and two bars, not a row of equal-weight tiles. */}
-      <div className="card cov-hero">
-        <div className="cov-hero-main">
-          <div className="cov-eyebrow">Network driven{scopeLabel ? ` · ${scopeLabel}` : ''}</div>
-          <div className="cov-hero-figure">
-            <span className="cov-hero-pct">{donePct.toFixed(1)}<small>%</small></span>
-            <span className="cov-hero-of">
-              <b>{km(covered)} km</b> of {km(target)} km
-            </span>
+      {/* The headline, in one slim strip beside the region chips: how far along (with the bar), the
+          areas by state, and who is on the map. It used to be a tall card that pushed the map half
+          off the screen. */}
+      <div ref={headRef} className="cov-head-row">
+        {filterBar}
+        <div className="card cov-strip">
+          <div className="cov-strip-main" title={`${km(remaining)} km still to drive · ${totalLinks.toLocaleString()} road links`}>
+            <span className="cov-strip-pct">{donePct.toFixed(1)}<small>%</small></span>
+            <div className="cov-strip-col">
+              <div className="cov-strip-line">
+                <b>{km(covered)}</b> of {km(target)} km driven{scopeLabel ? <span className="cov-strip-scope"> · {scopeLabel}</span> : null}
+              </div>
+              <div className="cov-meter" role="img" aria-label={`${donePct.toFixed(1)}% of the target network driven`}>
+                <div className="cov-meter-fill" style={{ width: `${Math.min(100, donePct)}%` }} />
+              </div>
+              <div className="cov-strip-sub"><b>{km(remaining)} km</b> to drive · {totalLinks.toLocaleString()} links</div>
+            </div>
           </div>
-          <div className="cov-meter" role="img" aria-label={`${donePct.toFixed(1)}% of the target network driven`}>
-            <div className="cov-meter-fill" style={{ width: `${Math.min(100, donePct)}%` }} />
-          </div>
-          <div className="cov-hero-foot">
-            <span><b>{km(remaining)} km</b> still to drive</span>
-            <span>{totalLinks.toLocaleString()} road links</span>
-          </div>
-        </div>
 
-        <div className="cov-hero-areas">
-          <div className="cov-eyebrow">Work areas · {totalAreas.toLocaleString()}</div>
-          <div className="cov-stack" role="img" aria-label="Work areas by state">
-            <span className="done" style={{ flexGrow: completedCount }} />
-            <span className="held" style={{ flexGrow: assignedCount }} />
-            <span className="open" style={{ flexGrow: openCount }} />
+          <div className="cov-strip-areas">
+            <div className="cov-strip-line"><b>{totalAreas.toLocaleString()}</b> work areas</div>
+            <div className="cov-stack" role="img" aria-label="Work areas by state">
+              <span className="done" style={{ flexGrow: completedCount }} />
+              <span className="held" style={{ flexGrow: assignedCount }} />
+              <span className="open" style={{ flexGrow: openCount }} />
+            </div>
+            <div className="cov-stack-key">
+              <span><i className="done" />{completedCount.toLocaleString()} signed off</span>
+              <span><i className="held" />{assignedCount.toLocaleString()} with a driver</span>
+              <span><i className="open" />{openCount.toLocaleString()} waiting</span>
+            </div>
           </div>
-          <div className="cov-stack-key">
-            <span><i className="done" />{completedCount.toLocaleString()} signed off</span>
-            <span><i className="held" />{assignedCount.toLocaleString()} with a driver</span>
-            <span><i className="open" />{openCount.toLocaleString()} waiting</span>
-          </div>
-        </div>
 
-        <div className="cov-hero-side">
-          <div className="cov-fact">
-            <span className="v">{coverageDrivers.length.toLocaleString()}</span>
-            <span className="k">drivers with coverage</span>
-          </div>
-          <div className="cov-fact">
-            <span className="v">
-              {showTracks && tracksMeta
-                ? `${tracksMeta.count.toLocaleString()}${tracksMeta.truncated ? '+' : ''}`
-                : '—'}
-            </span>
-            <span className="k">
-              {showTracks ? 'trips on the map' : 'tracks hidden'}
-              {showTracks && tracksMeta && tracksMeta.pendingSnap > 0 && ` · ${tracksMeta.pendingSnap} snapping`}
+          <div className="cov-strip-facts">
+            <span><b>{coverageDrivers.length.toLocaleString()}</b> drivers with coverage</span>
+            <span>
+              {showTracks && tracksMeta ? (
+                <>
+                  <b>{tracksMeta.count.toLocaleString()}{tracksMeta.truncated ? '+' : ''}</b> trips on the map
+                  {tracksMeta.pendingSnap > 0 && ` · ${tracksMeta.pendingSnap} snapping`}
+                </>
+              ) : (
+                'Tracks hidden'
+              )}
             </span>
           </div>
         </div>
@@ -1683,7 +1706,7 @@ function ProgressTab({
         <CoverageMap
           versionId={scopeId}
           mode={mapMode}
-          height={isFullscreen ? '100vh' : 620}
+          height={isFullscreen ? '100vh' : mapHeight}
           focusAreaId={focusAreaId}
           focusNonce={focusNonce}
           selectedIds={selectedIds}
