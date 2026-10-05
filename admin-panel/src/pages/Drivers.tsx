@@ -213,7 +213,7 @@ export function Drivers() {
           .card table td { white-space: nowrap; }
           .card table th.sticky-col, .card table td.sticky-col { position: sticky; overflow: hidden; text-overflow: ellipsis; }
           .card table td.sticky-col { background: var(--panel); z-index: 1; }
-          .card table th.sticky-col { background: var(--sb-bg); z-index: 4; }
+          .card table th.sticky-col { background: #eff3f9; z-index: 4; }
           .card table tbody tr:hover td.sticky-col { background: var(--brand-light); }
           .card table .sl-1 { left: 0; width: 190px; min-width: 190px; max-width: 190px; }
           .card table .sl-2 { left: 190px; width: 110px; min-width: 110px; max-width: 110px; }
