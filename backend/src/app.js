@@ -104,6 +104,8 @@ function createApp() {
         // Imports recognise HERE Admin columns (AREA_ID / POLYGON_NM), join a place's pieces by
         // default, and reuse the columns of the project's last successful import.
         hereAdminImport: true,
+        // POST /imports/:id/file?hold=1 stores without starting, so both archives go in first.
+        heldImportUploads: true,
       },
     })
   );
