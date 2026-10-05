@@ -549,6 +549,12 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
           },
         },
         importedTrips: { $sum: { $cond: [{ $ne: [{ $ifNull: ['$importBatchId', null] }, null] }, 1, 0] } },
+        // The day's UKM: the same per-trip figure the expanded rows show (effectiveUkmMeters —
+        // assigned-network UKM when the driver held a polygon, global otherwise), added up. A trip
+        // whose UKM is not established yet adds nothing and is not counted in ukmTrips, so the
+        // caller can say "3 of 4 trips" instead of passing a partial sum off as the total.
+        totalUkm: { $sum: { $ifNull: ['$effectiveUkmMeters', 0] } },
+        ukmTrips: { $sum: { $cond: [{ $ne: [{ $ifNull: ['$effectiveUkmMeters', null] }, null] }, 1, 0] } },
         maxSpeed: { $max: '$maxSpeedKmh' },
         firstStart: { $min: '$startedAt' },
         lastEnd: { $max: '$endedAt' },
@@ -578,6 +584,8 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     totalDistanceCleaned: r.totalDistanceCleaned || 0,
     matchedTrips: r.matchedTrips || 0,
     importedTrips: r.importedTrips || 0,
+    totalUkm: r.totalUkm || 0,
+    ukmTrips: r.ukmTrips || 0,
     maxSpeed: r.maxSpeed || 0,
     firstStart: r.firstStart,
     lastEnd: r.lastEnd,

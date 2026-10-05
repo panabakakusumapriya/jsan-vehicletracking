@@ -34,8 +34,8 @@ function assert(cond, msg) {
   await bob.setPassword('pw123456'); await bob.save();
 
   // Alice: 3 trips on 2026-08-01 (one still active), 1 trip on 2026-08-02.
-  await Trip.create({ driverId: alice._id, status: 'completed', startedAt: new Date('2026-08-01T02:00:00Z'), endedAt: new Date('2026-08-01T02:30:00Z'), distanceMeters: 1000, maxSpeedKmh: 40 });
-  await Trip.create({ driverId: alice._id, status: 'completed', startedAt: new Date('2026-08-01T10:00:00Z'), endedAt: new Date('2026-08-01T10:45:00Z'), distanceMeters: 2000, maxSpeedKmh: 60 });
+  await Trip.create({ driverId: alice._id, status: 'completed', startedAt: new Date('2026-08-01T02:00:00Z'), endedAt: new Date('2026-08-01T02:30:00Z'), distanceMeters: 1000, maxSpeedKmh: 40, effectiveUkmMeters: 400 });
+  await Trip.create({ driverId: alice._id, status: 'completed', startedAt: new Date('2026-08-01T10:00:00Z'), endedAt: new Date('2026-08-01T10:45:00Z'), distanceMeters: 2000, maxSpeedKmh: 60, effectiveUkmMeters: 1200 });
   await Trip.create({ driverId: alice._id, status: 'active', startedAt: new Date('2026-08-01T18:00:00Z'), endedAt: null, distanceMeters: 500, maxSpeedKmh: 30 });
   await Trip.create({ driverId: alice._id, status: 'completed', startedAt: new Date('2026-08-02T09:00:00Z'), endedAt: new Date('2026-08-02T09:20:00Z'), distanceMeters: 1500, maxSpeedKmh: 50 });
 
@@ -58,6 +58,8 @@ function assert(cond, msg) {
   assert(aliceAug1.totalDistance === 3500, 'distance summed correctly across the day\'s trips (1000+2000+500)');
   assert(aliceAug1.maxSpeed === 60, 'max speed is the max across the day, not the last trip\'s value');
   assert(aliceAug1.anyActive === true, 'a day containing a still-active trip is flagged anyActive');
+  assert(aliceAug1.totalUkm === 1600, 'the day UKM adds up the trips UKM (400+1200)');
+  assert(aliceAug1.ukmTrips === 2, '…and says it covers 2 of the 3 trips — the active one has no UKM yet, which is not zero');
 
   const aliceAug2 = all.body.summaries.find((s) => s.driverName === 'Alice' && s.date === '2026-08-02');
   assert(aliceAug2.totalTrips === 1 && aliceAug2.anyActive === false, 'Alice 2026-08-02 is a separate row from 2026-08-01, not merged together');

@@ -24,6 +24,10 @@ interface DaySummary {
   totalDistance: number;
   /** How many of the day's trips came from imported GIS data rather than a handset. */
   importedTrips?: number;
+  /** The day's UKM, summed over its trips that have one. */
+  totalUkm?: number;
+  /** How many of the day's trips have a UKM yet — the rest are still being worked out. */
+  ukmTrips?: number;
   maxSpeed: number;
   firstStart: string;
   lastEnd: string | null;
@@ -249,6 +253,7 @@ export function Trips() {
   const tripsOnPage  = summaries.reduce((acc, s) => acc + s.totalTrips, 0);
   const activeDays   = summaries.filter(s => s.anyActive).length;
   const totalKm      = summaries.reduce((acc, s) => acc + (s.totalDistance ?? 0), 0);
+  const totalUkm     = summaries.reduce((acc, s) => acc + (s.totalUkm ?? 0), 0);
   const topSpeed     = summaries.reduce((acc, s) => Math.max(acc, s.maxSpeed ?? 0), 0);
 
   return (
@@ -256,6 +261,7 @@ export function Trips() {
       {/* Compact stat cards, scoped to this page only — frees up vertical room for the table
           below rather than shrinking `.stat` everywhere else in the app. */}
       <style>{`
+        .day-total-row td { font-weight: 700; color: var(--text); border-top: 1px solid var(--line-2); background: var(--panel-2); }
         .trips-stats { margin-bottom: 8px; gap: 8px; }
         .trips-stats .stat { padding: 5px 10px; min-width: 90px; border-radius: 8px; }
         .trips-stats .stat .icon { font-size: 10px; margin-bottom: 0; }
@@ -377,6 +383,11 @@ export function Trips() {
           <div className="v">{km(totalKm)}</div>
           <div className="k">Total distance</div>
         </div>
+        <div className="stat" title="Unique kilometres of the driver-days on this page — road first covered, as in each trip's UKM">
+          <div className="icon">🛣️</div>
+          <div className="v">{km(totalUkm)}</div>
+          <div className="k">Total UKM</div>
+        </div>
         <div className="stat">
           <div className="icon">⚡</div>
           <div className="v">{Math.round(topSpeed)}<span style={{ fontSize: 10, fontWeight: 600, color: 'var(--muted)' }}> km/h</span></div>
@@ -394,6 +405,7 @@ export function Trips() {
               <th>Date</th>
               <th>Trips</th>
               <th>Total distance</th>
+              <th title="Unique kilometres: the day's trips' UKM added up">Total UKM</th>
               <th>Max speed</th>
               <th>First start</th>
               <th>Last end</th>
@@ -426,6 +438,27 @@ export function Trips() {
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.date}</td>
                     <td style={{ fontWeight: 700 }}>{s.totalTrips}</td>
                     <td style={{ fontWeight: 600 }}>{km(s.totalDistance)}</td>
+                    {/* Partial while some trips still have no UKM (open, or not map-matched yet):
+                        say how many it covers rather than passing a part off as the whole. */}
+                    <td
+                      style={{ fontWeight: 600, color: 'var(--brand)' }}
+                      title={(s.ukmTrips ?? 0) < s.totalTrips
+                        ? `${s.ukmTrips ?? 0} of ${s.totalTrips} trips have a UKM so far — the rest are still being worked out`
+                        : 'All of the day\u2019s trips added up'}
+                    >
+                      {(s.ukmTrips ?? 0) === 0 ? (
+                        <span style={{ color: 'var(--muted)', fontWeight: 400 }}>—</span>
+                      ) : (
+                        <>
+                          {km(s.totalUkm ?? 0)}
+                          {(s.ukmTrips ?? 0) < s.totalTrips && (
+                            <span style={{ marginLeft: 5, fontSize: 11, fontWeight: 500, color: 'var(--muted)' }}>
+                              {s.ukmTrips}/{s.totalTrips} trips
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </td>
                     {/* Every trip imported means nothing was ever measured; a day that mixes the
                         two still has a real reading from the recorded half. */}
                     <td title={(s.importedTrips ?? 0) >= s.totalTrips ? 'No GPS was recorded for an imported day, so speed was never measured.' : undefined}>
@@ -438,7 +471,7 @@ export function Trips() {
                   </tr>
                   {isOpen && (
                     <tr key={`${key}-detail`} className="day-detail-row">
-                      <td colSpan={8}>
+                      <td colSpan={9}>
                         {rowsLoading && !rows ? (
                           <div className="muted" style={{ padding: '14px 20px', fontSize: 12.5 }}>Loading trips…</div>
                         ) : (
@@ -574,6 +607,32 @@ export function Trips() {
                                 </tr>
                               ))}
                             </tbody>
+                            {(rows ?? []).length > 1 && (() => {
+                              const list = rows ?? [];
+                              const dist = list.reduce((a, t) => a + (t.distanceMeters ?? 0), 0);
+                              const withUkm = list.filter(t => t.effectiveUkmMeters != null);
+                              const ukm = withUkm.reduce((a, t) => a + (t.effectiveUkmMeters ?? 0), 0);
+                              const outList = list.filter(t => t.outAreaMeters != null);
+                              const out = outList.reduce((a, t) => a + (t.outAreaMeters ?? 0), 0);
+                              return (
+                                <tfoot>
+                                  <tr className="day-total-row">
+                                    <td style={{ paddingLeft: 48 }} colSpan={4}>Day total · {list.length} trips</td>
+                                    <td>{km(dist)}</td>
+                                    <td />
+                                    <td />
+                                    <td title={withUkm.length < list.length ? `${withUkm.length} of ${list.length} trips have a UKM so far` : undefined}>
+                                      {withUkm.length ? km(ukm) : '—'}
+                                      {withUkm.length > 0 && withUkm.length < list.length && (
+                                        <span style={{ marginLeft: 5, fontSize: 11, fontWeight: 500, color: 'var(--muted)' }}>{withUkm.length}/{list.length}</span>
+                                      )}
+                                    </td>
+                                    <td style={{ color: out > 0 ? '#d97706' : 'var(--muted)' }}>{outList.length ? km(out) : '—'}</td>
+                                    <td />
+                                  </tr>
+                                </tfoot>
+                              );
+                            })()}
                           </table>
                         )}
                       </td>
@@ -584,7 +643,7 @@ export function Trips() {
             })}
             {!loading && summaries.length === 0 && (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
+                <td colSpan={9} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
                   No trips found for the selected filter.
                 </td>
               </tr>
