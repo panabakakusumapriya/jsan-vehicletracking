@@ -89,11 +89,20 @@ function pick(fields, patterns) {
   return null;
 }
 
+/**
+ * HERE's Admin layers (Admin4 = towns/suburbs, the New Zealand deliveries): one row per PIECE of a
+ * place, POLYGON_ID per piece and AREA_ID per place, the name in POLYGON_NM. AREA_ID is the area —
+ * POLYGON_ID would make every island and harbour sliver its own work area.
+ */
+const isHereAdmin = (fields) =>
+  fields.some((f) => /^AREA_ID$/i.test(f.name)) && fields.some((f) => /^POLYGON_ID$/i.test(f.name));
+
 function sniffBoundaryMapping(fields) {
   return {
-    // SA2 before SA3/SA4: the most specific level present is the unit of work.
-    areaCode: pick(fields, [/^SA2.*CODE$/i, /^SA1.*CODE$/i, /CODE$/i, /^ID$/i]),
-    areaName: pick(fields, [/^SA2.*NAME$/i, /^SA1.*NAME$/i, /^NAME$/i, /NAME$/i]),
+    // SA2 before SA3/SA4: the most specific level present is the unit of work. Then HERE Admin's
+    // AREA_ID (see isHereAdmin), then anything that looks like a code or an id.
+    areaCode: pick(fields, [/^SA2.*CODE$/i, /^SA1.*CODE$/i, /^AREA_?ID$/i, /CODE$/i, /^ID$/i]),
+    areaName: pick(fields, [/^SA2.*NAME$/i, /^SA1.*NAME$/i, /^NAME$/i, /^POLYGON_?NM$/i, /NAME$/i, /_NM$/i]),
     areaParent: pick(fields, [/^SA3.*NAME$/i, /^SA4.*NAME$/i, /^GCC.*NAME$/i, /REGION/i]),
     priority: pick(fields, [/^PRIORITY$/i, /PRIOR/i, /^RANK$/i, /^P$/i]),
     areaSqm: pick(fields, [/AREA_?SQM/i, /AREA_?SQ/i, /^AREA$/i, /SHAPE_?AREA/i]),
@@ -108,6 +117,46 @@ function sniffNetworkMapping(fields) {
     dirTravel: pick(fields, [/^DIR_?TRAVEL$/i, /^DIR$/i, /ONEWAY/i, /DIRECT/i]),
     autoAccess: pick(fields, [/^AR_?AUTO$/i, /AUTO/i, /^CAR$/i]),
   };
+}
+
+/**
+ * Whether rows sharing an area code are joined into one area. true can only have been ticked;
+ * false is also the default, so it counts as a choice only once the operator has touched the box
+ * (joinAreaPartsChosenAt). Until then: on for a HERE Admin layer keyed by AREA_ID, else off.
+ */
+function joinPartsFor(job, boundaryFields, mapping) {
+  if (job.joinAreaParts === true || job.joinAreaPartsChosenAt) return Boolean(job.joinAreaParts);
+  return Boolean(boundaryFields && isHereAdmin(boundaryFields) && /^AREA_?ID$/i.test(mapping.areaCode || ''));
+}
+
+/** Which mapping fields belong to which layer. */
+const BOUNDARY_KEYS = ['areaCode', 'areaName', 'areaParent', 'priority', 'areaSqm'];
+const NETWORK_KEYS = ['linkId', 'linkName', 'funcClass', 'dirTravel', 'autoAccess'];
+
+/**
+ * The columns this project's most recent successful import used, kept only where the same column
+ * exists in the file now being checked. So the second delivery in a format needs no choosing at
+ * all, and a delivery in a different format falls through to the guess instead of inheriting
+ * columns it does not have.
+ */
+async function rememberedMapping(job, boundaryFields, networkFields) {
+  if (!job.projectId) return {};
+  const ImportJob = require('../models/ImportJob');
+  const last = await ImportJob.findOne({
+    projectId: job.projectId,
+    _id: { $ne: job._id },
+    status: 'ready',
+    networkVersionId: { $ne: null },
+  })
+    .sort({ createdAt: -1 })
+    .select('mapping')
+    .lean();
+  if (!last || !last.mapping) return {};
+  const has = (fields, name) => Boolean(fields && fields.some((f) => f.name === name));
+  const out = {};
+  for (const key of BOUNDARY_KEYS) if (last.mapping[key] && has(boundaryFields, last.mapping[key])) out[key] = last.mapping[key];
+  for (const key of NETWORK_KEYS) if (last.mapping[key] && has(networkFields, last.mapping[key])) out[key] = last.mapping[key];
+  return out;
 }
 
 /* ------------------------------------------------------------------ geometry conversion */
@@ -363,11 +412,22 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
   const target = roadsOnly ? await resolveRoadsOnlyTarget(job) : null;
 
   const boundaryInfo = roadsOnly ? null : shapefile.inspect(layers.boundary.chosen);
+  const networkFields = layers.network ? shapefile.inspect(layers.network.chosen).fields : null;
+  const remembered = await (deps.rememberedMapping || rememberedMapping)(job, boundaryInfo?.fields, networkFields);
   const mapping = {
     ...(boundaryInfo ? sniffBoundaryMapping(boundaryInfo.fields) : {}),
-    ...(layers.network ? sniffNetworkMapping(shapefile.inspect(layers.network.chosen).fields) : {}),
+    ...(networkFields ? sniffNetworkMapping(networkFields) : {}),
+    // A customer sends the same format every time: whatever was chosen for this project's last
+    // import wins over the guess, wherever that column is present in this file too.
+    ...remembered,
     ...Object.fromEntries(Object.entries(job.mapping || {}).filter(([, v]) => v)),
   };
+  /**
+   * Join the pieces of one area into one MultiPolygon? The operator's choice when they made one;
+   * otherwise on for a HERE Admin layer keyed by AREA_ID, where repeated codes ARE pieces, and off
+   * for anything else, where a repeat is a merged file's copy (see the ImportJob model).
+   */
+  const joinAreaParts = joinPartsFor(job, boundaryInfo && boundaryInfo.fields, mapping);
 
   if (boundaryInfo && ![5, 15, 25].includes(boundaryInfo.shapeType)) {
     errors.push({
@@ -429,7 +489,7 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
          * the roads in all the others into orphans. With joinAreaParts the pieces become one
          * MultiPolygon area. A true copy (same shape) is still just dropped.
          */
-        if (job.joinAreaParts && !sameShape) {
+        if (joinAreaParts && !sameShape) {
           const target = areas[first.index];
           const parts = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.coordinates);
           target.geometry = { type: 'MultiPolygon', coordinates: [...parts(target.geometry), ...parts(geometry)] };
@@ -463,7 +523,8 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
 
       areas.push({
         code,
-        name: mapping.areaName ? String(attrs[mapping.areaName] ?? '').trim() : code,
+        // A blank name is the code, so nothing on screen ever reads as an empty string.
+        name: (mapping.areaName ? String(attrs[mapping.areaName] ?? '').trim() : '') || code,
         parentName: mapping.areaParent ? String(attrs[mapping.areaParent] ?? '').trim() || null : null,
         priority,
         areaSqm,
@@ -774,6 +835,8 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
   const report = {
     generatedAt: new Date(),
     mapping,
+    // What was actually applied — the job's own setting, or the default for this kind of file.
+    joinAreaParts,
     boundary: {
       // Reused from the active version rather than uploaded, for a roads-only import.
       file: roadsOnly ? '(existing work areas)' : layers.boundary.chosen.name,
@@ -1134,5 +1197,7 @@ module.exports = {
   cleanupArtifacts,
   sniffBoundaryMapping,
   sniffNetworkMapping,
+  rememberedMapping,
+  joinPartsFor,
   polygonToGeoJson,
 };

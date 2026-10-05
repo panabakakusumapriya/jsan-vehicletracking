@@ -349,8 +349,9 @@ async function updateJob(req, res) {
   }
   // Joining pieces changes how many areas the delivery HAS, so the standing report is wrong the
   // moment this flips — re-check rather than let someone approve a stale one.
-  if (typeof req.body.joinAreaParts === 'boolean' && req.body.joinAreaParts !== job.joinAreaParts) {
+  if (typeof req.body.joinAreaParts === 'boolean' && (req.body.joinAreaParts !== job.joinAreaParts || !job.joinAreaPartsChosenAt)) {
     job.joinAreaParts = req.body.joinAreaParts;
+    job.joinAreaPartsChosenAt = new Date();
     if (job.files?.boundary?.name || job.files?.network?.name) {
       job.status = 'queued';
       job.claimToken = null;

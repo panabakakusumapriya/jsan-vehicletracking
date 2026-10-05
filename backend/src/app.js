@@ -101,6 +101,9 @@ function createApp() {
         driverPositions: true,
         // Coverage reads accept several deliveries ('id~id') and deliveries carry a region.
         regionFilter: true,
+        // Imports recognise HERE Admin columns (AREA_ID / POLYGON_NM), join a place's pieces by
+        // default, and reuse the columns of the project's last successful import.
+        hereAdminImport: true,
       },
     })
   );

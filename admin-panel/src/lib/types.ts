@@ -505,6 +505,8 @@ export interface ColumnMapping {
 export interface ImportReport {
   generatedAt: string;
   mapping: ColumnMapping;
+  /** Whether pieces sharing an area code were joined — the operator's choice, or the file's default. */
+  joinAreaParts?: boolean;
   boundary: {
     file: string;
     otherLayersInZip: string[];
@@ -585,6 +587,8 @@ export interface ImportJob {
   includeOrphanLinks: boolean;
   /** Join rows sharing an area code into one MultiPolygon area — see backend models/ImportJob.js. */
   joinAreaParts?: boolean;
+  /** Set once the operator has ticked or unticked joinAreaParts; until then the preflight picks. */
+  joinAreaPartsChosenAt?: string | null;
   /** Areas split into zones earlier in this project stay split when the customer re-delivers them. */
   keepAreaSplits?: boolean;
   report: ImportReport | null;

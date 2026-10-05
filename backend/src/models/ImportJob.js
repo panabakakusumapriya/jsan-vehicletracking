@@ -87,6 +87,11 @@ const importJobSchema = new mongoose.Schema(
      * several layers (the QLD P2+P3 delivery) a repeated code is a copy, and first-wins is right.
      */
     joinAreaParts: { type: Boolean, default: false },
+    /**
+     * When the operator last ticked or unticked joinAreaParts. Until they do, the preflight picks
+     * for them: on for a HERE Admin layer keyed by AREA_ID (pieces of one place), off otherwise.
+     */
+    joinAreaPartsChosenAt: { type: Date, default: null },
 
     /**
      * An area a manager has split into zones (services/workAreaSplit.js) arrives whole again in the

@@ -2457,12 +2457,14 @@ function ReportView({
       {/* Offered whenever area codes repeat: either the file is a merge of several layers (copies —
           keep the first), or each row is a PIECE of one area (HERE Admin4 — join them). Only the
           operator knows which; changing it re-checks the files. */}
-      {(job.joinAreaParts || report.warnings.some((w) => w.code === 'DUPLICATE_AREA_CODE' || w.code === 'JOINED_AREA_PARTS')) && (
+      {(job.joinAreaParts || report.joinAreaParts || report.warnings.some((w) => w.code === 'DUPLICATE_AREA_CODE' || w.code === 'JOINED_AREA_PARTS')) && (
         <label className="cov-toggle">
           <input
             type="checkbox"
             disabled={!canEdit}
-            checked={Boolean(job.joinAreaParts)}
+            // What the check actually did: the operator's choice, or the default for this kind of
+            // file (on for HERE Admin layers) until they make one.
+            checked={Boolean(report.joinAreaParts ?? job.joinAreaParts)}
             onChange={(e) => onPatch({ joinAreaParts: e.target.checked })}
           />
           <span>
