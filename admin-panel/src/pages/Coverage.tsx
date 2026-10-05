@@ -2120,7 +2120,8 @@ function ImportDetail({
   const upload = async (layer: 'boundary' | 'network', file: File) => {
     setUploading({ layer, percent: 0 });
     try {
-      // A draft waits for the other archive and an explicit start; a checked job re-checks at once.
+      // A draft waits for the other archive and an explicit start. A checked job re-checks at once
+      // when both archives are in; with only one, the server holds it so the other can be added.
       const hold = job?.status === 'draft' ? '&hold=1' : '';
       await uploadRaw(`/api/network/imports/${jobId}/file?layer=${layer}${hold}`, file, (percent) =>
         setUploading({ layer, percent })

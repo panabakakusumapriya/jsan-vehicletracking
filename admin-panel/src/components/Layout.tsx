@@ -6,6 +6,7 @@ import { syncExistingSubscription } from '../lib/push';
 import { AlertsBell } from './AlertsBell';
 import { AlertToaster } from './AlertToaster';
 import { PwaBanner } from './PwaBanner';
+import { UpdateNotice } from './UpdateNotice';
 import type { TabKey, TabPermission } from '../lib/types';
 import { ADMIN_ONLY_TABS } from '../lib/types';
 
@@ -246,6 +247,7 @@ export function Layout() {
 
       {/* App-wide overlays: one-time install/alerts nudge and live alert toasts. */}
       <PwaBanner />
+      <UpdateNotice />
       <AlertToaster />
     </div>
   );

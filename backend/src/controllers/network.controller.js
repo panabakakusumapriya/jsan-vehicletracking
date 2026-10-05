@@ -310,7 +310,7 @@ async function uploadLayer(req, res) {
   job.error = null;
 
   /**
-   * EITHER archive is enough to start.
+   * EITHER archive is enough for an import (when it starts is decided just below):
    *
    *  - work areas only  -> a new version with the polygons; roads can follow later
    *  - roads only       -> added in place to the project's ACTIVE version, whose areas already
@@ -328,7 +328,16 @@ async function uploadLayer(req, res) {
    * needed a second import.
    */
   const hold = ['1', 'true'].includes(String(req.query.hold || '').toLowerCase());
-  const ready = !hold && Boolean(job.files.boundary?.name || job.files.network?.name);
+  /**
+   * An upload starts the import by itself only once BOTH archives are in. With one, the job waits
+   * as a draft for the other — or for an explicit start (POST …/validate) when one layer really is
+   * the whole delivery: work areas now and roads later, or roads for areas already loaded.
+   *
+   * Starting on the first archive is what made Christchurch's roads load on their own while the
+   * operator was still reaching for the polygon zip, with no way to add it to that import after.
+   * This holds for a panel tab still running an older build too, which sends no `hold` at all.
+   */
+  const ready = !hold && Boolean(job.files.boundary?.name && job.files.network?.name);
   job.status = ready ? 'queued' : 'draft';
   job.claimToken = null; // handed back to whichever runner claims it next
   if (ready) job.progress = { phase: 'queued', done: 0, total: 0 };

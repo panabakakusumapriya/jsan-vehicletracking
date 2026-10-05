@@ -1642,3 +1642,18 @@ select.input { cursor: pointer; }
   .hb-toolbar .input { width: 100% !important; }
   .hb-toolbar > div:last-child { margin-left: 0 !important; }
 }
+
+/* "A newer version of the panel is out" (components/UpdateNotice.tsx). */
+.update-notice {
+  position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 60;
+  display: flex; align-items: center; gap: 12px; max-width: calc(100% - 32px);
+  padding: 8px 8px 8px 16px; border-radius: 12px;
+  background: var(--panel); border: 1px solid var(--line-2); color: var(--text);
+  box-shadow: 0 12px 32px -10px rgba(17,24,39,0.4); font-size: 13.5px; font-weight: 600;
+}
+.update-notice .btn { padding: 6px 14px; font-size: 13px; }
+.update-notice-x {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  width: 28px; height: 28px; border-radius: 7px;
+}
+.update-notice-x:hover { background: var(--panel-2); color: var(--text); }

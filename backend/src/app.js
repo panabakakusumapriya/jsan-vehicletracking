@@ -106,6 +106,8 @@ function createApp() {
         hereAdminImport: true,
         // POST /imports/:id/file?hold=1 stores without starting, so both archives go in first.
         heldImportUploads: true,
+        // An upload starts an import by itself only once both archives are in.
+        importsWaitForBoth: true,
       },
     })
   );
