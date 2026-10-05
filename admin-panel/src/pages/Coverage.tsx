@@ -1326,7 +1326,7 @@ function ProgressTab({
           <div className="cov-pop-foot">
             {shownDone
               ? 'Completed areas cannot be assigned to another driver without an override.'
-              : 'Completing releases the driver and takes these roads off their phone.'}
+              : 'Completing releases the driver, takes these roads off their phone and shows them all as done (blue) here.'}
             {shownDetail.area.splitFrom &&
               ` One of ${shownDetail.area.splitFrom.zones ?? 'the'} zones ${shownDetail.area.splitFrom.name} was split into.`}
             {shownDetail.lastCleared &&

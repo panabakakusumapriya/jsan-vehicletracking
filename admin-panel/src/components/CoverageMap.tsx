@@ -75,12 +75,14 @@ interface AreaCollection {
  * A road inside an assigned area, as positional tuples: [linkId, funcClass, covered, coords].
  * No field names on the wire — at 100k links the key names would cost more than the coordinates.
  */
-type AssignedLinkTuple = [string, number | null, 0 | 1, [number, number][], number];
+type AssignedLinkTuple = [string, number | null, 0 | 1 | 2, [number, number][], number];
 
 interface AssignedLink {
   linkId: string;
   funcClass: number | null;
   covered: boolean;
+  /** Not driven, but its area is signed off as completed: drawn as done. */
+  signedOff: boolean;
   path: [number, number][];
   /** Who first drove it, so the road can be drawn in that person's colour. */
   driverId: string | null;
@@ -116,7 +118,12 @@ interface LinkRow {
   areaCode: string | null;
   coordinates: [number, number][];
   covered: boolean;
+  /** Its area is signed off as completed — drawn as done whether or not a trip recorded it. */
+  signedOff?: boolean;
 }
+
+/** Blue for a road that is done: driven, or in an area a manager has marked completed. */
+const isDone = (l: { covered: boolean; signedOff?: boolean }) => l.covered || Boolean(l.signedOff);
 
 /** Distinct hues per band. Deliberately not a ramp — priority is nominal, not ordinal, until the
  *  customer confirms what the ordering means. */
@@ -358,6 +365,15 @@ export function CoverageMap({
       .finally(() => setLoading(false));
   }, [source]);
 
+  // A sign-off, a clear or an assignment changes what the polygons say (the completed border, the
+  // fill, who holds it). Refetch them quietly — without re-framing the camera the reader has set.
+  const firstKey = useRef(true);
+  useEffect(() => {
+    if (firstKey.current) { firstKey.current = false; return; }
+    if (!source) return;
+    api.get<AreaCollection>(source).then(setAreas).catch(() => {});
+  }, [assignedKey, source]);
+
   // Frame a requested area once its outline is in hand. Runs on either ordering — the click can
   // arrive before or after the fetch resolves.
   useEffect(() => {
@@ -401,6 +417,7 @@ export function CoverageMap({
             linkId,
             funcClass,
             covered: covered === 1,
+            signedOff: covered === 2,
             path,
             driverId: driverIdx >= 0 && who[driverIdx] ? who[driverIdx].driverId : null,
             driverName: driverIdx >= 0 && who[driverIdx] ? who[driverIdx].name : null,
@@ -495,7 +512,8 @@ export function CoverageMap({
       .finally(() => {
         if (ticket === areaLinkRequest.current) setAreaLinksLoading(false);
       });
-  }, [versionId, areaRoadsFor, areas, roadScope]);
+    // assignedKey: a sign-off turns this area's roads blue, so they are fetched again.
+  }, [versionId, areaRoadsFor, areas, roadScope, assignedKey]);
 
   // The last camera the map settled on. Kept because roads can be switched on without the map
   // moving, and the only other source of the viewport is the move event itself — without this,
@@ -537,7 +555,9 @@ export function CoverageMap({
           if (ticket === linkRequest.current) setLinksLoading(false);
         });
     },
-    [versionId, roadScope]
+    // assignedKey: re-read the roads in view after a sign-off or a clear changes their colour.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [versionId, roadScope, assignedKey]
   );
 
   const handleMoveEnd = useCallback(
@@ -755,7 +775,7 @@ export function CoverageMap({
           // The same contract as every other road layer on this map: red outstanding, blue
           // driven. It used to be green-on-slate, from when this layer was a browsing aid at high
           // zoom rather than the answer to "show me the roads".
-          getColor: (d) => (d.covered ? [37, 99, 235, 235] : [220, 38, 38, 215]),
+          getColor: (d) => (isDone(d) ? [37, 99, 235, 235] : [220, 38, 38, 215]),
           // Arterials heavier than local streets, matching how the basemap already reads.
           getWidth: (d) => (d.funcClass && d.funcClass <= 3 ? 5 : d.funcClass === 4 ? 3.5 : 2.2),
           widthUnits: 'meters',
@@ -785,7 +805,9 @@ export function CoverageMap({
            * than "what is left".
            */
           getColor: (d) => {
-            if (!d.covered) return [220, 38, 38, 220];
+            if (!d.covered && !d.signedOff) return [220, 38, 38, 220];
+            // Signed off without a recorded drive: done, in the standard blue — it has no driver.
+            if (!d.covered) return [37, 99, 235, driverSet.size > 0 ? 45 : 235];
             const c = (colorRoadsByDriver && d.driverId && driverColorById?.[d.driverId]) || [37, 99, 235];
             // Driven by someone outside the filter: still there, but not what is being read.
             const faded = driverSet.size > 0 && !(d.driverId && driverSet.has(d.driverId));
@@ -819,7 +841,7 @@ export function CoverageMap({
            * should be looking at the same picture the driver has on the phone, where red means
            * still to drive. Two colour languages for two genuinely different questions.
            */
-          getColor: (d) => (d.covered ? [37, 99, 235, 240] : [220, 38, 38, 225]),
+          getColor: (d) => (isDone(d) ? [37, 99, 235, 240] : [220, 38, 38, 225]),
           getWidth: (d) => (d.funcClass && d.funcClass <= 3 ? 5 : d.funcClass === 4 ? 3.5 : 2.4),
           widthUnits: 'meters',
           widthMinPixels: 1.6,
@@ -966,8 +988,10 @@ export function CoverageMap({
       const a = obj as unknown as AssignedLink;
       return {
         html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${
-          a.covered ? '✓ driven' : 'not driven yet'
+          a.covered ? '✓ driven' : a.signedOff ? '✓ area signed off' : 'not driven yet'
         }</b>${
+          !a.covered && a.signedOff ? '<div style="opacity:.7">no trip recorded on it</div>' : ''
+        }${
           a.covered && a.driverName ? `<div>by ${a.driverName}</div>` : ''
         }<div style="opacity:.7">FC${a.funcClass ?? '?'}</div><div style="opacity:.55;font-family:monospace;font-size:11px">${a.linkId}</div></div>`,
       };
@@ -975,7 +999,7 @@ export function CoverageMap({
 
     if (obj.linkId) {
       return {
-        html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${obj.name || 'Unnamed road'}</b><div style="opacity:.7">FC${obj.funcClass ?? '?'} · ${Math.round(obj.lengthMeters)} m · ${obj.dirTravel === 'B' ? 'two-way' : 'one-way'}</div><div style="margin-top:3px">${obj.covered ? '✓ driven' : 'not driven yet'}</div><div style="opacity:.55;font-family:monospace;font-size:11px">${obj.linkId}</div></div>`,
+        html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${obj.name || 'Unnamed road'}</b><div style="opacity:.7">FC${obj.funcClass ?? '?'} · ${Math.round(obj.lengthMeters)} m · ${obj.dirTravel === 'B' ? 'two-way' : 'one-way'}</div><div style="margin-top:3px">${obj.covered ? '✓ driven' : obj.signedOff ? '✓ area signed off · no trip recorded on it' : 'not driven yet'}</div><div style="opacity:.55;font-family:monospace;font-size:11px">${obj.linkId}</div></div>`,
       };
     }
     return null;
@@ -983,7 +1007,7 @@ export function CoverageMap({
 
   const areaRoadsNote =
     areaRoadsFor && areaLinks.length
-      ? ` · ${areaLinks.length.toLocaleString()} in the selected area (blue = driven, red = still to drive)`
+      ? ` · ${areaLinks.length.toLocaleString()} in the selected area (blue = done, red = still to drive)`
       : '';
 
   const drivenCount = assignedLinks.reduce((n, l) => n + (l.covered ? 1 : 0), 0);

@@ -924,6 +924,11 @@ async function versionLinks(req, res) {
 
   const truncated = links.length > limit;
   const page = truncated ? links.slice(0, limit) : links;
+  const signedOff = await completionsByCode(
+    scope.projectId,
+    await cycleIdFor(scope.projectId),
+    page.map((l) => l.areaCode)
+  );
 
   const coveredIds = new Set(
     (
@@ -947,6 +952,10 @@ async function versionLinks(req, res) {
       areaCode: l.areaCode,
       coordinates: l.geometry.coordinates,
       covered: coveredIds.has(l.linkId),
+      // The area it is in has been marked completed by a manager. Drawn as done (blue) even where
+      // no trip was recorded on it — the sign-off is the verdict — while `covered` stays the
+      // ledger's truth, so the driven km and percentages are never inflated by it.
+      signedOff: signedOff.has(l.areaCode),
     })),
   });
 }
@@ -1619,15 +1628,29 @@ async function versionAssignedLinks(req, res) {
     .filter(Boolean);
 
   let areaIds = null;
+  /** Areas marked completed. Completing releases the driver, so they would otherwise drop out of
+   *  this layer altogether; they stay, with every road drawn as done. */
+  let doneAreaIds = new Set();
   if (linkScope === 'assigned') {
     const assignmentFilter = { projectId: scope.projectId, releasedAt: null };
     if (driverIds.length) assignmentFilter.driverId = { $in: driverIds };
-    const codes = await AreaAssignment.distinct('areaCode', assignmentFilter);
+    const held = await AreaAssignment.distinct('areaCode', assignmentFilter);
+    // Not when narrowed to particular drivers: a signed-off area is nobody's any more.
+    const done = driverIds.length
+      ? []
+      : await AreaCompletion.distinct('areaCode', {
+          projectId: scope.projectId,
+          coverageCycleId: await cycleIdFor(scope.projectId),
+          status: 'completed',
+        });
+    const codes = [...new Set([...held, ...done])];
     if (!codes.length) return res.json({ links: [], areas: 0, covered: 0, truncated: false, drivers: [] });
     const areas = await WorkArea.find({ networkVersionId: { $in: scope.versionIds }, areaCode: { $in: codes } })
-      .select('_id')
+      .select('_id areaCode')
       .lean();
     areaIds = areas.map((a) => a._id);
+    const doneCodes = new Set(done);
+    doneAreaIds = new Set(areas.filter((a) => doneCodes.has(a.areaCode)).map((a) => String(a._id)));
     if (!areaIds.length) return res.json({ links: [], areas: 0, covered: 0, truncated: false, drivers: [] });
   }
 
@@ -1645,7 +1668,7 @@ async function versionAssignedLinks(req, res) {
   else linkFilter.linkId = { $in: [...coverBy.keys()] };
 
   const rows = await RoadLink.find(linkFilter)
-    .select('linkId funcClass geometry.coordinates -_id')
+    .select('linkId funcClass areaId geometry.coordinates -_id')
     .limit(ASSIGNED_LINK_LIMIT + 1)
     .lean();
 
@@ -1669,7 +1692,9 @@ async function versionAssignedLinks(req, res) {
       }
       idx = driverIndex.get(who);
     }
-    links.push([l.linkId, l.funcClass, coverBy.has(l.linkId) ? 1 : 0, line, idx]);
+    // 1 driven, 2 not driven but in an area signed off as completed (drawn as done), 0 to drive.
+    const state = coverBy.has(l.linkId) ? 1 : doneAreaIds.has(String(l.areaId)) ? 2 : 0;
+    links.push([l.linkId, l.funcClass, state, line, idx]);
   }
 
   const names = drivers.length
@@ -1688,7 +1713,7 @@ async function versionAssignedLinks(req, res) {
       truncated,
       drivers: drivers.map((id) => ({ driverId: id, name: nameById.get(id) || 'Unknown driver' })),
       // Changes whenever the drawn picture could have changed, so the client can cache on it.
-      version: `${version._id}:${linkScope}:${links.length}:${coverBy.size}`,
+      version: `${version._id}:${linkScope}:${links.length}:${coverBy.size}:${doneAreaIds.size}`,
     },
     'assigned-links'
   );
