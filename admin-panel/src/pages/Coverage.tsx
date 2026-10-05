@@ -6,6 +6,7 @@ import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
 import { NameDeliveriesModal } from '../components/NameDeliveriesModal';
+import { NewImportModal, dropTarget, zipsIn } from '../components/NewImportModal';
 import { api, uploadRaw } from '../lib/api';
 import { PIN_RANK, pinAlpha, statusText, whereText, type DriverPin } from '../lib/driverPins';
 import { sessionDt } from '../lib/format';
@@ -2010,30 +2011,30 @@ function ImportsTab({
 
   useEffect(load, [load]);
 
-  const create = async () => {
-    setCreating(true);
-    try {
-      const r = await api.post<{ job: ImportJob }>('/api/network/imports', { projectId });
-      load();
-      setOpenId(r.job._id);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : 'Failed to create import');
-    } finally {
-      setCreating(false);
-    }
-  };
 
   return (
     <>
       <div className="cov-table-head" style={{ padding: '0 0 14px' }}>
         <p className="cov-sub" style={{ margin: 0 }}>
-          A shapefile is six or seven sibling files, so upload each layer as a single .zip. The
-          work areas are enough to start — loading begins as soon as they are in, and it only stops
-          to ask if something is actually wrong. The road network is optional and adds coverage
-          tracking; you can add it later.
+          A shapefile is six or seven sibling files, so each layer comes as a single .zip. Choose the
+          work areas and the road network together and they load as one delivery — it only stops to
+          ask if something is actually wrong. Roads on their own are added to the current areas.
         </p>
-        {canEdit && <button className="btn" disabled={creating || !projectId} onClick={create}>+ New import</button>}
+        {canEdit && <button className="btn" disabled={!projectId} onClick={() => setCreating(true)}>+ New import</button>}
       </div>
+
+      {creating && (
+        <NewImportModal
+          projectId={projectId}
+          defaultLabel=""
+          onClose={() => setCreating(false)}
+          onStarted={(jobId) => {
+            setCreating(false);
+            load();
+            setOpenId(jobId);
+          }}
+        />
+      )}
 
       {jobs.length === 0 && (
         <div className="card empty-state">
@@ -2091,6 +2092,8 @@ function ImportDetail({
   const [job, setJob] = useState<ImportJob | null>(null);
   const [uploading, setUploading] = useState<{ layer: string; percent: number } | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The file slot a dragged archive is over. */
+  const [dragOver, setDragOver] = useState<'boundary' | 'network' | null>(null);
   const boundaryRef = useRef<HTMLInputElement>(null);
   const networkRef = useRef<HTMLInputElement>(null);
 
@@ -2117,7 +2120,9 @@ function ImportDetail({
   const upload = async (layer: 'boundary' | 'network', file: File) => {
     setUploading({ layer, percent: 0 });
     try {
-      await uploadRaw(`/api/network/imports/${jobId}/file?layer=${layer}`, file, (percent) =>
+      // A draft waits for the other archive and an explicit start; a checked job re-checks at once.
+      const hold = job?.status === 'draft' ? '&hold=1' : '';
+      await uploadRaw(`/api/network/imports/${jobId}/file?layer=${layer}${hold}`, file, (percent) =>
         setUploading({ layer, percent })
       );
       await refresh();
@@ -2212,8 +2217,21 @@ function ImportDetail({
           const info = job.files[layer];
           const ref = layer === 'boundary' ? boundaryRef : networkRef;
           const active = uploading?.layer === layer;
+          const droppable = canEdit && !live && job.status !== 'ready' && !uploading;
           return (
-            <div key={layer} className="cov-file">
+            <div
+              key={layer}
+              className={`cov-file${dragOver === layer ? ' over' : ''}`}
+              {...dropTarget(
+                (files) => {
+                  const zip = zipsIn(files)[0];
+                  if (zip) upload(layer, zip);
+                  else alert('Drop the .zip archive — a shapefile has to be zipped with its sibling files.');
+                },
+                (o) => setDragOver(o ? layer : null),
+                !droppable
+              )}
+            >
               <div className="cov-file-label">
                 {layer === 'boundary'
                   ? 'Work areas (polygons)'
@@ -2262,10 +2280,24 @@ function ImportDetail({
           cases where it could NOT just proceed: something blocked it, or it failed. */}
       {canEdit && !live && (
         <div className="cov-actions">
-          {job.status === 'draft' && !job.files.boundary.name && !job.files.network.name && (
+          {job.status === 'draft' && !canLoad && (
             <span className="cov-sub" style={{ margin: 0, alignSelf: 'center' }}>
-              Add an archive and loading starts automatically.
+              Choose the work areas and the road network, then start.
             </span>
+          )}
+          {job.status === 'draft' && canLoad && (
+            <>
+              <button className="btn" disabled={busy || Boolean(uploading)} onClick={() => act('/validate')}>
+                Start import
+              </button>
+              <span className="cov-sub" style={{ margin: 0, alignSelf: 'center' }}>
+                {job.files.boundary.name && job.files.network.name
+                  ? 'Both archives are in.'
+                  : job.files.boundary.name
+                    ? 'Add the road network first if you have it — otherwise the areas load on their own.'
+                    : 'Roads only will be added to the current work areas — add the work areas first for a new place.'}
+              </span>
+            </>
           )}
           {job.status === 'awaiting_approval' && (
             <>
@@ -2350,7 +2382,8 @@ function ReportView({
         <div>
           <h3 className="cov-h3" style={{ margin: 0 }}>Preflight</h3>
           <p className="cov-sub" style={{ margin: '2px 0 0' }}>
-            Nothing has been written yet · {new Date(report.generatedAt).toLocaleString()}
+            {job.status === 'ready' ? 'Checked and loaded' : 'Nothing has been written yet'} ·{' '}
+            {new Date(report.generatedAt).toLocaleString()}
           </p>
         </div>
       </div>

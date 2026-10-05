@@ -321,7 +321,14 @@ async function uploadLayer(req, res) {
    * Requiring the boundary unconditionally meant a roads-only upload sat in `draft` forever telling
    * the operator to re-upload polygons that were already in the database.
    */
-  const ready = Boolean(job.files.boundary?.name || job.files.network?.name);
+  /**
+   * `?hold=1`: store the file and wait. The panel sends both archives of a delivery this way and
+   * then starts the import once (POST …/validate) — starting on the FIRST file loaded Christchurch's
+   * work areas as a delivery of their own before its roads had even been picked, and the roads then
+   * needed a second import.
+   */
+  const hold = ['1', 'true'].includes(String(req.query.hold || '').toLowerCase());
+  const ready = !hold && Boolean(job.files.boundary?.name || job.files.network?.name);
   job.status = ready ? 'queued' : 'draft';
   job.claimToken = null; // handed back to whichever runner claims it next
   if (ready) job.progress = { phase: 'queued', done: 0, total: 0 };
@@ -399,6 +406,8 @@ async function validateJob(req, res) {
   job.error = null;
   job.progress = { phase: 'queued', done: 0, total: 0 };
   await job.save();
+  // Start now, not at the next poll — this is also how a held upload of both archives begins.
+  kickImportRunner();
   return res.json({ job });
 }
 

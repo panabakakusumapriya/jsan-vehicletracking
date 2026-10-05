@@ -980,6 +980,21 @@ select.input { cursor: pointer; }
   border-radius: 10px;
   padding: 14px 16px;
 }
+/* Drag-and-drop: the new-import drop zone, and any file slot a zip is dragged over. */
+.newimp-drop {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+  padding: 18px 16px; margin-bottom: 12px; cursor: pointer;
+  border: 2px dashed var(--line-2); border-radius: 12px; background: var(--panel-2);
+  color: var(--muted); font-size: 12.5px; transition: border-color .12s, background .12s;
+}
+.newimp-drop b { color: var(--text); font-size: 14px; }
+.newimp-drop svg { color: var(--brand); margin-bottom: 2px; }
+.newimp-drop:hover, .newimp-drop:focus-visible { border-color: var(--brand-2); outline: none; }
+.newimp-drop.over, .cov-file.over { border-color: var(--brand); background: var(--brand-light); }
+.cov-file.over { border-style: solid; }
+.newimp-slots { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.newimp-opt { font-weight: 500; color: var(--muted); }
+@media (max-width: 560px) { .newimp-slots { grid-template-columns: 1fr; } }
 .cov-file-label { font-size: 12px; font-weight: 700; color: var(--text-2); margin-bottom: 8px; }
 .cov-file-have { font-size: 13px; margin-bottom: 8px; }
 
