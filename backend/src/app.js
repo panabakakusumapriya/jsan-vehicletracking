@@ -108,6 +108,8 @@ function createApp() {
         heldImportUploads: true,
         // An upload starts an import by itself only once both archives are in.
         importsWaitForBoth: true,
+        // The live map draws each driver's assigned areas (GET /api/tracking/live-areas).
+        liveAreas: true,
       },
     })
   );

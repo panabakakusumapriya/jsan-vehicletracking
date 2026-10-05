@@ -1,13 +1,14 @@
 import { PageIcon } from '../components/AppIcon';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { divIcon } from 'leaflet';
-import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
+import { GeoJSON, MapContainer, Marker, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { MapAutoResize } from '../lib/MapAutoResize';
 import { useSocket, useSocketEvent } from '../lib/socket';
 import { useAuth } from '../lib/auth';
 import { km } from '../lib/format';
+import { isInside, type Outline } from '../lib/areaCheck';
 import type { LiveDriver, LocationEvent, ParkedDriver, User } from '../lib/types';
 
 function Recenter({ focus }: { focus: [number, number] | null }) {
@@ -37,10 +38,48 @@ const STATE_UI: Record<DriverState, { fill: string; label: string; badge: string
   stale:   { fill: '#dc2626', label: 'No signal', badge: 'red',   hint: 'No GPS and no app heartbeat — we cannot account for this driver' },
 };
 
-// Active car marker, coloured by state.
-function carIcon(heading: number | null | undefined, state: DriverState) {
+/** A work area a visible driver holds, as GET /api/tracking/live-areas sends it. */
+interface LiveArea {
+  _id: string;
+  projectId: string;
+  areaCode: string;
+  name: string;
+  parentName: string | null;
+  outline: Outline;
+  driverIds: string[];
+}
+
+/**
+ * Where a driver is relative to the areas they hold. null: they hold none — nothing to say, and
+ * nothing is drawn for them. Otherwise `inside` is the area they are in (null when in none of them).
+ */
+type AreaStatus = { areas: LiveArea[]; inside: LiveArea | null } | null;
+
+const AREA_BLUE = '#2563eb';
+const OUTSIDE_RED = '#dc2626';
+
+/** The chip on a driver's card and in their popup. */
+function AreaChip({ status, parked = false }: { status: AreaStatus; parked?: boolean }) {
+  if (!status) return null;
+  const names = status.areas.map((a) => a.name).join(', ');
+  return status.inside ? (
+    <span className="area-chip in" title={`Assigned: ${names}`}>
+      ● {parked ? 'Parked in' : 'In'} {status.inside.name}
+    </span>
+  ) : (
+    <span className="area-chip out" title={`Assigned: ${names}`}>
+      ● {parked ? 'Parked outside' : 'Outside'} their area{status.areas.length > 1 ? 's' : ''}
+    </span>
+  );
+}
+
+// Active car marker, coloured by state. A red ring when the driver is outside every area they hold.
+function carIcon(heading: number | null | undefined, state: DriverState, outside = false) {
   const fill = STATE_UI[state].fill;
   const rot = typeof heading === 'number' && isFinite(heading) ? heading : 0;
+  const ring = outside
+    ? `<div style="position:absolute; inset:-5px; border-radius:50%; border:2.5px solid ${OUTSIDE_RED}; background:rgba(220,38,38,0.12);"></div>`
+    : '';
   const svg = `
     <svg viewBox="0 0 32 32" width="30" height="30" xmlns="http://www.w3.org/2000/svg">
       <rect x="9" y="3" width="14" height="26" rx="6" fill="${fill}" stroke="#ffffff" stroke-width="1.6"/>
@@ -50,7 +89,7 @@ function carIcon(heading: number | null | undefined, state: DriverState) {
     </svg>`;
   return divIcon({
     className: 'car-marker',
-    html: `<div style="transform: rotate(${rot}deg); transform-origin: center; width:30px; height:30px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));">${svg}</div>`,
+    html: `<div style="position:relative; width:30px; height:30px;">${ring}<div style="transform: rotate(${rot}deg); transform-origin: center; width:30px; height:30px; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));">${svg}</div></div>`,
     iconSize: [30, 30],
     iconAnchor: [15, 15],
     popupAnchor: [0, -15],
@@ -84,6 +123,11 @@ export function LiveMap() {
   const [focus, setFocus] = useState<[number, number] | null>(null);
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
+  /** Assigned work areas of the visible drivers, and how near a boundary still counts as inside. */
+  const [liveAreas, setLiveAreas] = useState<{ edgeMeters: number; areas: LiveArea[] }>({ edgeMeters: 45, areas: [] });
+  const [showAreas, setShowAreas] = useState(true);
+  /** The driver whose card was last clicked: their areas are drawn heavier than everyone else's. */
+  const [selectedDriver, setSelectedDriver] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDriver = searchParams.get('driver');
 
@@ -130,6 +174,45 @@ export function LiveMap() {
       } catch {}
     })();
   }, [token]);
+
+  // Assignments change rarely: on load, every five minutes, and when the tab comes back into view.
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      if (document.hidden) return;
+      api
+        .get<{ edgeMeters: number; areas: LiveArea[] }>('/api/tracking/live-areas')
+        .then((r) => { if (alive) setLiveAreas({ edgeMeters: r.edgeMeters ?? 45, areas: r.areas ?? [] }); })
+        .catch(() => { /* the map is still useful without them */ });
+    };
+    load();
+    const timer = window.setInterval(load, 5 * 60 * 1000);
+    document.addEventListener('visibilitychange', load);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', load);
+    };
+  }, [token]);
+
+  const areasByDriver = useMemo(() => {
+    const map = new Map<string, LiveArea[]>();
+    for (const a of liveAreas.areas) {
+      for (const id of a.driverIds) map.set(id, [...(map.get(id) || []), a]);
+    }
+    return map;
+  }, [liveAreas]);
+
+  /** In one of their areas, outside all of them, or — holding none — nothing to say. */
+  const areaStatus = useCallback(
+    (driverId: string, loc: { lat: number; lon: number } | null | undefined): AreaStatus => {
+      const mine = areasByDriver.get(driverId);
+      if (!mine || !mine.length || !loc) return null;
+      const inside = mine.find((a) => isInside(loc.lon, loc.lat, a.outline, liveAreas.edgeMeters)) || null;
+      return { areas: mine, inside };
+    },
+    [areasByDriver, liveAreas.edgeMeters]
+  );
 
   useSocketEvent<LocationEvent>('location', useCallback((e: LocationEvent) => {
     setDrivers(prev => {
@@ -229,6 +312,21 @@ export function LiveMap() {
     return true;
   });
 
+  const statusOf = new Map<string, AreaStatus>();
+  for (const d of list) statusOf.set(d.driver._id, areaStatus(d.driver._id, d.location));
+  for (const p of filteredParked) statusOf.set(p.driver._id, areaStatus(p.driver._id, p.location));
+  /** On duty, holding an area, and in none of them — the people a dispatcher wants to see. */
+  const outsideNow = list.filter((d) => {
+    const st = statusOf.get(d.driver._id);
+    return st && !st.inside;
+  });
+
+  // Only the areas of drivers actually on the map: the filters narrow these too.
+  const shownDriverIds = new Set([...list.map((d) => d.driver._id), ...filteredParked.map((p) => p.driver._id)]);
+  const shownAreas = showAreas ? liveAreas.areas.filter((a) => a.driverIds.some((id) => shownDriverIds.has(id))) : [];
+  const nameOfDriver = (id: string) =>
+    drivers[id]?.driver.name || parked.find((p) => p.driver._id === id)?.driver.name || userByIdRef.current[id]?.name || 'Unknown';
+
   // Total = active drivers (on duty + parked) matching the current filters.
   // Derived from the combined on-duty and parked lists so it stays consistent.
   const totalActive = list.length + filteredParked.length;
@@ -296,6 +394,12 @@ export function LiveMap() {
           </div>
         </div>
 
+        {outsideNow.length > 0 && (
+          <div className="area-alert" title="On duty, holding a work area, and not in any of their areas right now">
+            ● {outsideNow.length} on duty outside their assigned area{outsideNow.length === 1 ? '' : 's'}
+          </div>
+        )}
+
         {/* Empty state */}
         {list.length === 0 && filteredParked.length === 0 && (
           <div style={{
@@ -318,8 +422,11 @@ export function LiveMap() {
           return (
             <div
               key={d.driver._id}
-              className="driver-card"
-              onClick={() => d.location && setFocus([d.location.lat, d.location.lon])}
+              className={`driver-card${selectedDriver === d.driver._id ? ' selected' : ''}`}
+              onClick={() => {
+                setSelectedDriver(d.driver._id);
+                if (d.location) setFocus([d.location.lat, d.location.lon]);
+              }}
             >
               <div className="row" style={{ marginBottom: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -340,6 +447,7 @@ export function LiveMap() {
                         {[project, country].filter(Boolean).join(' · ')}
                       </div>
                     )}
+                    <AreaChip status={statusOf.get(d.driver._id) ?? null} />
                   </div>
                 </div>
                 <span className={`badge ${STATE_UI[driverState(d)].badge}`} title={STATE_UI[driverState(d)].hint}>
@@ -378,9 +486,12 @@ export function LiveMap() {
           return (
             <div
               key={p.driver._id}
-              className="driver-card"
+              className={`driver-card${selectedDriver === p.driver._id ? ' selected' : ''}`}
               style={{ opacity: 0.75 }}
-              onClick={() => p.location && setFocus([p.location.lat, p.location.lon])}
+              onClick={() => {
+                setSelectedDriver(p.driver._id);
+                if (p.location) setFocus([p.location.lat, p.location.lon]);
+              }}
             >
               <div className="row" style={{ marginBottom: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -399,6 +510,7 @@ export function LiveMap() {
                         {[project, country].filter(Boolean).join(' · ')}
                       </div>
                     )}
+                    <AreaChip status={statusOf.get(p.driver._id) ?? null} parked />
                   </div>
                 </div>
                 <span className="badge gray">Parked</span>
@@ -431,7 +543,13 @@ export function LiveMap() {
       </div>
 
       {/* ── Map ── */}
-      <div className="map-wrap">
+      <div className="map-wrap" style={{ position: 'relative' }}>
+        {liveAreas.areas.length > 0 && (
+          <label className="live-areas-toggle">
+            <input type="checkbox" checked={showAreas} onChange={(e) => setShowAreas(e.target.checked)} />
+            Assigned areas
+          </label>
+        )}
         <MapContainer center={initialCenter.current} zoom={13} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -439,6 +557,33 @@ export function LiveMap() {
           />
           <MapAutoResize />
           <Recenter focus={focus} />
+
+          {/* Each visible driver's assigned areas, outline only — the streets stay readable. The
+              last-clicked driver's are drawn heavier; a driver outside them gets a red ring. */}
+          {shownAreas.map((a) => {
+            const mineSelected = selectedDriver != null && a.driverIds.includes(selectedDriver);
+            const holderOutside = a.driverIds.some((id) => shownDriverIds.has(id) && statusOf.get(id) && !statusOf.get(id)!.inside);
+            return (
+              <GeoJSON
+                key={`${a._id}:${mineSelected ? 's' : ''}`}
+                data={a.outline as unknown as GeoJSON.GeoJsonObject}
+                style={{
+                  color: AREA_BLUE,
+                  weight: mineSelected ? 3.5 : 2,
+                  opacity: selectedDriver && !mineSelected ? 0.45 : 0.9,
+                  fillColor: AREA_BLUE,
+                  fillOpacity: mineSelected ? 0.1 : 0.04,
+                  dashArray: holderOutside ? '6 5' : undefined,
+                }}
+              >
+                <Tooltip sticky>
+                  <b>{a.name}</b>
+                  <br />
+                  {a.driverIds.map(nameOfDriver).join(', ')}
+                </Tooltip>
+              </GeoJSON>
+            );
+          })}
 
           {/* Active vehicles */}
           {filteredWithLoc.map(d => {
@@ -448,10 +593,12 @@ export function LiveMap() {
               <Marker
                 key={d.driver._id}
                 position={[d.location!.lat, d.location!.lon]}
-                icon={carIcon(d.location!.heading, driverState(d))}
+                icon={carIcon(d.location!.heading, driverState(d), Boolean(statusOf.get(d.driver._id) && !statusOf.get(d.driver._id)!.inside))}
+                eventHandlers={{ click: () => setSelectedDriver(d.driver._id) }}
               >
                 <Popup>
                   <b>{d.driver.name}</b><br />
+                  {statusOf.get(d.driver._id) && <><AreaChip status={statusOf.get(d.driver._id) ?? null} /><br /></>}
                   {d.vehicle?.plateNumber && <><span>{d.vehicle.plateNumber}</span><br /></>}
                   {project && <><span style={{ color: '#0050a9' }}>{project}</span><br /></>}
                   {country && <><span>{country}</span><br /></>}
@@ -477,9 +624,11 @@ export function LiveMap() {
                 key={`parked-${p.driver._id}`}
                 position={[p.location!.lat, p.location!.lon]}
                 icon={parkedCarIcon()}
+                eventHandlers={{ click: () => setSelectedDriver(p.driver._id) }}
               >
                 <Popup>
                   <b>{p.driver.name}</b><br />
+                  {statusOf.get(p.driver._id) && <><AreaChip status={statusOf.get(p.driver._id) ?? null} parked /><br /></>}
                   {p.vehicle?.plateNumber && <><span>{p.vehicle.plateNumber}</span><br /></>}
                   {project && <><span style={{ color: '#0050a9' }}>{project}</span><br /></>}
                   {country && <><span>{country}</span><br /></>}

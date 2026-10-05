@@ -82,6 +82,9 @@ router.get('/my-history', authenticate, requireRole('user'), historyLimiter, ctr
 // Admins / managers read the live snapshot.
 router.get('/live', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.live);
 
+// The work areas the visible drivers hold, for the live map's "in their area or not".
+router.get('/live-areas', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.liveAreas);
+
 // Admins / managers read parked (recently stopped) vehicles.
 router.get('/parked', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.parked);
 

@@ -473,6 +473,63 @@ exports.live = asyncHandler(async (req, res) => {
   res.json({ drivers, serverTime: new Date().toISOString() });
 });
 
+/**
+ * GET /api/tracking/live-areas   (admin / manager / team lead)
+ *
+ * The work areas the visible drivers currently hold, as outlines, so the live map can show each
+ * driver's patch and whether they are in it. Resolved exactly as the driver's own phone resolves
+ * them (by areaCode, against the project's live deliveries — see liveNetworks.js), so the map and
+ * the phone can never disagree about which polygon is whose.
+ *
+ * Outlines are the 25 m-simplified copies, never the full geometry: the map draws them and tests a
+ * point against them, and `edgeMeters` says how close to a boundary still counts as inside — the
+ * attribution buffer plus the simplification, so a driver on the edge is not called "outside" by a
+ * line that was smoothed.
+ */
+exports.liveAreas = asyncHandler(async (req, res) => {
+  const scope = await accessibleDriverFilter(req.user);
+  const held = await AreaAssignment.find({ releasedAt: null, ...scope })
+    .select('projectId driverId areaId areaCode')
+    .lean();
+  const byProject = new Map();
+  for (const a of held) {
+    const key = String(a.projectId);
+    if (!byProject.has(key)) byProject.set(key, []);
+    byProject.get(key).push(a);
+  }
+
+  const areas = [];
+  for (const [projectId, rows] of byProject) {
+    // eslint-disable-next-line no-await-in-loop
+    const versions = await liveNetworkVersions([projectId]);
+    // eslint-disable-next-line no-await-in-loop
+    const found = await resolveAssignedAreas(versions, rows, '_id name parentName outline bbox');
+    for (const area of found) {
+      const holders = rows.filter((r) => (r.areaCode ? r.areaCode === area.areaCode : String(r.areaId) === String(area._id)));
+      let outline = area.outline && area.outline.coordinates ? area.outline : null;
+      if (!outline && Array.isArray(area.bbox) && area.bbox.length === 4) {
+        const [w, s, e, n] = area.bbox;
+        outline = { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] };
+      }
+      if (!outline) continue;
+      areas.push({
+        _id: String(area._id),
+        projectId,
+        areaCode: area.areaCode,
+        name: area.name,
+        parentName: area.parentName || null,
+        outline,
+        driverIds: [...new Set(holders.map((h) => String(h.driverId)))],
+      });
+    }
+  }
+
+  return sendCompressed(req, res, {
+    edgeMeters: env.AREA_BOUNDARY_BUFFER_METERS + 25,
+    areas,
+  }, 'live-areas');
+});
+
 // Shared helper: build the trip filter + optional driver-level narrowing.
 async function buildUkmTripFilter(req) {
   const { from, to, project, country, driverId } = req.query;
