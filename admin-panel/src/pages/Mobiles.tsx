@@ -1,5 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import type { Assignment, DeviceStatus, MobileDevice, Project } from '../lib/types';
@@ -30,6 +30,15 @@ export function Mobiles() {
   const [showAdd, setShowAdd] = useState(false);
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
+  /** A chip clicked as a filter: a device status, or every out-of-service one. */
+  const [statusFilter, setStatusFilter] = useState<'' | DeviceStatus | 'out'>('');
+  /** Free text over IMEIs, work phone and mail, model, label and who holds it. */
+  const [query, setQuery] = useState('');
+  // A new filter starts the list from the top — the table scrolls inside its own card.
+  const tableRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (tableRef.current) tableRef.current.scrollTop = 0;
+  }, [projectFilter, countryFilter, statusFilter, query]);
 
   const load = () => {
     api.get<{ devices: MobileDevice[] }>('/api/mobiles').then(r => setDevices(r.devices)).catch(() => {});
@@ -52,48 +61,92 @@ export function Mobiles() {
     filteredByProject.map(d => d.country).filter(Boolean)
   )).sort() as string[];
 
-  const filtered = filteredByProject.filter(d => {
+  // Project / country / search narrow what the chips count; the chips pick a status, so each
+  // chip's number is what clicking it would show. Same pattern as the Drivers page.
+  const q = query.trim().toLowerCase();
+  const inScope = filteredByProject.filter(d => {
     if (countryFilter && d.country !== countryFilter) return false;
+    if (q) {
+      const hay = [
+        d.imei, d.secondaryImei, d.workPhone, d.workMail, d.phoneModel, d.label, d.serial,
+        d.driverName, driverOf(d)?.name,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
-
-  const inStock = filtered.filter(d => d.status === 'in_stock').length;
-  const assigned = filtered.filter(d => d.status === 'assigned').length;
-  const outOfService = filtered.filter(d => ['repair', 'lost', 'retired'].includes(d.status)).length;
+  const OUT: DeviceStatus[] = ['repair', 'lost', 'retired'];
+  const filtered = inScope.filter(d => {
+    if (!statusFilter) return true;
+    if (statusFilter === 'out') return OUT.includes(d.status);
+    return d.status === statusFilter;
+  });
+  const count = (s: DeviceStatus) => inScope.filter(d => d.status === s).length;
+  const assigned = count('assigned');
+  const inStock = count('in_stock');
+  const outOfService = inScope.filter(d => OUT.includes(d.status)).length;
+  const pick = (s: DeviceStatus | 'out') => setStatusFilter(cur => (cur === s ? '' : s));
+  const anyFilter = Boolean(projectFilter || countryFilter || statusFilter || q);
+  const clearAll = () => {
+    setProjectFilter(''); setCountryFilter(''); setStatusFilter(''); setQuery('');
+  };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title"><PageIcon name="phone" />Mobiles</h1>
-          <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            Device inventory — every handover is recorded, so you can see who had which phone in any month
-          </p>
+    <div className="list-page">
+      {/* One slim row: the title, the numbers (each one a filter), search, filters, Add. */}
+      <div className="dr-bar">
+        <h1 className="dr-title" title="Device inventory — every handover is recorded, so you can see who had which phone in any month">
+          <PageIcon name="phone" />Mobiles
+        </h1>
+
+        <div className="dr-stats" role="group" aria-label="Device counts — click one to filter">
+          <button type="button" className={`dr-stat${!statusFilter ? ' on' : ''}`}
+            onClick={() => setStatusFilter('')} title="Every device matching the filters">
+            <b>{inScope.length}</b> Total
+          </button>
+          <button type="button" className={`dr-stat green${statusFilter === 'assigned' ? ' on' : ''}`}
+            onClick={() => pick('assigned')} title="With a driver now">
+            <b>{assigned}</b> Assigned
+          </button>
+          <button type="button" className={`dr-stat${statusFilter === 'in_stock' ? ' on' : ''}`}
+            onClick={() => pick('in_stock')} title="Ready to hand out">
+            <b>{inStock}</b> In stock
+          </button>
+          {(outOfService > 0 || statusFilter === 'out') && (
+            <>
+              <span className="dr-sep" aria-hidden="true" />
+              <button type="button" className={`dr-stat amber${statusFilter === 'out' ? ' on' : ''}`}
+                onClick={() => pick('out')} title={`In repair ${count('repair')} · lost ${count('lost')} · retired ${count('retired')}`}>
+                <b>{outOfService}</b> Out of service
+              </button>
+            </>
+          )}
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <select className="input" style={{ width: 120, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
-            <option value="">Project</option>
+
+        <div className="dr-tools">
+          <input
+            className="input dr-search"
+            type="search"
+            placeholder="Search devices…"
+            title="IMEI, work phone or mail, model, label or driver"
+            aria-label="Search devices"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+          <select className="input dr-filter" aria-label="Project" value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
+            <option value="">All projects</option>
             {projectOptions.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
           </select>
-          <select className="input" style={{ width: 100, fontSize: 12, padding: '4px 6px' }} value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
-            <option value="">Country</option>
+          <select className="input dr-filter" aria-label="Country" value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
+            <option value="">All countries</option>
             {countries.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
-          <button className="btn" onClick={() => setShowAdd(true)}>+ Add device</button>
+          {anyFilter && <button type="button" className="cov-link" onClick={clearAll}>Clear</button>}
+          <button className="btn dr-add" onClick={() => setShowAdd(true)}>+ Add device</button>
         </div>
       </div>
 
-      <div className="stat-row">
-        <div className="stat"><div className="v">{filtered.length}</div><div className="k">Devices</div></div>
-        <div className="stat"><div className="v" style={{ color: 'var(--green)' }}>{assigned}</div><div className="k">Assigned</div></div>
-        <div className="stat"><div className="v">{inStock}</div><div className="k">In stock</div></div>
-        <div className="stat"><div className="v" style={{ color: 'var(--amber)' }}>{outOfService}</div><div className="k">Out of service</div></div>
-      </div>
-
-      <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
-        <style>{`
-          .mobiles-table td, .mobiles-table th { white-space: nowrap; }
-        `}</style>
+      <div ref={tableRef} className="card list-card">
         <table className="mobiles-table">
           <thead>
             <tr>
@@ -139,7 +192,7 @@ export function Mobiles() {
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={13} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
-                  No devices found.
+                  {devices.length ? 'No device matches these filters.' : 'No devices yet — add one to get started.'}
                 </td>
               </tr>
             )}

@@ -1,5 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import type { Project, User, Vehicle } from '../lib/types';
@@ -16,6 +16,16 @@ export function Vehicles() {
   const [editing, setEditing] = useState<Vehicle | null>(null);
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'' | 'active' | 'inactive'>('');
+  /** A chip clicked as a filter: vehicles with a driver, or active ones without. */
+  const [holderFilter, setHolderFilter] = useState<'' | 'held' | 'free'>('');
+  /** Free text over plate, VID, model, driver and comments. */
+  const [query, setQuery] = useState('');
+  // A new filter starts the list from the top — the table scrolls inside its own card.
+  const tableRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (tableRef.current) tableRef.current.scrollTop = 0;
+  }, [projectFilter, countryFilter, statusFilter, holderFilter, query]);
 
   const load = () => {
     Promise.all([
@@ -50,39 +60,102 @@ export function Vehicles() {
     filteredByProject.map(v => v.country).filter(Boolean)
   )).sort() as string[];
 
-  const filtered = filteredByProject.filter(v => {
+  // Project / country / search narrow what the chips count; the chips pick status and holder, so
+  // each chip's number is what clicking it would show. Same pattern as the Drivers page.
+  const q = query.trim().toLowerCase();
+  const inScope = filteredByProject.filter(v => {
     if (countryFilter && v.country !== countryFilter) return false;
+    if (q) {
+      const hay = [v.plateNumber, v.vid, v.model, v.comments, driverObj(v.assignedDriverId)?.name]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
+  const hasDriver = (v: Vehicle) => Boolean(driverObj(v.assignedDriverId));
+  const filtered = inScope.filter(v => {
+    if (statusFilter === 'active' && !v.active) return false;
+    if (statusFilter === 'inactive' && v.active) return false;
+    if (holderFilter === 'held' && !hasDriver(v)) return false;
+    if (holderFilter === 'free' && hasDriver(v)) return false;
+    return true;
+  });
+  const activeCount = inScope.filter(v => v.active).length;
+  const inactiveCount = inScope.length - activeCount;
+  // Driver chips count vehicles in service: an inactive vehicle with nobody on it is not news.
+  const working = inScope.filter(v => v.active);
+  const withDriver = working.filter(hasDriver).length;
+  const unassigned = working.length - withDriver;
+  const pickStatus = (v: 'active' | 'inactive') => {
+    setHolderFilter('');
+    setStatusFilter(cur => (cur === v && !holderFilter ? '' : v));
+  };
+  const pickHolder = (v: 'held' | 'free') => {
+    const off = holderFilter === v;
+    setHolderFilter(off ? '' : v);
+    setStatusFilter(off ? '' : 'active');
+  };
+  const anyFilter = Boolean(projectFilter || countryFilter || statusFilter || holderFilter || q);
+  const clearAll = () => {
+    setProjectFilter(''); setCountryFilter(''); setStatusFilter(''); setHolderFilter(''); setQuery('');
+  };
 
   return (
-    <div>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title"><PageIcon name="vehicle" />Vehicles</h1>
+    <div className="list-page">
+      {/* One slim row: the title, the numbers (each one a filter), search, filters, Add. */}
+      <div className="dr-bar">
+        <h1 className="dr-title"><PageIcon name="vehicle" />Vehicles</h1>
+
+        <div className="dr-stats" role="group" aria-label="Vehicle counts — click one to filter">
+          <button type="button" className={`dr-stat${!statusFilter && !holderFilter ? ' on' : ''}`}
+            onClick={() => { setStatusFilter(''); setHolderFilter(''); }} title="Every vehicle matching the filters">
+            <b>{inScope.length}</b> Total
+          </button>
+          <button type="button" className={`dr-stat green${statusFilter === 'active' && !holderFilter ? ' on' : ''}`}
+            onClick={() => pickStatus('active')} title="In service">
+            <b>{activeCount}</b> Active
+          </button>
+          <button type="button" className={`dr-stat${statusFilter === 'inactive' ? ' on' : ''}`}
+            onClick={() => pickStatus('inactive')} title="Out of service">
+            <b>{inactiveCount}</b> Inactive
+          </button>
+          <span className="dr-sep" aria-hidden="true" />
+          <button type="button" className={`dr-stat${holderFilter === 'held' ? ' on' : ''}`}
+            onClick={() => pickHolder('held')} title="Active vehicles assigned to a driver">
+            <b>{withDriver}</b> With driver
+          </button>
+          {(unassigned > 0 || holderFilter === 'free') && (
+            <button type="button" className={`dr-stat amber${holderFilter === 'free' ? ' on' : ''}`}
+              onClick={() => pickHolder('free')} title="Active vehicles nobody is assigned to">
+              <b>{unassigned}</b> Unassigned
+            </button>
+          )}
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <select className="input" style={{ width: 120, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
-            <option value="">Project</option>
+
+        <div className="dr-tools">
+          <input
+            className="input dr-search"
+            type="search"
+            placeholder="Search vehicles…"
+            title="Plate, VID, model, driver or comments"
+            aria-label="Search vehicles"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+          <select className="input dr-filter" aria-label="Project" value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
+            <option value="">All projects</option>
             {projectOptions.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
           </select>
-          <select className="input" style={{ width: 100, fontSize: 12, padding: '4px 6px' }} value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
-            <option value="">Country</option>
+          <select className="input dr-filter" aria-label="Country" value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
+            <option value="">All countries</option>
             {countries.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
-          <button className="btn" onClick={() => setShowAdd(true)}>
-            + Add vehicle
-          </button>
+          {anyFilter && <button type="button" className="cov-link" onClick={clearAll}>Clear</button>}
+          <button className="btn dr-add" onClick={() => setShowAdd(true)}>+ Add vehicle</button>
         </div>
       </div>
 
-      <div className="stat-row">
-        <div className="stat"><div className="v">{filtered.length}</div><div className="k">Total Vehicles</div></div>
-        <div className="stat"><div className="v" style={{ color: 'var(--green)' }}>{filtered.filter(v => v.active).length}</div><div className="k">Active</div></div>
-        <div className="stat"><div className="v" style={{ color: 'var(--muted)' }}>{filtered.filter(v => !v.active).length}</div><div className="k">Inactive</div></div>
-      </div>
-
-      <div className="card" style={{ padding: 0 }}>
+      <div ref={tableRef} className="card list-card">
         <table>
           <thead>
             <tr>
@@ -118,8 +191,8 @@ export function Vehicles() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="muted" style={{ textAlign: 'center', padding: 28 }}>
-                  No vehicles found.
+                <td colSpan={8} className="muted" style={{ textAlign: 'center', padding: '40px 24px' }}>
+                  {vehicles.length ? 'No vehicle matches these filters.' : 'No vehicles yet — add one to get started.'}
                 </td>
               </tr>
             )}
