@@ -1760,7 +1760,7 @@ select.input { cursor: pointer; }
 .card.list-card { padding: 0; overflow: auto; flex: 1; min-height: 0; }
 .list-card table thead { position: sticky; top: 0; z-index: 3; }
 .list-card td, .list-card th { white-space: nowrap; }
-.list-card tbody tr:hover td { background: #eef4fc; }
+.list-card tbody tr:hover > td { background: #eef4fc; }
 .dr-bar { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin: -10px 0 12px; }
 .dr-title {
   display: flex; align-items: center; gap: 9px; margin: 0;
@@ -1779,6 +1779,15 @@ select.input { cursor: pointer; }
 .dr-stat.green b { color: var(--green); }
 .dr-stat.red b { color: var(--red); }
 .dr-stat.amber b { color: var(--amber); }
+.dr-stat.blue b { color: var(--brand); }
+/* A figure, not a filter: same chip, nothing to click. */
+.dr-stat.static { cursor: default; }
+.dr-stat.static:hover { border-color: var(--line-2); color: var(--muted); }
+/* Trips: the second short row of filters under the bar. */
+.tr-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; }
+.tr-filters select.input.dr-filter { flex: 0 0 auto; height: 32px; padding: 4px 26px 4px 10px; line-height: 1.2; font-size: 13px; }
+.tr-filters .input:not(select) { height: 32px; padding: 4px 10px; font-size: 13px; }
+.tr-export { margin-left: auto; }
 .dr-stat:hover { border-color: var(--brand-2); color: var(--text-2); }
 .dr-stat.on { background: var(--brand-light); border-color: var(--brand); color: var(--brand); }
 .dr-sep { width: 1px; height: 18px; background: var(--line-2); margin: 0 2px; }

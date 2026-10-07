@@ -277,40 +277,62 @@ export function Trips() {
   const topSpeed     = summaries.reduce((acc, s) => Math.max(acc, s.maxSpeed ?? 0), 0);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 56px - var(--topbar-h))' }}>
-      {/* Compact stat cards, scoped to this page only — frees up vertical room for the table
-          below rather than shrinking `.stat` everywhere else in the app. */}
+    <div className="list-page">
       <style>{`
         .trip-hover-row { cursor: help; }
         .day-total-row td { font-weight: 700; color: var(--text); border-top: 1px solid var(--line-2); background: var(--panel-2); }
-        .trips-stats { margin-bottom: 8px; gap: 8px; }
-        .trips-stats .stat { padding: 5px 10px; min-width: 90px; border-radius: 8px; }
-        .trips-stats .stat .icon { font-size: 10px; margin-bottom: 0; }
-        .trips-stats .stat .v { font-size: 14px; letter-spacing: -0.4px; }
-        .trips-stats .stat .k { font-size: 9px; margin-top: 0; }
-        .card table thead { position: sticky; top: 0; z-index: 3; }
         .day-row { cursor: pointer; }
-        .day-row:hover td { background: var(--panel-2); }
+        /* The expanded block is one row holding a table: it must not light up as a whole. */
+        .list-card tbody tr.day-detail-row:hover > td { background: var(--bg); }
         .day-detail-row td { padding: 0; background: var(--bg); }
         .day-detail-row table td { background: transparent; }
         .row-flash td { animation: tripsRowFlash 1.8s ease-out; }
         @keyframes tripsRowFlash { 0%, 40% { background: var(--brand-light); } 100% { background: transparent; } }
       `}</style>
-      <div className="page-head">
-        <div>
-          <h1 className="page-title"><PageIcon name="route" />Trips</h1>
-          <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: 13 }}>
-            One row per driver per day — click a row to see that day&apos;s individual trips
-          </p>
+      {/* One slim row like Drivers / Vehicles / Mobiles: the title, the page's numbers as chips
+          (Active is a filter). Filters and Export on a second short row. */}
+      <div className="dr-bar">
+        <h1 className="dr-title" title="One row per driver per day — click a row to see that day's individual trips">
+          <PageIcon name="route" />Trips
+        </h1>
+
+        <div className="dr-stats" role="group" aria-label="Trip figures">
+          <span className="dr-stat static" title="Driver-days matching the filters (all pages)">
+            <b>{total}</b> Driver-days
+          </span>
+          <span className="dr-stat static" title="Trips in the driver-days on this page">
+            <b>{tripsOnPage}</b> Trips
+          </span>
+          <button
+            type="button"
+            className={`dr-stat green${status === 'active' ? ' on' : ''}`}
+            onClick={() => setFilters({ status: status === 'active' ? '' : 'active' })}
+            title={status === 'active' ? 'Show every status again' : 'Only days with a trip still running'}
+          >
+            <b>{activeDays}</b> Active
+          </button>
+          <span className="dr-sep" aria-hidden="true" />
+          <span className="dr-stat static" title="Distance of the driver-days on this page">
+            <b>{km(totalKm)}</b> Distance
+          </span>
+          <span className="dr-stat static blue" title="New customer road driven inside the areas the drivers held — the driver-days on this page">
+            <b>{km(assignedUkm)}</b> Assigned UKM
+          </span>
+          <span className="dr-stat static amber" title="New customer road driven outside the drivers' assigned areas — the driver-days on this page">
+            <b>{km(outsideUkm)}</b> Outside UKM
+          </span>
+          <span className="dr-stat static" title="Fastest recorded speed on this page">
+            <b>{Math.round(topSpeed)}</b> km/h top
+          </span>
         </div>
+
       </div>
 
-      {/* Filters bar — below title */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
+      <div className="tr-filters">
         <FilterIcon />
         <select
-          className="input"
-          style={{ width: 140, margin: 0 }}
+          className="input dr-filter"
+          style={{ width: 134 }}
           value={project}
           onChange={e => setFilters({ project: e.target.value, country: '', driver: '' })}
         >
@@ -318,8 +340,8 @@ export function Trips() {
           {projects.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
         </select>
         <select
-          className="input"
-          style={{ width: 140, margin: 0 }}
+          className="input dr-filter"
+          style={{ width: 134 }}
           value={country}
           onChange={e => setFilters({ country: e.target.value, driver: '' })}
         >
@@ -327,8 +349,8 @@ export function Trips() {
           {countries.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <select
-          className="input"
-          style={{ width: 150, margin: 0 }}
+          className="input dr-filter"
+          style={{ width: 134 }}
           value={status}
           onChange={e => setFilters({ status: e.target.value })}
         >
@@ -338,8 +360,8 @@ export function Trips() {
           <option value="timed_out">Timed out</option>
         </select>
         <select
-          className="input"
-          style={{ width: 170, margin: 0 }}
+          className="input dr-filter"
+          style={{ width: 160 }}
           value={driverId}
           onChange={e => {
             const id = e.target.value;
@@ -358,71 +380,30 @@ export function Trips() {
           ))}
         </select>
         <DateField
-          style={{ width: 150 }}
+          style={{ width: 140 }}
           value={from}
           max={to || undefined}
           onChange={v => setFilters({ from: v })}
         />
         <span style={{ color: 'var(--muted)', fontSize: 13 }}>to</span>
         <DateField
-          style={{ width: 150 }}
+          style={{ width: 140 }}
           value={to}
           min={from || undefined}
           onChange={v => setFilters({ to: v })}
         />
         {(status || driverId || project || country || from || to) && (
-          <button
-            className="btn-ghost"
-            style={{ padding: '6px 10px', fontSize: 12.5 }}
-            onClick={() => setSearchParams({}, { replace: true })}
-          >
+          <button type="button" className="cov-link" onClick={() => setSearchParams({}, { replace: true })}>
             Clear
           </button>
         )}
-        <ExportButtons onExport={handleExport} disabled={total === 0} snappedAvailable status={exportStatus} />
-      </div>
-
-      {/* Stats */}
-      <div className="stat-row trips-stats">
-        <div className="stat">
-          <div className="icon">📅</div>
-          <div className="v">{total}</div>
-          <div className="k">Driver-days</div>
-        </div>
-        <div className="stat">
-          <div className="icon">🗺️</div>
-          <div className="v">{tripsOnPage}</div>
-          <div className="k">Trips (loaded)</div>
-        </div>
-        <div className="stat">
-          <div className="icon">🟢</div>
-          <div className="v">{activeDays}</div>
-          <div className="k">Days with active trip</div>
-        </div>
-        <div className="stat">
-          <div className="icon">📏</div>
-          <div className="v">{km(totalKm)}</div>
-          <div className="k">Total distance</div>
-        </div>
-        <div className="stat" title="New customer road driven inside the areas the drivers held — the driver-days on this page">
-          <div className="icon">🛣️</div>
-          <div className="v" style={{ color: 'var(--brand)' }}>{km(assignedUkm)}</div>
-          <div className="k">Assigned UKM</div>
-        </div>
-        <div className="stat" title="New customer road driven outside the drivers' assigned areas — the driver-days on this page">
-          <div className="icon">🧭</div>
-          <div className="v" style={{ color: '#d97706' }}>{km(outsideUkm)}</div>
-          <div className="k">Outside UKM</div>
-        </div>
-        <div className="stat">
-          <div className="icon">⚡</div>
-          <div className="v">{Math.round(topSpeed)}<span style={{ fontSize: 10, fontWeight: 600, color: 'var(--muted)' }}> km/h</span></div>
-          <div className="k">Top speed</div>
+        <div className="tr-export">
+          <ExportButtons onExport={handleExport} disabled={total === 0} snappedAvailable status={exportStatus} />
         </div>
       </div>
 
       {/* Table — scrolls on its own; the filter bar and stats above stay put. */}
-      <div className="card" style={{ padding: 0, overflow: 'auto', flex: 1, minHeight: 0 }}>
+      <div className="card list-card">
         <table>
           <thead>
             <tr>
