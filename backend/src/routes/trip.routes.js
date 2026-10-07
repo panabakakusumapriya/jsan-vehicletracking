@@ -21,5 +21,7 @@ router.get('/:id/export', ctrl.exportOne);
 // Who already held the road this trip covered — the breakdown behind its "Already covered"
 // figure. Read-only; scoped like every other trip read.
 router.get('/:id/ukm-overlap', ctrl.ukmOverlap);
+// The road this trip drove that was already driven before — by whom and when. Hover on Trips.
+router.get('/:id/already-driven', ctrl.alreadyDriven);
 
 module.exports = router;

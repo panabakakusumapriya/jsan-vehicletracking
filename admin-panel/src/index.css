@@ -1733,6 +1733,27 @@ select.input { cursor: pointer; }
   .cov-strip-areas, .cov-strip-facts { padding-left: 0; border-left: none; }
 }
 
+/* ---- Trips: "already driven before" on hovering a trip (components/AlreadyDrivenTip.tsx) ---- */
+.ad-tip {
+  position: fixed; z-index: 1000; width: 340px; max-width: calc(100vw - 16px); pointer-events: none;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px;
+  box-shadow: 0 14px 34px -12px rgba(17,24,39,0.38); padding: 10px 12px; font-size: 12.5px; color: var(--text-2);
+}
+.ad-head { font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.ad-head b { color: #b45309; }
+.ad-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 10px; align-items: baseline;
+  padding: 4px 0; border-top: 1px solid var(--line);
+}
+.ad-date { font-weight: 600; color: var(--text); white-space: nowrap; }
+.ad-who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-km { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ad-where { grid-column: 2 / 4; font-size: 11.5px; color: var(--muted); }
+.ad-muted { color: var(--muted); }
+.ad-row.ad-muted { display: block; }
+.ad-foot { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); color: var(--muted); }
+.ad-foot b { color: var(--text); }
+
 /* ---- List pages (Drivers, Vehicles, Mobiles): one slim bar of title, counts-as-filters and
    tools, and the table in a card that fills the rest of the screen ---- */
 .list-page { display: flex; flex-direction: column; height: calc(100vh - 56px - var(--topbar-h)); }

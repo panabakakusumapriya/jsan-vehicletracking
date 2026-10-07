@@ -2,6 +2,7 @@ import { PageIcon } from '../components/AppIcon';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { DateField } from '../components/DateField';
+import { AlreadyDrivenTip } from '../components/AlreadyDrivenTip';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, viewerTimeZone } from '../lib/api';
 import { runExportJob, describeJob } from '../lib/exportJobs';
@@ -28,6 +29,12 @@ interface DaySummary {
   totalUkm?: number;
   /** How many of the day's trips have a UKM yet — the rest are still being worked out. */
   ukmTrips?: number;
+  /** New customer road driven inside the areas the driver held, summed over the day. */
+  assignedUkm?: number;
+  /** New customer road driven anywhere else (all of it for a driver holding no area). */
+  outsideUkm?: number;
+  /** How many of the day's trips have been measured against the network, i.e. have the split. */
+  splitTrips?: number;
   maxSpeed: number;
   firstStart: string;
   lastEnd: string | null;
@@ -35,6 +42,16 @@ interface DaySummary {
 }
 
 const dayKey = (s: DaySummary) => `${s.driverId}|${s.date}`;
+
+/**
+ * A trip's UKM, split. Assigned: new customer road inside the areas its driver held (null when they
+ * held none). Outside: new customer road anywhere else. Both null until the trip has been measured
+ * against the network — not established is not zero.
+ */
+const assignedUkmOf = (t: Trip) => (t.linkUkmNetworkMeters == null ? null : t.linkUkmMeters ?? null);
+const outsideUkmOf = (t: Trip) =>
+  t.linkUkmNetworkMeters == null ? null : Math.max(0, t.linkUkmNetworkMeters - (t.linkUkmMeters ?? 0));
+const UNIT = { marginLeft: 5, fontSize: 11, fontWeight: 500, color: 'var(--muted)' } as const;
 
 const FilterIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -253,7 +270,10 @@ export function Trips() {
   const tripsOnPage  = summaries.reduce((acc, s) => acc + s.totalTrips, 0);
   const activeDays   = summaries.filter(s => s.anyActive).length;
   const totalKm      = summaries.reduce((acc, s) => acc + (s.totalDistance ?? 0), 0);
-  const totalUkm     = summaries.reduce((acc, s) => acc + (s.totalUkm ?? 0), 0);
+  const assignedUkm  = summaries.reduce((acc, s) => acc + (s.assignedUkm ?? 0), 0);
+  const outsideUkm   = summaries.reduce((acc, s) => acc + (s.outsideUkm ?? 0), 0);
+  /** The trip row under the pointer, for the "already driven before" panel. */
+  const [hover, setHover] = useState<{ tripId: string; x: number; y: number } | null>(null);
   const topSpeed     = summaries.reduce((acc, s) => Math.max(acc, s.maxSpeed ?? 0), 0);
 
   return (
@@ -261,6 +281,7 @@ export function Trips() {
       {/* Compact stat cards, scoped to this page only — frees up vertical room for the table
           below rather than shrinking `.stat` everywhere else in the app. */}
       <style>{`
+        .trip-hover-row { cursor: help; }
         .day-total-row td { font-weight: 700; color: var(--text); border-top: 1px solid var(--line-2); background: var(--panel-2); }
         .trips-stats { margin-bottom: 8px; gap: 8px; }
         .trips-stats .stat { padding: 5px 10px; min-width: 90px; border-radius: 8px; }
@@ -383,10 +404,15 @@ export function Trips() {
           <div className="v">{km(totalKm)}</div>
           <div className="k">Total distance</div>
         </div>
-        <div className="stat" title="Unique kilometres of the driver-days on this page — road first covered, as in each trip's UKM">
+        <div className="stat" title="New customer road driven inside the areas the drivers held — the driver-days on this page">
           <div className="icon">🛣️</div>
-          <div className="v">{km(totalUkm)}</div>
-          <div className="k">Total UKM</div>
+          <div className="v" style={{ color: 'var(--brand)' }}>{km(assignedUkm)}</div>
+          <div className="k">Assigned UKM</div>
+        </div>
+        <div className="stat" title="New customer road driven outside the drivers' assigned areas — the driver-days on this page">
+          <div className="icon">🧭</div>
+          <div className="v" style={{ color: '#d97706' }}>{km(outsideUkm)}</div>
+          <div className="k">Outside UKM</div>
         </div>
         <div className="stat">
           <div className="icon">⚡</div>
@@ -405,7 +431,8 @@ export function Trips() {
               <th>Date</th>
               <th>Trips</th>
               <th>Total distance</th>
-              <th title="Unique kilometres: the day's trips' UKM added up">Total UKM</th>
+              <th title="New customer road driven inside the driver's assigned areas, the day's trips added up">Assigned UKM</th>
+              <th title="New customer road driven outside the driver's assigned areas, the day's trips added up">Outside UKM</th>
               <th>Max speed</th>
               <th>First start</th>
               <th>Last end</th>
@@ -438,27 +465,26 @@ export function Trips() {
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.date}</td>
                     <td style={{ fontWeight: 700 }}>{s.totalTrips}</td>
                     <td style={{ fontWeight: 600 }}>{km(s.totalDistance)}</td>
-                    {/* Partial while some trips still have no UKM (open, or not map-matched yet):
-                        say how many it covers rather than passing a part off as the whole. */}
-                    <td
-                      style={{ fontWeight: 600, color: 'var(--brand)' }}
-                      title={(s.ukmTrips ?? 0) < s.totalTrips
-                        ? `${s.ukmTrips ?? 0} of ${s.totalTrips} trips have a UKM so far — the rest are still being worked out`
-                        : 'All of the day\u2019s trips added up'}
-                    >
-                      {(s.ukmTrips ?? 0) === 0 ? (
-                        <span style={{ color: 'var(--muted)', fontWeight: 400 }}>—</span>
-                      ) : (
-                        <>
-                          {km(s.totalUkm ?? 0)}
-                          {(s.ukmTrips ?? 0) < s.totalTrips && (
-                            <span style={{ marginLeft: 5, fontSize: 11, fontWeight: 500, color: 'var(--muted)' }}>
-                              {s.ukmTrips}/{s.totalTrips} trips
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </td>
+                    {/* Partial while some trips are not measured yet (open, or not map-matched): say
+                        how many the sums cover rather than passing a part off as the whole. */}
+                    {(['assignedUkm', 'outsideUkm'] as const).map((field) => (
+                      <td
+                        key={field}
+                        style={{ fontWeight: 600, color: field === 'assignedUkm' ? 'var(--brand)' : '#d97706' }}
+                        title={(s.splitTrips ?? 0) < s.totalTrips
+                          ? `${s.splitTrips ?? 0} of ${s.totalTrips} trips measured so far — the rest are still being worked out`
+                          : 'All of the day\u2019s trips added up'}
+                      >
+                        {(s.splitTrips ?? 0) === 0 ? (
+                          <span style={{ color: 'var(--muted)', fontWeight: 400 }}>—</span>
+                        ) : (
+                          <>
+                            {km(s[field] ?? 0)}
+                            {(s.splitTrips ?? 0) < s.totalTrips && <span style={UNIT}>{s.splitTrips}/{s.totalTrips}</span>}
+                          </>
+                        )}
+                      </td>
+                    ))}
                     {/* Every trip imported means nothing was ever measured; a day that mixes the
                         two still has a real reading from the recorded half. */}
                     <td title={(s.importedTrips ?? 0) >= s.totalTrips ? 'No GPS was recorded for an imported day, so speed was never measured.' : undefined}>
@@ -471,7 +497,7 @@ export function Trips() {
                   </tr>
                   {isOpen && (
                     <tr key={`${key}-detail`} className="day-detail-row">
-                      <td colSpan={9}>
+                      <td colSpan={10}>
                         {rowsLoading && !rows ? (
                           <div className="muted" style={{ padding: '14px 20px', fontSize: 12.5 }}>Loading trips…</div>
                         ) : (
@@ -485,14 +511,22 @@ export function Trips() {
                                 <th>Distance</th>
                                 <th>Max speed</th>
                                 <th>Points</th>
-                                <th title="Unique kilometers: assigned roads first covered by the trip when the driver held a polygon, otherwise road new to the whole programme">UKM</th>
+                                <th title="New customer road this trip drove first, inside the areas its driver held">Assigned UKM</th>
+                                <th title="New customer road this trip drove first, outside the driver's areas">Outside UKM</th>
                                 <th title="Snapped distance driven outside the polygons the driver was assigned during the trip">Outside area</th>
                                 <th></th>
                               </tr>
                             </thead>
                             <tbody>
                               {(rows ?? []).map(t => (
-                                <tr key={t._id} data-trip-id={t._id}>
+                                <tr
+                                  key={t._id}
+                                  data-trip-id={t._id}
+                                  className="trip-hover-row"
+                                  onMouseEnter={(e) => setHover({ tripId: t._id, x: e.clientX, y: e.clientY })}
+                                  onMouseMove={(e) => setHover({ tripId: t._id, x: e.clientX, y: e.clientY })}
+                                  onMouseLeave={() => setHover(null)}
+                                >
                                   <td style={{ paddingLeft: 48 }}>
                                     {plate(t.vehicleId) !== '—'
                                       ? <span style={{ background: 'var(--panel-2)', border: '1px solid var(--line-2)', borderRadius: 6, padding: '2px 8px', fontSize: 12, fontWeight: 600, fontFamily: 'monospace' }}>{plate(t.vehicleId)}</span>
@@ -564,16 +598,23 @@ export function Trips() {
                                       t.pointCount
                                     )}
                                   </td>
-                                  <td
-                                    style={{ fontWeight: 600 }}
-                                    title={t.effectiveUkmMeters == null
-                                      ? (t.status === 'active' ? 'Computed once the trip ends and is map-matched' : 'Not established yet — this is not zero')
-                                      : t.ukmBasis === 'assigned' ? 'Measured against the assigned road network' : 'Measured against all driving in the programme'}
-                                  >
-                                    {t.effectiveUkmMeters != null
-                                      ? <>{km(t.effectiveUkmMeters)}{t.ukmBasis && <span style={{ marginLeft: 5, fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase' }}>{t.ukmBasis}</span>}</>
-                                      : <span style={{ color: 'var(--muted)' }}>—</span>}
-                                  </td>
+                                  {t.linkUkmNetworkMeters == null ? (
+                                    <td colSpan={2} style={{ color: 'var(--muted)' }}
+                                      title={t.status === 'active' ? 'Worked out once the trip ends and is map-matched' : 'Not established yet — this is not zero'}>
+                                      {t.status === 'active' ? 'after the trip ends' : '—'}
+                                    </td>
+                                  ) : (
+                                    <>
+                                      <td style={{ fontWeight: 600, color: 'var(--brand)' }}
+                                        title={assignedUkmOf(t) == null ? 'No area was assigned to the driver during this trip' : 'New customer road driven first, inside the assigned areas'}>
+                                        {assignedUkmOf(t) == null ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>no area</span> : km(assignedUkmOf(t) ?? 0)}
+                                      </td>
+                                      <td style={{ fontWeight: 600, color: (outsideUkmOf(t) ?? 0) > 0 ? '#d97706' : 'var(--muted)' }}
+                                        title="New customer road driven first, outside the assigned areas">
+                                        {km(outsideUkmOf(t) ?? 0)}
+                                      </td>
+                                    </>
+                                  )}
                                   <td style={{ color: (t.outAreaMeters ?? 0) > 0 ? '#d97706' : 'var(--muted)', fontWeight: (t.outAreaMeters ?? 0) > 0 ? 600 : 400 }}>
                                     {t.outAreaMeters != null ? km(t.outAreaMeters) : '—'}
                                   </td>
@@ -610,8 +651,9 @@ export function Trips() {
                             {(rows ?? []).length > 1 && (() => {
                               const list = rows ?? [];
                               const dist = list.reduce((a, t) => a + (t.distanceMeters ?? 0), 0);
-                              const withUkm = list.filter(t => t.effectiveUkmMeters != null);
-                              const ukm = withUkm.reduce((a, t) => a + (t.effectiveUkmMeters ?? 0), 0);
+                              const measured = list.filter(t => t.linkUkmNetworkMeters != null);
+                              const assignedSum = measured.reduce((a, t) => a + (assignedUkmOf(t) ?? 0), 0);
+                              const outsideSum = measured.reduce((a, t) => a + (outsideUkmOf(t) ?? 0), 0);
                               const outList = list.filter(t => t.outAreaMeters != null);
                               const out = outList.reduce((a, t) => a + (t.outAreaMeters ?? 0), 0);
                               return (
@@ -621,12 +663,11 @@ export function Trips() {
                                     <td>{km(dist)}</td>
                                     <td />
                                     <td />
-                                    <td title={withUkm.length < list.length ? `${withUkm.length} of ${list.length} trips have a UKM so far` : undefined}>
-                                      {withUkm.length ? km(ukm) : '—'}
-                                      {withUkm.length > 0 && withUkm.length < list.length && (
-                                        <span style={{ marginLeft: 5, fontSize: 11, fontWeight: 500, color: 'var(--muted)' }}>{withUkm.length}/{list.length}</span>
-                                      )}
+                                    <td style={{ color: 'var(--brand)' }} title={measured.length < list.length ? `${measured.length} of ${list.length} trips measured so far` : undefined}>
+                                      {measured.length ? km(assignedSum) : '—'}
+                                      {measured.length > 0 && measured.length < list.length && <span style={UNIT}>{measured.length}/{list.length}</span>}
                                     </td>
+                                    <td style={{ color: '#d97706' }}>{measured.length ? km(outsideSum) : '—'}</td>
                                     <td style={{ color: out > 0 ? '#d97706' : 'var(--muted)' }}>{outList.length ? km(out) : '—'}</td>
                                     <td />
                                   </tr>
@@ -643,7 +684,7 @@ export function Trips() {
             })}
             {!loading && summaries.length === 0 && (
               <tr>
-                <td colSpan={9} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
+                <td colSpan={10} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>
                   No trips found for the selected filter.
                 </td>
               </tr>
@@ -651,6 +692,8 @@ export function Trips() {
           </tbody>
         </table>
       </div>
+
+      {hover && <AlreadyDrivenTip tripId={hover.tripId} x={hover.x} y={hover.y} />}
 
       {/* Numbered pagination over driver-day rows. Each page replaces the table rather than
           accumulating, so the page never has to hold more than one page's worth in memory. */}

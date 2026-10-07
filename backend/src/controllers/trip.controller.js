@@ -12,6 +12,7 @@ const { timezoneForCountry } = require('../utils/countryTimezone');
 const { buildKml, buildSnappedKml, buildJson, buildMergedKml, buildMergedSnappedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate } = require('../utils/tripExport');
 const { decodePolyline6 } = require('../services/roadSegments');
 const { overlapBreakdown } = require('../services/globalUkm');
+const { alreadyDriven: alreadyDrivenFor } = require('../services/alreadyDriven');
 const Project = require('../models/Project');
 
 /**
@@ -54,6 +55,23 @@ async function pointsByTrip(tripIds) {
  *
  * Read-only.
  */
+/**
+ * GET /api/trips/:id/already-driven
+ *
+ * The road this trip covered that somebody had already driven, grouped by that earlier drive —
+ * its date, its driver, and how much of it lay inside / outside the areas this trip's driver held.
+ * None of it counts toward this trip's UKM. Shown when a trip is hovered on the Trips page. See
+ * services/alreadyDriven.js. Read-only; scoped like every other trip read.
+ */
+exports.alreadyDriven = asyncHandler(async (req, res) => {
+  const scope = await accessibleDriverFilter(req.user);
+  const trip = await Trip.findOne({ _id: req.params.id, ...scope }).select('_id').lean();
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  const result = await alreadyDrivenFor(trip._id);
+  if (!result) return res.status(404).json({ error: 'Trip not found' });
+  return res.json(result);
+});
+
 exports.ukmOverlap = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
   const trip = await Trip.findOne({ _id: req.params.id, ...scope }).select('_id').lean();
@@ -555,6 +573,22 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
         // caller can say "3 of 4 trips" instead of passing a partial sum off as the total.
         totalUkm: { $sum: { $ifNull: ['$effectiveUkmMeters', 0] } },
         ukmTrips: { $sum: { $cond: [{ $ne: [{ $ifNull: ['$effectiveUkmMeters', null] }, null] }, 1, 0] } },
+        // The same UKM split the way the Trips page shows it. Assigned: the customer's roads this
+        // trip drove first INSIDE the areas its driver held (linkUkmMeters). Outside: the customer's
+        // roads it drove first anywhere else — everything new on the network that is not assigned
+        // (linkUkmNetworkMeters − linkUkmMeters; all of it, for a driver holding no area).
+        assignedUkm: { $sum: { $ifNull: ['$linkUkmMeters', 0] } },
+        outsideUkm: {
+          $sum: {
+            $cond: [
+              { $ne: [{ $ifNull: ['$linkUkmNetworkMeters', null] }, null] },
+              { $max: [0, { $subtract: ['$linkUkmNetworkMeters', { $ifNull: ['$linkUkmMeters', 0] }] }] },
+              0,
+            ],
+          },
+        },
+        // Trips measured against the network at all — the rest have no split yet.
+        splitTrips: { $sum: { $cond: [{ $ne: [{ $ifNull: ['$linkUkmNetworkMeters', null] }, null] }, 1, 0] } },
         maxSpeed: { $max: '$maxSpeedKmh' },
         firstStart: { $min: '$startedAt' },
         lastEnd: { $max: '$endedAt' },
@@ -586,6 +620,9 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     importedTrips: r.importedTrips || 0,
     totalUkm: r.totalUkm || 0,
     ukmTrips: r.ukmTrips || 0,
+    assignedUkm: r.assignedUkm || 0,
+    outsideUkm: r.outsideUkm || 0,
+    splitTrips: r.splitTrips || 0,
     maxSpeed: r.maxSpeed || 0,
     firstStart: r.firstStart,
     lastEnd: r.lastEnd,
