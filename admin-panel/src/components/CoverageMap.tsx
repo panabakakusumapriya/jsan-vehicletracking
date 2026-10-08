@@ -664,7 +664,8 @@ export function CoverageMap({
      * "this belongs to someone", and the driver legend below carries who.
      */
     const OUTLINE_ONLY: [number, number, number, number] = [0, 0, 0, 0];
-    const ASSIGNED_BLUE: [number, number, number, number] = [37, 99, 235, 255];
+    // Green outlines, so an area boundary never reads as a road: blue on this map means driven.
+    const AREA_GREEN: [number, number, number, number] = [22, 163, 74, 255];
 
     /** Outside the driver filter: kept on the map for context, but pushed well back. */
     const isFaded = (p: AreaProps) =>
@@ -707,11 +708,11 @@ export function CoverageMap({
             // A signed-off area gets an emerald border. Deliberately the OUTLINE and not the fill:
             // completion and percentage are independent facts, and a manager needs to read both
             // at once — "done" and "done at 44%" is a real combination.
-            if (f.properties.completed) return [4, 120, 87, 255];
+            if (f.properties.completed) return [6, 95, 70, 255]; // deep green, drawn thickest
             if (mode === 'assignment') {
-              // Both blue: an area is an area. Solid means someone holds it, dashed means it is
+              // Both green: an area is an area. Solid means someone holds it, dashed means it is
               // still waiting — the same language the delivered design used.
-              return isAssigned(f.properties) ? ASSIGNED_BLUE : [37, 99, 235, 200];
+              return isAssigned(f.properties) ? AREA_GREEN : [22, 163, 74, 200];
             }
             const c = shadeOf(f.properties);
             return [c[0], c[1], c[2], 235];
@@ -724,7 +725,7 @@ export function CoverageMap({
             selected.has(f.properties.areaId || '')
               ? 3
               : f.properties.completed
-                ? 2.2
+                ? 3
                 : isAssigned(f.properties)
                   ? 2
                   : 1,
@@ -1150,14 +1151,14 @@ export function CoverageMap({
           <>
             {/* Outline first, because it is the fact people look for: whose is this. */}
             <div className="cov-legend-row">
-              <span className="cov-line" style={{ background: 'rgb(37,99,235)' }} />
+              <span className="cov-line" style={{ background: 'rgb(22,163,74)' }} />
               <span>assigned</span>
               <span
                 className="cov-line"
-                style={{ background: 'none', borderTop: '2px dashed rgb(37,99,235)', height: 0 }}
+                style={{ background: 'none', borderTop: '2px dashed rgb(22,163,74)', height: 0 }}
               />
               <span>unassigned</span>
-              <span className="cov-line" style={{ background: 'rgb(4,120,87)' }} />
+              <span className="cov-line" style={{ background: 'rgb(6,95,70)', height: 4 }} />
               <span>completed</span>
             </div>
             <div className="cov-legend-row">
