@@ -79,6 +79,9 @@ const historyLimiter = rateLimit({
 });
 router.get('/my-history', authenticate, requireRole('user'), historyLimiter, ctrl.myHistory);
 
+// The driver's trips on one day and the day's working hours — a few hundred bytes, no geometry.
+router.get('/my-day', authenticate, requireRole('user'), syncLimiter, ctrl.myDay);
+
 // Admins / managers read the live snapshot.
 router.get('/live', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.live);
 

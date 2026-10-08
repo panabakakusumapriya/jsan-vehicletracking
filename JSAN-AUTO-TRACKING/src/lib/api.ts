@@ -234,6 +234,32 @@ export type MyHistoryTrip = {
   ukmStatus: string;
 };
 
+/** One trip on the driver's day, for the Home screen's "Today's work" card. */
+export type MyDayTrip = {
+  id: string;
+  startedAt: string;
+  /** null while the trip is still running. */
+  endedAt: string | null;
+  status: string;
+  /** Start to end — or to when the server answered, while running. */
+  durationMs: number;
+  distanceMeters: number;
+};
+
+export type MyDay = {
+  date: string;
+  timezone: string;
+  trips: MyDayTrip[];
+  /** workMs: every trip's start to end, added up. The gaps between trips are not counted. */
+  totals: { trips: number; workMs: number; distanceMeters: number };
+};
+
+/** The driver's own trips on one local day (YYYY-MM-DD), with the day's working hours. Numbers only. */
+export function apiMyDay(token: string, date: string, tz: string | null): Promise<MyDay> {
+  const q = `date=${encodeURIComponent(date)}${tz ? `&tz=${encodeURIComponent(tz)}` : ''}`;
+  return request(`/api/tracking/my-day?${q}`, {}, token);
+}
+
 export type MyHistory = {
   days: number;
   from: string;

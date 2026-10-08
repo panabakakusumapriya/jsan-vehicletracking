@@ -19,6 +19,18 @@ export const sessionDt = (s?: string | null) => {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+/** A span of time as working hours: "2h 14m", or "44m" under an hour. */
+export const hm = (ms: number | null | undefined) => {
+  const mins = Math.max(0, Math.round((ms ?? 0) / 60000));
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+};
+
+/** How long a trip ran: start to end, or to now while it is still going. */
+export const tripMs = (t: { startedAt: string; endedAt?: string | null }) =>
+  Math.max(0, (t.endedAt ? new Date(t.endedAt).getTime() : Date.now()) - new Date(t.startedAt).getTime());
+
 export function statusBadge(status: 'active' | 'completed' | 'timed_out') {
   if (status === 'active') return 'green';
   if (status === 'timed_out') return 'amber';

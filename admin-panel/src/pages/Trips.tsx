@@ -7,7 +7,7 @@ import { AlreadyDrivenTip } from '../components/AlreadyDrivenTip';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, viewerTimeZone } from '../lib/api';
 import { runExportJob, describeJob } from '../lib/exportJobs';
-import { km, sessionDt, statusBadge } from '../lib/format';
+import { hm, km, sessionDt, statusBadge, tripMs } from '../lib/format';
 import type { Project, Trip, User } from '../lib/types';
 
 const plate = (v: Trip['vehicleId']) => (typeof v === 'object' && v ? v.plateNumber : '—');
@@ -26,6 +26,11 @@ interface DaySummary {
   totalDistance: number;
   /** How many of the day's trips came from imported GIS data rather than a handset. */
   importedTrips?: number;
+  /**
+   * Working hours: each trip's start-to-end added up (gaps between trips are not work; a running
+   * trip counts to now; imported trips are left out — their times are the importer's fixed window).
+   */
+  workMs?: number;
   /** The day's UKM, summed over its trips that have one. */
   totalUkm?: number;
   /** How many of the day's trips have a UKM yet — the rest are still being worked out. */
@@ -276,6 +281,7 @@ export function Trips() {
   const totalKm      = summaries.reduce((acc, s) => acc + (s.totalDistance ?? 0), 0);
   const assignedUkm  = summaries.reduce((acc, s) => acc + (s.assignedUkm ?? 0), 0);
   const outsideUkm   = summaries.reduce((acc, s) => acc + (s.outsideUkm ?? 0), 0);
+  const workMs       = summaries.reduce((acc, s) => acc + (s.workMs ?? 0), 0);
   /** The trip row under the pointer, for the "already driven before" panel. */
   const [hover, setHover] = useState<{ tripId: string; x: number; y: number } | null>(null);
   const topSpeed     = summaries.reduce((acc, s) => Math.max(acc, s.maxSpeed ?? 0), 0);
@@ -316,6 +322,9 @@ export function Trips() {
             <b>{activeDays}</b> Active
           </button>
           <span className="dr-sep" aria-hidden="true" />
+          <span className="dr-stat static" title="Working hours of the driver-days on this page: every trip's start to end, added up">
+            <b>{hm(workMs)}</b> Working hours
+          </span>
           <span className="dr-stat static" title="Distance of the driver-days on this page">
             <b>{km(totalKm)}</b> Distance
           </span>
@@ -420,6 +429,7 @@ export function Trips() {
               <th>Max speed</th>
               <th>First start</th>
               <th>Last end</th>
+              <th title="Every trip's start to end, added up — the time between trips is not counted">Working hours</th>
             </tr>
           </thead>
           <tbody>
@@ -478,10 +488,18 @@ export function Trips() {
                     </td>
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(s.firstStart)}</td>
                     <td style={{ color: 'var(--muted)', fontSize: 13 }}>{s.lastEnd ? sessionDt(s.lastEnd) : '—'}</td>
+                    <td
+                      style={{ fontWeight: 700 }}
+                      title={(s.importedTrips ?? 0) > 0
+                        ? `Recorded trips only — ${s.importedTrips} imported trip${s.importedTrips === 1 ? ' has' : 's have'} no real start and end times`
+                        : 'Every trip’s start to end, added up'}
+                    >
+                      {(s.importedTrips ?? 0) >= s.totalTrips ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>—</span> : hm(s.workMs)}
+                    </td>
                   </tr>
                   {isOpen && (
                     <tr key={`${key}-detail`} className="day-detail-row">
-                      <td colSpan={10}>
+                      <td colSpan={11}>
                         {rowsLoading && !rows ? (
                           <div className="muted" style={{ padding: '14px 20px', fontSize: 12.5 }}>Loading trips…</div>
                         ) : (
@@ -492,6 +510,7 @@ export function Trips() {
                                 <th>Status</th>
                                 <th>Started</th>
                                 <th>Ended</th>
+                                <th>Duration</th>
                                 <th>Distance</th>
                                 <th>Max speed</th>
                                 <th>Points</th>
@@ -533,6 +552,11 @@ export function Trips() {
                                   </td>
                                   <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(t.startedAt)}</td>
                                   <td style={{ color: 'var(--muted)', fontSize: 13 }}>{t.endedAt ? sessionDt(t.endedAt) : '—'}</td>
+                                  <td style={{ fontWeight: 600 }} title={t.importBatchId ? 'Imported: no real start and end times were recorded' : undefined}>
+                                    {t.importBatchId ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>—</span> : (
+                                      <>{hm(tripMs(t))}{!t.endedAt && <span style={UNIT}>so far</span>}</>
+                                    )}
+                                  </td>
                                   <td style={{ fontWeight: 600 }}>{km(t.distanceMeters)}</td>
                                   {/* Same reason as Points: no GPS means no speed was ever
                                       measured. A flat 0 km/h claims the vehicle never moved. */}
@@ -632,9 +656,11 @@ export function Trips() {
                                 </tr>
                               ))}
                             </tbody>
-                            {(rows ?? []).length > 1 && (() => {
+                            {(rows ?? []).length > 0 && (() => {
                               const list = rows ?? [];
                               const dist = list.reduce((a, t) => a + (t.distanceMeters ?? 0), 0);
+                              const timed = list.filter(t => !t.importBatchId);
+                              const work = timed.reduce((a, t) => a + tripMs(t), 0);
                               const measured = list.filter(t => t.linkUkmNetworkMeters != null);
                               const assignedSum = measured.reduce((a, t) => a + (assignedUkmOf(t) ?? 0), 0);
                               const outsideSum = measured.reduce((a, t) => a + (outsideUkmOf(t) ?? 0), 0);
@@ -643,7 +669,11 @@ export function Trips() {
                               return (
                                 <tfoot>
                                   <tr className="day-total-row">
-                                    <td style={{ paddingLeft: 48 }} colSpan={4}>Day total · {list.length} trips</td>
+                                    <td style={{ paddingLeft: 48 }} colSpan={4}>Day total · {list.length} trip{list.length === 1 ? '' : 's'}</td>
+                                    <td title="Total working hours: every trip's start to end, added up — the time between trips is not counted">
+                                      {timed.length ? hm(work) : '—'}
+                                      {timed.length > 0 && <span style={UNIT}>working</span>}
+                                    </td>
                                     <td>{km(dist)}</td>
                                     <td />
                                     <td />

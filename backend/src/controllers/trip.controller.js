@@ -589,6 +589,18 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
         },
         // Trips measured against the network at all — the rest have no split yet.
         splitTrips: { $sum: { $cond: [{ $ne: [{ $ifNull: ['$linkUkmNetworkMeters', null] }, null] }, 1, 0] } },
+        // Working hours: each trip's own start-to-end, added up — the gaps between trips are not
+        // work time. A trip still running counts up to now. Imported days are left out: their
+        // times are a fixed working window stamped by the importer, not anything recorded.
+        workMs: {
+          $sum: {
+            $cond: [
+              { $ne: [{ $ifNull: ['$importBatchId', null] }, null] },
+              0,
+              { $max: [0, { $subtract: [{ $ifNull: ['$endedAt', '$$NOW'] }, '$startedAt'] }] },
+            ],
+          },
+        },
         maxSpeed: { $max: '$maxSpeedKmh' },
         firstStart: { $min: '$startedAt' },
         lastEnd: { $max: '$endedAt' },
@@ -623,6 +635,7 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     assignedUkm: r.assignedUkm || 0,
     outsideUkm: r.outsideUkm || 0,
     splitTrips: r.splitTrips || 0,
+    workMs: r.workMs || 0,
     maxSpeed: r.maxSpeed || 0,
     firstStart: r.firstStart,
     lastEnd: r.lastEnd,

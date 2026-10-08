@@ -23,6 +23,7 @@ const { scopeForProject } = require('../services/coverageScope');
 const { rebuildScope } = require('../services/globalUkm');
 const { classifyTrip } = require('../services/tripNoise');
 const mongoose = require('mongoose');
+const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezone');
 const { sendCompressed } = require('../utils/compressedJson');
 
 /**
@@ -1211,6 +1212,56 @@ const reencode = (coords, tolerance) => {
   if (simplified.length < 2) return null;
   return { shape: encodePolyline6(simplified.map(([lon, lat]) => ({ lat, lon }))), vertices: simplified.length };
 };
+
+/**
+ * GET /api/tracking/my-day?date=YYYY-MM-DD&tz=Area/City — the driver's own trips on one day, with
+ * the day's working hours: each trip's start-to-end added up (a trip still running counts to now).
+ *
+ * Numbers only, no geometry — the Home screen's "Today's work" card reads it on open and on every
+ * trip end. The day is the driver's local one: `tz` from the phone, else their stored zone.
+ */
+exports.myDay = asyncHandler(async (req, res) => {
+  const tz = isValidTimeZone(req.query.tz) ? req.query.tz : isValidTimeZone(req.user.timezone) ? req.user.timezone : 'UTC';
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? String(req.query.date) : formatDateInZone(new Date(), tz);
+  let range;
+  try {
+    range = dayRange(date, tz);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  const rows = await Trip.find({
+    driverId: req.user._id,
+    startedAt: { $gte: range.from, $lt: range.to },
+    parkedJitter: { $ne: true },
+    // An imported day's times are the importer's fixed working window, not recorded work.
+    importBatchId: null,
+  })
+    .select('startedAt endedAt status distanceMeters')
+    .sort({ startedAt: 1 })
+    .lean();
+  const now = Date.now();
+  const trips = rows.map((t) => {
+    const end = t.endedAt ? new Date(t.endedAt).getTime() : now;
+    return {
+      id: String(t._id),
+      startedAt: t.startedAt,
+      endedAt: t.endedAt || null,
+      status: t.status,
+      durationMs: Math.max(0, end - new Date(t.startedAt).getTime()),
+      distanceMeters: t.distanceMeters || 0,
+    };
+  });
+  res.json({
+    date,
+    timezone: tz,
+    trips,
+    totals: {
+      trips: trips.length,
+      workMs: trips.reduce((a, t) => a + t.durationMs, 0),
+      distanceMeters: trips.reduce((a, t) => a + t.distanceMeters, 0),
+    },
+  });
+});
 
 exports.myHistory = asyncHandler(async (req, res) => {
   const requested = parseInt(String(req.query.days || ''), 10);

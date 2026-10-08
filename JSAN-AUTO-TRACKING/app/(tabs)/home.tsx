@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import * as VehicleTracker from '@/modules/vehicle-tracker';
+import { DayWork } from '@/src/components/DayWork';
 import { TrackingChecklist } from '@/src/components/TrackingChecklist';
 import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
@@ -60,6 +61,8 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [uploadError, setUploadError] = useState<UploadError>(null);
   const [daylightInfo, setDaylightInfo] = useState<VehicleTracker.DaylightInfo | null>(null);
+  /** Bumped when a trip starts or ends, or on pull-to-refresh: the working-hours card reloads. */
+  const [workKey, setWorkKey] = useState(0);
   const started = useRef(false);
   /** `${token}|${driverId}` last handed to the native service — dedupes configure() calls. */
   const lastConfiguredRef = useRef<string | null>(null);
@@ -171,11 +174,18 @@ export default function Home() {
             ? prev : e);
         if (e.tripStatus === 'active') setUiState('tracking');
       }),
-      VehicleTracker.addTripEndListener(() => { setUiState('idle'); refreshStatus(); }),
+      VehicleTracker.addTripEndListener(() => { setUiState('idle'); refreshStatus(); setWorkKey(k => k + 1); }),
       VehicleTracker.addUploadErrorListener(e => { setUploadError(e); }),
     ].filter(Boolean);
     return () => subs.forEach(s => s?.remove());
   }, [refreshStatus]);
+
+  // A trip starting shows up as a running row straight away (once the server has its first points).
+  useEffect(() => {
+    if (uiState !== 'tracking') return;
+    const t = setTimeout(() => setWorkKey(k => k + 1), 20_000);
+    return () => clearTimeout(t);
+  }, [uiState]);
 
   // Upload failures re-fire on every failed flush (~10-30 s), each replacing the event object and
   // re-arming this timer — the banner stays up while failures continue and clears itself 90 s
@@ -193,6 +203,7 @@ export default function Home() {
     setRefreshing(true);
     await VehicleTracker.flushNow();
     await refreshStatus();
+    setWorkKey(k => k + 1);
     setRefreshing(false);
   };
 
@@ -275,6 +286,9 @@ export default function Home() {
           </TouchableOpacity>
         )}
       </View>
+
+      {/* ── Working hours: the day's trips, start – end, and their total ── */}
+      <DayWork token={token} refreshKey={workKey} />
 
       {/* ── Tracking health checklist — the same six switches the login gate enforces,
              kept visible so post-login regressions (revoked permission, OEM re-enabling

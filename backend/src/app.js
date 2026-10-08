@@ -112,6 +112,7 @@ function createApp() {
         liveAreas: true,
         // The coverage map draws every road at full detail from cached binary files.
         roadBlobs: true,
+        workHours: true,
       },
     })
   );
