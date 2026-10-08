@@ -26,6 +26,16 @@ async function start() {
     startExportRunner();
     startImportRunner();
     seedDefaultCategories();
+    // The coverage map's road files for every delivery in use, built in the background so the
+    // first person to open the map after a deploy does not wait for them.
+    setTimeout(() => {
+      const NetworkVersion = require('./models/NetworkVersion');
+      const { liveNetworkVersions } = require('./services/liveNetworks');
+      NetworkVersion.distinct('projectId')
+        .then((ids) => liveNetworkVersions(ids))
+        .then((versions) => require('./services/roadBlobs').warm(versions.map((v) => v._id)))
+        .catch(() => {});
+    }, 20 * 1000);
     console.log('');
   });
 }

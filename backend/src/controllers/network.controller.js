@@ -20,6 +20,7 @@ const networkImport = require('../services/networkImport');
 const workAreaSplit = require('../services/workAreaSplit');
 const coverageReset = require('../services/coverageReset');
 const driverPositions = require('../services/driverPositions');
+const roadBlobs = require('../services/roadBlobs');
 const { ensureRegions } = require('../services/deliveryRegions');
 const { liveNetworkVersions } = require('../services/liveNetworks');
 const { kickImportRunner } = require('../services/importRunner');
@@ -1879,6 +1880,109 @@ async function versionTracks(req, res) {
   }, 'tracks');
 }
 
+/* ---- every road of the network, at full detail, for the coverage map (services/roadBlobs.js) ---- */
+
+/**
+ * GET /versions/:id/road-blobs — the road files of the deliveries in this scope: which file each
+ * one is (its key goes in the URL, so the browser caches it for good) and whether it is built yet.
+ */
+async function versionRoadBlobs(req, res) {
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+  const blobs = [];
+  for (const versionId of scope.versionIds) {
+    // eslint-disable-next-line no-await-in-loop
+    const { key, links } = await roadBlobs.blobKey(versionId);
+    if (links) blobs.push({ versionId: String(versionId), key, links });
+  }
+  res.set('Cache-Control', 'no-store');
+  return res.json({ blobs });
+}
+
+/**
+ * GET /road-blob/:versionId/:key — one delivery's roads, every vertex, gzipped binary. Built on
+ * first request (a big delivery takes a minute, once) and served from storage after that.
+ */
+async function roadBlob(req, res) {
+  const version = await NetworkVersion.findById(asObjectId(req.params.versionId) || null).select('projectId');
+  if (!version) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, version.projectId);
+  const { key } = await roadBlobs.blobKey(version._id);
+  // A stale key means the delivery changed (a split, a roads-only import): ask for the list again.
+  if (req.params.key !== key) return res.status(410).json({ error: 'This road file has been replaced', key });
+
+  const file = await roadBlobs.ensure(version._id, key);
+  res.set({
+    'Content-Type': 'application/octet-stream',
+    'Content-Encoding': 'gzip',
+    'Content-Length': String(file.length),
+    // The key changes whenever the content does, so this URL can be kept for good.
+    'Cache-Control': 'private, max-age=31536000, immutable',
+    Vary: 'Accept-Encoding',
+  });
+  const stream = roadBlobs.openFile(file._id);
+  stream.on('error', (err) => {
+    // eslint-disable-next-line no-console
+    console.error('[road blob]', err.message);
+    if (!res.headersSent) res.status(500).end();
+    else res.destroy(err);
+  });
+  return stream.pipe(res);
+}
+
+/**
+ * GET /versions/:id/road-state — what changes between trips, for the road files above: per
+ * delivery the indices of its driven links and who drove each; the area codes out with a driver;
+ * the area codes signed off. A few hundred KB where the roads themselves are tens of MB.
+ */
+async function versionRoadState(req, res) {
+  const scope = await resolveNetworkScope(req);
+  if (!scope) return res.status(404).json({ error: 'Network version not found' });
+  assertProjectAccess(req.user, scope.projectId);
+
+  const driverIndex = new Map();
+  const driverIds = [];
+  const versions = [];
+  for (const versionId of scope.versionIds) {
+    // eslint-disable-next-line no-await-in-loop
+    const { key } = await roadBlobs.blobKey(versionId);
+    // eslint-disable-next-line no-await-in-loop
+    const cov = await roadBlobs.coverageIndices(versionId, key);
+    const who = new Uint8Array(cov.indices.length);
+    cov.drivers.forEach((d, i) => {
+      if (!d) { who[i] = 255; return; }
+      if (!driverIndex.has(d) && driverIds.length < 254) {
+        driverIndex.set(d, driverIds.length);
+        driverIds.push(d);
+      }
+      who[i] = driverIndex.has(d) ? driverIndex.get(d) : 255;
+    });
+    versions.push({
+      versionId: String(versionId),
+      key,
+      covered: Buffer.from(cov.indices.buffer, cov.indices.byteOffset, cov.indices.byteLength).toString('base64'),
+      coveredBy: Buffer.from(who.buffer).toString('base64'),
+    });
+  }
+  const [held, done, names] = await Promise.all([
+    AreaAssignment.distinct('areaCode', { projectId: scope.projectId, releasedAt: null }),
+    AreaCompletion.distinct('areaCode', {
+      projectId: scope.projectId,
+      coverageCycleId: await cycleIdFor(scope.projectId),
+      status: 'completed',
+    }),
+    driverIds.length ? User.find({ _id: { $in: driverIds } }).select('name').lean() : [],
+  ]);
+  const nameById = new Map(names.map((u) => [String(u._id), u.name]));
+  return sendCompressed(req, res, {
+    versions,
+    drivers: driverIds.map((id) => ({ driverId: id, name: nameById.get(id) || 'Unknown driver' })),
+    heldCodes: held.filter(Boolean),
+    signedOffCodes: done.filter(Boolean),
+  }, 'road-state');
+}
+
 /* ---- where each driver left off, on the coverage map ---- */
 
 /**
@@ -2246,6 +2350,9 @@ module.exports = {
   versionCoverageDrivers,
   versionDriverPositions,
   versionDriverRoute,
+  versionRoadBlobs,
+  roadBlob,
+  versionRoadState,
   activateVersion,
   deleteVersion,
 };

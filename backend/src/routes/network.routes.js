@@ -50,6 +50,10 @@ router.get(
   requireRole('admin', 'manager', 'team_lead'),
   ctrl.versionDriverRoute
 );
+// Every road at full detail as cached binary files, and which of them are driven (roadBlobs.js).
+router.get('/versions/:id/road-blobs', ctrl.versionRoadBlobs);
+router.get('/road-blob/:versionId/:key', ctrl.roadBlob);
+router.get('/versions/:id/road-state', ctrl.versionRoadState);
 // Snapped driven routes across the project, for the map's "Driven tracks" layer.
 router.get('/versions/:id/tracks', ctrl.versionTracks);
 router.post('/versions/:id/activate', requireRole('admin', 'manager'), ctrl.activateVersion);

@@ -110,6 +110,8 @@ function createApp() {
         importsWaitForBoth: true,
         // The live map draws each driver's assigned areas (GET /api/tracking/live-areas).
         liveAreas: true,
+        // The coverage map draws every road at full detail from cached binary files.
+        roadBlobs: true,
       },
     })
   );

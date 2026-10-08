@@ -550,7 +550,9 @@ function ProgressTab({
    * polygon in view. The last exists because the first two are complete but narrow, and a
    * dispatcher looking at a region wants the outstanding red in areas nobody holds yet.
    */
-  const [roadScope, setRoadScope] = useState<'off' | 'assigned' | 'covered' | 'inview'>('assigned');
+  // Every road, at full detail, by default: the whole network loads once (and is kept by the
+  // browser), so there is nothing to be gained by showing less until someone zooms in.
+  const [roadScope, setRoadScope] = useState<'off' | 'assigned' | 'covered' | 'all'>('all');
   // Off by default: red/blue is the contract the phone uses, and per-driver hues override it.
   const [colorRoadsByDriver, setColorRoadsByDriver] = useState(false);
   /** Everyone with driven road on this network — NOT the same set as "everyone holding a polygon". */
@@ -1536,7 +1538,7 @@ function ProgressTab({
                       ['off', 'None', 'Just the areas and basemap'],
                       ['assigned', 'In assigned areas', 'Every road a crew holds — red to drive'],
                       ['covered', 'Everything driven', 'All driven road, project-wide'],
-                      ['inview', 'All roads on screen', 'Whole network, bounded by the view'],
+                      ['all', 'All roads', 'The whole network, every road at full detail'],
                     ] as const).map(([value, label, hint]) => (
                       <button
                         key={value}
@@ -1717,7 +1719,6 @@ function ProgressTab({
           roadScope={roadScope}
           // Refetch when assignments move or an area is signed off — both change what is drawn.
           assignedKey={`${assignments.length}:${reloadKey}`}
-          areaRoadsFor={roadScope === 'off' ? null : singleAreaId}
           showTracks={showTracks}
           tracksFrom={tracksFrom}
           tracksTo={tracksTo}

@@ -78,6 +78,8 @@ async function finishCommit(job, layers, areas, mapping, report, onProgress) {
       },
     }
   );
+  // Draw-ready road file for the coverage map, made now rather than on someone's first visit.
+  require('./roadBlobs').warm([version._id]).catch(() => {});
   return version;
 }
 
