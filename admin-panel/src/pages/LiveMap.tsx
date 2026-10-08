@@ -1,7 +1,7 @@
 import { PageIcon } from '../components/AppIcon';
 import { ProjectSelect, useDefaultProject, useProjectScope } from '../components/ProjectSelect';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { divIcon } from 'leaflet';
+import { divIcon, latLngBounds, type LatLngTuple } from 'leaflet';
 import { GeoJSON, MapContainer, Marker, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api';
@@ -15,6 +15,23 @@ import type { LiveDriver, LocationEvent, ParkedDriver, User } from '../lib/types
 function Recenter({ focus }: { focus: [number, number] | null }) {
   const map = useMap();
   useEffect(() => { if (focus) map.panTo(focus, { animate: true }); }, [focus, map]);
+  return null;
+}
+
+/**
+ * Bring the drivers into view: once when they first arrive, and again whenever the filters change
+ * (a manager on one project lands on that project's ground, not on wherever the map last was).
+ * With nobody on the map yet, their assigned areas stand in. Live updates never move the view.
+ */
+function FitToScope({ scopeKey, points }: { scopeKey: string; points: LatLngTuple[] }) {
+  const map = useMap();
+  const fitted = useRef<string | null>(null);
+  useEffect(() => {
+    if (fitted.current === scopeKey || !points.length) return;
+    fitted.current = scopeKey;
+    if (points.length === 1) map.setView(points[0], 14);
+    else map.fitBounds(latLngBounds(points), { padding: [40, 40], maxZoom: 15 });
+  }, [scopeKey, points, map]);
   return null;
 }
 
@@ -334,6 +351,17 @@ export function LiveMap() {
   // Derived from the combined on-duty and parked lists so it stays consistent.
   const totalActive = list.length + filteredParked.length;
 
+  // Where the shown drivers are — or, before anyone is on the map, the ground of their areas.
+  const fitPoints: LatLngTuple[] = [];
+  for (const d of list) if (d.location) fitPoints.push([d.location.lat, d.location.lon]);
+  for (const p of filteredParked) if (p.location) fitPoints.push([p.location.lat, p.location.lon]);
+  if (!fitPoints.length) {
+    for (const a of shownAreas) {
+      const polys = a.outline.type === 'Polygon' ? [a.outline.coordinates] : a.outline.coordinates;
+      for (const poly of polys) for (const [lon, lat] of poly[0] || []) fitPoints.push([lat, lon]);
+    }
+  }
+
   // Stable initial center.
   const initialCenter = useRef<[number, number]>([17.42, 78.45]);
   if (withLoc[0]?.location && initialCenter.current[0] === 17.42 && initialCenter.current[1] === 78.45) {
@@ -430,7 +458,7 @@ export function LiveMap() {
               }}
             >
               <div className="row" style={{ marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div className="driver-ident">
                   <div style={{
                     width: 34, height: 34, borderRadius: 10, flexShrink: 0,
                     background: driverState(d) === 'moving' ? 'var(--brand-light)' : 'var(--amber-bg)',
@@ -441,10 +469,10 @@ export function LiveMap() {
                   }}>
                     {d.driver.name.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase()}
                   </div>
-                  <div>
-                    <span className="driver-name">{d.driver.name}</span>
+                  <div className="driver-ident-text">
+                    <span className="driver-name" title={d.driver.name}>{d.driver.name}</span>
                     {(project || country) && (
-                      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>
+                      <div className="driver-sub" title={[project, country].filter(Boolean).join(' · ')}>
                         {[project, country].filter(Boolean).join(' · ')}
                       </div>
                     )}
@@ -495,7 +523,7 @@ export function LiveMap() {
               }}
             >
               <div className="row" style={{ marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div className="driver-ident">
                   <div style={{
                     width: 34, height: 34, borderRadius: 10, flexShrink: 0,
                     background: '#f1f5f9', border: '1px solid #e2e8f0',
@@ -504,10 +532,10 @@ export function LiveMap() {
                   }}>
                     {p.driver.name.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase()}
                   </div>
-                  <div>
-                    <span className="driver-name">{p.driver.name}</span>
+                  <div className="driver-ident-text">
+                    <span className="driver-name" title={p.driver.name}>{p.driver.name}</span>
                     {(project || country) && (
-                      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 1 }}>
+                      <div className="driver-sub" title={[project, country].filter(Boolean).join(' · ')}>
                         {[project, country].filter(Boolean).join(' · ')}
                       </div>
                     )}
@@ -558,6 +586,7 @@ export function LiveMap() {
           />
           <MapAutoResize />
           <Recenter focus={focus} />
+          {!deepLinkDriver && <FitToScope scopeKey={`${projectFilter}|${countryFilter}`} points={fitPoints} />}
 
           {/* Each visible driver's assigned areas, outline only — the streets stay readable. The
               last-clicked driver's are drawn heavier; a driver outside them gets a red ring. */}

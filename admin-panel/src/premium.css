@@ -271,3 +271,16 @@ summary { color: var(--text-2); }
 @media (prefers-reduced-motion: reduce) {
   .sidebar nav a .nav-label, .sidebar nav a::after { transition: none; }
 }
+
+/* Live map cards: long names, project codes and area names truncate inside the card instead of
+   widening the list (which used to scroll sideways and cut every card off on the left). */
+.live-list { overflow-x: hidden; }
+.live-list > * { flex-shrink: 0; max-width: 100%; }
+.driver-card { min-width: 0; }
+.driver-card .row { gap: 8px; }
+.driver-card .row > .badge { flex-shrink: 0; }
+.driver-ident { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.driver-ident-text { min-width: 0; flex: 1 1 auto; }
+.driver-ident-text .driver-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.driver-sub { font-size: 11px; color: var(--muted); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.driver-ident-text .area-chip { display: block; width: fit-content; max-width: 100%; }
