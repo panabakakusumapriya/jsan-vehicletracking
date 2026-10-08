@@ -7,6 +7,7 @@ import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
 import { NameDeliveriesModal } from '../components/NameDeliveriesModal';
 import { NewImportModal, dropTarget, zipsIn } from '../components/NewImportModal';
+import { useProjectScope } from '../components/ProjectSelect';
 import { api, uploadRaw } from '../lib/api';
 import { PIN_RANK, pinAlpha, statusText, whereText, type DriverPin } from '../lib/driverPins';
 import { sessionDt } from '../lib/format';
@@ -302,16 +303,17 @@ export function Coverage() {
     if (projectId) writeFilter(projectId, next);
   };
 
+  // The projects this person may look at — every one for an admin, their own for anyone else
+  // (components/ProjectSelect.tsx) — starting on the first.
+  const projectScope = useProjectScope();
   useEffect(() => {
-    api
-      .get<{ projects: Project[] }>('/api/projects')
-      .then((r) => {
-        setProjects(r.projects);
-        if (r.projects.length && !projectId) setProjectId(r.projects[0]._id);
-      })
-      .catch((e) => setError(e.message));
+    if (!projectScope.projects) return;
+    setProjects(projectScope.projects);
+    if (projectScope.projects.length && !projectScope.projects.some((p) => p._id === projectId)) {
+      setProjectId(projectScope.projects[0]._id);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [projectScope.projects]);
 
   const loadVersions = useCallback(() => {
     if (!projectId) return;

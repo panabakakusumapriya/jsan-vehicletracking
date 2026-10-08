@@ -11,8 +11,9 @@ import type { Project } from '../lib/types';
  * starts on it, with no "All projects" to pick, because for them there is nothing else. Someone on
  * several gets "All my projects" plus each of theirs.
  *
- * The list comes from GET /api/projects, which the server already narrows to the caller's own
- * projects for anyone but an admin; it is fetched once per page load and shared by every page.
+ * The list comes from GET /api/projects, which the server narrows to the caller's own projects for
+ * anyone but an admin — and is narrowed again here against the projects on the signed-in account
+ * itself, so the rule holds even against a server that still returns every project.
  */
 
 let cache: Promise<Project[]> | null = null;
@@ -41,6 +42,13 @@ export interface ProjectScope {
   only: Project | null;
 }
 
+/** The project ids on the account, whether they arrived as ids or as populated documents. */
+function ownProjectIds(user: { projectIds?: unknown[] } | null): string[] {
+  return (user?.projectIds || [])
+    .map((p) => (p && typeof p === 'object' ? String((p as { _id: string })._id) : String(p)))
+    .filter(Boolean);
+}
+
 export function useProjectScope(): ProjectScope {
   const { user } = useAuth();
   const restricted = Boolean(user && user.role !== 'admin');
@@ -48,9 +56,30 @@ export function useProjectScope(): ProjectScope {
   useEffect(() => {
     if (!user) return undefined;
     let alive = true;
-    myProjects(user._id).then((list) => { if (alive) setProjects(list); });
+    myProjects(user._id).then((list) => {
+      if (!alive) return;
+      if (!restricted) {
+        setProjects(list);
+        return;
+      }
+      const own = ownProjectIds(user);
+      let mine = list.filter((p) => own.includes(p._id));
+      // The account names projects the list did not return (inactive, or not loaded): use what the
+      // account itself carries — populated names, or the single project name a driver record keeps.
+      if (!mine.length && own.length) {
+        const populated = (user.projectIds || []).filter(
+          (p): p is { _id: string; name: string } => Boolean(p && typeof p === 'object' && 'name' in p)
+        );
+        mine = populated.length
+          ? populated.map((p) => ({ _id: String(p._id), name: p.name }) as Project)
+          : user.project
+            ? [{ _id: own[0], name: user.project } as Project]
+            : [];
+      }
+      setProjects(mine);
+    });
     return () => { alive = false; };
-  }, [user]);
+  }, [user, restricted]);
   const only = restricted && projects && projects.length === 1 ? projects[0] : null;
   return { restricted, projects, only };
 }
