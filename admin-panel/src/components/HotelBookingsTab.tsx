@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, downloadFile } from '../lib/api';
 import type { Project } from '../lib/types';
 import { HotelBookingModal } from './HotelBookingModal';
+import { ProjectSelect, useDefaultProject, useProjectScope } from './ProjectSelect';
 import {
   PAYMENT_LABEL, STAY_LABEL, dayLabel, money, todayIso, type HotelBooking,
 } from '../lib/hotelBookings';
@@ -27,6 +28,8 @@ export function HotelBookingsTab({ reloadKey }: { reloadKey: number }) {
   const [when, setWhen] = useState<When>('current');
   const [q, setQ] = useState('');
   const [projectId, setProjectId] = useState('');
+  const projectScope = useProjectScope();
+  useDefaultProject(projectScope, projectId, setProjectId, 'id');
   const [projects, setProjects] = useState<Project[]>([]);
   const [rows, setRows] = useState<HotelBooking[]>([]);
   const [loading, setLoading] = useState(true);
@@ -76,10 +79,8 @@ export function HotelBookingsTab({ reloadKey }: { reloadKey: number }) {
           ))}
         </div>
         <input className="input" type="search" placeholder="Driver, hotel, city or reference…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 260, margin: 0 }} />
-        <select className="input" value={projectId} onChange={(e) => setProjectId(e.target.value)} style={{ width: 'auto', margin: 0 }}>
-          <option value="">All projects</option>
-          {projects.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-        </select>
+        <ProjectSelect scope={projectScope} keyBy="id" value={projectId} onChange={setProjectId} style={{ width: 'auto', margin: 0 }}
+          options={projects.map((p) => ({ value: p._id, label: p.name }))} />
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button className="btn-ghost" onClick={exportCsv} disabled={!rows.length}>Export CSV</button>
           <button className="btn" onClick={() => setCreating(true)}>+ Record booking</button>

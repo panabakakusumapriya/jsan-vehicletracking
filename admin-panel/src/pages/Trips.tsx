@@ -1,4 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
+import { ProjectSelect, useDefaultProject, useProjectScope } from '../components/ProjectSelect';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { DateField } from '../components/DateField';
@@ -120,6 +121,9 @@ export function Trips() {
   // showing a page number or open rows that no longer match what's selected.
   const setFilters = (changes: Record<string, string>) =>
     updateParams({ ...changes, page: '', exp: '' });
+  // Someone on a single project starts on it (unless the address already names a project).
+  const projectScope = useProjectScope();
+  useDefaultProject(projectScope, project, (v) => setFilters({ project: v, country: '', driver: '' }));
 
   // A day-row's individual trips are fetched lazily on first expand and then cached by key,
   // so collapsing and re-expanding the same row doesn't refetch.
@@ -330,15 +334,14 @@ export function Trips() {
 
       <div className="tr-filters">
         <FilterIcon />
-        <select
+        <ProjectSelect
+          scope={projectScope}
           className="input dr-filter"
           style={{ width: 134 }}
           value={project}
-          onChange={e => setFilters({ project: e.target.value, country: '', driver: '' })}
-        >
-          <option value="">All projects</option>
-          {projects.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
-        </select>
+          onChange={v => setFilters({ project: v, country: '', driver: '' })}
+          options={projects.map(p => ({ value: p.name, label: p.name }))}
+        />
         <select
           className="input dr-filter"
           style={{ width: 134 }}

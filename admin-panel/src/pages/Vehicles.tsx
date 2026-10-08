@@ -1,4 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
+import { ProjectSelect, useDefaultProject, useProjectScope } from '../components/ProjectSelect';
 import { useEffect, useRef, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
@@ -16,6 +17,8 @@ export function Vehicles() {
   const [editing, setEditing] = useState<Vehicle | null>(null);
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
+  const projectScope = useProjectScope();
+  useDefaultProject(projectScope, projectFilter, setProjectFilter);
   const [statusFilter, setStatusFilter] = useState<'' | 'active' | 'inactive'>('');
   /** A chip clicked as a filter: vehicles with a driver, or active ones without. */
   const [holderFilter, setHolderFilter] = useState<'' | 'held' | 'free'>('');
@@ -142,10 +145,8 @@ export function Vehicles() {
             value={query}
             onChange={e => setQuery(e.target.value)}
           />
-          <select className="input dr-filter" aria-label="Project" value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
-            <option value="">All projects</option>
-            {projectOptions.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
-          </select>
+          <ProjectSelect scope={projectScope} className="input dr-filter" value={projectFilter}
+            onChange={v => { setProjectFilter(v); setCountryFilter(''); }} options={projectOptions.map(p => ({ value: p.name, label: p.name }))} />
           <select className="input dr-filter" aria-label="Country" value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
             <option value="">All countries</option>
             {countries.map(c => <option key={c} value={c}>{c}</option>)}

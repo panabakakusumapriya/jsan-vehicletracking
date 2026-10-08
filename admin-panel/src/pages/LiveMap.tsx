@@ -1,4 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
+import { ProjectSelect, useDefaultProject, useProjectScope } from '../components/ProjectSelect';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { divIcon } from 'leaflet';
 import { GeoJSON, MapContainer, Marker, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
@@ -123,6 +124,8 @@ export function LiveMap() {
   const [focus, setFocus] = useState<[number, number] | null>(null);
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
+  const projectScope = useProjectScope();
+  useDefaultProject(projectScope, projectFilter, setProjectFilter);
   /** Assigned work areas of the visible drivers, and how near a boundary still counts as inside. */
   const [liveAreas, setLiveAreas] = useState<{ edgeMeters: number; areas: LiveArea[] }>({ edgeMeters: 45, areas: [] });
   const [showAreas, setShowAreas] = useState(true);
@@ -355,15 +358,13 @@ export function LiveMap() {
         </div>
 
         {/* Filters — Project first, then Country (cascaded by project) */}
-        <select
-          className="input"
+        <ProjectSelect
+          scope={projectScope}
           style={{ width: '100%', margin: '8px 0 4px', fontSize: 13 }}
           value={projectFilter}
-          onChange={e => handleProjectChange(e.target.value)}
-        >
-          <option value="">All projects</option>
-          {projects.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
+          onChange={handleProjectChange}
+          options={projects.map(p => ({ value: p, label: p }))}
+        />
         <select
           className="input"
           style={{ width: '100%', margin: '4px 0 4px', fontSize: 13 }}

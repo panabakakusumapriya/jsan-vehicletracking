@@ -1,4 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
+import { ProjectSelect, useDefaultProject, useProjectScope } from '../components/ProjectSelect';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import type { Project } from '../lib/types';
@@ -44,6 +45,8 @@ export function AppHealth() {
   const [projectOptions, setProjectOptions] = useState<Project[]>([]);
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
+  const projectScope = useProjectScope();
+  useDefaultProject(projectScope, projectFilter, setProjectFilter);
   const [tab, setTab] = useState<Tab>('summary');
   const [loading, setLoading] = useState(true);
 
@@ -118,10 +121,8 @@ export function AppHealth() {
           <h1 className="page-title"><PageIcon name="health" />App Health</h1>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <select className="input" style={{ width: 120, fontSize: 12, padding: '4px 6px' }} value={projectFilter} onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); }}>
-            <option value="">Project</option>
-            {projectOptions.map(p => <option key={p._id} value={p.name}>{p.name}</option>)}
-          </select>
+          <ProjectSelect scope={projectScope} style={{ width: 120, fontSize: 12, padding: '4px 6px' }} value={projectFilter}
+            onChange={v => { setProjectFilter(v); setCountryFilter(''); }} options={projectOptions.map(p => ({ value: p.name, label: p.name }))} />
           <select className="input" style={{ width: 100, fontSize: 12, padding: '4px 6px' }} value={countryFilter} onChange={e => setCountryFilter(e.target.value)}>
             <option value="">Country</option>
             {countries.map(c => <option key={c} value={c}>{c}</option>)}

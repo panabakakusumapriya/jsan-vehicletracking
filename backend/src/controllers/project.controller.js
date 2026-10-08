@@ -33,6 +33,11 @@ function parseTripEndAfterMinutes(raw) {
 // deactivated ones; everyone else only sees the assignable (active) set.
 exports.list = asyncHandler(async (req, res) => {
   const filter = req.query.all === 'true' && req.user.role === 'admin' ? {} : { active: true };
+  // Anyone but an admin works for particular projects, and every project picker in the panel is
+  // built from this list — so they are offered theirs, not the whole company's.
+  if (req.user.role !== 'admin') {
+    filter._id = { $in: (req.user.projectIds || []).map((p) => p._id || p) };
+  }
   const projects = await Project.find(filter).sort({ name: 1 });
   res.json({ projects });
 });

@@ -1,4 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
+import { ProjectSelect, useDefaultProject, useProjectScope } from '../components/ProjectSelect';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MapContainer, Polyline, TileLayer, useMap } from 'react-leaflet';
 import { api, downloadFile } from '../lib/api';
@@ -346,6 +347,8 @@ export function Ukm() {
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
   const [driverFilter, setDriverFilter] = useState('');
+  const projectScope = useProjectScope();
+  useDefaultProject(projectScope, projectFilter, setProjectFilter);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [data, setData] = useState<UkmResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -499,11 +502,8 @@ export function Ukm() {
           <input type="date" className="input" value={to} onChange={e => setTo(e.target.value)}
             style={{ display: 'block', marginTop: 2, fontSize: 13 }} />
         </label>
-        <select className="input" style={{ fontSize: 13, flex: '1 1 0', minWidth: 0 }} value={projectFilter}
-          onChange={e => handleProjectChange(e.target.value)}>
-          <option value="">All projects</option>
-          {projects.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
+        <ProjectSelect scope={projectScope} style={{ fontSize: 13, flex: '1 1 0', minWidth: 0 }} value={projectFilter}
+          onChange={handleProjectChange} options={projects.map(p => ({ value: p, label: p }))} />
         <select className="input" style={{ fontSize: 13, flex: '1 1 0', minWidth: 0 }} value={countryFilter}
           onChange={e => handleCountryChange(e.target.value)}>
           <option value="">All countries</option>

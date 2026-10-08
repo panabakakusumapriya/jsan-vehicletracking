@@ -1,4 +1,5 @@
 import { PageIcon } from '../components/AppIcon';
+import { ProjectSelect, useDefaultProject, useProjectScope } from '../components/ProjectSelect';
 import React, { useEffect, useMemo, useState } from 'react';
 import { divIcon } from 'leaflet';
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
@@ -406,6 +407,8 @@ export function Weather() {
   const [flyTarget, setFlyTarget] = useState<[number, number] | null>(null);
   const [projectFilter, setProjectFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
+  const projectScope = useProjectScope();
+  useDefaultProject(projectScope, projectFilter, setProjectFilter);
 
   useEffect(() => {
     let alive = true;
@@ -566,13 +569,11 @@ export function Weather() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select className="input" style={{ width: 130, fontSize: 12, padding: '4px 6px' }}
+          <ProjectSelect scope={projectScope} style={{ width: 130, fontSize: 12, padding: '4px 6px' }}
             value={projectFilter}
-            onChange={e => { setProjectFilter(e.target.value); setCountryFilter(''); setSelectedDriver(''); setFlyTarget(null); }}
-          >
-            <option value="">All projects</option>
-            {projects.map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
+            onChange={v => { setProjectFilter(v); setCountryFilter(''); setSelectedDriver(''); setFlyTarget(null); }}
+            options={projects.map(p => ({ value: p, label: p }))}
+          />
           <select className="input" style={{ width: 130, fontSize: 12, padding: '4px 6px' }}
             value={countryFilter}
             onChange={e => { setCountryFilter(e.target.value); setSelectedDriver(''); setFlyTarget(null); }}
