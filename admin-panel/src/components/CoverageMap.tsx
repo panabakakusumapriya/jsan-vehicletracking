@@ -15,6 +15,7 @@ import {
   type RoadState,
 } from '../lib/roadNetwork';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
+import { MarkerCard, pinUrl, type TripMarker } from './TripMarkers';
 
 /**
  * WebGL view of a customer's work areas and target road network.
@@ -294,6 +295,13 @@ export function CoverageMap({
 }) {
   const mapRef = useRef<Map3DHandle>(null);
   const [areas, setAreas] = useState<AreaCollection | null>(null);
+  /**
+   * Markers drivers dropped on this delivery's ground (the last year), drawn as pins over the
+   * roads — the reviewer sees "Road Is Impassable" where the red road is. Toggle in the legend.
+   */
+  const [fieldMarkers, setFieldMarkers] = useState<TripMarker[]>([]);
+  const [showMarkers, setShowMarkers] = useState(true);
+  const [pickedMarker, setPickedMarker] = useState<TripMarker | null>(null);
   const [tracks, setTracks] = useState<TrackPath[]>([]);
   const trackRequest = useRef(0);
   const [tracksLoading, setTracksLoading] = useState(false);
@@ -621,6 +629,21 @@ export function CoverageMap({
     [roadPaint]
   );
 
+  const areaBbox = areas?.bbox ? areas.bbox.join(',') : '';
+  useEffect(() => {
+    setFieldMarkers([]);
+    setPickedMarker(null);
+    if (!areaBbox) return undefined;
+    const [w, s, e, n] = areaBbox.split(',').map(Number);
+    const pad = 0.02; // a marker on the boundary street still belongs to the map
+    let alive = true;
+    api
+      .get<{ markers: TripMarker[] }>(`/api/markers?days=365&bbox=${[w - pad, s - pad, e + pad, n + pad].join(',')}`)
+      .then((r) => { if (alive) setFieldMarkers(r.markers); })
+      .catch(() => { /* auxiliary — the coverage map must not degrade over it */ });
+    return () => { alive = false; };
+  }, [areaBbox]);
+
   const layers = useMemo<Layer[]>(() => {
     // The fill is always a quantity: how much of the area is driven, or which band it sits in.
     const shadeOf = (p: AreaProps): [number, number, number] =>
@@ -848,8 +871,33 @@ export function CoverageMap({
       );
     }
 
+    if (showMarkers && fieldMarkers.length > 0) {
+      out.push(
+        new IconLayer<TripMarker>({
+          id: 'field-markers',
+          data: fieldMarkers,
+          pickable: true,
+          getPosition: (m) => [m.lon, m.lat],
+          getIcon: (m) => ({ url: pinUrl(m.category?.color), width: 48, height: 64, anchorY: 62 }),
+          // Pixels: this map is read at the scale of a region, where a pin sized in metres vanishes.
+          getSize: 30,
+          sizeUnits: 'pixels',
+          parameters: ALWAYS_ON_TOP,
+          onClick: (info: PickingInfo) => {
+            const m = info.object as TripMarker | undefined;
+            if (!m) return false;
+            setPickedMarker(m);
+            // Handled: the area underneath must not also take this click.
+            return true;
+          },
+        })
+      );
+    }
+
     return out;
   }, [
+    showMarkers,
+    fieldMarkers,
     driverPins,
     selectedPinId,
     onPickPin,
@@ -874,6 +922,14 @@ export function CoverageMap({
 
   const getTooltip = useCallback((info: PickingInfo) => {
     const layerId = info.layer?.id || '';
+    if (layerId === 'field-markers' && info.object) {
+      const m = info.object as TripMarker;
+      return {
+        html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${escapeHtml(m.category?.name ?? 'Marker')}</b><div>${escapeHtml(
+          [m.driverName, m.vehiclePlate].filter(Boolean).join(' '),
+        )}</div><div style="opacity:.7">${escapeHtml(new Date(m.recordedAt).toLocaleString())}</div></div>`,
+      };
+    }
     if (layerId.startsWith('roads-') && info.index >= 0) {
       const net = netsRef.current.find((n) => `roads-${n.versionId}` === layerId);
       if (!net) return null;
@@ -1085,6 +1141,10 @@ export function CoverageMap({
         )
       )}
 
+      {pickedMarker && showMarkers && (
+        <MarkerCard marker={pickedMarker} onClose={() => setPickedMarker(null)} style={{ zIndex: 6 }} />
+      )}
+
       <div className="cov-map-legend">
         {mode === 'assignment' ? (
           <>
@@ -1138,6 +1198,15 @@ export function CoverageMap({
           </div>
         )}
         <div className="cov-legend-note">{linksHint}</div>
+        {fieldMarkers.length > 0 && (
+          <label className="cov-legend-row" style={{ cursor: 'pointer', gap: 6 }}>
+            <input type="checkbox" checked={showMarkers} onChange={(e) => setShowMarkers(e.target.checked)} />
+            <img src={pinUrl('#ef4444')} alt="" width={11} height={15} />
+            <span>
+              {fieldMarkers.length} marker{fieldMarkers.length === 1 ? '' : 's'} dropped by drivers · click one for details
+            </span>
+          </label>
+        )}
         {driverPins && driverPins.length > 0 && (
           <div className="cov-legend-note">
             Pins: where each driver’s last drive ended · green dot = driving now

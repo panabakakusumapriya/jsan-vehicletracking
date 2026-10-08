@@ -70,6 +70,11 @@ export function pendingMarkerCount(): number {
   return readOutbox().length;
 }
 
+/** The drops still waiting to upload — drawn on the driver's map so a queued marker never vanishes. */
+export function pendingMarkers(): PendingMarker[] {
+  return readOutbox();
+}
+
 /**
  * Try to deliver everything queued. A category error is permanent (retrying a retired category
  * forever cannot succeed) and drops the entry; anything else — offline, 5xx — keeps it for the

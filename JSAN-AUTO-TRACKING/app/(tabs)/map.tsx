@@ -30,7 +30,7 @@ import {
   apiDropMarker, apiMarkerCategories, apiMyAreas, apiMyMarkers, apiMyRoadsVersion, apiMyTripsSettled,
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
 } from '@/src/lib/api';
-import { enqueueMarker, flushMarkerQueue, newClientId } from '@/src/lib/markerQueue';
+import { enqueueMarker, flushMarkerQueue, newClientId, pendingMarkerCount, pendingMarkers } from '@/src/lib/markerQueue';
 import {
   buildSnapIndexAsync, createCoverStore, createMatcher, coverLines, coverTripIds, dropTrip,
   expireTrips, ingestFix,
@@ -1032,18 +1032,40 @@ export default function MapScreen() {
     try {
       const [cats, mine] = await Promise.all([apiMarkerCategories(token), apiMyMarkers(token)]);
       setMarkerCats(cats.categories.filter((c) => c.active !== false));
-      setMarkers(mine.markers);
+      // The server's list plus the drops still queued on this phone — replacing the list with the
+      // server's alone made a queued marker disappear from the driver's map until it uploaded.
+      const sent = new Set(mine.markers.map((m) => m.id));
+      const queued = pendingMarkers()
+        .filter((p) => !sent.has(p.clientId))
+        .map((p) => ({
+          id: p.clientId, lat: p.lat, lon: p.lon,
+          category: cats.categories.find((c) => c.id === p.categoryId) ?? null,
+          driverName: user?.name ?? null, vehiclePlate: null, recordedAt: p.recordedAt,
+        }));
+      setMarkers([...mine.markers, ...queued]);
     } catch { /* auxiliary layer — the map must not degrade over it */ }
-  }, [token]);
+  }, [token, user]);
+
+  /**
+   * Deliver queued drops. It used to run only when the map screen first mounted — and the tab
+   * stays mounted all shift, so a marker queued in a dead spot sat on the phone until the app was
+   * restarted, and never reached Trips or Coverage. Now: on open, every minute while anything is
+   * queued, and whenever the app comes back to the foreground.
+   */
+  const flushMarkers = useCallback(() => {
+    if (!token || pendingMarkerCount() === 0) return;
+    flushMarkerQueue(token)
+      .then((r) => { if (r.sent.length > 0) loadMarkers(); })
+      .catch(() => {});
+  }, [token, loadMarkers]);
 
   useEffect(() => {
     loadMarkers();
-    if (token) {
-      flushMarkerQueue(token)
-        .then((r) => { if (r.sent.length > 0) loadMarkers(); })
-        .catch(() => {});
-    }
-  }, [loadMarkers, token]);
+    flushMarkers();
+    const id = setInterval(flushMarkers, 60_000);
+    const sub = RNAppState.addEventListener('change', (st) => { if (st === 'active') flushMarkers(); });
+    return () => { clearInterval(id); sub.remove(); };
+  }, [loadMarkers, flushMarkers]);
 
   // Transient toast-like note; self-clearing so it cannot go stale.
   useEffect(() => {

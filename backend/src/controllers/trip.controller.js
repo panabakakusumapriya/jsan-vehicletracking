@@ -14,6 +14,8 @@ const { decodePolyline6 } = require('../services/roadSegments');
 const { overlapBreakdown } = require('../services/globalUkm');
 const { alreadyDriven: alreadyDrivenFor } = require('../services/alreadyDriven');
 const Project = require('../models/Project');
+const Marker = require('../models/Marker');
+const { formatDateInZone } = require('../utils/timezone');
 
 /**
  * Points for many trips in ONE query, grouped by trip id.
@@ -641,6 +643,32 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     lastEnd: r.lastEnd,
     anyActive: Boolean(r.anyActive),
   }));
+
+  // The markers each driver dropped on each of these days — bucketed in the same zone as the row,
+  // so a marker shows on the day it belongs to. By time, not by trip stamp: drivers stop to flag a
+  // spot, often between trips.
+  if (summaries.length) {
+    const ids = [...new Set(summaries.map((s) => String(s.driverId)))];
+    const starts = summaries.map((s) => new Date(s.firstStart).getTime());
+    const from = new Date(Math.min(...starts) - 36 * 3600 * 1000);
+    const to = new Date(Math.max(...starts) + 36 * 3600 * 1000);
+    const marks = await Marker.find({ driverId: { $in: ids }, recordedAt: { $gte: from, $lte: to } })
+      .select('driverId recordedAt categoryId')
+      .populate('categoryId', 'color')
+      .lean();
+    const byDay = new Map();
+    for (const m of marks) {
+      const key = `${m.driverId}|${formatDateInZone(m.recordedAt, driverTzMap.get(String(m.driverId)) || 'UTC')}`;
+      if (!byDay.has(key)) byDay.set(key, new Map());
+      const color = m.categoryId?.color || '#ef4444';
+      byDay.get(key).set(color, (byDay.get(key).get(color) || 0) + 1);
+    }
+    for (const s of summaries) {
+      const colors = byDay.get(`${s.driverId}|${s.date}`);
+      s.markerCount = colors ? [...colors.values()].reduce((a, n) => a + n, 0) : 0;
+      s.markerColors = colors ? [...colors].map(([color, count]) => ({ color, count })) : [];
+    }
+  }
 
   res.json({ summaries, total, page, limit });
 });

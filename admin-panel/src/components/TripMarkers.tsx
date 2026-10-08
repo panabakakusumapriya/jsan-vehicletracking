@@ -26,6 +26,8 @@ export type TripMarker = {
   vehiclePlate: string | null;
   note: string | null;
   recordedAt: string;
+  /** The trip the server linked it to, by when it was dropped — null between trips. */
+  tripId?: string | null;
 };
 
 /**
@@ -33,7 +35,7 @@ export type TripMarker = {
  * the same artwork the driver app rasterises in its WebView, so both sides match.
  */
 const pinUrlCache = new Map<string, string>();
-function pinUrl(color: string | undefined): string {
+export function pinUrl(color: string | undefined): string {
   const c = color && /^#[0-9a-f]{6}$/i.test(color) ? color : '#ef4444';
   let u = pinUrlCache.get(c);
   if (!u) {
@@ -52,15 +54,59 @@ function pinUrl(color: string | undefined): string {
   return u;
 }
 
-function fmtWhen(iso: string) {
+export function fmtWhen(iso: string) {
   return new Date(iso).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
-function age(iso: string) {
+export function age(iso: string) {
   const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
   if (m < 1) return 'just now';
   if (m < 60) return `${m} min`;
   if (m < 24 * 60) return `${Math.floor(m / 60)} h`;
   return `${Math.floor(m / 1440)} d`;
+}
+
+/** The card a picked marker opens — the same on every map that draws markers. */
+export function MarkerCard({ marker, onClose, style }: { marker: TripMarker; onClose: () => void; style?: React.CSSProperties }) {
+  return (
+    <div
+      style={{
+        position: 'absolute', left: 12, bottom: 12, zIndex: 2,
+        background: 'var(--panel, #ffffff)', border: '1px solid var(--line-2, #e2e8f0)',
+        borderRadius: 10, padding: '10px 12px', minWidth: 220, maxWidth: 300,
+        boxShadow: '0 4px 14px rgba(15,23,42,0.18)', fontSize: 13,
+        ...style,
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <b style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: 99, background: marker.category?.color ?? '#ef4444' }} />
+          {marker.category?.name ?? 'Marker'}
+        </b>
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--muted, #64748b)', fontSize: 13 }}
+        >
+          ✕
+        </button>
+      </div>
+      <div style={{ color: 'var(--muted, #64748b)', margin: '2px 0 6px' }}>
+        {[
+          [marker.driverName, marker.vehiclePlate].filter(Boolean).join(' '),
+          fmtWhen(marker.recordedAt),
+          age(marker.recordedAt),
+        ].filter(Boolean).join(' · ')}
+      </div>
+      {marker.note && <div style={{ marginBottom: 6 }}>{marker.note}</div>}
+      <a
+        href={`https://www.google.com/maps/search/?api=1&query=${marker.lat},${marker.lon}`}
+        target="_blank"
+        rel="noreferrer"
+      >
+        Open in Google Maps ↗
+      </a>
+    </div>
+  );
 }
 
 export function useTripMarkers(tripId: string | undefined) {
@@ -114,42 +160,7 @@ export function useTripMarkers(tripId: string | undefined) {
     }
   }, []);
 
-  const popup = picked ? (
-    <div
-      style={{
-        position: 'absolute', left: 12, bottom: 12, zIndex: 2,
-        background: 'var(--panel, #ffffff)', border: '1px solid var(--line-2, #e2e8f0)',
-        borderRadius: 10, padding: '10px 12px', minWidth: 220, maxWidth: 300,
-        boxShadow: '0 4px 14px rgba(15,23,42,0.18)', fontSize: 13,
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <b>{picked.category?.name ?? 'Marker'}</b>
-        <button
-          onClick={() => setPicked(null)}
-          aria-label="Close"
-          style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'var(--muted, #64748b)', fontSize: 13 }}
-        >
-          ✕
-        </button>
-      </div>
-      <div style={{ color: 'var(--muted, #64748b)', margin: '2px 0 6px' }}>
-        {[
-          [picked.driverName, picked.vehiclePlate].filter(Boolean).join(' '),
-          fmtWhen(picked.recordedAt),
-          age(picked.recordedAt),
-        ].filter(Boolean).join(' · ')}
-      </div>
-      {picked.note && <div style={{ marginBottom: 6 }}>{picked.note}</div>}
-      <a
-        href={`https://www.google.com/maps/search/?api=1&query=${picked.lat},${picked.lon}`}
-        target="_blank"
-        rel="noreferrer"
-      >
-        Open in Google Maps ↗
-      </a>
-    </div>
-  ) : null;
+  const popup = picked ? <MarkerCard marker={picked} onClose={() => setPicked(null)} /> : null;
 
   return { markers, layers, onMapClick, popup };
 }

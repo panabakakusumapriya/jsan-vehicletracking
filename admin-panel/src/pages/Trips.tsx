@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { DateField } from '../components/DateField';
 import { AlreadyDrivenTip } from '../components/AlreadyDrivenTip';
+import { pinUrl, type TripMarker } from '../components/TripMarkers';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, viewerTimeZone } from '../lib/api';
 import { runExportJob, describeJob } from '../lib/exportJobs';
@@ -31,6 +32,9 @@ interface DaySummary {
    * trip counts to now; imported trips are left out — their times are the importer's fixed window).
    */
   workMs?: number;
+  /** Markers the driver dropped that day (by when, not by trip — they often stop between trips). */
+  markerCount?: number;
+  markerColors?: { color: string; count: number }[];
   /** The day's UKM, summed over its trips that have one. */
   totalUkm?: number;
   /** How many of the day's trips have a UKM yet — the rest are still being worked out. */
@@ -134,6 +138,8 @@ export function Trips() {
   // so collapsing and re-expanding the same row doesn't refetch.
   const [dayTrips, setDayTrips] = useState<Record<string, Trip[]>>({});
   const [dayTripsLoading, setDayTripsLoading] = useState<Record<string, boolean>>({});
+  /** The markers of each expanded day, keyed like dayTrips. */
+  const [dayMarkers, setDayMarkers] = useState<Record<string, TripMarker[]>>({});
 
   useEffect(() => {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
@@ -212,6 +218,12 @@ export function Trips() {
     api.get<{ trips: Trip[] }>(`/api/trips?${params}`)
       .then(r => setDayTrips(prev => ({ ...prev, [key]: r.trips })))
       .finally(() => setDayTripsLoading(prev => ({ ...prev, [key]: false })));
+    if (s.markerCount) {
+      const mp = new URLSearchParams({ driverId: s.driverId, date: s.date, tz: s.timezone || 'UTC' });
+      api.get<{ markers: TripMarker[] }>(`/api/markers?${mp}`)
+        .then(r => setDayMarkers(prev => ({ ...prev, [key]: r.markers })))
+        .catch(() => { /* auxiliary — the day's trips must still show */ });
+    }
   }, [dayTrips, dayTripsLoading]);
 
   const toggleExpand = (s: DaySummary) => {
@@ -292,6 +304,17 @@ export function Trips() {
         .trip-hover-row { cursor: help; }
         .day-total-row td { font-weight: 700; color: var(--text); border-top: 1px solid var(--line-2); background: var(--panel-2); }
         .day-row { cursor: pointer; }
+        .trip-marker-dots { display: inline-flex; gap: 8px; font-weight: 700; font-size: 12.5px; }
+        .trip-marker-dots > span { display: inline-flex; align-items: center; gap: 4px; }
+        .trip-marker-dots i { width: 9px; height: 9px; border-radius: 99px; display: inline-block; box-shadow: 0 0 0 1.5px #fff, 0 0 0 2.5px rgba(15,23,42,0.15); }
+        .trip-day-markers { padding: 10px 20px 14px 48px; border-top: 1px dashed var(--line-2); }
+        .tdm-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-bottom: 6px; }
+        .tdm-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; padding: 4px 0; }
+        .tdm-time { color: var(--muted); }
+        .tdm-trip { color: var(--text-2); }
+        .tdm-plate { font-family: monospace; font-size: 12px; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 1px 7px; }
+        .tdm-note { color: var(--text-2); font-style: italic; }
+        .tdm-row a { font-weight: 600; font-size: 12.5px; }
         /* The expanded block is one row holding a table: it must not light up as a whole. */
         .list-card tbody tr.day-detail-row:hover > td { background: var(--bg); }
         .day-detail-row td { padding: 0; background: var(--bg); }
@@ -430,6 +453,7 @@ export function Trips() {
               <th>First start</th>
               <th>Last end</th>
               <th title="Every trip's start to end, added up — the time between trips is not counted">Working hours</th>
+              <th title="Markers the driver dropped that day, by colour — open the day to see each one">Markers</th>
             </tr>
           </thead>
           <tbody>
@@ -496,10 +520,19 @@ export function Trips() {
                     >
                       {(s.importedTrips ?? 0) >= s.totalTrips ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>—</span> : hm(s.workMs)}
                     </td>
+                    <td title={s.markerCount ? `${s.markerCount} marker${s.markerCount === 1 ? '' : 's'} dropped that day — open the day to see them` : 'No markers that day'}>
+                      {s.markerCount ? (
+                        <span className="trip-marker-dots">
+                          {(s.markerColors ?? []).map((c) => (
+                            <span key={c.color}><i style={{ background: c.color }} />{c.count}</span>
+                          ))}
+                        </span>
+                      ) : <span style={{ color: 'var(--muted)' }}>—</span>}
+                    </td>
                   </tr>
                   {isOpen && (
                     <tr key={`${key}-detail`} className="day-detail-row">
-                      <td colSpan={11}>
+                      <td colSpan={12}>
                         {rowsLoading && !rows ? (
                           <div className="muted" style={{ padding: '14px 20px', fontSize: 12.5 }}>Loading trips…</div>
                         ) : (
@@ -689,6 +722,47 @@ export function Trips() {
                               );
                             })()}
                           </table>
+                        )}
+                        {(dayMarkers[key] ?? []).length > 0 && (
+                          <div className="trip-day-markers">
+                            <div className="tdm-title">Markers this day · {dayMarkers[key].length}</div>
+                            {dayMarkers[key].map((m) => {
+                              // The trip it was linked to; for a marker stamped before linking went
+                              // by time, the trip it was dropped during — or just after, within
+                              // the same 30 minutes the server allows (drivers stop to flag a spot).
+                              const at = new Date(m.recordedAt).getTime();
+                              /** Minutes from the drop to the trip: 0 inside it, else to its nearer end. */
+                              const gap = (t: Trip) => {
+                                const s0 = new Date(t.startedAt).getTime();
+                                const e0 = t.endedAt ? new Date(t.endedAt).getTime() : Date.now();
+                                return at < s0 ? s0 - at : at > e0 ? at - e0 : 0;
+                              };
+                              const nearest = [...(rows ?? [])].sort((a, b) => gap(a) - gap(b))[0];
+                              const trip =
+                                (rows ?? []).find((t) => t._id === m.tripId) ??
+                                (nearest && gap(nearest) <= 30 * 60 * 1000 ? nearest : undefined);
+                              return (
+                                <div key={m.id} className="tdm-row">
+                                  <img src={pinUrl(m.category?.color)} alt="" width={15} height={20} />
+                                  <b>{m.category?.name ?? 'Marker'}</b>
+                                  <span className="tdm-time">{sessionDt(m.recordedAt)}</span>
+                                  <span className="tdm-trip">
+                                    {trip
+                                      ? <>on the trip {sessionDt(trip.startedAt).slice(-5)}–{trip.endedAt ? sessionDt(trip.endedAt).slice(-5) : 'now'}</>
+                                      : 'between trips'}
+                                  </span>
+                                  {m.vehiclePlate && <span className="tdm-plate">{m.vehiclePlate}</span>}
+                                  {m.note && <span className="tdm-note">{m.note}</span>}
+                                  {trip && (
+                                    <Link to={`/trips/${trip._id}/map`} state={{ tripsSearch: searchParams.toString() }} onClick={() => rememberTrip(trip._id)}>See on the trip map →</Link>
+                                  )}
+                                  <a href={`https://www.google.com/maps/search/?api=1&query=${m.lat},${m.lon}`} target="_blank" rel="noreferrer">
+                                    Google Maps ↗
+                                  </a>
+                                </div>
+                              );
+                            })}
+                          </div>
                         )}
                       </td>
                     </tr>

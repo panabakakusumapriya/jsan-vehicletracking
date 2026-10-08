@@ -25,7 +25,9 @@ const markerSchema = new mongoose.Schema(
      * queues them offline and retries — the unique sparse index turns every retry of the same
      * press into the same marker, never a second one.
      */
-    clientId: { type: String, default: null },
+    // No default: a sparse index skips a MISSING field but indexes null, so a null default made
+    // every second marker without a client id a duplicate-key error.
+    clientId: { type: String },
     /** When the driver actually pressed the button (device clock); createdAt is upload time. */
     recordedAt: { type: Date, required: true },
   },
