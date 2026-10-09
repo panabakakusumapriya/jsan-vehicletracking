@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
 import { ssdsApi } from '../lib/ssdsApi';
-import type { Project } from '../lib/types';
+import { isAdminRole, type Project } from '../lib/types';
 
 interface DailyReport {
   _id: string;
@@ -50,7 +50,7 @@ const EMPTY_FORM = {
 
 export function SsdsDailyReports() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isAdminRole(user?.role);
   const canEdit = isAdmin || user?.role === 'manager';
   const [reports, setReports] = useState<DailyReport[]>([]);
   const [mapAssignments, setMapAssignments] = useState<MapAssignment[]>([]);

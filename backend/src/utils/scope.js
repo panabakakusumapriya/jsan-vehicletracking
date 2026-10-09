@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const { isAdmin } = require('./roles');
 
 // Drivers visible to a manager/team_lead: those explicitly linked to them (managerId /
 // teamLeadId) PLUS everyone on any of their assigned projects. Project assignment alone must
@@ -20,7 +21,7 @@ function linkedOrOnProjects(requester, linkField) {
 //   team_lead -> drivers linked via teamLeadId, or on any of the team lead's projects
 //   user      -> only themselves
 async function accessibleDriverFilter(requester) {
-  if (requester.role === 'admin') return {};
+  if (isAdmin(requester)) return {};
   if (requester.role === 'manager' || requester.role === 'team_lead') {
     const linkField = requester.role === 'manager' ? 'managerId' : 'teamLeadId';
     const drivers = await User.find(linkedOrOnProjects(requester, linkField)).select('_id');
@@ -39,7 +40,7 @@ function sharesProject(requester, driver) {
 // Whether `requester` may act on the driver document `driver`. Mirrors the visibility rule
 // above: what a manager/team lead can see on their screens, they can also edit.
 function canManageDriver(requester, driver) {
-  if (requester.role === 'admin') return true;
+  if (isAdmin(requester)) return true;
   if (requester.role === 'manager') {
     if (driver.managerId && driver.managerId.toString() === requester._id.toString()) return true;
     if (driver.role === 'user' && sharesProject(requester, driver)) return true;

@@ -1,4 +1,10 @@
-export type Role = 'admin' | 'manager' | 'team_lead' | 'user';
+export type Role = 'superadmin' | 'admin' | 'manager' | 'team_lead' | 'user';
+
+/** The admin tier: a superadmin is an admin who may also create and manage admins. */
+export const isAdminRole = (role: string | undefined | null) => role === 'admin' || role === 'superadmin';
+/** How a role reads on screen. */
+export const roleLabel = (role: string | undefined | null) =>
+  role === 'superadmin' ? 'Super admin' : role === 'team_lead' ? 'Team Lead' : role === 'user' ? 'Driver' : role ? role[0].toUpperCase() + role.slice(1) : '';
 export type TabPermission = 'edit' | 'view' | 'hidden';
 
 /** All tab keys across admin panel and SSDS tool. */

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import type { Project } from '../lib/types';
+import { isAdminRole, type Project } from '../lib/types';
 
 /**
  * The project filter every list page uses, with one rule about WHO sees which projects.
@@ -51,7 +51,7 @@ function ownProjectIds(user: { projectIds?: unknown[] } | null): string[] {
 
 export function useProjectScope(): ProjectScope {
   const { user } = useAuth();
-  const restricted = Boolean(user && user.role !== 'admin');
+  const restricted = Boolean(user && !isAdminRole(user.role));
   const [projects, setProjects] = useState<Project[] | null>(null);
   useEffect(() => {
     if (!user) return undefined;

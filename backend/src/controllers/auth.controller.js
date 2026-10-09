@@ -5,6 +5,7 @@ const AppActivity = require('../models/AppActivity');
 const { signToken } = require('../utils/jwt');
 const { isValidTimeZone } = require('../utils/timezone');
 const asyncHandler = require('../utils/asyncHandler');
+const { isAdmin } = require('../utils/roles');
 
 // Attach the driver's project-level mobile app permissions to the user object
 async function attachEnabledModules(userData) {
@@ -118,7 +119,7 @@ exports.permissions = asyncHandler(async (req, res) => {
 
   const permissions = {};
   for (const tab of ALL_TABS) {
-    if (req.user.role === 'admin') {
+    if (isAdmin(req.user)) {
       permissions[tab] = 'edit';
     } else if (stored[tab]) {
       permissions[tab] = stored[tab];

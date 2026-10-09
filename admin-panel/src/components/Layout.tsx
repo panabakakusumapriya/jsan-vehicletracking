@@ -1,4 +1,5 @@
 import { AppIcon } from './AppIcon';
+import { isAdminRole, roleLabel } from '../lib/types';
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
@@ -84,7 +85,7 @@ const ssdsLinks: { to: string; label: string; Icon: () => JSX.Element; tabKey: T
 
 /** Resolve a tab's effective permission for the current user. */
 function getTabPermission(tabKey: TabKey, role: string, tabPermissions?: Partial<Record<TabKey, TabPermission>>): TabPermission {
-  if (role === 'admin') return 'edit';
+  if (isAdminRole(role)) return 'edit';
   if (tabPermissions?.[tabKey]) return tabPermissions[tabKey]!;
   if (ADMIN_ONLY_TABS.includes(tabKey)) return 'hidden';
   return 'edit';
@@ -212,7 +213,7 @@ export function Layout() {
           </div>
           <div className="who">
             <div className="who-name">{user?.name}</div>
-            <div className="who-role">{user?.role}</div>
+            <div className="who-role">{roleLabel(user?.role)}</div>
           </div>
           <AlertsBell />
           <button

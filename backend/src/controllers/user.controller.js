@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const Project = require('../models/Project');
 const asyncHandler = require('../utils/asyncHandler');
+const { isAdmin, isSuperadmin } = require('../utils/roles');
 const { canManageDriver, linkedOrOnProjects } = require('../utils/scope');
 const custody = require('../services/assetCustody');
 const { releaseAllForDriver } = custody;
@@ -20,7 +21,7 @@ async function resolveProjectsForCreate(req, b, finalRole) {
   const requiresProject = ['manager', 'team_lead', 'user'].includes(finalRole);
   const multi = finalRole === 'manager' || finalRole === 'team_lead';
 
-  if (req.user.role !== 'admin') {
+  if (!isAdmin(req.user)) {
     const own = (req.user.projectIds || []).map(String);
     if (!own.length) {
       return { error: 'Your account has no project assigned — ask an admin to fix that before adding drivers.' };
@@ -54,7 +55,7 @@ async function resolveProjectsForUpdate(req, b, targetRole) {
   const touched = multi ? b.projectIds !== undefined : b.projectId !== undefined;
   if (!touched) return null;
 
-  if (req.user.role !== 'admin') {
+  if (!isAdmin(req.user)) {
     const own = (req.user.projectIds || []).map(String);
     if (!own.length) return { projectIds: [], projectNames: [] };
     const requested = b.projectId ? String(b.projectId) : null;
@@ -151,6 +152,11 @@ exports.create = asyncHandler(async (req, res) => {
     finalManager = req.user._id;
   }
   if (!User.ROLES.includes(finalRole)) return res.status(400).json({ error: 'invalid role' });
+  // Only a superadmin creates admins (and other superadmins). An admin creating an admin would
+  // make every admin able to hand out full access — the superadmin tier exists to hold that.
+  if (isAdmin({ role: finalRole }) && !isSuperadmin(req.user)) {
+    return res.status(403).json({ error: 'Only a superadmin can create admin accounts' });
+  }
 
   const projectResolved = await resolveProjectsForCreate(req, b, finalRole);
   if (projectResolved.error) return res.status(400).json({ error: projectResolved.error });
@@ -193,7 +199,7 @@ exports.create = asyncHandler(async (req, res) => {
     androidVersion: b.androidVersion || null,
     phoneCase: b.phoneCase || null,
     phoneScreenguard: b.phoneScreenguard || null,
-    tabPermissions: (req.user.role === 'admin' && b.tabPermissions && typeof b.tabPermissions === 'object') ? b.tabPermissions : {},
+    tabPermissions: (isAdmin(req.user) && b.tabPermissions && typeof b.tabPermissions === 'object') ? b.tabPermissions : {},
   });
   await user.setPassword(password);
   await user.save();
@@ -225,6 +231,15 @@ exports.update = asyncHandler(async (req, res) => {
   if (!canManageDriver(req.user, user)) return res.status(403).json({ error: 'Forbidden' });
 
   const b = req.body || {};
+  // An admin account — or a change that would make one — is a superadmin's call alone.
+  const touchesAdmin = isAdmin(user) || (b.role !== undefined && isAdmin({ role: b.role }));
+  if (touchesAdmin && !isSuperadmin(req.user) && String(user._id) !== String(req.user._id)) {
+    return res.status(403).json({ error: 'Only a superadmin can change admin accounts' });
+  }
+  // Nobody changes their own role (a superadmin demoting themselves would lock the tier out).
+  if (b.role !== undefined && String(user._id) === String(req.user._id) && b.role !== user.role) {
+    return res.status(400).json({ error: 'You cannot change your own role' });
+  }
   // Allow email updates — validate uniqueness below.
   if (b.email !== undefined && b.email !== user.email) {
     const dup = await User.findOne({ email: String(b.email).toLowerCase(), _id: { $ne: user._id } });
@@ -284,7 +299,7 @@ exports.update = asyncHandler(async (req, res) => {
     if (problems) assetProblems.push(...problems);
   }
   // Tab/module permissions — only admins may set these.
-  if (b.tabPermissions !== undefined && req.user.role === 'admin') {
+  if (b.tabPermissions !== undefined && isAdmin(req.user)) {
     if (b.tabPermissions && typeof b.tabPermissions === 'object') {
       user.tabPermissions = new Map(Object.entries(b.tabPermissions));
     }
@@ -306,6 +321,10 @@ exports.remove = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!canManageDriver(req.user, user)) return res.status(403).json({ error: 'Forbidden' });
+  if (isAdmin(user) && !isSuperadmin(req.user)) {
+    return res.status(403).json({ error: 'Only a superadmin can deactivate admin accounts' });
+  }
+  if (String(user._id) === String(req.user._id)) return res.status(400).json({ error: 'You cannot deactivate yourself' });
   // Deactivating used to set `active` and nothing else, which left two things quietly wrong:
   // `driverStatus` still read "Active" in every report, and — worse — no `exitDate` meant the
   // asset release in update() never fired, so the driver kept holding their vehicle and phone and

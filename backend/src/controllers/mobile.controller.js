@@ -1,6 +1,7 @@
 const MobileDevice = require('../models/MobileDevice');
 const Assignment = require('../models/Assignment');
 const asyncHandler = require('../utils/asyncHandler');
+const { isAdmin } = require('../utils/roles');
 const { releaseAllForDriver } = require('../services/assetCustody');
 
 function scopeFilter() {
@@ -85,7 +86,7 @@ exports.update = asyncHandler(async (req, res) => {
   const b = req.body || {};
   for (const f of EDITABLE) if (b[f] !== undefined) device[f] = b[f] || null;
   if (b.active !== undefined) device.active = b.active;
-  if (b.managerId !== undefined && req.user.role === 'admin') device.managerId = b.managerId || null;
+  if (b.managerId !== undefined && isAdmin(req.user)) device.managerId = b.managerId || null;
 
   // Status is custody-adjacent: taking a device out of service must also hand it back,
   // otherwise a lost phone stays "held" by a driver forever.

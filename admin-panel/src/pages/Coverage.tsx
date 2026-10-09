@@ -14,20 +14,7 @@ import { sessionDt } from '../lib/format';
 import { decodePolyline6 } from '../lib/polyline';
 import type { ApiError } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import type {
-  AreaAssignment,
-  AreaCoverageDetail,
-  ColumnMapping,
-  CoverageArea,
-  CoverageSummary,
-  DeliveryBreakdown,
-  DriverPosition,
-  ImportJob,
-  ImportReport,
-  NetworkVersion,
-  Project,
-  User,
-} from '../lib/types';
+import { isAdminRole, type AreaAssignment, type AreaCoverageDetail, type ColumnMapping, type CoverageArea, type CoverageSummary, type DeliveryBreakdown, type DriverPosition, type ImportJob, type ImportReport, type NetworkVersion, type Project, type User } from '../lib/types';
 
 /**
  * Coverage — progress against the road network the customer requires us to drive.
@@ -281,7 +268,7 @@ function Switch({
 
 export function Coverage() {
   const { user } = useAuth();
-  const canEdit = user?.role === 'admin' || user?.role === 'manager';
+  const canEdit = isAdminRole(user?.role) || user?.role === 'manager';
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');

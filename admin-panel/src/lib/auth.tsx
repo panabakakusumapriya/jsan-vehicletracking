@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, tokenStore } from './api';
 import type { TabKey, TabPermission, User } from './types';
+import { isAdminRole } from './types';
 import { ADMIN_ONLY_TABS } from './types';
 
 interface AuthValue {
@@ -45,7 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email,
       password,
     });
-    if (!['admin', 'manager', 'team_lead', 'user'].includes(u.role)) {
+    if (!['superadmin', 'admin', 'manager', 'team_lead', 'user'].includes(u.role)) {
       throw new Error('Invalid account role.');
     }
     tokenStore.set(t);
@@ -79,7 +80,7 @@ export function useAuth(): AuthValue {
 export function useTabPermission(tabKey: TabKey): TabPermission {
   const { user } = useAuth();
   if (!user) return 'hidden';
-  if (user.role === 'admin') return 'edit';
+  if (isAdminRole(user.role)) return 'edit';
   if (user.tabPermissions?.[tabKey]) return user.tabPermissions[tabKey]!;
   if (ADMIN_ONLY_TABS.includes(tabKey)) return 'hidden';
   return 'edit';

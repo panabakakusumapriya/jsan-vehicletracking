@@ -1,7 +1,8 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
-const ROLES = ['admin', 'manager', 'team_lead', 'user']; // 'user' == driver
+// 'superadmin' is an admin who may also create and manage admins — see utils/roles.js.
+const ROLES = ['superadmin', 'admin', 'manager', 'team_lead', 'user']; // 'user' == driver
 
 const userSchema = new mongoose.Schema(
   {

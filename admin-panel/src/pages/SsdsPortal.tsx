@@ -4,7 +4,7 @@ import { useAuth } from '../lib/auth';
 import { api, API_URL } from '../lib/api';
 import { ssdsApi } from '../lib/ssdsApi';
 import { Modal } from '../components/Modal';
-import type { Project, User } from '../lib/types';
+import { isAdminRole, type Project, type User } from '../lib/types';
 import { extractFromImages } from '../lib/ocrAi';
 
 interface SsdsDriver {
@@ -46,7 +46,7 @@ const resolveImgUrl = (url?: string) => {
 
 export function SsdsPortal() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isAdminRole(user?.role);
   const canEdit = isAdmin || user?.role === 'manager';
   const [data, setData] = useState<SsdsData | null>(null);
   const [loading, setLoading] = useState(true);

@@ -28,7 +28,7 @@ function initSocket(server) {
   io.on('connection', (socket) => {
     const u = socket.user;
     // Watchers subscribe to rooms; the ingest path fans out to them.
-    if (u.role === 'admin') socket.join('admins');
+    if (u.role === 'admin' || u.role === 'superadmin') socket.join('admins');
     if (u.role === 'manager' || u.role === 'team_lead') socket.join(`manager:${u._id}`);
   });
 

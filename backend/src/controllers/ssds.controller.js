@@ -1,5 +1,6 @@
 const { ObjectId } = require('mongodb');
 const asyncHandler = require('../utils/asyncHandler');
+const { isAdmin } = require('../utils/roles');
 const Project = require('../models/Project');
 const User = require('../models/User');
 const { getSsdsCollections } = require('../config/ssdsDb');
@@ -23,7 +24,7 @@ function getISTDate() {
  * and lets managers pick one of their own projects.
  */
 function projectFilter(req) {
-  const isAdmin = req.user.role === 'admin';
+  const isAdmin = isAdmin(req.user);
   const userProjectIds = (req.user.projectIds || []).map(String);
   const requested = req.query.projectId || null;
 
@@ -48,7 +49,7 @@ exports.getSsds = asyncHandler(async (req, res) => {
   const { drivers: ssdCol } = getSsdsCollections();
 
   // Build user query scoped by project
-  const isAdmin = req.user.role === 'admin';
+  const isAdmin = isAdmin(req.user);
   const userProjectIds = (req.user.projectIds || []).map(String);
   const requestedProject = req.query.projectId || null;
 
@@ -599,17 +600,17 @@ function resolveProjectIdForCreate(req) {
   const userProjectIds = (req.user.projectIds || []).map(String);
 
   if (b.projectId) {
-    if (req.user.role === 'admin') return b.projectId;
+    if (isAdmin(req.user)) return b.projectId;
     if (userProjectIds.includes(b.projectId)) return b.projectId;
     return userProjectIds[0] || null;
   }
-  if (req.user.role === 'admin') return null; // admin must pick explicitly
+  if (isAdmin(req.user)) return null; // admin must pick explicitly
   return userProjectIds[0] || null;
 }
 
 /** Whether the requester can see/edit this record based on its projectId. */
 function canAccessRecord(req, record) {
-  if (req.user.role === 'admin') return true;
+  if (isAdmin(req.user)) return true;
   if (!record.projectId) {
     // Unassigned records: allow if the manager/team_lead created it, otherwise deny.
     return record.createdBy && record.createdBy === req.user._id.toString();
@@ -620,7 +621,7 @@ function canAccessRecord(req, record) {
 
 /** Whether the requester can assign this projectId. */
 function canAssignProject(req, projectId) {
-  if (req.user.role === 'admin') return true;
+  if (isAdmin(req.user)) return true;
   const own = (req.user.projectIds || []).map(String);
   return own.includes(projectId);
 }
@@ -648,7 +649,7 @@ exports.assignProject = asyncHandler(async (req, res) => {
     if (!project || !project.active) return res.status(400).json({ error: 'Project not found or inactive' });
 
     // Manager can only assign their own projects
-    if (req.user.role !== 'admin') {
+    if (!isAdmin(req.user)) {
       const own = (req.user.projectIds || []).map(String);
       if (!own.includes(projectId)) return res.status(403).json({ error: 'You can only assign your own projects' });
     }

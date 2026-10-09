@@ -4,7 +4,7 @@ import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { dt } from '../lib/format';
-import type { Project, User, TabKey, TabPermission } from '../lib/types';
+import { isAdminRole, roleLabel, type Project, type User, type TabKey, type TabPermission } from '../lib/types';
 import { TAB_LABELS, ADMIN_PANEL_TABS, SSDS_TABS, ADMIN_ONLY_TABS } from '../lib/types';
 
 const idOf = (ref: unknown): string =>
@@ -107,18 +107,26 @@ export function Managers() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<User | null>(null);
+  const { user: me } = useAuth();
+  const isSuperadmin = me?.role === 'superadmin';
 
   const load = () => {
+    // A superadmin also sees the admin accounts here — it is the only place they are managed.
+    const adminLists = isSuperadmin
+      ? [api.get<{ users: User[] }>('/api/users?role=superadmin'), api.get<{ users: User[] }>('/api/users?role=admin')]
+      : [];
     Promise.all([
       api.get<{ users: User[] }>('/api/users?role=manager'),
       api.get<{ users: User[] }>('/api/users?role=team_lead'),
-    ]).then(([mgrs, leads]) => {
+      ...adminLists,
+    ]).then(([mgrs, leads, ...admins]) => {
       setManagers(mgrs.users);
-      setUsers([...mgrs.users, ...leads.users]);
+      setUsers([...admins.flatMap((r) => r.users), ...mgrs.users, ...leads.users]);
     });
     api.get<{ projects: Project[] }>('/api/projects').then((r) => setProjects(r.projects));
   };
-  useEffect(() => { load(); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [isSuperadmin]);
 
   const deactivate = async (m: User) => {
     if (!confirm(`Deactivate ${m.name}?`)) return;
@@ -158,7 +166,7 @@ export function Managers() {
                   <td>{m.name}</td>
                   <td>{m.email}</td>
                   <td>{m.phone || '—'}</td>
-                  <td><span className="badge gray" style={{ textTransform: 'capitalize' }}>{m.role === 'team_lead' ? 'Team Lead' : m.role}</span></td>
+                  <td><span className="badge gray" style={{ textTransform: 'capitalize' }}>{roleLabel(m.role)}</span></td>
                   <td title={projectNames.join(', ')}>{projectNames.length ? projectNames.join(', ') : '—'}</td>
                   <td>{m.role === 'team_lead' && m.managerId && typeof m.managerId === 'object' ? m.managerId.name : '—'}</td>
                   <td>{dt(m.createdAt)}</td>
@@ -208,7 +216,7 @@ function AddUser({ managers, projects, onClose, onSaved }: {
   managers: User[]; projects: Project[]; onClose: () => void; onSaved: () => void;
 }) {
   const { user: currentUser } = useAuth();
-  const isAdmin = currentUser?.role === 'admin';
+  const isAdmin = isAdminRole(currentUser?.role);
   const [form, setForm] = useState({ name: '', email: '', password: '', phone: '', role: 'manager', managerId: '' });
   const [projectIds, setProjectIds] = useState<string[]>([]);
   const [tabPermissions, setTabPermissions] = useState<Partial<Record<TabKey, TabPermission>>>({});
@@ -223,7 +231,8 @@ function AddUser({ managers, projects, onClose, onSaved }: {
       setError('Please select a manager for this team lead');
       return;
     }
-    if (!projectIds.length) {
+    // Admins see every project, so an admin account needs none.
+    if (!projectIds.length && !isAdminRole(form.role)) {
       setError('Please select at least one project');
       return;
     }
@@ -271,6 +280,9 @@ function AddUser({ managers, projects, onClose, onSaved }: {
         <select className="input" value={form.role} onChange={(e) => set('role', e.target.value)}>
           <option value="manager">Manager</option>
           <option value="team_lead">Team Lead</option>
+          {/* Admin accounts are a superadmin's to create. */}
+          {currentUser?.role === 'superadmin' && <option value="admin">Admin</option>}
+          {currentUser?.role === 'superadmin' && <option value="superadmin">Super admin</option>}
         </select>
       </div>
       <div className="field">
@@ -322,7 +334,7 @@ function EditUser({ user, managers, projects, onClose, onSaved }: {
   user: User; managers: User[]; projects: Project[]; onClose: () => void; onSaved: () => void;
 }) {
   const { user: currentUser } = useAuth();
-  const isAdmin = currentUser?.role === 'admin';
+  const isAdmin = isAdminRole(currentUser?.role);
   const currentManagerId = user.managerId && typeof user.managerId === 'object' ? user.managerId._id : (user.managerId || '');
   const [form, setForm] = useState({
     name: user.name, email: user.email, phone: user.phone || '', password: '', role: user.role,
@@ -381,6 +393,9 @@ function EditUser({ user, managers, projects, onClose, onSaved }: {
         <select className="input" value={form.role} onChange={e => set('role', e.target.value)}>
           <option value="manager">Manager</option>
           <option value="team_lead">Team Lead</option>
+          {/* Admin accounts are a superadmin's to create. */}
+          {currentUser?.role === 'superadmin' && <option value="admin">Admin</option>}
+          {currentUser?.role === 'superadmin' && <option value="superadmin">Super admin</option>}
         </select>
       </div>
       <div className="field">

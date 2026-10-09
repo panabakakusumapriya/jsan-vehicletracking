@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import type { Assignment, MobileDevice, Project, User, Vehicle } from '../lib/types';
+import { isAdminRole, type Assignment, type MobileDevice, type Project, type User, type Vehicle } from '../lib/types';
 
 /**
  * Drivers — and the ONE place assets are allocated.
@@ -17,7 +17,7 @@ import type { Assignment, MobileDevice, Project, User, Vehicle } from '../lib/ty
  */
 export function Drivers() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isAdminRole(user?.role);
   const isManager = user?.role === 'manager';
   const canAssignTeamLead = isAdmin || isManager;
   const [drivers, setDrivers] = useState<User[]>([]);

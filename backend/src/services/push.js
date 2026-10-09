@@ -87,7 +87,7 @@ async function sendToUsers(userIds, payload) {
  * the manager who owns the driver, plus every active admin.
  */
 async function watcherIdsForDriver(driver) {
-  const admins = await User.find({ role: 'admin', active: true }).select('_id');
+  const admins = await User.find({ role: { $in: ['superadmin', 'admin'] }, active: true }).select('_id');
   const ids = admins.map((a) => a._id.toString());
   const managerId = driver && driver.managerId;
   if (managerId) ids.push(managerId.toString());

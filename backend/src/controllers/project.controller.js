@@ -1,6 +1,7 @@
 const Project = require('../models/Project');
 const User = require('../models/User');
 const asyncHandler = require('../utils/asyncHandler');
+const { isAdmin } = require('../utils/roles');
 const { clearScopeCache } = require('../services/coverageScope');
 
 // Bounds for the per-project stop timeout, mirrored by the clamp in TrackingService.kt so the
@@ -32,10 +33,10 @@ function parseTripEndAfterMinutes(raw) {
 // everywhere (Managers, Drivers). ?all=true (admin's own Projects tab) also returns
 // deactivated ones; everyone else only sees the assignable (active) set.
 exports.list = asyncHandler(async (req, res) => {
-  const filter = req.query.all === 'true' && req.user.role === 'admin' ? {} : { active: true };
+  const filter = req.query.all === 'true' && isAdmin(req.user) ? {} : { active: true };
   // Anyone but an admin works for particular projects, and every project picker in the panel is
   // built from this list — so they are offered theirs, not the whole company's.
-  if (req.user.role !== 'admin') {
+  if (!isAdmin(req.user)) {
     filter._id = { $in: (req.user.projectIds || []).map((p) => p._id || p) };
   }
   const projects = await Project.find(filter).sort({ name: 1 });

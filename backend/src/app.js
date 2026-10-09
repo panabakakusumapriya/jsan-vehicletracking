@@ -116,6 +116,8 @@ function createApp() {
         markersEverywhere: true,
         driverAcademy: true,
         academyPortal: true,
+        superadmin: true,
+        panelTokenWeek: true,
       },
     })
   );

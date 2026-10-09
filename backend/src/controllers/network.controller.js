@@ -4,6 +4,7 @@ const { pipeline } = require('stream/promises');
 
 const ImportJob = require('../models/ImportJob');
 const NetworkVersion = require('../models/NetworkVersion');
+const { isAdmin } = require('../utils/roles');
 const WorkArea = require('../models/WorkArea');
 const RoadLink = require('../models/RoadLink');
 const LinkCoverage = require('../models/LinkCoverage');
@@ -42,7 +43,7 @@ function asObjectId(value) {
 
 /** Projects the caller may act on. Admins see everything; everyone else only their own. */
 function projectScope(user) {
-  if (user.role === 'admin') return null;
+  if (isAdmin(user)) return null;
   return (user.projectIds || []).map(String);
 }
 
@@ -1294,7 +1295,7 @@ function blockerFor(area, completion, resultingDriverNames) {
 
 /** May this caller force past a blocker? Team leads assign; only admins and managers override. */
 function mayOverride(user) {
-  return user.role === 'admin' || user.role === 'manager';
+  return isAdmin(user) || user.role === 'manager';
 }
 
 /** An override clears a completion, never the one-driver-per-area invariant. */

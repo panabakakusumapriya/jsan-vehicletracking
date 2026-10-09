@@ -15,9 +15,10 @@ module.exports = {
   PORT: parseInt(process.env.PORT || '4000', 10),
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_SECRET: process.env.JWT_SECRET,
-  // Admin/manager/team_lead tokens — these roles sign in from a browser fairly often, so a
-  // shorter lifetime is a small inconvenience, not a support ticket.
-  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '30d',
+  // Admin/manager/team_lead tokens — a week: the panel is used from browsers, often shared
+  // office machines, so a sign-in that lingered for a month was the wrong trade. Set
+  // JWT_EXPIRES_IN on the host to override (it was 30d until 2026-10-09).
+  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
   // Driver-portal (mobile app) tokens. A driver may be signed in on several phones at once
   // (see auth.controller.js login) — a lost/stolen phone is revoked by
   // deactivating the account, not by waiting out the JWT — so a long-lived token here trades
