@@ -40,9 +40,13 @@ export function TabBar() {
     ? ALL_TABS.filter(t => enabled.includes(t.module))
     : ALL_TABS;
 
-  // If current screen is not in the allowed tabs, redirect to the first allowed tab
+  // If the current TAB is one the project switched off, redirect to the first allowed tab.
+  // Only tab screens: this bar stays mounted under screens pushed on top of the tabs (the Driver
+  // Academy), and treating those as "not an allowed tab" bounced them straight back to the
+  // Dashboard — the screen flashed and never opened.
   useEffect(() => {
-    if (tabs.length > 0 && !tabs.some(t => t.path === pathname)) {
+    const onTab = ALL_TABS.some(t => t.path === pathname);
+    if (onTab && tabs.length > 0 && !tabs.some(t => t.path === pathname)) {
       router.replace(tabs[0].path as any);
     }
   }, [tabs, pathname]);
