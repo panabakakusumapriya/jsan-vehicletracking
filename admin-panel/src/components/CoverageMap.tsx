@@ -575,8 +575,8 @@ export function CoverageMap({
         if (covered) driven += 1;
         let c: [number, number, number] = RED;
         let a = 225;
-        // 1 = still to drive, 2 = done: drawn as separate layers (below) so the outstanding
-        // roads can be the thicker ones at every zoom.
+        // 1 = still to drive, 2 = done: drawn as separate layers (below) so the driven roads can
+        // be the thicker ones at every zoom.
         let bucket = 1;
         if (covered) {
           bucket = 2;
@@ -602,9 +602,9 @@ export function CoverageMap({
   }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet]);
 
   /**
-   * Two layers per delivery over the SAME binary: the driven roads first, thin; the roads still
-   * to drive on top, thick. Colour alone was not enough — at a glance the eye reads width before
-   * hue, so what is left to do is the heavier line and the done roads sit back as context. The
+   * Two layers per delivery over the SAME binary: the roads still to drive first, thin; the driven
+   * roads on top, thick. Colour alone was not enough — at a glance the eye reads width before hue,
+   * so the work done is the heavier line and what is left sits as the thin red mesh behind it. The
    * layers share positions and colours; only the filter value (1 to-drive, 2 done) differs.
    */
   const roadLayers = useMemo<Layer[]>(
@@ -612,8 +612,8 @@ export function CoverageMap({
       roadPaint.flatMap(({ net, colors, show }) =>
         (
           [
-            { suffix: 'done', range: [1.5, 2.5], width: 3, min: 1.3, max: 6 },
-            { suffix: 'todo', range: [0.5, 1.5], width: 5, min: 2.4, max: 10 },
+            { suffix: 'todo', range: [0.5, 1.5], width: 3, min: 1.3, max: 6 },
+            { suffix: 'done', range: [1.5, 2.5], width: 5, min: 2.4, max: 10 },
           ] as const
         ).map(
           (b) =>
@@ -1043,7 +1043,7 @@ export function CoverageMap({
             ? `${roadsShown.toLocaleString()} ${
                 roadScope === 'covered' ? 'driven roads' : roadScope === 'assigned' ? 'roads in assigned areas' : 'roads'
               }${roadScope === 'covered' ? '' : ` · ${roadsDriven.toLocaleString()} driven (${((roadsDriven / roadsShown) * 100).toFixed(0)}%)`} · ${
-                colorRoadsByDriver ? 'driven roads take the driver’s colour (thin), thick red = still to drive' : 'thick red = still to drive, thin blue = done'
+                colorRoadsByDriver ? 'driven roads take the driver’s colour (thick), thin red = still to drive' : 'thick blue = done, thin red = still to drive'
               }`
             : nets.length
               ? roadScope === 'assigned' ? 'No area is out with a driver' : 'Nothing driven yet'
