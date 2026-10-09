@@ -575,12 +575,17 @@ export function CoverageMap({
         if (covered) driven += 1;
         let c: [number, number, number] = RED;
         let a = 225;
+        // 1 = still to drive, 2 = done: drawn as separate layers (below) so the outstanding
+        // roads can be the thicker ones at every zoom.
+        let bucket = 1;
         if (covered) {
+          bucket = 2;
           const who = d < drivers.length ? drivers[d].driverId : null;
           c = (colorRoadsByDriver && who && driverColorById?.[who]) || BLUE;
           if (driverSet.size > 0 && !(who && driverSet.has(who))) a = 45;
         } else if (f & 2) {
           c = BLUE;
+          bucket = 2;
           if (driverSet.size > 0) a = 45;
         }
         for (let v = net.startIndices[i]; v < net.startIndices[i + 1]; v++) {
@@ -589,42 +594,56 @@ export function CoverageMap({
           colors[o + 1] = c[1];
           colors[o + 2] = c[2];
           colors[o + 3] = a;
-          show[v] = 1;
+          show[v] = bucket;
         }
       }
       return { net, colors, show, shown, driven };
     });
   }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet]);
 
+  /**
+   * Two layers per delivery over the SAME binary: the driven roads first, thin; the roads still
+   * to drive on top, thick. Colour alone was not enough — at a glance the eye reads width before
+   * hue, so what is left to do is the heavier line and the done roads sit back as context. The
+   * layers share positions and colours; only the filter value (1 to-drive, 2 done) differs.
+   */
   const roadLayers = useMemo<Layer[]>(
     () =>
-      roadPaint.map(({ net, colors, show }) =>
-        new PathLayer({
-          id: `roads-${net.versionId}`,
-          data: {
-            length: net.linkCount,
-            startIndices: net.startIndices,
-            attributes: {
-              getPath: { value: net.positions, size: 2 },
-              getColor: { value: colors, size: 4, normalized: true },
-              getFilterValue: { value: show, size: 1 },
-            },
-          },
-          // The binary is used as-is: open paths, offsets from the delivery's own centre (float32
-          // near an origin is precise to centimetres; absolute float32 longitudes are not).
-          _pathType: 'open',
-          coordinateSystem: COORDINATE_SYSTEM.LNGLAT_OFFSETS,
-          coordinateOrigin: [net.origin[0], net.origin[1], 0],
-          getWidth: 3,
-          widthUnits: 'meters',
-          widthMinPixels: 1.2,
-          widthMaxPixels: 7,
-          capRounded: true,
-          jointRounded: true,
-          pickable: true,
-          extensions: [ROAD_FILTER],
-          filterRange: [0.5, 1.5],
-        } as never)
+      roadPaint.flatMap(({ net, colors, show }) =>
+        (
+          [
+            { suffix: 'done', range: [1.5, 2.5], width: 3, min: 1.3, max: 6 },
+            { suffix: 'todo', range: [0.5, 1.5], width: 5, min: 2.4, max: 10 },
+          ] as const
+        ).map(
+          (b) =>
+            new PathLayer({
+              id: `roads-${net.versionId}-${b.suffix}`,
+              data: {
+                length: net.linkCount,
+                startIndices: net.startIndices,
+                attributes: {
+                  getPath: { value: net.positions, size: 2 },
+                  getColor: { value: colors, size: 4, normalized: true },
+                  getFilterValue: { value: show, size: 1 },
+                },
+              },
+              // The binary is used as-is: open paths, offsets from the delivery's own centre
+              // (float32 near an origin is precise to centimetres; absolute longitudes are not).
+              _pathType: 'open',
+              coordinateSystem: COORDINATE_SYSTEM.LNGLAT_OFFSETS,
+              coordinateOrigin: [net.origin[0], net.origin[1], 0],
+              getWidth: b.width,
+              widthUnits: 'meters',
+              widthMinPixels: b.min,
+              widthMaxPixels: b.max,
+              capRounded: true,
+              jointRounded: true,
+              pickable: true,
+              extensions: [ROAD_FILTER],
+              filterRange: b.range,
+            } as never)
+        )
       ),
     [roadPaint]
   );
@@ -932,7 +951,7 @@ export function CoverageMap({
       };
     }
     if (layerId.startsWith('roads-') && info.index >= 0) {
-      const net = netsRef.current.find((n) => `roads-${n.versionId}` === layerId);
+      const net = netsRef.current.find((n) => layerId.startsWith(`roads-${n.versionId}-`));
       if (!net) return null;
       const st = roadStateRef.current;
       const d = st?.coveredBy.get(net.versionId)?.[info.index] ?? -1;
@@ -1024,7 +1043,7 @@ export function CoverageMap({
             ? `${roadsShown.toLocaleString()} ${
                 roadScope === 'covered' ? 'driven roads' : roadScope === 'assigned' ? 'roads in assigned areas' : 'roads'
               }${roadScope === 'covered' ? '' : ` · ${roadsDriven.toLocaleString()} driven (${((roadsDriven / roadsShown) * 100).toFixed(0)}%)`} · ${
-                colorRoadsByDriver ? 'driven roads take the driver’s colour, red = to drive' : 'red = to drive, blue = done'
+                colorRoadsByDriver ? 'driven roads take the driver’s colour (thin), thick red = still to drive' : 'thick red = still to drive, thin blue = done'
               }`
             : nets.length
               ? roadScope === 'assigned' ? 'No area is out with a driver' : 'Nothing driven yet'
