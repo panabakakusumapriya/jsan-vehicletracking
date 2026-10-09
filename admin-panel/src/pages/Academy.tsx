@@ -131,7 +131,8 @@ const STYLE = `
 /* ─────────────────────────────── /academy — the link a manager shares ─────────────────────────────── */
 
 export function AcademyLanding() {
-  const { user, loading } = useAuth();
+  const { user, loading, signOut } = useAuth();
+  const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   if (loading) return <div className="center-screen">Loading…</div>;
   if (user?.role === 'user') return <Navigate to="/driver/academy" replace />;
@@ -160,6 +161,13 @@ export function AcademyLanding() {
                 <input readOnly value={shareUrl()} onFocus={(e) => e.currentTarget.select()} />
                 <button className="acad-btn" onClick={() => { navigator.clipboard?.writeText(shareUrl()).then(() => setCopied(true)).catch(() => {}); }}>
                   {copied ? 'Copied ✓' : 'Copy link'}
+                </button>
+              </div>
+              {/* A manager wants to see the course too — and the driver sign-in is a different account,
+                  so this signs the manager out first rather than hiding the button behind that step. */}
+              <div className="acad-actions">
+                <button className="acad-btn ghost" onClick={() => { signOut(); navigate('/login?next=/driver/academy', { replace: true }); }}>
+                  Try it as a driver — signs you out, then sign in with a driver account
                 </button>
               </div>
             </>
