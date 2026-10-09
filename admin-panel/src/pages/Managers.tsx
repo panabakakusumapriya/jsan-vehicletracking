@@ -167,7 +167,9 @@ export function Managers() {
                   <td>{m.email}</td>
                   <td>{m.phone || '—'}</td>
                   <td><span className="badge gray" style={{ textTransform: 'capitalize' }}>{roleLabel(m.role)}</span></td>
-                  <td title={projectNames.join(', ')}>{projectNames.length ? projectNames.join(', ') : '—'}</td>
+                  <td title={isAdminRole(m.role) ? 'Admins see every project' : projectNames.join(', ')}>
+                    {isAdminRole(m.role) ? <span className="badge green">All projects</span> : projectNames.length ? projectNames.join(', ') : '—'}
+                  </td>
                   <td>{m.role === 'team_lead' && m.managerId && typeof m.managerId === 'object' ? m.managerId.name : '—'}</td>
                   <td>{dt(m.createdAt)}</td>
                   <td>
@@ -246,7 +248,7 @@ function AddUser({ managers, projects, onClose, onSaved }: {
         phone: form.phone || undefined,
         role: form.role,
         managerId: form.role === 'team_lead' ? form.managerId : undefined,
-        projectIds,
+        projectIds: isAdminRole(form.role) ? [] : projectIds,
         tabPermissions: Object.keys(tabPermissions).length ? tabPermissions : undefined,
       });
       onSaved();
@@ -286,8 +288,19 @@ function AddUser({ managers, projects, onClose, onSaved }: {
         </select>
       </div>
       <div className="field">
-        <label>Project(s) * {projectIds.length ? `· ${projectIds.length} selected` : ''}</label>
-        <ProjectPicker projects={projects} selectedIds={projectIds} onToggle={toggleProject} />
+        {/* Admins are not scoped by project at all — the server never filters them — so there is
+            nothing to pick, and ticking every box would miss the projects created next month. */}
+        {isAdminRole(form.role) ? (
+          <>
+            <label>Project(s)</label>
+            <AllProjectsNote />
+          </>
+        ) : (
+          <>
+            <label>Project(s) * {projectIds.length ? `· ${projectIds.length} selected` : ''}</label>
+            <ProjectPicker projects={projects} selectedIds={projectIds} onToggle={toggleProject} />
+          </>
+        )}
       </div>
       {form.role === 'team_lead' && (
         <div className="field">
@@ -364,7 +377,8 @@ function EditUser({ user, managers, projects, onClose, onSaved }: {
         role: form.role,
         managerId: form.role === 'team_lead' ? form.managerId : null,
       };
-      if (projectIds.length) body.projectIds = projectIds;
+      if (isAdminRole(form.role)) body.projectIds = [];
+      else if (projectIds.length) body.projectIds = projectIds;
       if (form.password) body.password = form.password;
       if (isAdmin) body.tabPermissions = tabPermissions;
       await api.patch(`/api/users/${user._id}`, body);
@@ -399,8 +413,17 @@ function EditUser({ user, managers, projects, onClose, onSaved }: {
         </select>
       </div>
       <div className="field">
-        <label>Project(s) {projectIds.length ? `· ${projectIds.length} selected` : '· none assigned yet'}</label>
-        <ProjectPicker projects={projects} selectedIds={projectIds} onToggle={toggleProject} />
+        {isAdminRole(form.role) ? (
+          <>
+            <label>Project(s)</label>
+            <AllProjectsNote />
+          </>
+        ) : (
+          <>
+            <label>Project(s) {projectIds.length ? `· ${projectIds.length} selected` : '· none assigned yet'}</label>
+            <ProjectPicker projects={projects} selectedIds={projectIds} onToggle={toggleProject} />
+          </>
+        )}
       </div>
       {form.role === 'team_lead' && (
         <div className="field">
@@ -440,5 +463,14 @@ function EditUser({ user, managers, projects, onClose, onSaved }: {
         <button className="btn" onClick={save} disabled={busy}>{busy ? 'Saving...' : 'Save changes'}</button>
       </div>
     </Modal>
+  );
+}
+
+/** In place of the project picker for an admin role: admins are never scoped by project. */
+function AllProjectsNote() {
+  return (
+    <div style={{ fontSize: 13, padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10, background: 'var(--panel-2)', color: 'var(--text-2)' }}>
+      ✓ <b>All projects</b> — admins see every project automatically, including ones created later.
+    </div>
   );
 }
