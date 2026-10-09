@@ -213,6 +213,8 @@ export function Drivers() {
             {countries.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           {anyFilter && <button type="button" className="cov-link" onClick={clearAll}>Clear</button>}
+          {/* The Driver Academy page: the link to hand to drivers, with a copy button. */}
+          <a className="btn-ghost" href="/academy" target="_blank" rel="noreferrer" title="Driver Academy — the course link to give your drivers" style={{ textDecoration: 'none', whiteSpace: 'nowrap' }}>🎓 Academy link</a>
           <button className="btn dr-add" onClick={() => setShowAdd(true)}>+ Add driver</button>
         </div>
       </div>
@@ -261,6 +263,7 @@ export function Drivers() {
               <th>Currency</th>
               <th>Language</th>
               <th>Timezone</th>
+              <th title="The in-app Driver Academy — how to use the app, shown after first login">Academy</th>
               <th className="sticky-col sr-2">Status</th>
               <th></th>
             </tr>
@@ -306,6 +309,22 @@ export function Drivers() {
                   <td>{d.currency || <M />}</td>
                   <td>{d.language || <M />}</td>
                   <td>{d.timezone || <M />}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {d.academy?.completedAt && d.academy.certificateId ? (
+                      <a className="badge green" href={'/academy/certificate/' + d.academy.certificateId} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}
+                        title={'Open the certificate ' + d.academy.certificateId}>
+                        🏅 Certified{d.academy.score != null ? ` · ${d.academy.score}%` : ''}
+                      </a>
+                    ) : d.academy?.completedAt ? (
+                      <span className="badge green" title={`Finished ${new Date(d.academy.completedAt).toLocaleDateString()}${d.academy.score != null ? ` · ${d.academy.score}% right first time` : ''}`}>
+                        ✓ Done{d.academy.score != null ? ` · ${d.academy.score}%` : ''}
+                      </span>
+                    ) : (d.academy?.lessons?.length ?? 0) > 0 ? (
+                      <span className="badge amber" title="Started, not finished">{d.academy!.lessons!.length} of 6</span>
+                    ) : d.academy?.skippedAt ? (
+                      <span className="badge gray" title={`Skipped ${new Date(d.academy.skippedAt).toLocaleDateString()} — still on their Home screen`}>Skipped</span>
+                    ) : <M />}
+                  </td>
                   {/*
                     Editable in place, and two-way. `active` is the source of truth here rather
                     than the free-text driverStatus, because it is the field that actually decides
@@ -337,10 +356,10 @@ export function Drivers() {
               );
             })}
             {drivers.length === 0 && (
-              <tr><td colSpan={29} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
+              <tr><td colSpan={30} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No drivers yet — add one to get started.</td></tr>
             )}
             {drivers.length > 0 && filtered.length === 0 && (
-              <tr><td colSpan={29} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No driver matches these filters.</td></tr>
+              <tr><td colSpan={30} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No driver matches these filters.</td></tr>
             )}
           </tbody>
         </table>

@@ -28,11 +28,15 @@ import { SsdsDailyReports } from './pages/SsdsDailyReports';
 import { DriverMySsds } from './pages/DriverMySsds';
 import { DriverMyTimesheets } from './pages/DriverMyTimesheets';
 import { DriverMyDailyReports } from './pages/DriverMyDailyReports';
+import { AcademyCertificate, AcademyLanding, DriverAcademy } from './pages/Academy';
 
 export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      {/* Driver Academy: the shareable link and the public, verifiable certificates. */}
+      <Route path="/academy" element={<AcademyLanding />} />
+      <Route path="/academy/certificate/:id" element={<AcademyCertificate />} />
       <Route
         element={
           <ProtectedRoute>
@@ -123,6 +127,7 @@ export default function App() {
         <Route path="/driver" element={<DriverMySsds />} />
         <Route path="/driver/timesheets" element={<DriverMyTimesheets />} />
         <Route path="/driver/daily-reports" element={<DriverMyDailyReports />} />
+        <Route path="/driver/academy" element={<DriverAcademy />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

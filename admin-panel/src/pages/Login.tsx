@@ -65,14 +65,18 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
 
-  if (token && user) return <Navigate to={user.role === 'user' ? '/driver' : '/'} replace />;
+  // A driver sent here from a shared link (e.g. /academy) goes back to it after signing in.
+  const nextParam = new URLSearchParams(window.location.search).get('next');
+  const driverHome = nextParam && nextParam.startsWith('/driver') ? nextParam : '/driver';
+
+  if (token && user) return <Navigate to={user.role === 'user' ? driverHome : '/'} replace />;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
       const u = await signIn(email.trim(), password);
-      navigate(u.role === 'user' ? '/driver' : '/', { replace: true });
+      navigate(u.role === 'user' ? driverHome : '/', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {

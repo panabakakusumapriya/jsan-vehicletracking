@@ -6,6 +6,7 @@ import { useAuth } from '../lib/auth';
 const SsdsIcon = () => <AppIcon name="grid" size={19} />;
 const TimesheetIcon = () => <AppIcon name="clock" size={19} />;
 const DailyReportIcon = () => <AppIcon name="report" size={19} />;
+const AcademyIcon = () => <AppIcon name="academy" size={19} />;
 const MenuIcon = () => (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="3" y1="6" x2="21" y2="6" />
@@ -25,6 +26,7 @@ const links = [
   { to: '/driver',              label: 'My SSDS',           end: true, Icon: SsdsIcon       },
   { to: '/driver/timesheets',   label: 'My Timesheets',               Icon: TimesheetIcon   },
   { to: '/driver/daily-reports',label: 'My Daily Reports',            Icon: DailyReportIcon },
+  { to: '/driver/academy',      label: 'Driver Academy',              Icon: AcademyIcon     },
 ];
 
 function getInitials(name: string) {

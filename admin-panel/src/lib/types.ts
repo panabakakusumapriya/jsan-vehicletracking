@@ -73,6 +73,8 @@ export interface Project {
 
 export interface User {
   _id: string;
+  /** The in-app Driver Academy (how to use the app) — set by the driver app. */
+  academy?: { lessons?: string[]; score?: number | null; completedAt?: string | null; skippedAt?: string | null; certificateId?: string | null } | null;
   name: string;
   email: string;
   phone?: string | null;

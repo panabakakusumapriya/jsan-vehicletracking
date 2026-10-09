@@ -20,7 +20,9 @@ const paths = {
   "pin": "M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0ZM12 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z",
   "grid": "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM3 9h18M9 9v12",
   "clock": "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM12 6v6l4 2",
-  "shield": "M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3ZM8 12l3 3 5-6"
+  "shield": "M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3ZM8 12l3 3 5-6",
+  "academy": "M2 9l10-5 10 5-10 5-10-5ZM6 11v5c0 1.5 3 3 6 3s6-1.5 6-3v-5M22 9v6",
+  "award": "M12 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12ZM8.5 13 7 22l5-3 5 3-1.5-9"
 } as const;
 export type AppIconName = keyof typeof paths;
 export function AppIcon({ name, size = 20 }: { name: AppIconName; size?: number }) {

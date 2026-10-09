@@ -24,6 +24,7 @@ const { rebuildScope } = require('../services/globalUkm');
 const { classifyTrip } = require('../services/tripNoise');
 const mongoose = require('mongoose');
 const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezone');
+const { certify } = require('./academy.controller');
 const { sendCompressed } = require('../utils/compressedJson');
 
 /**
@@ -1261,6 +1262,37 @@ exports.myDay = asyncHandler(async (req, res) => {
       distanceMeters: trips.reduce((a, t) => a + t.distanceMeters, 0),
     },
   });
+});
+
+/**
+ * PUT /api/tracking/my-academy — the driver's progress through the in-app Driver Academy.
+ * Body: { lessons?: string[], score?: number, completed?: boolean, skipped?: boolean }
+ *
+ * Merging, never overwriting: lessons are added to the ones already done (a second phone with an
+ * older local copy must not undo progress), and completion, once recorded, stays recorded.
+ */
+const ACADEMY_LESSON_RE = /^[a-z0-9-]{1,40}$/;
+exports.myAcademy = asyncHandler(async (req, res) => {
+  const { lessons, score, completed, skipped } = req.body || {};
+  const user = await User.findById(req.user._id).select('academy');
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const a = user.academy || {};
+  const have = new Set(a.lessons || []);
+  if (Array.isArray(lessons)) {
+    for (const l of lessons.slice(0, 50)) if (typeof l === 'string' && ACADEMY_LESSON_RE.test(l)) have.add(l);
+  }
+  const next = {
+    ...(user.toObject().academy || {}),
+    lessons: [...have],
+    score: Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : a.score ?? null,
+    completedAt: a.completedAt || (completed ? new Date() : null),
+    skippedAt: a.skippedAt || (skipped ? new Date() : null),
+  };
+  // All lessons done on the phone earns the same certificate as the web portal.
+  certify(next);
+  user.academy = next;
+  await user.save();
+  res.json({ academy: next });
 });
 
 exports.myHistory = asyncHandler(async (req, res) => {

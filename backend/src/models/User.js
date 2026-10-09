@@ -19,6 +19,24 @@ const userSchema = new mongoose.Schema(
     mobileDeviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'MobileDevice', default: null },
     country: { type: String, trim: true, default: null },
     timezone: { type: String, trim: true, default: null },
+    /**
+     * Driver Academy — the in-app "how to use this app" course a driver sees after first login.
+     * Kept on the account, not the phone, so a driver who signs in on a second handset is not
+     * sent through it again, and so the panel can show who has done it.
+     */
+    academy: {
+      /** Lesson ids finished (each lesson ends with a question answered correctly). */
+      lessons: { type: [String], default: undefined },
+      /** Questions answered right first time, out of the lessons finished. */
+      score: { type: Number, default: null },
+      completedAt: { type: Date, default: null },
+      /** "Skip for now" — stops the automatic opening; the course stays on the Home screen. */
+      skippedAt: { type: Date, default: null },
+      /** Lessons whose question was first answered wrong on the web portal (graded server-side). */
+      firstWrong: { type: [String], default: undefined },
+      /** Issued when all lessons are done; printed on the certificate, checkable by anyone. */
+      certificateId: { type: String, default: undefined },
+    },
     active: { type: Boolean, default: true },
     lastLoginAt: { type: Date, default: null },
     activeSessionId: { type: String, default: null },
@@ -98,6 +116,8 @@ userSchema.methods.toSafeJSON = function toSafeJSON() {
   }
   return obj;
 };
+
+userSchema.index({ 'academy.certificateId': 1 }, { unique: true, sparse: true });
 
 const User = mongoose.model('User', userSchema);
 User.ROLES = ROLES;

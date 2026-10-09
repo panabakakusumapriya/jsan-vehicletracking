@@ -114,6 +114,8 @@ function createApp() {
         roadBlobs: true,
         workHours: true,
         markersEverywhere: true,
+        driverAcademy: true,
+        academyPortal: true,
       },
     })
   );
@@ -136,6 +138,7 @@ function createApp() {
   app.use('/api/network', require('./routes/network.routes'));
   app.use('/api/ssds', require('./routes/ssds.routes'));
   app.use('/api/markers', require('./routes/marker.routes'));
+  app.use('/api/academy', require('./routes/academy.routes'));
 
   // SPA fallback — serve index.html for non-API routes
   app.get('*', (req, res, next) => {
