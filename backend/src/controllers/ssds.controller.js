@@ -24,11 +24,11 @@ function getISTDate() {
  * and lets managers pick one of their own projects.
  */
 function projectFilter(req) {
-  const isAdmin = isAdmin(req.user);
+  const admin = isAdmin(req.user);
   const userProjectIds = (req.user.projectIds || []).map(String);
   const requested = req.query.projectId || null;
 
-  if (isAdmin) {
+  if (admin) {
     if (requested === 'unassigned') return { projectId: { $exists: false } };
     if (requested) return { projectId: requested };
     return {}; // admin sees all
@@ -49,12 +49,12 @@ exports.getSsds = asyncHandler(async (req, res) => {
   const { drivers: ssdCol } = getSsdsCollections();
 
   // Build user query scoped by project
-  const isAdmin = isAdmin(req.user);
+  const admin = isAdmin(req.user);
   const userProjectIds = (req.user.projectIds || []).map(String);
   const requestedProject = req.query.projectId || null;
 
   const userQuery = { role: 'user' };
-  if (!isAdmin) {
+  if (!admin) {
     if (!userProjectIds.length) return res.json({ data: [], total_drivers: 0, total_ssds: 0 });
     if (requestedProject && userProjectIds.includes(requestedProject)) {
       userQuery.projectIds = new ObjectId(requestedProject);
