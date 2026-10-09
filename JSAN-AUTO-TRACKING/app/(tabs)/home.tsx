@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 
 import * as VehicleTracker from '@/modules/vehicle-tracker';
+import { AcademyCard } from '@/src/components/AcademyCard';
 import { DayWork } from '@/src/components/DayWork';
 import { TrackingChecklist } from '@/src/components/TrackingChecklist';
 import { API_BASE_URL } from '@/src/lib/config';
@@ -286,6 +287,9 @@ export default function Home() {
           </TouchableOpacity>
         )}
       </View>
+
+      {/* ── Driver Academy: how to use the app — progress, and a way back in any time ── */}
+      <AcademyCard />
 
       {/* ── Working hours: the day's trips, start – end, and their total ── */}
       <DayWork token={token} refreshKey={workKey} />

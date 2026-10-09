@@ -82,6 +82,9 @@ router.get('/my-history', authenticate, requireRole('user'), historyLimiter, ctr
 // The driver's trips on one day and the day's working hours — a few hundred bytes, no geometry.
 router.get('/my-day', authenticate, requireRole('user'), syncLimiter, ctrl.myDay);
 
+// Driver Academy progress (the in-app course) — saved per account.
+router.put('/my-academy', authenticate, requireRole('user'), syncLimiter, ctrl.myAcademy);
+
 // Admins / managers read the live snapshot.
 router.get('/live', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.live);
 

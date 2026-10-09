@@ -44,7 +44,17 @@ export type AuthUser = {
    * own default — do NOT coerce that to 0, which would tell the engine to end trips instantly.
    */
   tripEndAfterMinutes?: number | null;
+  /** Driver Academy progress (the in-app course), as the account last recorded it. */
+  academy?: { lessons?: string[]; score?: number | null; completedAt?: string | null; skippedAt?: string | null } | null;
 };
+
+/** Save Driver Academy progress on the account. The server merges; it never takes progress back. */
+export function apiSaveAcademy(
+  token: string,
+  body: { lessons: string[]; score?: number; completed?: boolean; skipped?: boolean },
+): Promise<{ academy: NonNullable<AuthUser['academy']> }> {
+  return request('/api/tracking/my-academy', { method: 'PUT', body: JSON.stringify(body) }, token);
+}
 
 async function request(path: string, options: RequestInit = {}, token?: string | null) {
   const headers: Record<string, string> = {

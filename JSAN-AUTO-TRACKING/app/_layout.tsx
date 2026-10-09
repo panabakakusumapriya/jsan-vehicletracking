@@ -559,6 +559,7 @@ function RootLayoutInner() {
           <Stack.Screen name="login" />
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="timezone-setup" />
+          <Stack.Screen name="academy" options={{ animation: "slide_from_bottom" }} />
         </Stack>
         <StatusBar style="auto" />
         {/* Post-login hard gate: mid-session permission loss blocks the app until fixed. */}

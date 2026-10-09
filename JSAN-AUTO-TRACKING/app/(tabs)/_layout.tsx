@@ -1,5 +1,12 @@
-import { Tabs } from 'expo-router';
+import { router, Tabs } from 'expo-router';
+import { useEffect } from 'react';
+
 import { TabBar } from '@/src/components/TabBar';
+import { shouldAutoOpen } from '@/src/lib/academy';
+import { useAuth } from '@/src/lib/auth';
+
+/** Once per app start at most — closing the course must not bring it straight back. */
+let academyOffered = false;
 
 /**
  * The driver tab group — the conventional Expo Router `(tabs)` structure.
@@ -15,6 +22,17 @@ import { TabBar } from '@/src/components/TabBar';
  * so the screens no longer render it themselves.
  */
 export default function TabsLayout() {
+  const { user } = useAuth();
+
+  // A driver who has neither finished nor skipped the Driver Academy gets it once, straight after
+  // signing in. Tracking is unaffected: it is started at session level (TrackingBootstrap), not here.
+  useEffect(() => {
+    if (academyOffered || !shouldAutoOpen(user)) return;
+    academyOffered = true;
+    const t = setTimeout(() => router.push('/academy' as any), 400);
+    return () => clearTimeout(t);
+  }, [user]);
+
   return (
     <Tabs
       tabBar={() => <TabBar />}
