@@ -65,6 +65,7 @@ const links: { to: string; label: string; end?: boolean; Icon: () => JSX.Element
 ];
 
 const FlagIcon = () => <AppIcon name="pin" size={19} />;
+const DashboardIcon = () => <AppIcon name="dashboard" size={19} />;
 
 const adminLinks: { to: string; label: string; Icon: () => JSX.Element; tabKey: TabKey }[] = [
   { to: '/managers',    label: 'Users',       Icon: ManagerIcon, tabKey: 'managers'    },
@@ -159,6 +160,12 @@ export function Layout() {
         {/* Nav */}
         <nav>
           <div className="nav-section-label">Main Menu</div>
+          {/* The fleet-wide dashboard is a superadmin's alone. */}
+          {user?.role === 'superadmin' && (
+            <NavLink to="/dashboard" title="Dashboard" className={({ isActive }) => isActive ? 'active' : ''}>
+              <DashboardIcon /><span className="nav-label">Dashboard</span>
+            </NavLink>
+          )}
           {links
             .filter(({ tabKey }) => getTabPermission(tabKey, user?.role || '', user?.tabPermissions) !== 'hidden')
             .map(({ to, label, end, Icon }) => (

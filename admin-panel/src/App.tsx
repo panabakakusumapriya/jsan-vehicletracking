@@ -29,6 +29,7 @@ import { DriverMySsds } from './pages/DriverMySsds';
 import { DriverMyTimesheets } from './pages/DriverMyTimesheets';
 import { DriverMyDailyReports } from './pages/DriverMyDailyReports';
 import { AcademyCertificate, AcademyLanding, DriverAcademy } from './pages/Academy';
+import { Dashboard } from './pages/Dashboard';
 
 export default function App() {
   return (
@@ -46,6 +47,8 @@ export default function App() {
       >
         <Route path="/" element={<LiveMap />} />
         <Route path="/trips" element={<Trips />} />
+        {/* Superadmin only — the page itself sends anyone else back to the start. */}
+        <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/trips/:id" element={<TripDetail />} />
         <Route path="/trips/:id/map" element={<SessionMap />} />
         <Route path="/reports" element={<Reports />} />

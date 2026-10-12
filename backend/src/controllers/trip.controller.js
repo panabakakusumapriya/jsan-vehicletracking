@@ -6,6 +6,7 @@ const User = require('../models/User');
 const LocationPoint = require('../models/LocationPoint');
 const ExportJob = require('../models/ExportJob');
 const asyncHandler = require('../utils/asyncHandler');
+const { workMsExpr } = require('../utils/workHours');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { dayRange, isValidTimeZone } = require('../utils/timezone');
 const { timezoneForCountry } = require('../utils/countryTimezone');
@@ -599,7 +600,7 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
             $cond: [
               { $ne: [{ $ifNull: ['$importBatchId', null] }, null] },
               0,
-              { $max: [0, { $subtract: [{ $ifNull: ['$endedAt', '$$NOW'] }, '$startedAt'] }] },
+              workMsExpr,
             ],
           },
         },

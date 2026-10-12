@@ -25,6 +25,7 @@ const { classifyTrip } = require('../services/tripNoise');
 const mongoose = require('mongoose');
 const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezone');
 const { certify } = require('./academy.controller');
+const { WORK_CAP_MS } = require('../utils/workHours');
 const { sendCompressed } = require('../utils/compressedJson');
 
 /**
@@ -1248,7 +1249,7 @@ exports.myDay = asyncHandler(async (req, res) => {
       startedAt: t.startedAt,
       endedAt: t.endedAt || null,
       status: t.status,
-      durationMs: Math.max(0, end - new Date(t.startedAt).getTime()),
+      durationMs: Math.min(WORK_CAP_MS, Math.max(0, end - new Date(t.startedAt).getTime())),
       distanceMeters: t.distanceMeters || 0,
     };
   });

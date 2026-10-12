@@ -27,9 +27,14 @@ export const hm = (ms: number | null | undefined) => {
   return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
 };
 
-/** How long a trip ran: start to end, or to now while it is still going. */
+/**
+ * How long a trip counts as worked: start to end (to now while running), at most 12 hours — the
+ * same cap the server applies (backend/src/utils/workHours.js): sessions from before the 8-hour
+ * trip limit were left open for days and are not working time.
+ */
+export const TRIP_WORK_CAP_MS = 12 * 60 * 60 * 1000;
 export const tripMs = (t: { startedAt: string; endedAt?: string | null }) =>
-  Math.max(0, (t.endedAt ? new Date(t.endedAt).getTime() : Date.now()) - new Date(t.startedAt).getTime());
+  Math.min(TRIP_WORK_CAP_MS, Math.max(0, (t.endedAt ? new Date(t.endedAt).getTime() : Date.now()) - new Date(t.startedAt).getTime()));
 
 export function statusBadge(status: 'active' | 'completed' | 'timed_out') {
   if (status === 'active') return 'green';

@@ -118,6 +118,7 @@ function createApp() {
         academyPortal: true,
         superadmin: true,
         panelTokenWeek: true,
+        analyticsDashboard: true,
       },
     })
   );
@@ -141,6 +142,7 @@ function createApp() {
   app.use('/api/ssds', require('./routes/ssds.routes'));
   app.use('/api/markers', require('./routes/marker.routes'));
   app.use('/api/academy', require('./routes/academy.routes'));
+  app.use('/api/analytics', require('./routes/analytics.routes'));
 
   // SPA fallback — serve index.html for non-API routes
   app.get('*', (req, res, next) => {
