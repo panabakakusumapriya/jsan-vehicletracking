@@ -47,7 +47,7 @@ export default function App() {
       >
         <Route path="/" element={<LiveMap />} />
         <Route path="/trips" element={<Trips />} />
-        {/* Superadmin only — the page itself sends anyone else back to the start. */}
+        {/* Admins and superadmins — the page itself sends anyone else back to the start. */}
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/trips/:id" element={<TripDetail />} />
         <Route path="/trips/:id/map" element={<SessionMap />} />

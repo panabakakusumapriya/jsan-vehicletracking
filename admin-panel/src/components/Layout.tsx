@@ -160,8 +160,8 @@ export function Layout() {
         {/* Nav */}
         <nav>
           <div className="nav-section-label">Main Menu</div>
-          {/* The fleet-wide dashboard is a superadmin's alone. */}
-          {user?.role === 'superadmin' && (
+          {/* The fleet-wide dashboard: admins and superadmins. */}
+          {isAdminRole(user?.role) && (
             <NavLink to="/dashboard" title="Dashboard" className={({ isActive }) => isActive ? 'active' : ''}>
               <DashboardIcon /><span className="nav-label">Dashboard</span>
             </NavLink>

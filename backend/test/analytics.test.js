@@ -38,6 +38,7 @@ const HOUR = 3600 * 1000;
   };
   const superT = await login('root@x.com', 'superadmin');
   const adminT = await login('admin@x.com', 'admin');
+  const managerT = await login('mgr@x.com', 'manager');
   const get = (q, t = superT) => request(app).get(`/api/analytics/overview?from=2026-10-01&to=2026-10-07&tz=UTC${q}`).set('Authorization', `Bearer ${t}`);
 
   const eu = await Project.create({ name: 'EU-PROJ' });
@@ -61,7 +62,8 @@ const HOUR = 3600 * 1000;
   const cat = await MarkerCategory.create({ name: 'Red Flag', color: '#ef4444', order: 1 });
   await Marker.create({ driverId: aus._id, categoryId: cat._id, lat: -37, lon: 145, recordedAt: at(3, 9) });
 
-  assert((await get('', adminT)).status === 403, 'an admin is not let in — superadmins only');
+  assert((await get('', adminT)).status === 200, 'an admin can open the dashboard');
+  assert((await get('', managerT)).status === 403, 'a manager cannot — admins and superadmins only');
   const all = (await get('')).body;
   assert(all.totals.km === 380000, 'total km for the period: 100 + 50 + 30 + 200 (imported counts), no jitter, nothing outside the dates');
   assert(all.totals.trips === 4 && all.totals.drivingDrivers === 3, '4 trips by 3 drivers');

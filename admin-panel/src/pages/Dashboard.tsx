@@ -3,9 +3,10 @@ import { Navigate } from 'react-router-dom';
 import { PageIcon } from '../components/AppIcon';
 import { api, viewerTimeZone } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { isAdminRole } from '../lib/types';
 
 /**
- * The superadmin dashboard — the whole fleet, cut by project, region and country, over a period.
+ * The admin dashboard (admins and superadmins) — the whole fleet, cut by project, region and country, over a period.
  *
  * One request (GET /api/analytics/overview) carries everything: totals with the change against the
  * previous period of the same length, a timeline, the three breakdowns and the top drivers. Every
@@ -85,7 +86,7 @@ export function Dashboard() {
   const [hover, setHover] = useState<number | null>(null);
 
   useEffect(() => {
-    if (user?.role !== 'superadmin') return;
+    if (!isAdminRole(user?.role)) return;
     const q = new URLSearchParams({ from, to, tz: viewerTimeZone() });
     if (filter.projectId) q.set('projectId', filter.projectId);
     if (filter.region) q.set('region', filter.region);
@@ -104,7 +105,7 @@ export function Dashboard() {
     [filter.projectId, data],
   );
 
-  if (user && user.role !== 'superadmin') return <Navigate to="/" replace />;
+  if (user && !isAdminRole(user.role)) return <Navigate to="/" replace />;
 
   const t = data?.totals;
   const p = data?.previous;
