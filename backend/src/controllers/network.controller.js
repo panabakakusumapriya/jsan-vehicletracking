@@ -13,7 +13,7 @@ const AreaAssignment = require('../models/AreaAssignment');
 const AreaCompletion = require('../models/AreaCompletion');
 const User = require('../models/User');
 const Trip = require('../models/Trip');
-const { rebuildNetworkCoverage } = require('../services/linkCoverage');
+const { rebuildNetworkCoverage, recomputeForAssignment } = require('../services/linkCoverage');
 const { compactLine } = require('../services/driverRoads');
 const { sendCompressed } = require('../utils/compressedJson');
 
@@ -1392,6 +1392,9 @@ async function setAreaAssignments(req, res) {
       })),
       { ordered: false }
     );
+    // Roads these drivers already drove inside the area become their assigned UKM — in the
+    // background, so the save is not held up by re-figuring their history.
+    recomputeForAssignment(scope.projectId, toAdd.map((d) => ({ driverId: d._id, areaCode: area.areaCode }))).catch(() => {});
   }
 
   const rows = await AreaAssignment.find({ areaId: area._id, releasedAt: null }).populate(
@@ -1555,6 +1558,8 @@ async function bulkAssign(req, res) {
     await AreaAssignment.insertMany(additions, { ordered: false }).catch((err) => {
       if (err && err.code !== 11000) throw err;
     });
+    // As above: earlier driving inside the newly assigned areas becomes assigned UKM.
+    recomputeForAssignment(scope.projectId, additions.map((a) => ({ driverId: a.driverId, areaCode: a.areaCode }))).catch(() => {});
   }
 
   const rows = await AreaAssignment.find({

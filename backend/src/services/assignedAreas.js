@@ -85,23 +85,38 @@ async function assignedAreasForTrip(trip, samplePoints = []) {
 
   const startedAt = new Date(trip.startedAt);
   const endedAt = trip.endedAt ? new Date(trip.endedAt) : new Date();
+  // Every assignment not released before the trip began: the ones held DURING it, and the ones
+  // made to this driver AFTER it.
   const assignments = await AreaAssignment.find({
     driverId: trip.driverId,
-    assignedAt: { $lte: endedAt },
     $or: [{ releasedAt: null }, { releasedAt: { $gte: startedAt } }],
   })
-    .select('areaId areaCode')
+    .select('areaId areaCode assignedAt')
     .lean();
+  const held = assignments.filter((a) => new Date(a.assignedAt) <= endedAt);
+  const later = assignments.filter((a) => new Date(a.assignedAt) > endedAt);
 
-  const areas = await resolveAssignedAreas(versions, assignments, '_id name geometry bbox');
-  const version = await pickVersion(versions, areas, samplePoints);
+  const fields = '_id name geometry bbox';
+  const [areas, laterAreas] = await Promise.all([
+    resolveAssignedAreas(versions, held, fields),
+    later.length ? resolveAssignedAreas(versions, later, fields) : [],
+  ]);
+  const version = await pickVersion(versions, [...areas, ...laterAreas], samplePoints);
+  const inVersion = (list) =>
+    list.filter((a) => String(a.networkVersionId) === String(version._id)).map(prepareArea);
 
   return {
     networkVersionId: version._id,
     projectId: version.projectId,
-    areas: areas
-      .filter((a) => String(a.networkVersionId) === String(version._id))
-      .map(prepareArea),
+    // Held during the trip: these decide the basis, the in/out-of-area split and "outside your
+    // area" — what the driver was asked to do at the time.
+    areas: inVersion(areas),
+    /**
+     * Assigned to this driver AFTER the trip. Roads the trip was first to drive inside them count
+     * as the driver's assigned UKM, not outside UKM: someone who free-drove a polygon and is then
+     * given it did that polygon's work, just early. Only the UKM split uses them.
+     */
+    laterAreas: inVersion(laterAreas).filter((a) => !areas.some((h) => String(h._id) === String(a._id))),
   };
 }
 

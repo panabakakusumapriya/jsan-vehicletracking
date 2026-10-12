@@ -509,7 +509,8 @@ async function computeTripLinkMetrics(tripId, analysis = null) {
   }
 
   const assignedIds = a.ctx.areas.map((x) => x._id);
-  const basis = assignedIds.length ? 'assigned' : 'global';
+  // Before anything is measured, the basis is what the driver held during the trip.
+  const heldBasis = assignedIds.length ? 'assigned' : 'global';
   const { eligible, status } = eligibility(trip);
   if (!eligible || !a.steps.length) {
     return finish({
@@ -519,13 +520,18 @@ async function computeTripLinkMetrics(tripId, analysis = null) {
       // The eligibility verdict verbatim — 'review' under a no-claim policy and 'failed' are both
       // final answers, not a 'pending' that something might still resolve.
       linkCoverageStatus: eligible ? 'pending' : status,
-      ukmBasis: basis,
+      ukmBasis: heldBasis,
     });
   }
 
   const held = await ledgerFor(a.ctx.networkVersionId, a.covered.keys());
-  const assigned = new Set(assignedIds.map(String));
+  // Polygons assigned to the driver after this trip count for the roads it was first on inside
+  // them (see assignedAreasForTrip) — the same driver's early work, not outside driving.
+  const laterIds = (a.ctx.laterAreas || []).map((x) => String(x._id));
+  const assigned = new Set([...assignedIds.map(String), ...laterIds]);
+  const later = new Set(laterIds);
   let ukmMeters = 0;
+  let laterMeters = 0;
   let networkMeters = 0;
   const shapes = [];
   for (const [linkId, hit] of a.covered) {
@@ -534,10 +540,14 @@ async function computeTripLinkMetrics(tripId, analysis = null) {
     networkMeters += hit.link.lengthMeters;
     if (hit.link.areaId && assigned.has(String(hit.link.areaId))) {
       ukmMeters += hit.link.lengthMeters;
+      if (later.has(String(hit.link.areaId))) laterMeters += hit.link.lengthMeters;
       const coords = hit.link.geometry.coordinates;
       shapes.push(encodePolyline6(coords.map(([lon, lat]) => ({ lat, lon }))));
     }
   }
+  // A free-drive trip becomes an assigned one only if it actually drove a polygon the driver was
+  // given later; any other free drive stays on global UKM, untouched.
+  const basis = assignedIds.length || laterMeters > 0 ? 'assigned' : 'global';
 
   const set = {
     assignedAreaIds: assignedIds,
@@ -660,9 +670,31 @@ async function rebuildNetworkCoverage(networkVersionId, { onProgress } = {}) {
   };
 }
 
+/**
+ * A polygon was just assigned: re-figure the drivers' EARLIER trips that were first on roads inside
+ * it, so that work moves from outside UKM into their assigned UKM (see assignedAreasForTrip).
+ * Only trips that own a road there can change — every other trip's figures are untouched.
+ * Called fire-and-forget after an assignment is saved; failures are logged, never thrown.
+ */
+async function recomputeForAssignment(projectId, assignments) {
+  const WorkArea = require('../models/WorkArea');
+  for (const { driverId, areaCode } of assignments) {
+    try {
+      const areaIds = await WorkArea.find({ projectId, areaCode }).distinct('_id');
+      if (!areaIds.length) continue;
+      const tripIds = await LinkCoverage.distinct('firstTripId', { areaId: { $in: areaIds }, firstDriverId: driverId });
+      for (const id of tripIds) await computeTripLinkMetrics(id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[assignment] re-figuring earlier trips', String(driverId), areaCode, err.message);
+    }
+  }
+}
+
 module.exports = {
   attributeTripLinks,
   computeTripLinkMetrics,
+  recomputeForAssignment,
   rebuildNetworkCoverage,
   releaseLinks,
   // exported for the tests

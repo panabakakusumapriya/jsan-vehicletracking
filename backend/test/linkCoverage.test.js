@@ -296,6 +296,40 @@ const near = (a, b, tol, msg) => assert(a != null && Math.abs(a - b) <= tol, `${
     assert((await snapshot()) === before, 'rebuild produces the same owners and figures as the incremental path');
   }
 
+  // ── Test: free-drive first, the polygon assigned afterwards ──
+  console.log('\n── Free drive, then the same driver is given the polygon ──');
+  {
+    const { recomputeForAssignment } = require('../src/services/linkCoverage');
+    await reset();
+    const d = await makeDriver('Free', [project._id]);
+    // Free drive (no polygon held) over L1+L2, inside Wallan; another over L3 only, outside it.
+    const inside = await makeTrip(d, project, [shape(8, 0, 4)], 0, 20);
+    const outside = await makeTrip(d, project, [shape(8, 6, 8)], 30, 40);
+    for (const t of [inside, outside]) { await attributeTrip(t._id); await attributeTripLinks(t._id); }
+    let r = await reload(inside);
+    assert(r.ukmBasis === 'global' && r.linkUkmMeters == null, 'while free driving, the trip is on global UKM with no assigned part');
+    near(r.linkUkmNetworkMeters, steps(4), 2, 'its customer roads are all "outside" so far');
+
+    // Wallan is now assigned to the same driver — after both trips.
+    await assign(d, at(120));
+    await recomputeForAssignment(project._id, [{ driverId: d._id, areaCode: 'SA2-1' }]);
+    r = await reload(inside);
+    assert(r.ukmBasis === 'assigned', 'once given the polygon, the trip that drove it counts as assigned work');
+    near(r.linkUkmMeters, steps(4), 2, 'the roads it drove inside Wallan move into assigned UKM');
+    near(r.effectiveUkmMeters, steps(4), 2, '…and are what the trip is measured on');
+    assert(Math.max(0, r.linkUkmNetworkMeters - r.linkUkmMeters) < 1, 'nothing of it is left as outside UKM');
+    const o = await reload(outside);
+    assert(o.ukmBasis === 'global' && o.linkUkmMeters == null, 'the free drive that never entered Wallan is untouched — still global UKM');
+
+    // A different driver given the polygon does not inherit the credit.
+    const other = await makeDriver('Other', [project._id]);
+    await AreaAssignment.updateMany({}, { $set: { releasedAt: at(130) } });
+    await AreaAssignment.create({ projectId: project._id, networkVersionId: version._id, areaId: area._id, driverId: other._id, areaCode: 'SA2-1', assignedAt: at(140) });
+    await recomputeForAssignment(project._id, [{ driverId: other._id, areaCode: 'SA2-1' }]);
+    r = await reload(inside);
+    near(r.linkUkmMeters, steps(4), 2, 'handing the polygon on keeps the first driver\'s early work as theirs');
+  }
+
   await mongoose.disconnect();
   await mongod.stop();
   console.log(`\n🎉 ASSIGNED-NETWORK COVERAGE VERIFIED — ${passed} assertions passed`);
