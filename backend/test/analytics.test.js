@@ -70,6 +70,8 @@ function assert(cond, msg) {
   await trip(c, 13, 20, { importBatchId: 'imp', effectiveUkmMeters: 5000, ukmBasis: 'global' }); // no projectId → driver's; no zone → driver's country
   await trip(c, 13, 999, { projectId: p2._id, parkedJitter: true, effectiveUkmMeters: 999000 }); // jitter: nothing
   await trip(a, 20, 500, { projectId: p1._id }); // after the period
+  const demo = await User.create({ name: 'demo', email: 'demo@x.com', role: 'user', projectIds: [], country: 'AU', passwordHash: 'x' });
+  await trip(demo, 8, 8000, { timezone: 'Australia/Sydney', effectiveUkmMeters: 900000, ukmBasis: 'global' }); // no project anywhere: left out
   await trip(a, 20 - 19, 0); // a zero trip still in the period — harmless
   await Trip.create({ driverId: a._id, status: 'completed', startedAt: new Date('2026-09-20T08:00:00Z'), distanceMeters: 70000, effectiveUkmMeters: 7000, projectId: p1._id }); // previous period
 
@@ -81,7 +83,8 @@ function assert(cond, msg) {
   assert(t.km === 250000, 'km: 100 + 50 + 80 + 20 (imported counts), no jitter, nothing outside the dates');
   assert(t.ukm === 85000 && t.assignedUkm === 70000 && t.freeUkm === 15000, 'UKM 85 = 70 assigned + 15 free drive');
   assert(t.outsideUkm === 15000, 'outside UKM (network − assigned) is reported beside UKM, not added in');
-  assert(t.drivers === 3, '3 drivers drove');
+  assert(t.drivers === 3, '3 drivers drove — the driver on no project is not one of them');
+  assert(!all.byProject.some((r) => r.name === 'No project') && !all.byDriver.some((d) => d.name === 'demo'), 'no "No project" row, and the project-less driver is not listed');
   assert(t.network.targetMeters === 1700000 && t.network.coveredMeters === 400000, 'network: every live delivery, driven to date');
   assert(all.previous.km === 70000 && all.previous.ukm === 7000, 'the 14 days before are there for the change figures');
 

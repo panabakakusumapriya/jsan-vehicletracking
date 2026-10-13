@@ -31,6 +31,9 @@ const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezo
  * A trip's region is the region of the delivery it was measured against (the Coverage page's
  * "Australia" / "New Zealand", renamable there); a trip with none falls back to the country of
  * its time zone, then of its driver. Parked-GPS-jitter sessions count for nothing, as everywhere.
+ * Neither does driving by a driver on no project, on a trip with no project of its own (test
+ * accounts, drivers not yet put on a project): with nowhere to file it, it is left out entirely,
+ * so the totals still equal the sum of the project rows.
  *
  * One aggregation grouped by driver+project+delivery+zone+day, cut in memory — every breakdown is
  * then guaranteed to add up to the same totals.
@@ -173,6 +176,7 @@ exports.overview = asyncHandler(async (req, res) => {
     return { projectId, region };
   };
   const passes = (p, skip) =>
+    p.projectId !== NO_PROJECT &&
     (skip === 'project' || !filter.projectId || p.projectId === filter.projectId) &&
     (skip === 'region' || !filter.region || p.region === filter.region);
 
@@ -238,7 +242,7 @@ exports.overview = asyncHandler(async (req, res) => {
         ...x,
         ...rounded(x),
         name: dim === 'project'
-          ? (x.key === NO_PROJECT ? 'No project' : projectName.get(x.key) || 'Deleted project')
+          ? projectName.get(x.key) || 'Deleted project'
           : x.key,
         drivers: ds.size,
         series: series.map((s) => ({ km: Math.round(s.km), ukm: Math.round(s.ukm) })),
@@ -279,7 +283,7 @@ exports.overview = asyncHandler(async (req, res) => {
         driverId: x.driverId,
         name: d?.name || 'Unknown driver',
         active: Boolean(d && d.active !== false && String(d.driverStatus || '').toLowerCase() !== 'exit'),
-        project: pid === NO_PROJECT ? null : projectName.get(pid) || null,
+        project: projectName.get(pid) || null,
         region: most(x.regions),
         days: x.days.size,
         ...rounded(x),
