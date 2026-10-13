@@ -291,13 +291,15 @@ export function Coverage() {
   };
 
   // The projects this person may look at — every one for an admin, their own for anyone else
-  // (components/ProjectSelect.tsx) — starting on the first.
+  // (components/ProjectSelect.tsx) — starting on HE Drive when they can see it, else the first.
   const projectScope = useProjectScope();
   useEffect(() => {
     if (!projectScope.projects) return;
     setProjects(projectScope.projects);
     if (projectScope.projects.length && !projectScope.projects.some((p) => p._id === projectId)) {
-      setProjectId(projectScope.projects[0]._id);
+      const heDrive = projectScope.projects.find((p) =>
+        (p.name || '').toLowerCase().replace(/[^a-z0-9]/g, '').startsWith('hedrive'));
+      setProjectId((heDrive || projectScope.projects[0])._id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectScope.projects]);
