@@ -85,6 +85,8 @@ function Delta({ now, before }: { now: number; before: number }) {
   if (!before) return <span className="dash-delta flat">nothing the period before</span>;
   const p = Math.round(((now - before) / before) * 100);
   if (p === 0) return <span className="dash-delta flat">no change</span>;
+  // Against a near-empty period before, a percentage is noise ("▲ 225748%"); say it plainly.
+  if (p > 999) return <span className="dash-delta up">▲ over 10×</span>;
   return <span className={`dash-delta ${p > 0 ? 'up' : 'down'}`}>{p > 0 ? '▲' : '▼'} {Math.abs(p)}%</span>;
 }
 
@@ -438,7 +440,7 @@ const STYLE = `
 .dash-tip .muted2 { color: #cbd5e1; }
 .dash-axis { display: flex; gap: 3px; margin-left: 70px; margin-top: 6px; }
 .dash-axis span { flex: 1; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: visible; }
-.dash-table { max-height: none; }
+.dash-table { max-height: none; flex: none; overflow: visible; }
 .dash-scroll { overflow-x: auto; }
 .dash-table tr.sel td { background: #eff6ff; }
 .dash-table tr.dim td { opacity: .6; }
