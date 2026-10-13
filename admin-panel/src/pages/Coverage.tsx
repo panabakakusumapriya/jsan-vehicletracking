@@ -298,7 +298,7 @@ export function Coverage() {
     setProjects(projectScope.projects);
     if (projectScope.projects.length && !projectScope.projects.some((p) => p._id === projectId)) {
       const heDrive = projectScope.projects.find((p) =>
-        (p.name || '').toLowerCase().replace(/[^a-z0-9]/g, '').startsWith('hedrive'));
+        (p.name || '').toLowerCase().replace(/[^a-z0-9]/g, '').includes('hedrive'));
       setProjectId((heDrive || projectScope.projects[0])._id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
