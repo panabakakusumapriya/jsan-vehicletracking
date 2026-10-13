@@ -1,30 +1,41 @@
 const Trip = require('../models/Trip');
 const User = require('../models/User');
 const Project = require('../models/Project');
-const Marker = require('../models/Marker');
+const NetworkVersion = require('../models/NetworkVersion');
+const LinkCoverage = require('../models/LinkCoverage');
 const asyncHandler = require('../utils/asyncHandler');
-const { workMsExpr } = require('../utils/workHours');
+const { liveNetworkVersions } = require('../services/liveNetworks');
+const { countryForZone, ensureRegions } = require('../services/deliveryRegions');
 const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezone');
 
 /**
- * GET /api/analytics/overview — the superadmin dashboard: the whole fleet, cut by project,
- * region and country, over a period, with a timeline and the top drivers.
+ * GET /api/analytics/overview — the admin dashboard. Kilometres and UKM only, by project and
+ * region, day by day, week by week or month by month.
  *
- *   ?from=YYYY-MM-DD&to=YYYY-MM-DD   the period (default: the last 30 days), in `tz`
+ *   ?from=YYYY-MM-DD&to=YYYY-MM-DD   the period (default: the last 12 weeks), in `tz`
+ *   &grain=day|week|month            the bucket size (default week); too many buckets → coarser
  *   &tz=Area/City                    the viewer's zone (days are bucketed in it)
- *   &projectId=&region=&country=     cross-filters — the page sets them by clicking a bar
+ *   &projectId=&region=              filters — every breakdown ignores its OWN filter, so the
+ *                                    project table still lists every project while one is picked
  *
- * Distance is the recorded `distanceMeters` (what the Trips page shows), UKM is the per-trip
- * effective UKM, working hours are each trip's start to end (imported trips have no real times
- * and are left out of hours only). Parked-GPS-jitter sessions are left out of everything, as on
- * every other screen. A trip belongs to its own project, else to its driver's first project; a
- * trip's region and country are its driver's.
+ * The figures:
+ *   km           recorded `distanceMeters` (what the Trips page shows), imported trips included
+ *   ukm          `effectiveUkmMeters` — the one UKM figure every screen reads (services/ukmBasis.js)
+ *   assignedUkm  the part of it from trips measured on their assigned polygons
+ *   freeUkm      the part from trips measured on global UKM (free drives, no polygon held)
+ *   outsideUkm   first-driven customer roads OUTSIDE the driver's polygons — credit for the
+ *                project, not part of the driver's UKM, so shown beside it, never added in
+ *   network      the project's live deliveries: total road length and how much of it has been
+ *                driven to date (the Coverage page's number). Not limited to the period.
  *
- * The fleet is a few thousand trips, so this groups once in Mongo by driver+project+day and does
- * the cutting in memory — every breakdown is then guaranteed to add up to the same totals.
+ * A trip's region is the region of the delivery it was measured against (the Coverage page's
+ * "Australia" / "New Zealand", renamable there); a trip with none falls back to the country of
+ * its time zone, then of its driver. Parked-GPS-jitter sessions count for nothing, as everywhere.
+ *
+ * One aggregation grouped by driver+project+delivery+zone+day, cut in memory — every breakdown is
+ * then guaranteed to add up to the same totals.
  */
 
-/** Countries stored as ISO codes on some driver records and as names on others. */
 const COUNTRY_NAMES = {
   AU: 'Australia', NZ: 'New Zealand', IN: 'India', FR: 'France', DE: 'Germany', IT: 'Italy',
   SE: 'Sweden', FI: 'Finland', AT: 'Austria', ES: 'Spain', PT: 'Portugal', NL: 'Netherlands',
@@ -32,31 +43,14 @@ const COUNTRY_NAMES = {
   GB: 'United Kingdom', UK: 'United Kingdom', CZ: 'Czechia', HU: 'Hungary', GR: 'Greece',
   RO: 'Romania', US: 'United States', CA: 'Canada', SG: 'Singapore', JP: 'Japan',
 };
-const EU = new Set(['France', 'Germany', 'Italy', 'Sweden', 'Finland', 'Austria', 'Spain', 'Portugal',
-  'Netherlands', 'Belgium', 'Switzerland', 'Denmark', 'Norway', 'Poland', 'Ireland', 'United Kingdom',
-  'Czechia', 'Hungary', 'Greece', 'Romania']);
-const APAC = new Set(['Australia', 'New Zealand', 'India', 'Singapore', 'Japan']);
-const AMER = new Set(['United States', 'Canada']);
-const KNOWN_REGIONS = new Set(['EU', 'APAC', 'AMER', 'MEA', 'LATAM', 'NA']);
-const NONE = 'Unassigned';
+const UNKNOWN = 'Unknown';
+const NO_PROJECT = 'none';
 
 const countryOf = (u) => {
   const raw = String(u?.country || '').trim();
-  if (!raw) return NONE;
+  if (!raw) return null;
   return COUNTRY_NAMES[raw.toUpperCase()] || raw;
 };
-/** The stored region when it is a real one; else derived from the country. */
-const regionOf = (u) => {
-  const r = String(u?.region || '').trim().toUpperCase();
-  if (KNOWN_REGIONS.has(r)) return r;
-  const c = countryOf(u);
-  if (EU.has(c)) return 'EU';
-  if (APAC.has(c)) return 'APAC';
-  if (AMER.has(c)) return 'AMER';
-  return NONE;
-};
-
-const isActiveDriver = (u) => u.active !== false && String(u.driverStatus || '').toLowerCase() !== 'exit';
 
 function addDays(dateStr, n) {
   const d = new Date(`${dateStr}T00:00:00Z`);
@@ -65,16 +59,24 @@ function addDays(dateStr, n) {
 }
 const daysBetween = (a, b) => Math.round((new Date(`${b}T00:00:00Z`) - new Date(`${a}T00:00:00Z`)) / 86400000);
 
-/** Timeline buckets: days for up to two months, weeks up to a year, then months. */
-function bucketOf(date, unit) {
-  if (unit === 'day') return date;
-  if (unit === 'month') return `${date.slice(0, 7)}-01`;
+/** The bucket a day falls in: itself, its Monday, or the 1st of its month. */
+function bucketOf(date, grain) {
+  if (grain === 'day') return date;
+  if (grain === 'month') return `${date.slice(0, 7)}-01`;
   const d = new Date(`${date}T00:00:00Z`);
-  const dow = (d.getUTCDay() + 6) % 7; // Monday-based weeks
-  d.setUTCDate(d.getUTCDate() - dow);
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
   return d.toISOString().slice(0, 10);
 }
 
+/** Days are readable up to ~3 months, weeks up to ~2 years; beyond that the grain coarsens. */
+function fitGrain(grain, span) {
+  let g = ['day', 'week', 'month'].includes(grain) ? grain : 'week';
+  if (g === 'day' && span > 92) g = 'week';
+  if (g === 'week' && span > 731) g = 'month';
+  return g;
+}
+
+const isImported = { $ne: [{ $ifNull: ['$importBatchId', null] }, null] };
 async function tripGroups(from, to, tz) {
   return Trip.aggregate([
     { $match: { startedAt: { $gte: from, $lt: to }, parkedJitter: { $ne: true } } },
@@ -83,12 +85,15 @@ async function tripGroups(from, to, tz) {
         _id: {
           driverId: '$driverId',
           projectId: '$projectId',
+          versionId: '$assignedNetworkVersionId',
+          zone: '$timezone',
           day: { $dateToString: { format: '%Y-%m-%d', date: '$startedAt', timezone: tz } },
         },
-        trips: { $sum: 1 },
         km: { $sum: { $ifNull: ['$distanceMeters', 0] } },
         ukm: { $sum: { $ifNull: ['$effectiveUkmMeters', 0] } },
-        assignedUkm: { $sum: { $ifNull: ['$linkUkmMeters', 0] } },
+        assignedUkm: {
+          $sum: { $cond: [{ $eq: ['$ukmBasis', 'assigned'] }, { $ifNull: ['$effectiveUkmMeters', 0] }, 0] },
+        },
         outsideUkm: {
           $sum: {
             $cond: [
@@ -98,202 +103,203 @@ async function tripGroups(from, to, tz) {
             ],
           },
         },
-        workMs: {
-          $sum: {
-            $cond: [
-              { $ne: [{ $ifNull: ['$importBatchId', null] }, null] },
-              0,
-              workMsExpr,
-            ],
-          },
-        },
-        imported: { $sum: { $cond: [{ $ne: [{ $ifNull: ['$importBatchId', null] }, null] }, 1, 0] } },
+        trips: { $sum: 1 },
+        imported: { $sum: { $cond: [isImported, 1, 0] } },
       },
     },
   ]);
 }
 
-const emptyRow = () => ({ drivers: 0, activeDrivers: 0, drivingDrivers: 0, trips: 0, km: 0, ukm: 0, assignedUkm: 0, outsideUkm: 0, workMs: 0, markers: 0 });
-function addTo(row, g) {
-  row.trips += g.trips; row.km += g.km; row.ukm += g.ukm; row.assignedUkm += g.assignedUkm;
-  row.outsideUkm += g.outsideUkm; row.workMs += g.workMs;
+const zero = () => ({ km: 0, ukm: 0, assignedUkm: 0, freeUkm: 0, outsideUkm: 0 });
+function add(row, g) {
+  row.km += g.km;
+  row.ukm += g.ukm;
+  row.assignedUkm += g.assignedUkm;
+  row.freeUkm += g.ukm - g.assignedUkm;
+  row.outsideUkm += g.outsideUkm;
 }
+const rounded = (r) => ({
+  km: Math.round(r.km), ukm: Math.round(r.ukm), assignedUkm: Math.round(r.assignedUkm),
+  freeUkm: Math.round(r.freeUkm), outsideUkm: Math.round(r.outsideUkm),
+});
 
 exports.overview = asyncHandler(async (req, res) => {
   const tz = isValidTimeZone(req.query.tz) ? req.query.tz : 'UTC';
   const today = formatDateInZone(new Date(), tz);
   const DATE = /^\d{4}-\d{2}-\d{2}$/;
   let toDate = DATE.test(String(req.query.to || '')) ? String(req.query.to) : today;
-  let fromDate = DATE.test(String(req.query.from || '')) ? String(req.query.from) : addDays(toDate, -29);
+  let fromDate = DATE.test(String(req.query.from || '')) ? String(req.query.from) : addDays(toDate, -83);
   if (fromDate > toDate) [fromDate, toDate] = [toDate, fromDate];
   const span = daysBetween(fromDate, toDate) + 1;
   if (span > 3660) return res.status(400).json({ error: 'Pick a period of ten years or less' });
+  const grain = fitGrain(String(req.query.grain || ''), span);
   const from = dayRange(fromDate, tz).from;
   const to = dayRange(toDate, tz).to;
-  // The period before, the same length, for the change figures.
-  const prevTo = from;
+  // The period just before, the same length, for the change figures.
   const prevFrom = dayRange(addDays(fromDate, -span), tz).from;
 
   const filter = {
     projectId: /^[a-f\d]{24}$/i.test(String(req.query.projectId || '')) ? String(req.query.projectId) : null,
     region: req.query.region ? String(req.query.region) : null,
-    country: req.query.country ? String(req.query.country) : null,
   };
 
-  const [drivers, projects, groups, prevGroups, markers] = await Promise.all([
-    User.find({ role: 'user' }).select('name projectIds country region active driverStatus').lean(),
-    Project.find({}).select('name active').lean(),
+  const projects = await Project.find({}).select('name code active').lean();
+  const [drivers, groups, prevGroups, live] = await Promise.all([
+    User.find({ role: 'user' }).select('name projectIds country active driverStatus').lean(),
     tripGroups(from, to, tz),
-    tripGroups(prevFrom, prevTo, tz),
-    Marker.find({ recordedAt: { $gte: from, $lt: to } }).select('driverId').lean(),
+    tripGroups(prevFrom, from, tz),
+    liveNetworkVersions(projects.map((p) => p._id)),
   ]);
+
+  // Every delivery a trip was measured against, plus the live ones the network figures come from.
+  const versionIds = new Set(live.map((v) => String(v._id)));
+  for (const g of [...groups, ...prevGroups]) if (g._id.versionId) versionIds.add(String(g._id.versionId));
+  const versions = await NetworkVersion.find({ _id: { $in: [...versionIds] } })
+    .select('projectId region label targetMeters')
+    .lean();
+  await ensureRegions(versions.filter((v) => !v.region)).catch(() => {});
+  const versionById = new Map(versions.map((v) => [String(v._id), v]));
 
   const projectName = new Map(projects.map((p) => [String(p._id), p.name]));
   const driverById = new Map(drivers.map((d) => [String(d._id), d]));
   const firstProject = (d) => (d && d.projectIds && d.projectIds.length ? String(d.projectIds[0]) : null);
 
-  /** A trip group's project / region / country, and whether it passes the filters. */
+  /** A trip group's project and region. */
   const place = (g) => {
     const d = driverById.get(String(g._id.driverId));
-    const projectId = g._id.projectId ? String(g._id.projectId) : firstProject(d);
-    return { d, projectId, region: regionOf(d), country: countryOf(d) };
+    const projectId = g._id.projectId ? String(g._id.projectId) : firstProject(d) || NO_PROJECT;
+    const v = g._id.versionId ? versionById.get(String(g._id.versionId)) : null;
+    const region = v?.region || countryForZone(g._id.zone) || countryOf(d) || UNKNOWN;
+    return { projectId, region };
   };
   const passes = (p, skip) =>
     (skip === 'project' || !filter.projectId || p.projectId === filter.projectId) &&
-    (skip === 'region' || !filter.region || p.region === filter.region) &&
-    (skip === 'country' || !filter.country || p.country === filter.country);
+    (skip === 'region' || !filter.region || p.region === filter.region);
 
-  // Roster: a driver counts in every project they are on; their region and country are theirs.
-  const rosterRows = drivers.map((d) => ({
-    d,
-    projectIds: (d.projectIds || []).length ? d.projectIds.map(String) : [null],
-    region: regionOf(d),
-    country: countryOf(d),
-    active: isActiveDriver(d),
-  }));
-  const rosterPasses = (r, skip) =>
-    (skip === 'project' || !filter.projectId || r.projectIds.includes(filter.projectId)) &&
-    (skip === 'region' || !filter.region || r.region === filter.region) &&
-    (skip === 'country' || !filter.country || r.country === filter.country);
+  // Buckets, gaps included, so a quiet week shows as a zero rather than vanishing.
+  const buckets = [];
+  for (let d = fromDate; d <= toDate; d = addDays(d, 1)) {
+    const b = bucketOf(d, grain);
+    if (buckets[buckets.length - 1] !== b) buckets.push(b);
+  }
+  const bucketIndex = new Map(buckets.map((b, i) => [b, i]));
+
+  // Live network per project+region: total length, and driven to date.
+  const covered = live.length
+    ? await LinkCoverage.aggregate([
+      { $match: { networkVersionId: { $in: live.map((v) => v._id) } } },
+      { $group: { _id: '$networkVersionId', meters: { $sum: '$lengthMeters' } } },
+    ])
+    : [];
+  const coveredBy = new Map(covered.map((c) => [String(c._id), c.meters]));
+  const networks = live.map((lv) => {
+    const v = versionById.get(String(lv._id)) || lv;
+    return {
+      projectId: String(lv.projectId),
+      region: v.region || UNKNOWN,
+      targetMeters: v.targetMeters || 0,
+      coveredMeters: coveredBy.get(String(lv._id)) || 0,
+    };
+  });
+  const networkOf = (pred) => {
+    const n = { targetMeters: 0, coveredMeters: 0 };
+    for (const x of networks) if (pred(x)) { n.targetMeters += x.targetMeters; n.coveredMeters += x.coveredMeters; }
+    n.targetMeters = Math.round(n.targetMeters);
+    n.coveredMeters = Math.round(n.coveredMeters);
+    return n;
+  };
 
   /**
-   * One breakdown. Each dimension ignores its OWN filter (so the project chart still shows every
-   * project while one is selected — the selection is highlighted, not the only bar left) and
-   * honours the others.
+   * One breakdown: a row per project (or region) with the period's figures and the same figures
+   * per bucket, for the project-by-week / project-by-month table.
    */
   const breakdown = (dim) => {
     const rows = new Map();
-    const row = (k) => { if (!rows.has(k)) rows.set(k, { key: k, driving: new Set(), ...emptyRow() }); return rows.get(k); };
-    for (const r of rosterRows) {
-      if (!rosterPasses(r, dim)) continue;
-      const keys = dim === 'project' ? r.projectIds : [dim === 'region' ? r.region : r.country];
-      for (const k of keys) {
-        const x = row(k || NONE);
-        x.drivers += 1;
-        if (r.active) x.activeDrivers += 1;
-      }
-    }
+    const row = (k) => {
+      if (!rows.has(k)) rows.set(k, { key: k, ...zero(), drivers: new Set(), series: buckets.map(() => ({ km: 0, ukm: 0 })) });
+      return rows.get(k);
+    };
     for (const g of groups) {
       const p = place(g);
       if (!passes(p, dim)) continue;
-      const k = (dim === 'project' ? p.projectId : dim === 'region' ? p.region : p.country) || NONE;
-      const x = row(k);
-      addTo(x, g);
-      x.driving.add(String(g._id.driverId));
+      const x = row(dim === 'project' ? p.projectId : p.region);
+      add(x, g);
+      x.drivers.add(String(g._id.driverId));
+      const s = x.series[bucketIndex.get(bucketOf(g._id.day, grain))];
+      if (s) { s.km += g.km; s.ukm += g.ukm; }
     }
-    for (const m of markers) {
-      const d = driverById.get(String(m.driverId));
-      const p = { projectId: firstProject(d), region: regionOf(d), country: countryOf(d) };
-      if (!passes(p, dim)) continue;
-      row((dim === 'project' ? p.projectId : dim === 'region' ? p.region : p.country) || NONE).markers += 1;
+    // A project or region with a network but no driving in the period still gets a row.
+    for (const n of networks) {
+      if (!passes(n, dim)) continue;
+      row(dim === 'project' ? n.projectId : n.region);
     }
     return [...rows.values()]
-      .map(({ driving, ...x }) => ({
+      .map(({ drivers: ds, series, ...x }) => ({
         ...x,
-        drivingDrivers: driving.size,
-        name: dim === 'project' ? (x.key === NONE ? 'No project' : projectName.get(x.key) || 'Deleted project') : x.key,
-        km: Math.round(x.km), ukm: Math.round(x.ukm), assignedUkm: Math.round(x.assignedUkm), outsideUkm: Math.round(x.outsideUkm),
+        ...rounded(x),
+        name: dim === 'project'
+          ? (x.key === NO_PROJECT ? 'No project' : projectName.get(x.key) || 'Deleted project')
+          : x.key,
+        drivers: ds.size,
+        series: series.map((s) => ({ km: Math.round(s.km), ukm: Math.round(s.ukm) })),
+        network: networkOf((n) => (dim === 'project' ? n.projectId === x.key : n.region === x.key) && passes(n, dim)),
       }))
-      .filter((x) => x.drivers || x.trips || x.markers)
-      .sort((a, b) => b.km - a.km || b.drivers - a.drivers || a.name.localeCompare(b.name));
+      .sort((a, b) => b.km - a.km || b.network.targetMeters - a.network.targetMeters || a.name.localeCompare(b.name));
   };
 
-  // Totals and the timeline honour every filter.
-  const totals = { ...emptyRow() };
-  const driving = new Set();
-  const unit = span <= 62 ? 'day' : span <= 366 ? 'week' : 'month';
-  const series = new Map();
-  for (let d = fromDate; d <= toDate; d = addDays(d, 1)) {
-    const b = bucketOf(d, unit);
-    if (!series.has(b)) series.set(b, { date: b, trips: 0, km: 0, ukm: 0, workMs: 0, drivers: new Set() });
-  }
+  // Totals, timeline and drivers honour every filter.
+  const totals = zero();
+  const timeline = buckets.map((date) => ({ date, ...zero() }));
   const perDriver = new Map();
+  let trips = 0;
   for (const g of groups) {
     const p = place(g);
     if (!passes(p)) continue;
-    addTo(totals, g);
+    add(totals, g);
+    trips += g.trips;
+    const t = timeline[bucketIndex.get(bucketOf(g._id.day, grain))];
+    if (t) add(t, g);
     const id = String(g._id.driverId);
-    driving.add(id);
-    const s = series.get(bucketOf(g._id.day, unit));
-    if (s) { s.trips += g.trips; s.km += g.km; s.ukm += g.ukm; s.workMs += g.workMs; s.drivers.add(id); }
-    if (!perDriver.has(id)) perDriver.set(id, { driverId: id, ...emptyRow(), days: new Set() });
+    if (!perDriver.has(id)) perDriver.set(id, { driverId: id, ...zero(), days: new Set(), projects: new Map(), regions: new Map() });
     const pd = perDriver.get(id);
-    addTo(pd, g);
+    add(pd, g);
     pd.days.add(g._id.day);
+    pd.projects.set(p.projectId, (pd.projects.get(p.projectId) || 0) + g.km);
+    pd.regions.set(p.region, (pd.regions.get(p.region) || 0) + g.km);
   }
-  for (const r of rosterRows) {
-    if (!rosterPasses(r)) continue;
-    totals.drivers += 1;
-    if (r.active) totals.activeDrivers += 1;
-  }
-  totals.drivingDrivers = driving.size;
-  totals.markers = markers.filter((m) => {
-    const d = driverById.get(String(m.driverId));
-    return passes({ projectId: firstProject(d), region: regionOf(d), country: countryOf(d) });
-  }).length;
+  const previous = zero();
+  for (const g of prevGroups) if (passes(place(g))) add(previous, g);
 
-  const previous = { trips: 0, km: 0, ukm: 0, workMs: 0, drivingDrivers: 0 };
-  const prevDriving = new Set();
-  for (const g of prevGroups) {
-    if (!passes(place(g))) continue;
-    previous.trips += g.trips; previous.km += g.km; previous.ukm += g.ukm; previous.workMs += g.workMs;
-    prevDriving.add(String(g._id.driverId));
-  }
-  previous.drivingDrivers = prevDriving.size;
-
-  const topDrivers = [...perDriver.values()]
-    .sort((a, b) => b.km - a.km)
-    .slice(0, 15)
+  const most = (m) => [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const byDriver = [...perDriver.values()]
     .map((x) => {
       const d = driverById.get(x.driverId);
+      const pid = most(x.projects);
       return {
         driverId: x.driverId,
-        name: d?.name || 'Unknown',
-        project: projectName.get(firstProject(d)) || null,
-        country: countryOf(d),
-        region: regionOf(d),
-        active: d ? isActiveDriver(d) : false,
-        trips: x.trips,
+        name: d?.name || 'Unknown driver',
+        active: Boolean(d && d.active !== false && String(d.driverStatus || '').toLowerCase() !== 'exit'),
+        project: pid === NO_PROJECT ? null : projectName.get(pid) || null,
+        region: most(x.regions),
         days: x.days.size,
-        km: Math.round(x.km),
-        ukm: Math.round(x.ukm),
-        workMs: x.workMs,
+        ...rounded(x),
       };
-    });
-
-  const round = (o) => ({ ...o, km: Math.round(o.km), ukm: Math.round(o.ukm), assignedUkm: Math.round(o.assignedUkm || 0), outsideUkm: Math.round(o.outsideUkm || 0) });
+    })
+    .sort((a, b) => b.km - a.km);
 
   res.json({
-    period: { from: fromDate, to: toDate, days: span, tz, unit, previousFrom: addDays(fromDate, -span), previousTo: addDays(fromDate, -1) },
+    period: {
+      from: fromDate, to: toDate, days: span, tz, grain,
+      previousFrom: addDays(fromDate, -span), previousTo: addDays(fromDate, -1),
+    },
     filter,
-    totals: round(totals),
-    previous: { ...previous, km: Math.round(previous.km), ukm: Math.round(previous.ukm) },
+    totals: { ...rounded(totals), trips, drivers: perDriver.size, network: networkOf((n) => passes(n)) },
+    previous: rounded(previous),
+    timeline: timeline.map((t) => ({ date: t.date, ...rounded(t) })),
     byProject: breakdown('project'),
     byRegion: breakdown('region'),
-    byCountry: breakdown('country'),
-    timeline: [...series.values()].map((s) => ({ date: s.date, trips: s.trips, km: Math.round(s.km), ukm: Math.round(s.ukm), workMs: s.workMs, drivers: s.drivers.size })),
-    topDrivers,
+    byDriver,
   });
 });
 
-exports._test = { countryOf, regionOf, bucketOf };
+exports._test = { bucketOf, fitGrain };
