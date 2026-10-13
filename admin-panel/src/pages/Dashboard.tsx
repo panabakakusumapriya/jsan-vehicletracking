@@ -151,45 +151,41 @@ export function Dashboard() {
   return (
     <div className="list-page dash">
       <style>{STYLE}</style>
-      <div className="dr-bar" style={{ flexWrap: 'wrap', rowGap: 8 }}>
+      <div className="dr-bar dash-head">
         <h1 className="dr-title"><PageIcon name="dashboard" />Dashboard</h1>
-        <div className="dash-seg" role="group" aria-label="Show by">
-          {GRAINS.map((x) => (
-            <button key={x.key} className={grain === x.key ? 'on' : ''} onClick={() => pickGrain(x.key)}>{x.label}</button>
-          ))}
-        </div>
-        <select className="input dash-select" value={rangeKey} aria-label="Period"
-          onChange={(e) => { if (e.target.value === 'custom') { setRangeKey('custom'); return; } setRangeKey(e.target.value); setRange(rangeOf(e.target.value)); }}>
-          {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-          <option value="custom">Custom dates…</option>
-        </select>
-        <span className="dash-range">
-          <input className="input" type="date" value={from} max={to} aria-label="From"
-            onChange={(e) => { setRangeKey('custom'); setRange([e.target.value, to]); }} />
-          <span>to</span>
-          <input className="input" type="date" value={to} min={from} aria-label="To"
-            onChange={(e) => { setRangeKey('custom'); setRange([from, e.target.value]); }} />
-        </span>
-        {loading && <span className="muted" style={{ fontSize: 12.5 }}>Updating…</span>}
-      </div>
-
-      <div className="dash-filterbar">
-        <label>
-          <span>Project</span>
-          <select className="input dash-select" value={filter.projectId ?? ''}
+        {/* Every control on one line: grain, period, dates, project, region. */}
+        <div className="dash-controls">
+          <div className="dash-seg" role="group" aria-label="Show by">
+            {GRAINS.map((x) => (
+              <button key={x.key} className={grain === x.key ? 'on' : ''} onClick={() => pickGrain(x.key)}>{x.label}</button>
+            ))}
+          </div>
+          <select className="input" value={rangeKey} aria-label="Period"
+            onChange={(e) => { if (e.target.value === 'custom') { setRangeKey('custom'); return; } setRangeKey(e.target.value); setRange(rangeOf(e.target.value)); }}>
+            {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
+            <option value="custom">Custom dates…</option>
+          </select>
+          <span className="dash-range">
+            <input className="input" type="date" value={from} max={to} aria-label="From"
+              onChange={(e) => { setRangeKey('custom'); setRange([e.target.value, to]); }} />
+            <span>to</span>
+            <input className="input" type="date" value={to} min={from} aria-label="To"
+              onChange={(e) => { setRangeKey('custom'); setRange([from, e.target.value]); }} />
+          </span>
+          <select className={`input dash-pick${filter.projectId ? ' on' : ''}`} value={filter.projectId ?? ''} aria-label="Project"
             onChange={(e) => setFilter((f) => ({ ...f, projectId: e.target.value || undefined }))}>
             <option value="">All projects</option>
             {projects.map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}
           </select>
-        </label>
-        <div className="dash-chips" role="group" aria-label="Region">
-          <span>Region</span>
-          <button className={!filter.region ? 'on' : ''} onClick={() => setFilter((f) => ({ ...f, region: undefined }))}>All</button>
-          {regions.map((r) => (
-            <button key={r} className={filter.region === r ? 'on' : ''} onClick={() => toggle('region', r)}>{r}</button>
-          ))}
+          <select className={`input dash-pick${filter.region ? ' on' : ''}`} value={filter.region ?? ''} aria-label="Region"
+            onChange={(e) => setFilter((f) => ({ ...f, region: e.target.value || undefined }))}>
+            <option value="">All regions</option>
+            {/* The picked region stays listed even when another filter leaves it no driving. */}
+            {(filter.region && !regions.includes(filter.region) ? [filter.region, ...regions] : regions).map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          {(filter.projectId || filter.region) && <button className="dash-clear" onClick={() => setFilter({})}>Clear</button>}
+          {loading && <span className="muted" style={{ fontSize: 12.5 }}>Updating…</span>}
         </div>
-        {(filter.projectId || filter.region) && <button className="dash-clear" onClick={() => setFilter({})}>Clear filters</button>}
       </div>
 
       {error && <div className="card" style={{ color: 'var(--red)', padding: 16 }}>{error}</div>}
@@ -400,16 +396,20 @@ const STYLE = `
 .dash-seg { display: inline-flex; gap: 4px; padding: 4px; border-radius: 11px; background: #e9edf5; flex-wrap: wrap; }
 .dash-seg button { border: 0; background: transparent; padding: 6px 12px; border-radius: 8px; font: inherit; font-size: 13px; font-weight: 600; color: var(--text-2); cursor: pointer; }
 .dash-seg button.on { background: #fff; color: var(--brand); box-shadow: 0 1px 4px #19243b14; }
+.dash-controls .dash-seg { flex-wrap: nowrap; padding: 3px; } .dash-controls .dash-seg button { padding: 5px 11px; }
 .dash-seg.small { padding: 3px; } .dash-seg.small button { padding: 4px 10px; font-size: 12px; }
-.dash-select { width: auto; padding: 6px 8px; font-size: 13px; }
+.dash-head { gap: 8px 16px; }
+/* One line, always: the row drops below the title as a whole rather than breaking apart, and
+   scrolls sideways only on a screen narrower than the row itself. select.input is width:100%
+   globally, hence the two-class selectors. */
+.dash-controls { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; max-width: 100%; overflow-x: auto; padding: 2px 0; }
+.dash-controls > * { flex: 0 0 auto; }
+.dash-controls select.input, .dash-controls .input { width: auto; height: 34px; padding: 4px 28px 4px 10px; font-size: 13px; line-height: 1.2; }
+.dash-controls input.input { padding: 4px 8px; width: 132px; }
+.dash-controls select.dash-pick { max-width: 210px; text-overflow: ellipsis; }
+.dash-controls select.dash-pick.on { border-color: var(--brand); color: var(--brand); font-weight: 700; background-color: #eff6ff; }
 .dash-range { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
-.dash-range .input { width: 150px; padding: 6px 8px; }
-.dash-filterbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
-.dash-filterbar label, .dash-chips { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.dash-filterbar label > span, .dash-chips > span { font-size: 11.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
-.dash-chips button { border: 1px solid var(--line-2); background: #fff; color: var(--text-2); border-radius: 99px; padding: 5px 12px; font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
-.dash-chips button.on { border-color: #b9d3f3; background: #eff6ff; color: var(--brand); }
-.dash-clear { border: 0; background: none; color: var(--brand); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.dash-clear { border: 0; background: none; color: var(--brand); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 0 4px; }
 .dash-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
 .dash-kpi { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 13px 15px; }
 .dash-kpi.hero { border-color: #b9d3f3; background: #f5f9ff; }
@@ -452,5 +452,5 @@ const STYLE = `
 .dash-pivot td, .dash-pivot th { text-align: right; }
 .dash-pivot td:first-child, .dash-pivot th:first-child { text-align: left; position: sticky; left: 0; background: #fff; z-index: 1; }
 .dash-more { margin: 8px 16px 12px; border: 0; background: none; color: var(--brand); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
-@media (max-width: 640px) { .dash-timeline, .dash-axis { margin-left: 52px; } .dash-range .input { width: 132px; } }
+@media (max-width: 640px) { .dash-timeline, .dash-axis { margin-left: 52px; } .dash-controls input.input { width: 124px; } }
 `;
