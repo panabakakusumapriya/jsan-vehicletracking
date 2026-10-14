@@ -343,7 +343,7 @@ async function main() {
     }
     return 'matched';
   };
-  let trips = 0, points = 0, skipped = 0, abroad = 0;
+  let trips = 0, points = 0, skipped = 0, abroad = 0, routeOnlyCount = 0;
   // Several sessions at once: the database work overlaps, while road-matching requests still go
   // out one at a time, spaced as the shared server is owed (valhalla.js politeDelay).
   const importOne = async ({ s, email }) => {
@@ -351,9 +351,20 @@ async function main() {
     const all = await rawPoints(dump, token, s._id);
     const pts = all.filter(inAustralia);
     abroad += all.length - pts.length;
-    if (pts.length < 2) { skipped++; return; }
-    const first = pts[0];
-    const last = pts[pts.length - 1];
+    const route = PROCESS && !SNAP ? await cleanedRoute(dump, token, s._id) : null;
+    // VTS no longer holds raw fixes for its older sessions (30 Jun – 25 Aug 2026 came back empty)
+    // but still has their cleaned route. Such a session comes in on the route alone: times from the
+    // session, km and route from VTS, no LocationPoints — there is no raw GPS left to store.
+    const routeOnly = pts.length < 2 && route && route.count >= 2;
+    if (pts.length < 2 && !routeOnly) { skipped++; return; }
+    if (routeOnly) routeOnlyCount++;
+    const ends = routeOnly ? [route.runs[0][0], route.runs[route.runs.length - 1].slice(-1)[0]] : null;
+    const first = routeOnly
+      ? { latitude: ends[0].lat, longitude: ends[0].lon, at: new Date(s.startTime), speed: 0 }
+      : pts[0];
+    const last = routeOnly
+      ? { latitude: ends[1].lat, longitude: ends[1].lon, at: new Date(s.endTime || s.lastHeartbeat || s.startTime), speed: 0 }
+      : pts[pts.length - 1];
     const vehicleId = vehicles.get(String(s.licensePlate || '').trim().toUpperCase()) || null;
     const trip = await Trip.create({
       importBatchId: batch,
@@ -370,8 +381,10 @@ async function main() {
       endLocation: { lat: last.latitude, lon: last.longitude },
       lastLocation: { lat: last.latitude, lon: last.longitude, speed: last.speed || 0, heading: last.heading ?? null, recordedAt: last.at },
       timezone: timezoneFromCoords(first.latitude, first.longitude) || (await zoneOf(u)),
-      distanceMeters: distanceOf(pts),
-      maxSpeedKmh: Math.round(Math.max(0, ...pts.map((p) => (p.speed > 0 && p.speed < MAX_STEP_KMH ? p.speed : 0)))),
+      distanceMeters: routeOnly ? Math.round(s.stats?.totalDistance || route.meters) : distanceOf(pts),
+      maxSpeedKmh: routeOnly
+        ? Math.round(Math.min(MAX_STEP_KMH, s.stats?.maxSpeed || 0))
+        : Math.round(Math.max(0, ...pts.map((p) => (p.speed > 0 && p.speed < MAX_STEP_KMH ? p.speed : 0)))),
       pointCount: pts.length,
       // Written as already claimed, and released to 'pending' only once every point is in: the
       // worker polls for pending trips, and one that caught a trip with no points yet marked it
@@ -406,7 +419,6 @@ async function main() {
         points += e.insertedDocs?.length ?? 0;
       }
     }
-    const route = PROCESS && !SNAP ? await cleanedRoute(dump, token, s._id) : null;
     if (route && route.count >= 2) {
       trips++;
       outcomes[await settleWithVtsRoute(trip, pts, route)]++;
@@ -428,7 +440,7 @@ async function main() {
   for (const d of touchedDrivers) {
     try { await recomputeDriverUkm(d); } catch (e) { console.error(`driver UKM failed for ${d}: ${e.message}`); }
   }
-  log(`\nDone: ${trips} trips, ${points} points, ${skipped} skipped (under 2 fixes in Australia), ${abroad} fixes outside Australia dropped. Batch ${batch}.`);
+  log(`\nDone: ${trips} trips (${routeOnlyCount} on VTS's route alone, no raw GPS left on VTS), ${points} points, ${skipped} skipped (under 2 fixes in Australia), ${abroad} fixes outside Australia dropped. Batch ${batch}.`);
   log(PROCESS
     ? `Processed: ${JSON.stringify(outcomes)} (byWorker = the worker claimed it first; it finishes it the same way).`
     : 'Left pending: the map-match worker picks them up — route, km, UKM and coverage follow on their own.');

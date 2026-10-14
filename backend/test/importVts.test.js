@@ -124,6 +124,10 @@ function assert(cond, msg) {
   // VTS's cleaned route as the trip's route: no road-matching, cut where it jumps across a gap.
   fs.mkdirSync(path.join(dir, 'clean'));
   const route = [[-37.80, 144.96], [-37.795, 144.96], [-37.79, 144.96], [-37.60, 144.96] /* 21 km jump */, [-37.595, 144.96], [17.45, 78.36] /* Hyderabad */];
+  // s10: an older session VTS kept only the cleaned route of — its raw fixes come back empty.
+  sessions.push(ses('s10', 'd1', '2026-09-09T22:00:00Z', { endTime: '2026-09-10T01:00:00Z', stats: { totalDistance: 1700, maxSpeed: 60 } }));
+  fs.writeFileSync(path.join(dir, 'sessions_all.json'), JSON.stringify(sessions));
+  fs.writeFileSync(path.join(dir, 'points', 's10.json'), '[]');
   for (const s of sessions) fs.writeFileSync(path.join(dir, 'clean', `${s._id}.json`), JSON.stringify(route.map(([latitude, longitude]) => ({ latitude, longitude }))));
   execFileSync(process.execPath, ['src/seed/importVtsSessions.js', `--dump=${dir}`, `--token-file=${tokenFile}`, '--concurrency=2', '--apply'], {
     cwd: path.join(__dirname, '..'), env: { ...process.env, MONGODB_URI: uri }, encoding: 'utf8',
@@ -133,6 +137,10 @@ function assert(cond, msg) {
   assert(routed.cleanedRouteShapes.length === 2, 'the route is cut at the 21 km jump, and the Hyderabad fix is gone');
   assert(routed.cleanedDistanceMeters > 1500 && routed.cleanedDistanceMeters < 1800, `route length counts the roads, not the jump (${routed.cleanedDistanceMeters} m)`);
   assert(routed.ukmStatus !== 'pending' && routed.linkCoverageStatus !== 'pending', 'UKM and coverage are worked out as for any trip');
+  const only = await Trip.findOne({ importSourceId: 'vts:s10' }).lean();
+  assert(only && only.mapMatchStatus === 'matched' && only.cleanedRouteShapes.length === 2, 'a session with no raw fixes left comes in on its VTS route');
+  assert(only.pointCount === 0 && await LocationPoint.countDocuments({ tripId: only._id }) === 0, '…with no points, since there are none');
+  assert(only.startedAt.toISOString() === '2026-09-09T22:00:00.000Z' && only.endedAt.toISOString() === '2026-09-10T01:00:00.000Z' && only.distanceMeters === 1700, '…times from the session, km from VTS');
 
   console.log(`\n${passed} assertions passed`);
   fs.rmSync(dir, { recursive: true, force: true });
