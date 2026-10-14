@@ -25,6 +25,9 @@ const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezo
  *   freeUkm      the part from trips measured on global UKM (free drives, no polygon held)
  *   outsideUkm   first-driven customer roads OUTSIDE the driver's polygons — credit for the
  *                project, not part of the driver's UKM, so shown beside it, never added in
+ *   cars         cars by region: on the road now (an active trip, as on the Live map — not limited
+ *                to the period) and how many drove in the period. A trip with no vehicle on record
+ *                counts as its driver's car.
  *   network      the project's live deliveries: total road length and how much of it has been
  *                driven to date (the Coverage page's number). Not limited to the period.
  *
@@ -79,6 +82,9 @@ function fitGrain(grain, span) {
   return g;
 }
 
+// A car is the trip's vehicle; a trip with none on record (a driver not given one in the panel)
+// counts as its driver's car, so it is neither lost nor counted twice.
+const CAR = { $ifNull: [{ $toString: '$vehicleId' }, { $concat: ['driver:', { $toString: '$driverId' }] }] };
 const isImported = { $ne: [{ $ifNull: ['$importBatchId', null] }, null] };
 async function tripGroups(from, to, tz) {
   return Trip.aggregate([
@@ -107,6 +113,7 @@ async function tripGroups(from, to, tz) {
           },
         },
         trips: { $sum: 1 },
+        cars: { $addToSet: CAR },
         imported: { $sum: { $cond: [isImported, 1, 0] } },
       },
     },
@@ -147,16 +154,22 @@ exports.overview = asyncHandler(async (req, res) => {
   };
 
   const projects = await Project.find({}).select('name code active').lean();
-  const [drivers, groups, prevGroups, live] = await Promise.all([
+  const [drivers, groups, prevGroups, live, onTheRoad] = await Promise.all([
     User.find({ role: 'user' }).select('name projectIds country active driverStatus').lean(),
     tripGroups(from, to, tz),
     tripGroups(prevFrom, from, tz),
     liveNetworkVersions(projects.map((p) => p._id)),
+    Trip.find({ status: 'active' }).select('driverId projectId assignedNetworkVersionId timezone vehicleId').lean(),
   ]);
+  // Live trips in the same shape as a trip group, so place() files them the same way.
+  const nowGroups = onTheRoad.map((tr) => ({
+    _id: { driverId: tr.driverId, projectId: tr.projectId, versionId: tr.assignedNetworkVersionId, zone: tr.timezone },
+    cars: [tr.vehicleId ? String(tr.vehicleId) : `driver:${tr.driverId}`],
+  }));
 
   // Every delivery a trip was measured against, plus the live ones the network figures come from.
   const versionIds = new Set(live.map((v) => String(v._id)));
-  for (const g of [...groups, ...prevGroups]) if (g._id.versionId) versionIds.add(String(g._id.versionId));
+  for (const g of [...groups, ...prevGroups, ...nowGroups]) if (g._id.versionId) versionIds.add(String(g._id.versionId));
   const versions = await NetworkVersion.find({ _id: { $in: [...versionIds] } })
     .select('projectId region label targetMeters')
     .lean();
@@ -271,6 +284,29 @@ exports.overview = asyncHandler(async (req, res) => {
     pd.projects.set(p.projectId, (pd.projects.get(p.projectId) || 0) + g.km);
     pd.regions.set(p.region, (pd.regions.get(p.region) || 0) + g.km);
   }
+  // Cars by region. The rows ignore the region filter (the picked one is highlighted, like the
+  // region table); the totals honour it. A car seen in two regions counts once in the total.
+  const carRows = new Map();
+  const carTotals = { now: new Set(), period: new Set() };
+  for (const [kind, list] of [['period', groups], ['now', nowGroups]]) {
+    for (const g of list) {
+      const p = place(g);
+      if (!passes(p, 'region')) continue;
+      if (!carRows.has(p.region)) carRows.set(p.region, { now: new Set(), period: new Set() });
+      for (const c of g.cars) {
+        carRows.get(p.region)[kind].add(c);
+        if (passes(p)) carTotals[kind].add(c);
+      }
+    }
+  }
+  const cars = {
+    now: carTotals.now.size,
+    period: carTotals.period.size,
+    byRegion: [...carRows.entries()]
+      .map(([region, x]) => ({ region, now: x.now.size, period: x.period.size }))
+      .sort((a, b) => b.now - a.now || b.period - a.period || a.region.localeCompare(b.region)),
+  };
+
   const previous = zero();
   for (const g of prevGroups) if (passes(place(g))) add(previous, g);
 
@@ -299,6 +335,7 @@ exports.overview = asyncHandler(async (req, res) => {
     filter,
     totals: { ...rounded(totals), trips, drivers: perDriver.size, network: networkOf((n) => passes(n)) },
     previous: rounded(previous),
+    cars,
     timeline: timeline.map((t) => ({ date: t.date, ...rounded(t) })),
     byProject: breakdown('project'),
     byRegion: breakdown('region'),

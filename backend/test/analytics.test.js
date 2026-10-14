@@ -75,6 +75,13 @@ function assert(cond, msg) {
   await trip(a, 20 - 19, 0); // a zero trip still in the period — harmless
   await Trip.create({ driverId: a._id, status: 'completed', startedAt: new Date('2026-09-20T08:00:00Z'), distanceMeters: 70000, effectiveUkmMeters: 7000, projectId: p1._id }); // previous period
 
+  // Cars. a drove car V1 once (0 km) besides the trips with no vehicle on record (= a's own car),
+  // and is in V1 now; b is on the road with no vehicle on record. Neither moves the km figures.
+  const V1 = new mongoose.Types.ObjectId();
+  await trip(a, 2, 0, { projectId: p1._id, assignedNetworkVersionId: vAu._id, vehicleId: V1 });
+  await trip(a, 14, 0, { projectId: p1._id, assignedNetworkVersionId: vAu._id, vehicleId: V1, status: 'active' });
+  await trip(b, 14, 0, { projectId: p1._id, assignedNetworkVersionId: vNz._id, status: 'active' });
+
   assert((await get('', adminT)).status === 200, 'an admin can open the dashboard');
   assert((await get('', managerT)).status === 403, 'a manager cannot — admins and superadmins only');
 
@@ -116,6 +123,14 @@ function assert(cond, msg) {
   const nz = (await get('&region=New%20Zealand')).body;
   assert(nz.totals.km === 80000 && nz.totals.network.targetMeters === 500000, 'a region filter narrows km and network');
   assert(nz.byDriver.length === 1 && nz.byDriver[0].name === 'b', 'drivers honour the region filter');
+
+  const carsIn = (body, region) => body.cars.byRegion.find((r) => r.region === region);
+  assert(all.cars.now === 2 && all.cars.period === 4, 'cars: 2 on the road now, 4 drove in the period');
+  assert(carsIn(all, 'Australia').now === 1 && carsIn(all, 'Australia').period === 2, "Australia: V1 now; V1 and a's no-vehicle car in the period");
+  assert(carsIn(all, 'New Zealand').now === 1 && carsIn(all, 'India').period === 1 && carsIn(all, 'India').now === 0, "a trip with no vehicle counts as its driver's car");
+  assert(nz.cars.now === 1 && nz.cars.period === 1 && nz.cars.byRegion.length === 3, 'a region filter narrows the car totals, the region rows stay');
+  const onlyP2 = (await get(`&projectId=${p2._id}`)).body;
+  assert(onlyP2.cars.now === 0 && onlyP2.cars.byRegion.length === 1 && carsIn(onlyP2, 'India').period === 1, 'a project filter narrows the cars');
 
   const month = (await get('&grain=month')).body;
   assert(month.period.grain === 'month' && month.timeline.length === 1 && month.timeline[0].date === '2026-10-01', 'monthly');

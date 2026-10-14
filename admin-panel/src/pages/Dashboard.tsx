@@ -27,6 +27,7 @@ type Overview = {
   period: { from: string; to: string; days: number; grain: Grain; previousFrom: string; previousTo: string };
   totals: Fig & { trips: number; drivers: number; network: Network };
   previous: Fig;
+  cars?: { now: number; period: number; byRegion: { region: string; now: number; period: number }[] };
   timeline: (Fig & { date: string })[];
   byProject: Row[];
   byRegion: Row[];
@@ -221,6 +222,30 @@ export function Dashboard() {
               <div className="s">{km(t.network.coveredMeters)} of {km(t.network.targetMeters)} km, to date</div>
             </div>
           </div>
+
+          {/* An API from before this card sends no cars — leave the card out rather than break the page. */}
+          {data.cars && <div className="card dash-card">
+            <div className="dash-card-head">
+              <h3>Active cars by region</h3>
+              <span className="muted">on the road now · drove in this period — click a region to filter by it</span>
+            </div>
+            <div className="dash-cars">
+              <div className="dash-car total">
+                <div className="r">{filter.region ?? 'All regions'}</div>
+                <div className="n"><i className={data.cars.now ? 'live' : ''} />{nf.format(data.cars.now)}<small> on the road now</small></div>
+                <div className="p">{nf.format(data.cars.period)} drove in this period</div>
+              </div>
+              {data.cars.byRegion.length === 0 && <div className="muted" style={{ alignSelf: 'center', fontSize: 13 }}>No cars out in this period.</div>}
+              {data.cars.byRegion.map((r) => (
+                <button key={r.region} className={`dash-car${filter.region === r.region ? ' sel' : filter.region ? ' dim' : ''}`}
+                  onClick={() => toggle('region', r.region)}>
+                  <div className="r">{r.region}</div>
+                  <div className="n"><i className={r.now ? 'live' : ''} />{nf.format(r.now)}<small> now</small></div>
+                  <div className="p">{nf.format(r.period)} drove in this period</div>
+                </button>
+              ))}
+            </div>
+          </div>}
 
           <div className="card dash-card">
             <div className="dash-card-head">
@@ -422,6 +447,16 @@ const STYLE = `
 .dash-delta { font-weight: 700; }
 .dash-delta.up { color: #047857; } .dash-delta.down { color: #b91c1c; } .dash-delta.flat { color: var(--muted); }
 .dash-card { padding: 14px 16px; }
+.dash-cars { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.dash-car { text-align: left; font: inherit; color: inherit; background: #f8fafc; border: 1px solid var(--line); border-radius: 12px; padding: 11px 13px; cursor: pointer; transition: opacity .12s; }
+.dash-car.total { background: #f5f9ff; border-color: #b9d3f3; cursor: default; }
+.dash-car.sel { border-color: var(--brand); background: #eff6ff; } .dash-car.dim { opacity: .6; }
+.dash-car .r { font-size: 12px; font-weight: 700; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-car .n { display: flex; align-items: baseline; gap: 6px; font-size: 24px; font-weight: 800; letter-spacing: -.5px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.dash-car .n small { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+.dash-car .n i { width: 9px; height: 9px; border-radius: 50%; background: #cbd5e1; align-self: center; flex: none; }
+.dash-car .n i.live { background: #16a34a; box-shadow: 0 0 0 3px #16a34a2e; }
+.dash-car .p { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .dash-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .dash-card-head h3 { margin: 0; font-size: 15px; }
 .dash-card-head .muted { font-size: 12px; }
