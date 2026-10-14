@@ -382,7 +382,13 @@ async function main() {
       endLocation: { lat: last.latitude, lon: last.longitude },
       lastLocation: { lat: last.latitude, lon: last.longitude, speed: last.speed || 0, heading: last.heading ?? null, recordedAt: last.at },
       timezone: timezoneFromCoords(first.latitude, first.longitude) || (await zoneOf(u)),
-      distanceMeters: routeOnly ? Math.round(s.stats?.totalDistance || route.meters) : distanceOf(pts),
+      // VTS kept only part of some sessions' raw fixes; measured from what is left the drive comes out
+      // short, so VTS's own figure stands in when under 90% of the recorded fixes remain.
+      distanceMeters: routeOnly
+        ? Math.round(s.stats?.totalDistance || route.meters)
+        : pts.length < 0.9 * (s.totalLocations || 0)
+          ? Math.max(distanceOf(pts), Math.round(s.stats?.totalDistance || 0))
+          : distanceOf(pts),
       maxSpeedKmh: routeOnly
         ? Math.round(Math.min(MAX_STEP_KMH, s.stats?.maxSpeed || 0))
         : Math.round(Math.max(0, ...pts.map((p) => (p.speed > 0 && p.speed < MAX_STEP_KMH ? p.speed : 0)))),
