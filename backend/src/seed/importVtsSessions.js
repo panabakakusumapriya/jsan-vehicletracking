@@ -344,6 +344,7 @@ async function main() {
     return 'matched';
   };
   let trips = 0, points = 0, skipped = 0, abroad = 0, routeOnlyCount = 0;
+  const errors = [];
   // Several sessions at once: the database work overlaps, while road-matching requests still go
   // out one at a time, spaced as the shared server is owed (valhalla.js politeDelay).
   const importOne = async ({ s, email }) => {
@@ -434,8 +435,19 @@ async function main() {
   };
   const queue = todo.slice();
   await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
-    while (queue.length) await importOne(queue.shift());
+    while (queue.length) {
+      const item = queue.shift();
+      // One session failing (a dropped connection to Atlas) must not take the other hundreds with
+      // it. A re-run picks up whatever did not make it in.
+      try {
+        await importOne(item);
+      } catch (e) {
+        errors.push(item.s._id);
+        console.error(`session ${item.s._id} failed: ${e.message}`);
+      }
+    }
   }));
+  if (errors.length) log(`\n${errors.length} sessions failed and were left out — re-run to retry them: ${errors.join(', ')}`);
   // The per-driver figure the matcher recomputes after each trip: once per driver is enough here.
   for (const d of touchedDrivers) {
     try { await recomputeDriverUkm(d); } catch (e) { console.error(`driver UKM failed for ${d}: ${e.message}`); }
