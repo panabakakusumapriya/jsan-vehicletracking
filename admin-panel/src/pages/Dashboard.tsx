@@ -47,35 +47,20 @@ const pct = (a: number, b: number) => (b > 0 ? `${nf1.format((a / b) * 100)}%` :
 const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const today = () => iso(new Date());
 const daysAgo = (n: number) => { const d = new Date(); d.setDate(d.getDate() - n); return iso(d); };
-const monday = (weeksBack: number) => {
-  const d = new Date();
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - weeksBack * 7);
-  return iso(d);
-};
-const monthStart = (monthsBack: number) => { const d = new Date(); return iso(new Date(d.getFullYear(), d.getMonth() - monthsBack, 1)); };
-const monthEnd = (monthsBack: number) => { const d = new Date(); return iso(new Date(d.getFullYear(), d.getMonth() - monthsBack + 1, 0)); };
+const monthStart = () => { const d = new Date(); return iso(new Date(d.getFullYear(), d.getMonth(), 1)); };
 
-/** Ranges; each grain opens on the one that reads best in it. */
-const RANGES: { key: string; label: string; range: () => [string, string] }[] = [
-  { key: 'thisWeek', label: 'This week', range: () => [monday(0), today()] },
-  { key: 'lastWeek', label: 'Last week', range: () => [monday(1), daysAgo(((new Date().getDay() + 6) % 7) + 1)] },
-  { key: 'd30', label: 'Last 30 days', range: () => [daysAgo(29), today()] },
-  { key: 'w4', label: 'Last 4 weeks', range: () => [monday(3), today()] },
-  { key: 'w12', label: 'Last 12 weeks', range: () => [monday(11), today()] },
-  { key: 'thisMonth', label: 'This month', range: () => [monthStart(0), today()] },
-  { key: 'lastMonth', label: 'Last month', range: () => [monthStart(1), monthEnd(1)] },
-  { key: 'm3', label: 'Last 3 months', range: () => [monthStart(2), today()] },
-  { key: 'm6', label: 'Last 6 months', range: () => [monthStart(5), today()] },
-  { key: 'm12', label: 'Last 12 months', range: () => [monthStart(11), today()] },
-  { key: 'year', label: 'This year', range: () => [`${new Date().getFullYear()}-01-01`, today()] },
-  { key: 'all', label: 'All time', range: () => ['2025-01-01', today()] },
+/** The three periods: today, the last 7 days (today included), and this month so far. */
+const PERIODS: { key: string; label: string; title: string; range: () => [string, string] }[] = [
+  { key: 'day', label: 'Daily', title: 'Today', range: () => [today(), today()] },
+  { key: 'week', label: 'Weekly', title: 'The last 7 days, today included', range: () => [daysAgo(6), today()] },
+  { key: 'month', label: 'Monthly', title: 'This month, from the 1st to today', range: () => [monthStart(), today()] },
 ];
-const GRAINS: { key: Grain; label: string; range: string }[] = [
-  { key: 'day', label: 'Daily', range: 'd30' },
-  { key: 'week', label: 'Weekly', range: 'w12' },
-  { key: 'month', label: 'Monthly', range: 'm12' },
-];
-const rangeOf = (key: string) => RANGES.find((r) => r.key === key)!.range();
+const rangeOf = (key: string) => PERIODS.find((r) => r.key === key)!.range();
+/** Bars per day for any period up to ~3 months; longer custom dates go by week, then by month. */
+const grainFor = (from: string, to: string): Grain => {
+  const days = (new Date(`${to}T00:00:00`).getTime() - new Date(`${from}T00:00:00`).getTime()) / 86400000 + 1;
+  return days <= 92 ? 'day' : days <= 731 ? 'week' : 'month';
+};
 
 const fmtBucket = (s: string, g: Grain, long = false) => {
   const d = new Date(`${s}T00:00:00`);
@@ -109,9 +94,9 @@ function Covered({ n }: { n: Network }) {
 
 export function Dashboard() {
   const { user } = useAuth();
-  const [grain, setGrain] = useState<Grain>('week');
-  const [rangeKey, setRangeKey] = useState('w12');
-  const [[from, to], setRange] = useState<[string, string]>(() => rangeOf('w12'));
+  const [rangeKey, setRangeKey] = useState('week');
+  const [[from, to], setRange] = useState<[string, string]>(() => rangeOf('week'));
+  const grain = grainFor(from, to);
   const [filter, setFilter] = useState<{ projectId?: string; region?: string }>({});
   const [pivot, setPivot] = useState<'km' | 'ukm'>('km');
   const [pivotBy, setPivotBy] = useState<'project' | 'region'>('project');
@@ -142,11 +127,9 @@ export function Dashboard() {
       .finally(() => { if (!silent) setLoading(false); });
   }, [user?.role, from, to, grain, filter, tick]);
 
-  const pickGrain = (g: Grain) => {
-    setGrain(g);
-    const r = GRAINS.find((x) => x.key === g)!.range;
-    setRangeKey(r);
-    setRange(rangeOf(r));
+  const pickPeriod = (key: string) => {
+    setRangeKey(key);
+    setRange(rangeOf(key));
   };
   const toggle = (dim: 'projectId' | 'region', key: string) =>
     setFilter((f) => ({ ...f, [dim]: f[dim] === key ? undefined : key }));
@@ -174,18 +157,14 @@ export function Dashboard() {
       <style>{STYLE}</style>
       <div className="dr-bar dash-head">
         <h1 className="dr-title"><PageIcon name="dashboard" />Dashboard</h1>
-        {/* Every control on one line: grain, period, dates, project, region. */}
+        {/* Every control on one line: period, dates, project, region. Picking dates by hand
+            leaves the period buttons unlit. */}
         <div className="dash-controls">
-          <div className="dash-seg" role="group" aria-label="Show by">
-            {GRAINS.map((x) => (
-              <button key={x.key} className={grain === x.key ? 'on' : ''} onClick={() => pickGrain(x.key)}>{x.label}</button>
+          <div className="dash-seg" role="group" aria-label="Period">
+            {PERIODS.map((x) => (
+              <button key={x.key} className={rangeKey === x.key ? 'on' : ''} title={x.title} onClick={() => pickPeriod(x.key)}>{x.label}</button>
             ))}
           </div>
-          <select className="input" value={rangeKey} aria-label="Period"
-            onChange={(e) => { if (e.target.value === 'custom') { setRangeKey('custom'); return; } setRangeKey(e.target.value); setRange(rangeOf(e.target.value)); }}>
-            {RANGES.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}
-            <option value="custom">Custom dates…</option>
-          </select>
           <span className="dash-range">
             <input className="input" type="date" value={from} max={to} aria-label="From"
               onChange={(e) => { setRangeKey('custom'); setRange([e.target.value, to]); }} />
@@ -217,7 +196,7 @@ export function Dashboard() {
             <div className="dash-kpi">
               <div className="k">Km driven</div>
               <div className="v">{km(t.km)}<small> km</small></div>
-              <div className="s"><Delta now={t.km} before={p.km} /> vs previous {data.period.days} days</div>
+              <div className="s"><Delta now={t.km} before={p.km} /> vs {data.period.days === 1 ? 'the day before' : `previous ${data.period.days} days`}</div>
             </div>
             <div className="dash-kpi hero">
               <div className="k">UKM</div>
