@@ -79,6 +79,11 @@ const TEST_EMAILS = new Set(['autest@vts.com', 'projaus@gmail.com']);
 // A fix this inaccurate, or a step this fast, is not counted toward distance (it still goes in).
 const MAX_ACCURACY_M = 50;
 const MAX_STEP_KMH = 250;
+// Some VTS sessions carry fixes from a second phone in Hyderabad recording under the same session
+// (a whole session, or a few hundred fixes mid-drive). Snapped together with the real drive they
+// made a 28,000 km "route" and claimed roads in India. This is an Australian project: a fix outside
+// Australia is not part of the drive and is dropped; a session with nothing left is skipped.
+const inAustralia = (p) => p.latitude < -9 && p.latitude > -44.5 && p.longitude > 112 && p.longitude < 154.5;
 
 const log = (...a) => console.log(...a);
 const read = (dir, f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
@@ -257,10 +262,12 @@ async function main() {
 
   const { processTrip } = PROCESS ? require('../services/mapMatcher') : {};
   const outcomes = { matched: 0, skipped: 0, failed: 0, byWorker: 0 };
-  let trips = 0, points = 0, skipped = 0;
+  let trips = 0, points = 0, skipped = 0, abroad = 0;
   for (const { s, email } of todo) {
     const u = byEmail.get(email);
-    const pts = await rawPoints(dump, token, s._id);
+    const all = await rawPoints(dump, token, s._id);
+    const pts = all.filter(inAustralia);
+    abroad += all.length - pts.length;
     if (pts.length < 2) { skipped++; continue; }
     const first = pts[0];
     const last = pts[pts.length - 1];
@@ -283,7 +290,10 @@ async function main() {
       distanceMeters: distanceOf(pts),
       maxSpeedKmh: Math.round(Math.max(0, ...pts.map((p) => (p.speed > 0 && p.speed < MAX_STEP_KMH ? p.speed : 0)))),
       pointCount: pts.length,
-      mapMatchStatus: 'pending',
+      // Written as already claimed, and released to 'pending' only once every point is in: the
+      // worker polls for pending trips, and one that caught a trip with no points yet marked it
+      // skipped for having fewer than 2 fixes.
+      mapMatchStatus: 'matching',
       ukmStatus: 'pending',
       linkCoverageStatus: 'pending',
     });
@@ -313,11 +323,12 @@ async function main() {
         points += e.insertedDocs?.length ?? 0;
       }
     }
+    await Trip.updateOne({ _id: trip._id }, { $set: { mapMatchStatus: 'pending' } });
     trips++;
     if (PROCESS) outcomes[(await processTrip(trip._id)) || 'byWorker']++;
     if (trips % 10 === 0) log(`  ${trips}/${todo.length} trips, ${points} points${PROCESS ? ` ${JSON.stringify(outcomes)}` : ''}`);
   }
-  log(`\nDone: ${trips} trips, ${points} points, ${skipped} skipped (under 2 fixes). Batch ${batch}.`);
+  log(`\nDone: ${trips} trips, ${points} points, ${skipped} skipped (under 2 fixes in Australia), ${abroad} fixes outside Australia dropped. Batch ${batch}.`);
   log(PROCESS
     ? `Processed: ${JSON.stringify(outcomes)} (byWorker = the worker claimed it first; it finishes it the same way).`
     : 'Left pending: the map-match worker picks them up — route, km, UKM and coverage follow on their own.');

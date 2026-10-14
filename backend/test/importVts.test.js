@@ -65,6 +65,7 @@ function assert(cond, msg) {
     ses('s6', 'd1', '2026-09-03T22:00:00Z', { isActive: true }), // still running on VTS → never
     ses('s7', 'd1', '2026-09-04T22:00:00Z', { totalLocations: 0 }), // nothing recorded → never
     ses('s8', 'd5', '2026-09-02T22:00:00Z'), // another VTS project → never
+    ses('s9', 'd1', '2026-09-07T22:00:00Z'), // Abbas, but every fix is a phone in Hyderabad → skipped at apply
   ];
   fs.writeFileSync(path.join(dir, 'sessions_all.json'), JSON.stringify(sessions));
   // Three fixes ~1.1 km apart each, 2 minutes apart, plus one 900 m-accuracy fix that must not count.
@@ -73,8 +74,11 @@ function assert(cond, msg) {
     { _id: `${id}-x`, latitude: -37.70, longitude: 144.80, speed: 0, accuracy: 900, timestamp: new Date(Date.parse(t0) + 90000).toISOString() },
     { _id: `${id}-b`, latitude: -37.79, longitude: 144.96, speed: 40, accuracy: 5, timestamp: new Date(Date.parse(t0) + 180000).toISOString() },
     { _id: `${id}-c`, latitude: -37.78, longitude: 144.96, speed: 35, accuracy: 5, timestamp: new Date(Date.parse(t0) + 300000).toISOString() },
+    // A second phone in Hyderabad recording into the same session: not part of this drive.
+    { _id: `${id}-in`, latitude: 17.48, longitude: 78.55, speed: 0, accuracy: 9, timestamp: new Date(Date.parse(t0) + 240000).toISOString() },
   ];
-  for (const s of sessions) fs.writeFileSync(path.join(dir, 'points', `${s._id}.json`), JSON.stringify(pts(s._id, s.startTime)));
+  const india = (id, t0) => [0, 1, 2].map((i) => ({ _id: `${id}-${i}`, latitude: 17.45 + i / 1000, longitude: 78.36, speed: 20, accuracy: 5, timestamp: new Date(Date.parse(t0) + i * 60000).toISOString() }));
+  for (const s of sessions) fs.writeFileSync(path.join(dir, 'points', `${s._id}.json`), JSON.stringify(s._id === 's9' ? india(s._id, s.startTime) : pts(s._id, s.startTime)));
   const tokenFile = path.join(dir, 'token');
   fs.writeFileSync(tokenFile, 'unused');
 
@@ -84,9 +88,9 @@ function assert(cond, msg) {
   });
 
   const dry = run();
-  assert(/toImport: 2/.test(dry) && /dayHasData: 1/.test(dry), 'dry run: Abbas 2 Sep and Joel 6 Sep in; Joel 5 Sep already has data');
+  assert(/toImport: 3/.test(dry) && /dayHasData: 1/.test(dry), 'dry run: Abbas 2 and 8 Sep, Joel 6 Sep in; Joel 5 Sep already has data');
   assert(/testAccount: 1/.test(dry) && /active: 1/.test(dry) && /noPoints: 1/.test(dry) && /noAccount: 1/.test(dry), '…test account, running and empty sessions, and the unknown driver are left out');
-  assert(/sessions: 7/.test(dry), '…and another VTS project\'s sessions are not even considered');
+  assert(/sessions: 8/.test(dry), '…and another VTS project\'s sessions are not even considered');
   assert(await Trip.countDocuments({ importBatchId: /^vts-/ }) === 0, 'the dry run writes nothing');
 
   const out = run('--apply', '--create-missing-drivers');
@@ -96,7 +100,9 @@ function assert(cond, msg) {
   assert(robert.passwordHash && robert.passwordHash.startsWith('$2'), '…with a random password nobody knows');
 
   const trips = await Trip.find({ importBatchId: batch }).lean();
-  assert(trips.length === 3, '3 trips: Abbas, Joel 6 Sep, Robert');
+  assert(trips.length === 3, '3 trips: Abbas, Joel 6 Sep, Robert — the all-Hyderabad session is skipped');
+  assert(/1 skipped \(under 2 fixes in Australia\), 6 fixes outside Australia dropped/.test(out), "…the stray Hyderabad fix dropped from each of the 3 others, plus the skipped session's 3");
+  assert(await LocationPoint.countDocuments({ lat: { $gt: 0 } }) === 0, 'not one point outside Australia went in');
   const t1 = trips.find((t) => t.importSourceId === 'vts:s1');
   assert(String(t1.driverId) === String(abbas._id), 'email matches regardless of case');
   assert(t1.status === 'completed' && t1.mapMatchStatus === 'pending' && t1.ukmStatus === 'pending' && t1.linkCoverageStatus === 'pending', 'a completed, pending trip — the worker takes it from here');
@@ -108,7 +114,7 @@ function assert(cond, msg) {
   assert(p.length === 4 && p[0].clientId === 'vts:s1-a' && p[0].speedKmh === 30 && p[0].accuracy === 5, 'points land with speed and accuracy, keyed by their VTS id');
 
   const again = run('--apply', '--create-missing-drivers');
-  assert(/alreadyImported: 3/.test(again) && /toImport: 0/.test(again), 'a re-run finds them all already in');
+  assert(/alreadyImported: 3/.test(again) && /toImport: 1/.test(again), 'a re-run finds them all already in (the Hyderabad one is planned again and skipped again)');
   assert(await Trip.countDocuments({ importBatchId: /^vts-/ }) === 3, '…and adds nothing');
 
   execFileSync(process.execPath, ['src/seed/importVtsSessions.js', `--revert=${batch}`, '--apply'], { cwd: path.join(__dirname, '..'), env: { ...process.env, MONGODB_URI: uri }, encoding: 'utf8' });
