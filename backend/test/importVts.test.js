@@ -83,7 +83,7 @@ function assert(cond, msg) {
   fs.writeFileSync(tokenFile, 'unused');
 
   // --no-process: the road matcher calls a remote server; the pipeline itself has its own tests.
-  const run = (...extra) => execFileSync(process.execPath, ['src/seed/importVtsSessions.js', `--dump=${dir}`, `--token-file=${tokenFile}`, '--no-process', ...extra], {
+  const run = (...extra) => execFileSync(process.execPath, ['src/seed/importVtsSessions.js', `--dump=${dir}`, `--token-file=${tokenFile}`, '--no-process', '--concurrency=3', ...extra], {
     cwd: path.join(__dirname, '..'), env: { ...process.env, MONGODB_URI: uri }, encoding: 'utf8',
   });
 

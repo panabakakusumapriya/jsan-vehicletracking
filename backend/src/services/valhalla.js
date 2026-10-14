@@ -22,12 +22,21 @@ const { haversineMeters } = require('../utils/geo');
  */
 
 let lastCallAt = 0; // one shared queue for both trace and route calls
+let turns = Promise.resolve();
 
-async function politeDelay() {
-  const since = Date.now() - lastCallAt;
-  const wait = Math.max(0, env.VALHALLA_MIN_INTERVAL_MS - since);
-  if (wait) await new Promise((r) => setTimeout(r, wait));
-  lastCallAt = Date.now();
+/**
+ * Waits for this caller's turn. A chain rather than a timestamp check alone: two trips matched at
+ * once (the worker plus a backfill, or a parallel import) would otherwise both see the interval
+ * as elapsed and call together, and the spacing this server is owed would only hold one at a time.
+ */
+function politeDelay() {
+  const turn = turns.then(async () => {
+    const wait = Math.max(0, env.VALHALLA_MIN_INTERVAL_MS - (Date.now() - lastCallAt));
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    lastCallAt = Date.now();
+  });
+  turns = turn.catch(() => {});
+  return turn;
 }
 
 function isRetryable(status) {

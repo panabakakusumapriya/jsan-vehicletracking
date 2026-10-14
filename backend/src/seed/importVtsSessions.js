@@ -45,7 +45,7 @@
  *   node src/seed/importVtsSessions.js --revert=<importBatchId>
  *
  * Options: --project="PRJ-025-HE-DRIVE-AUSGNZ"  --vts-project=6a3233e935b68ccdc47a9785
- *          --create-missing-drivers  --no-process
+ *          --create-missing-drivers  --no-process  --concurrency=4
  */
 const fs = require('fs');
 const path = require('path');
@@ -72,6 +72,7 @@ const CREATE_MISSING = args.get('create-missing-drivers') === true;
 const LIMIT = args.has('limit') ? Number(args.get('limit')) : Infinity;
 const ONLY = args.has('only') ? String(args.get('only')) : null;
 const PROCESS = args.get('no-process') !== true;
+const CONCURRENCY = Math.max(1, Math.min(8, Number(args.get('concurrency')) || 1));
 const REVERT = args.has('revert') ? String(args.get('revert')) : null;
 const DEFAULT_ZONE = 'Australia/Melbourne';
 // Test logins on VTS — never real driving.
@@ -263,12 +264,14 @@ async function main() {
   const { processTrip } = PROCESS ? require('../services/mapMatcher') : {};
   const outcomes = { matched: 0, skipped: 0, failed: 0, byWorker: 0 };
   let trips = 0, points = 0, skipped = 0, abroad = 0;
-  for (const { s, email } of todo) {
+  // Several sessions at once: the database work overlaps, while road-matching requests still go
+  // out one at a time, spaced as the shared server is owed (valhalla.js politeDelay).
+  const importOne = async ({ s, email }) => {
     const u = byEmail.get(email);
     const all = await rawPoints(dump, token, s._id);
     const pts = all.filter(inAustralia);
     abroad += all.length - pts.length;
-    if (pts.length < 2) { skipped++; continue; }
+    if (pts.length < 2) { skipped++; return; }
     const first = pts[0];
     const last = pts[pts.length - 1];
     const vehicleId = vehicles.get(String(s.licensePlate || '').trim().toUpperCase()) || null;
@@ -327,7 +330,11 @@ async function main() {
     trips++;
     if (PROCESS) outcomes[(await processTrip(trip._id)) || 'byWorker']++;
     if (trips % 10 === 0) log(`  ${trips}/${todo.length} trips, ${points} points${PROCESS ? ` ${JSON.stringify(outcomes)}` : ''}`);
-  }
+  };
+  const queue = todo.slice();
+  await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
+    while (queue.length) await importOne(queue.shift());
+  }));
   log(`\nDone: ${trips} trips, ${points} points, ${skipped} skipped (under 2 fixes in Australia), ${abroad} fixes outside Australia dropped. Batch ${batch}.`);
   log(PROCESS
     ? `Processed: ${JSON.stringify(outcomes)} (byWorker = the worker claimed it first; it finishes it the same way).`
