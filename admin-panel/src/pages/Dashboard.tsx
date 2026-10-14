@@ -247,9 +247,6 @@ export function Dashboard() {
               <h3>Active cars by region</h3>
               <span className="muted">regions with a car on the road now, updated every minute — click one to filter by it</span>
             </div>
-            {(data.cars.live?.length ?? 0) > 0 && (
-              <CarsMap cars={data.cars.live!} colorOf={regionColor} selected={filter.region} onPick={(r) => toggle('region', r)} />
-            )}
             <div className="dash-cars">
               <div className="dash-car total">
                 <div className="r">{filter.region ?? 'All regions'}</div>
@@ -267,6 +264,9 @@ export function Dashboard() {
                 </button>
               ))}
             </div>
+            {(data.cars.live?.length ?? 0) > 0 && (
+              <CarsMap cars={data.cars.live!} colorOf={regionColor} selected={filter.region} onPick={(r) => toggle('region', r)} />
+            )}
           </div>}
 
           <div className="card dash-card">
@@ -554,7 +554,7 @@ const STYLE = `
 .dash-car .n i { width: 9px; height: 9px; border-radius: 50%; background: #cbd5e1; align-self: center; flex: none; }
 .dash-car .n i.live { background: #16a34a; box-shadow: 0 0 0 3px #16a34a2e; }
 .dash-car .r .sw { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; vertical-align: 0; }
-.dash-carmap { height: 320px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); margin-bottom: 10px; position: relative; z-index: 0; }
+.dash-carmap { height: 320px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); margin-top: 12px; position: relative; z-index: 0; }
 .dash-bubble { transform: translate(-50%, -50%); min-width: 34px; height: 34px; padding: 0 8px; border-radius: 99px; color: #fff; font-weight: 800; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; border: 3px solid #fff; box-shadow: 0 2px 8px #0f172a40; cursor: pointer; box-sizing: border-box; }
 .dash-car .p { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .dash-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
