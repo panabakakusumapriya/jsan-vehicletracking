@@ -26,12 +26,13 @@ type Fig = { km: number; ukm: number; assignedUkm: number; freeUkm: number; outs
 type Network = { targetMeters: number; coveredMeters: number };
 type Row = Fig & { key: string; name: string; drivers: number; series: { km: number; ukm: number }[]; network: Network };
 type Grain = 'day' | 'week' | 'month';
-type LiveCar = { region: string; lat: number; lon: number; at: string | null; driver: string; plate: string | null };
+type LiveCar = { region: string; lat: number; lon: number; at: string | null; onRoad: boolean; driver: string; plate: string | null };
+type CarCount = { today: number; now: number; drivers: number };
 type Overview = {
   period: { from: string; to: string; days: number; grain: Grain; previousFrom: string; previousTo: string };
   totals: Fig & { trips: number; drivers: number; network: Network };
   previous: Fig;
-  cars?: { now: number; period: number; live?: LiveCar[]; byRegion: { region: string; now: number; period: number }[] };
+  cars?: CarCount & { date: string; live: LiveCar[]; byRegion: (CarCount & { region: string })[] };
   timeline: (Fig & { date: string })[];
   byProject: Row[];
   byRegion: Row[];
@@ -105,7 +106,7 @@ export function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState<number | null>(null);
-  // A minute's tick keeps "on the road now" current; the refresh it causes is silent.
+  // A minute's tick keeps today's cars and "on the road now" current; the refresh it causes is silent.
   const [tick, setTick] = useState(0);
   const lastQuery = useRef('');
   useEffect(() => {
@@ -203,48 +204,33 @@ export function Dashboard() {
               <div className="v">{km(t.ukm)}<small> km</small></div>
               <div className="s"><Delta now={t.ukm} before={p.ukm} /> · {pct(t.ukm, t.km)} of km was new road</div>
             </div>
-            <div className="dash-kpi">
-              <div className="k">Assigned UKM</div>
-              <div className="v">{km(t.assignedUkm)}<small> km</small></div>
-              <div className="s">in drivers' own polygons{t.outsideUkm > 0 && <> · +{km(t.outsideUkm)} km outside them</>}</div>
-            </div>
-            <div className="dash-kpi">
-              <div className="k">Free-drive UKM</div>
-              <div className="v">{km(t.freeUkm)}<small> km</small></div>
-              <div className="s">trips with no polygon held</div>
-            </div>
-            <div className="dash-kpi">
-              <div className="k">Network covered</div>
-              <div className="v">{t.network.targetMeters ? pct(t.network.coveredMeters, t.network.targetMeters) : '—'}</div>
-              <div className="s">{km(t.network.coveredMeters)} of {km(t.network.targetMeters)} km, to date</div>
-            </div>
           </div>
 
           {/* An API from before this card sends no cars — leave the card out rather than break the page. */}
-          {data.cars && <div className="card dash-card">
+          {data.cars?.byRegion && <div className="card dash-card">
             <div className="dash-card-head">
               <h3>Active cars by region</h3>
-              <span className="muted">regions with a car on the road now, updated every minute — click one to filter by it</span>
+              <span className="muted">every car that drove today, finished or still out — updated every minute, click a region to filter by it</span>
             </div>
             <div className="dash-cars">
               <div className="dash-car total">
-                <div className="r">{filter.region ?? 'All regions'}</div>
-                <div className="n"><i className={data.cars.now ? 'live' : ''} />{nf.format(data.cars.now)}<small> on the road now</small></div>
-                <div className="p">{nf.format(data.cars.period)} drove in this period</div>
+                <div className="r">{filter.region ?? 'All regions'} · today</div>
+                <div className="n">{nf.format(data.cars.today)}<small> {data.cars.today === 1 ? 'car' : 'cars'}</small></div>
+                <div className="p">{nf.format(data.cars.drivers)} {data.cars.drivers === 1 ? 'driver' : 'drivers'} · <OnRoad n={data.cars.now} /></div>
               </div>
-              {/* Only regions with a car out right now; a region with none drops out until one is. */}
-              {!data.cars.byRegion.some((r) => r.now > 0) && <div className="muted" style={{ alignSelf: 'center', fontSize: 13 }}>No car is on the road right now.</div>}
-              {data.cars.byRegion.filter((r) => r.now > 0).map((r) => (
+              {/* Only regions with a car out today; a region with none drops out. */}
+              {data.cars.byRegion.length === 0 && <div className="muted" style={{ alignSelf: 'center', fontSize: 13 }}>No car has driven today yet.</div>}
+              {data.cars.byRegion.filter((r) => r.today > 0).map((r) => (
                 <button key={r.region} className={`dash-car${filter.region === r.region ? ' sel' : filter.region ? ' dim' : ''}`}
                   onClick={() => toggle('region', r.region)}>
                   <div className="r"><span className="sw" style={{ background: regionColor(r.region) }} />{r.region}</div>
-                  <div className="n"><i className={r.now ? 'live' : ''} />{nf.format(r.now)}<small> now</small></div>
-                  <div className="p">{nf.format(r.period)} drove in this period</div>
+                  <div className="n">{nf.format(r.today)}<small> {r.today === 1 ? 'car' : 'cars'}</small></div>
+                  <div className="p">{nf.format(r.drivers)} {r.drivers === 1 ? 'driver' : 'drivers'} · <OnRoad n={r.now} /></div>
                 </button>
               ))}
             </div>
-            {(data.cars.live?.length ?? 0) > 0 && (
-              <CarsMap cars={data.cars.live!} colorOf={regionColor} selected={filter.region} onPick={(r) => toggle('region', r)} />
+            {data.cars.live.length > 0 && (
+              <CarsMap cars={data.cars.live} counts={data.cars.byRegion} colorOf={regionColor} selected={filter.region} onPick={(r) => toggle('region', r)} />
             )}
           </div>}
 
@@ -372,14 +358,19 @@ export function Dashboard() {
 const REGION_COLORS = ['#2a78d6', '#16a34a', '#d97706', '#9333ea', '#db2777', '#0891b2', '#65a30d', '#dc2626'];
 const ZOOMED_IN = 8;
 
+function OnRoad({ n }: { n: number }) {
+  return <span className={n ? 'dash-onroad' : ''}>{n ? <><i />{nf.format(n)} on the road now</> : 'none on the road now'}</span>;
+}
+
 /**
- * The cars on the road, on a map. Zoomed out, each region is one bubble with its count (a click
- * filters the page by it); zoomed in, each car is a dot with its driver and plate. The map fits
+ * Today's cars on a map. Zoomed out, each region is one bubble with its count of cars today (a
+ * click filters the page by it); zoomed in, each car is a dot at its latest fix with its driver
+ * and plate — solid with a green ring while on the road, faded once its trips are done. The map fits
  * the cars — or the picked region's — when that set of regions changes, not on every minute's
  * refresh, so it does not snap back while someone is panning.
  */
-function CarsMap({ cars, colorOf, selected, onPick }: {
-  cars: LiveCar[]; colorOf: (r: string) => string; selected?: string; onPick: (r: string) => void;
+function CarsMap({ cars, counts, colorOf, selected, onPick }: {
+  cars: LiveCar[]; counts: (CarCount & { region: string })[]; colorOf: (r: string) => string; selected?: string; onPick: (r: string) => void;
 }) {
   const [zoom, setZoom] = useState(3);
   const regions = useMemo(() => {
@@ -387,11 +378,12 @@ function CarsMap({ cars, colorOf, selected, onPick }: {
     for (const c of cars) m.set(c.region, [...(m.get(c.region) ?? []), c]);
     return [...m.entries()].map(([region, list]) => ({
       region,
-      count: list.length,
+      count: counts.find((c) => c.region === region)?.today ?? list.length,
+      now: counts.find((c) => c.region === region)?.now ?? list.filter((c) => c.onRoad).length,
       lat: list.reduce((s, c) => s + c.lat, 0) / list.length,
       lon: list.reduce((s, c) => s + c.lon, 0) / list.length,
     }));
-  }, [cars]);
+  }, [cars, counts]);
   const shown = selected && cars.some((c) => c.region === selected) ? cars.filter((c) => c.region === selected) : cars;
   const fitKey = `${selected ?? ''}|${regions.map((r) => r.region).sort().join(',')}`;
 
@@ -411,15 +403,18 @@ function CarsMap({ cars, colorOf, selected, onPick }: {
                 iconSize: [0, 0],
                 html: `<div class="dash-bubble" style="background:${colorOf(r.region)}">${r.count}</div>`,
               })}>
-              <Tooltip direction="top" offset={[0, -16]}>{r.region}: {r.count} on the road now</Tooltip>
+              <Tooltip direction="top" offset={[0, -16]}>{r.region}: {r.count} {r.count === 1 ? 'car' : 'cars'} today · {r.now} on the road now</Tooltip>
             </Marker>
           ))
           : cars.map((c, i) => (
             <CircleMarker key={`${c.driver}-${i}`} center={[c.lat, c.lon]} radius={7}
-              pathOptions={{ color: '#fff', weight: 2, fillColor: colorOf(c.region), fillOpacity: 1 }}>
+              pathOptions={c.onRoad
+                ? { color: '#16a34a', weight: 3, fillColor: colorOf(c.region), fillOpacity: 1 }
+                : { color: '#fff', weight: 2, fillColor: colorOf(c.region), fillOpacity: 0.45 }}>
               <Tooltip direction="top" offset={[0, -6]}>
                 <b>{c.driver}</b>{c.plate ? ` · ${c.plate}` : ''}<br />{c.region}
-                {c.at ? ` · last fix ${new Date(c.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+                {' · '}{c.onRoad ? 'on the road now' : 'done for now'}
+                {c.at ? ` · last seen ${new Date(c.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
               </Tooltip>
             </CircleMarker>
           ))}
@@ -530,11 +525,11 @@ const STYLE = `
 .dash-car .r { font-size: 12px; font-weight: 700; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dash-car .n { display: flex; align-items: baseline; gap: 6px; font-size: 24px; font-weight: 800; letter-spacing: -.5px; margin-top: 3px; font-variant-numeric: tabular-nums; }
 .dash-car .n small { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
-.dash-car .n i { width: 9px; height: 9px; border-radius: 50%; background: #cbd5e1; align-self: center; flex: none; }
-.dash-car .n i.live { background: #16a34a; box-shadow: 0 0 0 3px #16a34a2e; }
 .dash-car .r .sw { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; vertical-align: 0; }
 .dash-carmap { height: 320px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); margin-top: 12px; position: relative; z-index: 0; }
 .dash-bubble { transform: translate(-50%, -50%); min-width: 34px; height: 34px; padding: 0 8px; border-radius: 99px; color: #fff; font-weight: 800; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; border: 3px solid #fff; box-shadow: 0 2px 8px #0f172a40; cursor: pointer; box-sizing: border-box; }
+.dash-onroad { color: #047857; font-weight: 700; }
+.dash-onroad i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #16a34a; margin-right: 5px; vertical-align: 1px; }
 .dash-car .p { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .dash-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .dash-card-head h3 { margin: 0; font-size: 15px; }

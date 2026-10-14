@@ -75,12 +75,14 @@ function assert(cond, msg) {
   await trip(a, 20 - 19, 0); // a zero trip still in the period — harmless
   await Trip.create({ driverId: a._id, status: 'completed', startedAt: new Date('2026-09-20T08:00:00Z'), distanceMeters: 70000, effectiveUkmMeters: 7000, projectId: p1._id }); // previous period
 
-  // Cars. a drove car V1 once (0 km) besides the trips with no vehicle on record (= a's own car),
-  // and is in V1 now; b is on the road with no vehicle on record. Neither moves the km figures.
+  // Cars today (the real today, whatever the period): a is on the road in car V1; b drove today
+  // and finished, no vehicle on record (= b's own car); c drove yesterday only. All 0 km, so the
+  // km figures do not move.
   const V1 = new mongoose.Types.ObjectId();
-  await trip(a, 2, 0, { projectId: p1._id, assignedNetworkVersionId: vAu._id, vehicleId: V1 });
-  await trip(a, 14, 0, { projectId: p1._id, assignedNetworkVersionId: vAu._id, vehicleId: V1, status: 'active', lastLocation: { lat: -37.8, lon: 144.9, recordedAt: at(14) } });
-  await trip(b, 14, 0, { projectId: p1._id, assignedNetworkVersionId: vNz._id, status: 'active' });
+  const ago = (min) => new Date(Date.now() - min * 60000);
+  await Trip.create({ driverId: a._id, status: 'active', startedAt: ago(0.2), projectId: p1._id, assignedNetworkVersionId: vAu._id, vehicleId: V1, lastLocation: { lat: -37.8, lon: 144.9, recordedAt: ago(0.1) } });
+  await Trip.create({ driverId: b._id, status: 'completed', startedAt: ago(0.2), endedAt: ago(0.1), projectId: p1._id, assignedNetworkVersionId: vNz._id, endLocation: { lat: -36.8, lon: 174.7 } });
+  await Trip.create({ driverId: c._id, status: 'completed', startedAt: ago(48 * 60), endedAt: ago(47 * 60), projectId: p2._id });
 
   assert((await get('', adminT)).status === 200, 'an admin can open the dashboard');
   assert((await get('', managerT)).status === 403, 'a manager cannot — admins and superadmins only');
@@ -125,14 +127,17 @@ function assert(cond, msg) {
   assert(nz.byDriver.length === 1 && nz.byDriver[0].name === 'b', 'drivers honour the region filter');
 
   const carsIn = (body, region) => body.cars.byRegion.find((r) => r.region === region);
-  assert(all.cars.now === 2 && all.cars.period === 4, 'cars: 2 on the road now, 4 drove in the period');
-  assert(carsIn(all, 'Australia').now === 1 && carsIn(all, 'Australia').period === 2, "Australia: V1 now; V1 and a's no-vehicle car in the period");
-  assert(carsIn(all, 'New Zealand').now === 1 && carsIn(all, 'India').period === 1 && carsIn(all, 'India').now === 0, "a trip with no vehicle counts as its driver's car");
-  assert(nz.cars.now === 1 && nz.cars.period === 1 && nz.cars.byRegion.length === 3, 'a region filter narrows the car totals, the region rows stay');
-  assert(all.cars.live.length === 1 && all.cars.live[0].region === 'Australia' && all.cars.live[0].lat === -37.8 && all.cars.live[0].driver === 'a',
-    'the map gets each car on the road with a position — b has no fix yet, so no dot');
+  assert(all.cars.today === 2 && all.cars.now === 1 && all.cars.drivers === 2, 'cars today: 2 drove today, 1 of them still on the road');
+  assert(carsIn(all, 'Australia').today === 1 && carsIn(all, 'Australia').now === 1, 'Australia: V1, on the road');
+  assert(carsIn(all, 'New Zealand').today === 1 && carsIn(all, 'New Zealand').now === 0, "a finished trip today still counts; no vehicle = the driver's car");
+  assert(!carsIn(all, 'India'), 'a car that drove only yesterday is not in today');
+  assert(nz.cars.today === 1 && nz.cars.now === 0 && nz.cars.byRegion.length === 2, 'a region filter narrows the car totals, the region rows stay');
+  const dotA = all.cars.live.find((c) => c.driver === 'a');
+  const dotB = all.cars.live.find((c) => c.driver === 'b');
+  assert(all.cars.live.length === 2 && dotA.onRoad && dotA.lat === -37.8 && !dotB.onRoad && dotB.lat === -36.8,
+    "the map gets each of today's cars at its latest fix, on the road or finished");
   const onlyP2 = (await get(`&projectId=${p2._id}`)).body;
-  assert(onlyP2.cars.now === 0 && onlyP2.cars.byRegion.length === 1 && carsIn(onlyP2, 'India').period === 1, 'a project filter narrows the cars');
+  assert(onlyP2.cars.today === 0 && onlyP2.cars.byRegion.length === 0, 'a project filter narrows the cars');
 
   const month = (await get('&grain=month')).body;
   assert(month.period.grain === 'month' && month.timeline.length === 1 && month.timeline[0].date === '2026-10-01', 'monthly');

@@ -26,10 +26,10 @@ const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezo
  *   freeUkm      the part from trips measured on global UKM (free drives, no polygon held)
  *   outsideUkm   first-driven customer roads OUTSIDE the driver's polygons — credit for the
  *                project, not part of the driver's UKM, so shown beside it, never added in
- *   cars         cars by region: on the road now (an active trip, as on the Live map — not limited
- *                to the period) and how many drove in the period. A trip with no vehicle on record
- *                counts as its driver's car. `cars.live` places each car on the road on the map:
- *                its last fix, region, driver and plate.
+ *   cars         cars that drove TODAY (in `tz`, whatever the period), by region: every car with a
+ *                trip today — finished or still going — plus how many of them are on the road now
+ *                and how many drivers. A trip with no vehicle on record counts as its driver's car.
+ *                `cars.live` puts each of today's cars on the map at its latest fix.
  *   network      the project's live deliveries: total road length and how much of it has been
  *                driven to date (the Coverage page's number). Not limited to the period.
  *
@@ -84,9 +84,6 @@ function fitGrain(grain, span) {
   return g;
 }
 
-// A car is the trip's vehicle; a trip with none on record (a driver not given one in the panel)
-// counts as its driver's car, so it is neither lost nor counted twice.
-const CAR = { $ifNull: [{ $toString: '$vehicleId' }, { $concat: ['driver:', { $toString: '$driverId' }] }] };
 const isImported = { $ne: [{ $ifNull: ['$importBatchId', null] }, null] };
 async function tripGroups(from, to, tz) {
   return Trip.aggregate([
@@ -115,7 +112,6 @@ async function tripGroups(from, to, tz) {
           },
         },
         trips: { $sum: 1 },
-        cars: { $addToSet: CAR },
         imported: { $sum: { $cond: [isImported, 1, 0] } },
       },
     },
@@ -156,29 +152,37 @@ exports.overview = asyncHandler(async (req, res) => {
   };
 
   const projects = await Project.find({}).select('name code active').lean();
-  const [drivers, groups, prevGroups, live, onTheRoad] = await Promise.all([
+  // Today's trips: started today, ended today (crossed midnight), or still going.
+  const todayRange = dayRange(today, tz);
+  const [drivers, groups, prevGroups, live, todayTrips] = await Promise.all([
     User.find({ role: 'user' }).select('name projectIds country active driverStatus').lean(),
     tripGroups(from, to, tz),
     tripGroups(prevFrom, from, tz),
     liveNetworkVersions(projects.map((p) => p._id)),
-    Trip.find({ status: 'active' })
-      .select('driverId projectId assignedNetworkVersionId timezone vehicleId lastLocation startLocation')
+    Trip.find({
+      startedAt: { $lt: todayRange.to },
+      parkedJitter: { $ne: true },
+      $or: [{ startedAt: { $gte: todayRange.from } }, { endedAt: { $gte: todayRange.from } }, { status: 'active' }],
+    })
+      .select('driverId projectId assignedNetworkVersionId timezone vehicleId status startedAt endedAt lastLocation startLocation endLocation')
       .lean(),
   ]);
   const plates = new Map(
-    (await Vehicle.find({ _id: { $in: onTheRoad.map((tr) => tr.vehicleId).filter(Boolean) } }).select('plateNumber').lean())
+    (await Vehicle.find({ _id: { $in: todayTrips.map((tr) => tr.vehicleId).filter(Boolean) } }).select('plateNumber').lean())
       .map((v) => [String(v._id), v.plateNumber])
   );
-  // Live trips in the same shape as a trip group, so place() files them the same way.
-  const nowGroups = onTheRoad.map((tr) => ({
+  // Today's trips in the same shape as a trip group, so place() files them the same way. A car is
+  // the trip's vehicle; a trip with none on record (a driver not given one in the panel) counts
+  // as its driver's car, so it is neither lost nor counted twice.
+  const todayGroups = todayTrips.map((tr) => ({
     _id: { driverId: tr.driverId, projectId: tr.projectId, versionId: tr.assignedNetworkVersionId, zone: tr.timezone },
-    cars: [tr.vehicleId ? String(tr.vehicleId) : `driver:${tr.driverId}`],
+    car: tr.vehicleId ? String(tr.vehicleId) : `driver:${tr.driverId}`,
     trip: tr,
   }));
 
   // Every delivery a trip was measured against, plus the live ones the network figures come from.
   const versionIds = new Set(live.map((v) => String(v._id)));
-  for (const g of [...groups, ...prevGroups, ...nowGroups]) if (g._id.versionId) versionIds.add(String(g._id.versionId));
+  for (const g of [...groups, ...prevGroups, ...todayGroups]) if (g._id.versionId) versionIds.add(String(g._id.versionId));
   const versions = await NetworkVersion.find({ _id: { $in: [...versionIds] } })
     .select('projectId region label targetMeters')
     .lean();
@@ -293,44 +297,47 @@ exports.overview = asyncHandler(async (req, res) => {
     pd.projects.set(p.projectId, (pd.projects.get(p.projectId) || 0) + g.km);
     pd.regions.set(p.region, (pd.regions.get(p.region) || 0) + g.km);
   }
-  // Cars by region. The rows ignore the region filter (the picked one is highlighted, like the
-  // region table); the totals honour it. A car seen in two regions counts once in the total.
+  // Today's cars by region. The rows ignore the region filter (the picked one is highlighted, like
+  // the region table); the totals honour it. A car seen in two regions counts once in the total.
+  const carSets = () => ({ today: new Set(), now: new Set(), drivers: new Set() });
   const carRows = new Map();
-  const carTotals = { now: new Set(), period: new Set() };
-  for (const [kind, list] of [['period', groups], ['now', nowGroups]]) {
-    for (const g of list) {
-      const p = place(g);
-      if (!passes(p, 'region')) continue;
-      if (!carRows.has(p.region)) carRows.set(p.region, { now: new Set(), period: new Set() });
-      for (const c of g.cars) {
-        carRows.get(p.region)[kind].add(c);
-        if (passes(p)) carTotals[kind].add(c);
-      }
-    }
-  }
-  // Where each car on the road is. A driver in two live trips at once (two phones) is one dot.
+  const carTotals = carSets();
+  // Where each car is: its latest trip today. On the road beats finished; then the latest fix.
   const onMap = new Map();
-  for (const g of nowGroups) {
+  const fixOf = (tr) => [tr.lastLocation, tr.endLocation, tr.startLocation].find((f) => f?.lat != null && f?.lon != null) || null;
+  const timeOf = (tr) => new Date(tr.lastLocation?.recordedAt || tr.endedAt || tr.startedAt).getTime();
+  for (const g of todayGroups) {
     const p = place(g);
-    const fix = g.trip.lastLocation?.lat != null ? g.trip.lastLocation : g.trip.startLocation;
-    if (!passes(p, 'region') || fix?.lat == null || fix?.lon == null || onMap.has(g.cars[0])) continue;
-    onMap.set(g.cars[0], {
+    if (!passes(p, 'region')) continue;
+    const onRoad = g.trip.status === 'active';
+    if (!carRows.has(p.region)) carRows.set(p.region, carSets());
+    for (const set of passes(p) ? [carRows.get(p.region), carTotals] : [carRows.get(p.region)]) {
+      set.today.add(g.car);
+      set.drivers.add(String(g._id.driverId));
+      if (onRoad) set.now.add(g.car);
+    }
+    const fix = fixOf(g.trip);
+    const prev = onMap.get(g.car);
+    if (!fix || (prev && (prev.onRoad > onRoad || (prev.onRoad === onRoad && prev.t >= timeOf(g.trip))))) continue;
+    onMap.set(g.car, {
       region: p.region,
       lat: fix.lat,
       lon: fix.lon,
-      at: fix.recordedAt || null,
+      at: fix.recordedAt || g.trip.endedAt || g.trip.startedAt || null,
+      onRoad,
+      t: timeOf(g.trip),
       driver: driverById.get(String(g._id.driverId))?.name || 'Unknown driver',
       plate: g.trip.vehicleId ? plates.get(String(g.trip.vehicleId)) || null : null,
     });
   }
-
+  const sizes = (x) => ({ today: x.today.size, now: x.now.size, drivers: x.drivers.size });
   const cars = {
-    now: carTotals.now.size,
-    live: [...onMap.values()],
-    period: carTotals.period.size,
+    date: today,
+    ...sizes(carTotals),
+    live: [...onMap.values()].map(({ t: _t, ...c }) => c),
     byRegion: [...carRows.entries()]
-      .map(([region, x]) => ({ region, now: x.now.size, period: x.period.size }))
-      .sort((a, b) => b.now - a.now || b.period - a.period || a.region.localeCompare(b.region)),
+      .map(([region, x]) => ({ region, ...sizes(x) }))
+      .sort((a, b) => b.today - a.today || b.now - a.now || a.region.localeCompare(b.region)),
   };
 
   const previous = zero();
