@@ -79,7 +79,7 @@ function assert(cond, msg) {
   // and is in V1 now; b is on the road with no vehicle on record. Neither moves the km figures.
   const V1 = new mongoose.Types.ObjectId();
   await trip(a, 2, 0, { projectId: p1._id, assignedNetworkVersionId: vAu._id, vehicleId: V1 });
-  await trip(a, 14, 0, { projectId: p1._id, assignedNetworkVersionId: vAu._id, vehicleId: V1, status: 'active' });
+  await trip(a, 14, 0, { projectId: p1._id, assignedNetworkVersionId: vAu._id, vehicleId: V1, status: 'active', lastLocation: { lat: -37.8, lon: 144.9, recordedAt: at(14) } });
   await trip(b, 14, 0, { projectId: p1._id, assignedNetworkVersionId: vNz._id, status: 'active' });
 
   assert((await get('', adminT)).status === 200, 'an admin can open the dashboard');
@@ -129,6 +129,8 @@ function assert(cond, msg) {
   assert(carsIn(all, 'Australia').now === 1 && carsIn(all, 'Australia').period === 2, "Australia: V1 now; V1 and a's no-vehicle car in the period");
   assert(carsIn(all, 'New Zealand').now === 1 && carsIn(all, 'India').period === 1 && carsIn(all, 'India').now === 0, "a trip with no vehicle counts as its driver's car");
   assert(nz.cars.now === 1 && nz.cars.period === 1 && nz.cars.byRegion.length === 3, 'a region filter narrows the car totals, the region rows stay');
+  assert(all.cars.live.length === 1 && all.cars.live[0].region === 'Australia' && all.cars.live[0].lat === -37.8 && all.cars.live[0].driver === 'a',
+    'the map gets each car on the road with a position — b has no fix yet, so no dot');
   const onlyP2 = (await get(`&projectId=${p2._id}`)).body;
   assert(onlyP2.cars.now === 0 && onlyP2.cars.byRegion.length === 1 && carsIn(onlyP2, 'India').period === 1, 'a project filter narrows the cars');
 

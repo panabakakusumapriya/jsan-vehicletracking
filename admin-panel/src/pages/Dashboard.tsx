@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
+import { divIcon, latLngBounds } from 'leaflet';
+import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { MapAutoResize } from '../lib/MapAutoResize';
 import { PageIcon } from '../components/AppIcon';
 import { api, viewerTimeZone } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -23,11 +26,12 @@ type Fig = { km: number; ukm: number; assignedUkm: number; freeUkm: number; outs
 type Network = { targetMeters: number; coveredMeters: number };
 type Row = Fig & { key: string; name: string; drivers: number; series: { km: number; ukm: number }[]; network: Network };
 type Grain = 'day' | 'week' | 'month';
+type LiveCar = { region: string; lat: number; lon: number; at: string | null; driver: string; plate: string | null };
 type Overview = {
   period: { from: string; to: string; days: number; grain: Grain; previousFrom: string; previousTo: string };
   totals: Fig & { trips: number; drivers: number; network: Network };
   previous: Fig;
-  cars?: { now: number; period: number; byRegion: { region: string; now: number; period: number }[] };
+  cars?: { now: number; period: number; live?: LiveCar[]; byRegion: { region: string; now: number; period: number }[] };
   timeline: (Fig & { date: string })[];
   byProject: Row[];
   byRegion: Row[];
@@ -158,6 +162,11 @@ export function Dashboard() {
   const max = data ? Math.max(1, ...data.timeline.map((b) => Math.max(b.km, b.ukm))) : 1;
   const pivotRows = data ? (pivotBy === 'project' ? data.byProject : data.byRegion).filter((r) => r.km > 0) : [];
   const pivotMax = Math.max(1, ...pivotRows.flatMap((r) => r.series.map((s) => s[pivot])));
+  // One colour per region, the same on the map and its tile; sorted so a region keeps its colour.
+  const regionColor = (r: string) => {
+    const names = [...new Set((data?.cars?.byRegion ?? []).map((x) => x.region))].sort();
+    return REGION_COLORS[Math.max(0, names.indexOf(r)) % REGION_COLORS.length];
+  };
   const drivers = data ? (allDrivers ? data.byDriver : data.byDriver.slice(0, 15)) : [];
 
   return (
@@ -238,6 +247,9 @@ export function Dashboard() {
               <h3>Active cars by region</h3>
               <span className="muted">regions with a car on the road now, updated every minute — click one to filter by it</span>
             </div>
+            {(data.cars.live?.length ?? 0) > 0 && (
+              <CarsMap cars={data.cars.live!} colorOf={regionColor} selected={filter.region} onPick={(r) => toggle('region', r)} />
+            )}
             <div className="dash-cars">
               <div className="dash-car total">
                 <div className="r">{filter.region ?? 'All regions'}</div>
@@ -249,7 +261,7 @@ export function Dashboard() {
               {data.cars.byRegion.filter((r) => r.now > 0).map((r) => (
                 <button key={r.region} className={`dash-car${filter.region === r.region ? ' sel' : filter.region ? ' dim' : ''}`}
                   onClick={() => toggle('region', r.region)}>
-                  <div className="r">{r.region}</div>
+                  <div className="r"><span className="sw" style={{ background: regionColor(r.region) }} />{r.region}</div>
                   <div className="n"><i className={r.now ? 'live' : ''} />{nf.format(r.now)}<small> now</small></div>
                   <div className="p">{nf.format(r.period)} drove in this period</div>
                 </button>
@@ -378,6 +390,81 @@ export function Dashboard() {
   );
 }
 
+const REGION_COLORS = ['#2a78d6', '#16a34a', '#d97706', '#9333ea', '#db2777', '#0891b2', '#65a30d', '#dc2626'];
+const ZOOMED_IN = 8;
+
+/**
+ * The cars on the road, on a map. Zoomed out, each region is one bubble with its count (a click
+ * filters the page by it); zoomed in, each car is a dot with its driver and plate. The map fits
+ * the cars — or the picked region's — when that set of regions changes, not on every minute's
+ * refresh, so it does not snap back while someone is panning.
+ */
+function CarsMap({ cars, colorOf, selected, onPick }: {
+  cars: LiveCar[]; colorOf: (r: string) => string; selected?: string; onPick: (r: string) => void;
+}) {
+  const [zoom, setZoom] = useState(3);
+  const regions = useMemo(() => {
+    const m = new Map<string, LiveCar[]>();
+    for (const c of cars) m.set(c.region, [...(m.get(c.region) ?? []), c]);
+    return [...m.entries()].map(([region, list]) => ({
+      region,
+      count: list.length,
+      lat: list.reduce((s, c) => s + c.lat, 0) / list.length,
+      lon: list.reduce((s, c) => s + c.lon, 0) / list.length,
+    }));
+  }, [cars]);
+  const shown = selected && cars.some((c) => c.region === selected) ? cars.filter((c) => c.region === selected) : cars;
+  const fitKey = `${selected ?? ''}|${regions.map((r) => r.region).sort().join(',')}`;
+
+  return (
+    <div className="dash-carmap">
+      <MapContainer center={[shown[0].lat, shown[0].lon]} zoom={3} scrollWheelZoom={false} style={{ height: '100%', width: '100%' }}>
+        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
+        <MapAutoResize />
+        <FitCars cars={shown} fitKey={fitKey} />
+        <ZoomWatch onZoom={setZoom} />
+        {zoom < ZOOMED_IN
+          ? regions.map((r) => (
+            <Marker key={r.region} position={[r.lat, r.lon]} eventHandlers={{ click: () => onPick(r.region) }}
+              opacity={selected && selected !== r.region ? 0.45 : 1}
+              icon={divIcon({
+                className: '',
+                iconSize: [0, 0],
+                html: `<div class="dash-bubble" style="background:${colorOf(r.region)}">${r.count}</div>`,
+              })}>
+              <Tooltip direction="top" offset={[0, -16]}>{r.region}: {r.count} on the road now</Tooltip>
+            </Marker>
+          ))
+          : cars.map((c, i) => (
+            <CircleMarker key={`${c.driver}-${i}`} center={[c.lat, c.lon]} radius={7}
+              pathOptions={{ color: '#fff', weight: 2, fillColor: colorOf(c.region), fillOpacity: 1 }}>
+              <Tooltip direction="top" offset={[0, -6]}>
+                <b>{c.driver}</b>{c.plate ? ` · ${c.plate}` : ''}<br />{c.region}
+                {c.at ? ` · last fix ${new Date(c.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
+              </Tooltip>
+            </CircleMarker>
+          ))}
+      </MapContainer>
+    </div>
+  );
+}
+
+function FitCars({ cars, fitKey }: { cars: LiveCar[]; fitKey: string }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!cars.length) return;
+    map.fitBounds(latLngBounds(cars.map((c) => [c.lat, c.lon] as [number, number])), { padding: [40, 40], maxZoom: 12 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, fitKey]);
+  return null;
+}
+
+function ZoomWatch({ onZoom }: { onZoom: (z: number) => void }) {
+  const map = useMapEvents({ zoomend: () => onZoom(map.getZoom()) });
+  useEffect(() => onZoom(map.getZoom()), [map, onZoom]);
+  return null;
+}
+
 function FigTable({ title, first, rows, selected, onPick, totals }: {
   title: string; first: string; rows: Row[]; selected?: string; onPick: (key: string) => void; totals: Overview['totals'];
 }) {
@@ -466,6 +553,9 @@ const STYLE = `
 .dash-car .n small { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
 .dash-car .n i { width: 9px; height: 9px; border-radius: 50%; background: #cbd5e1; align-self: center; flex: none; }
 .dash-car .n i.live { background: #16a34a; box-shadow: 0 0 0 3px #16a34a2e; }
+.dash-car .r .sw { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; vertical-align: 0; }
+.dash-carmap { height: 320px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); margin-bottom: 10px; position: relative; z-index: 0; }
+.dash-bubble { transform: translate(-50%, -50%); min-width: 34px; height: 34px; padding: 0 8px; border-radius: 99px; color: #fff; font-weight: 800; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; border: 3px solid #fff; box-shadow: 0 2px 8px #0f172a40; cursor: pointer; box-sizing: border-box; }
 .dash-car .p { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .dash-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .dash-card-head h3 { margin: 0; font-size: 15px; }

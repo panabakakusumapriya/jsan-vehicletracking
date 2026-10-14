@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Project = require('../models/Project');
 const NetworkVersion = require('../models/NetworkVersion');
 const LinkCoverage = require('../models/LinkCoverage');
+const Vehicle = require('../models/Vehicle');
 const asyncHandler = require('../utils/asyncHandler');
 const { liveNetworkVersions } = require('../services/liveNetworks');
 const { countryForZone, ensureRegions } = require('../services/deliveryRegions');
@@ -27,7 +28,8 @@ const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezo
  *                project, not part of the driver's UKM, so shown beside it, never added in
  *   cars         cars by region: on the road now (an active trip, as on the Live map — not limited
  *                to the period) and how many drove in the period. A trip with no vehicle on record
- *                counts as its driver's car.
+ *                counts as its driver's car. `cars.live` places each car on the road on the map:
+ *                its last fix, region, driver and plate.
  *   network      the project's live deliveries: total road length and how much of it has been
  *                driven to date (the Coverage page's number). Not limited to the period.
  *
@@ -159,12 +161,19 @@ exports.overview = asyncHandler(async (req, res) => {
     tripGroups(from, to, tz),
     tripGroups(prevFrom, from, tz),
     liveNetworkVersions(projects.map((p) => p._id)),
-    Trip.find({ status: 'active' }).select('driverId projectId assignedNetworkVersionId timezone vehicleId').lean(),
+    Trip.find({ status: 'active' })
+      .select('driverId projectId assignedNetworkVersionId timezone vehicleId lastLocation startLocation')
+      .lean(),
   ]);
+  const plates = new Map(
+    (await Vehicle.find({ _id: { $in: onTheRoad.map((tr) => tr.vehicleId).filter(Boolean) } }).select('plateNumber').lean())
+      .map((v) => [String(v._id), v.plateNumber])
+  );
   // Live trips in the same shape as a trip group, so place() files them the same way.
   const nowGroups = onTheRoad.map((tr) => ({
     _id: { driverId: tr.driverId, projectId: tr.projectId, versionId: tr.assignedNetworkVersionId, zone: tr.timezone },
     cars: [tr.vehicleId ? String(tr.vehicleId) : `driver:${tr.driverId}`],
+    trip: tr,
   }));
 
   // Every delivery a trip was measured against, plus the live ones the network figures come from.
@@ -299,8 +308,25 @@ exports.overview = asyncHandler(async (req, res) => {
       }
     }
   }
+  // Where each car on the road is. A driver in two live trips at once (two phones) is one dot.
+  const onMap = new Map();
+  for (const g of nowGroups) {
+    const p = place(g);
+    const fix = g.trip.lastLocation?.lat != null ? g.trip.lastLocation : g.trip.startLocation;
+    if (!passes(p, 'region') || fix?.lat == null || fix?.lon == null || onMap.has(g.cars[0])) continue;
+    onMap.set(g.cars[0], {
+      region: p.region,
+      lat: fix.lat,
+      lon: fix.lon,
+      at: fix.recordedAt || null,
+      driver: driverById.get(String(g._id.driverId))?.name || 'Unknown driver',
+      plate: g.trip.vehicleId ? plates.get(String(g.trip.vehicleId)) || null : null,
+    });
+  }
+
   const cars = {
     now: carTotals.now.size,
+    live: [...onMap.values()],
     period: carTotals.period.size,
     byRegion: [...carRows.entries()]
       .map(([region, x]) => ({ region, now: x.now.size, period: x.period.size }))
