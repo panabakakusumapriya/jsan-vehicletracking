@@ -35,6 +35,22 @@ function FitToScope({ scopeKey, points }: { scopeKey: string; points: LatLngTupl
   return null;
 }
 
+/** Open on the box the URL names (?bbox=south,west,north,east — the dashboard's region bubbles). */
+function FitBox({ box }: { box: [LatLngTuple, LatLngTuple] }) {
+  const map = useMap();
+  useEffect(() => { map.fitBounds(latLngBounds(box), { padding: [40, 40], maxZoom: 13 }); }, [box, map]);
+  return null;
+}
+
+/** "south,west,north,east" → the box, or null when it is not four real coordinates. */
+function parseBox(raw: string | null): [LatLngTuple, LatLngTuple] | null {
+  const n = (raw || '').split(',').map(Number);
+  if (n.length !== 4 || n.some((x) => !Number.isFinite(x))) return null;
+  const [s, w, no, e] = n;
+  if (Math.abs(s) > 90 || Math.abs(no) > 90 || Math.abs(w) > 180 || Math.abs(e) > 180) return null;
+  return [[s, w], [no, e]];
+}
+
 /**
  * Three states, not two.
  *
@@ -150,6 +166,12 @@ export function LiveMap() {
   const [selectedDriver, setSelectedDriver] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDriver = searchParams.get('driver');
+  // A box from the URL holds the view until someone changes a filter by hand.
+  const [box, setBox] = useState(() => parseBox(searchParams.get('bbox')));
+  useEffect(() => {
+    if (!searchParams.has('bbox')) return;
+    setSearchParams((prev) => { prev.delete('bbox'); return prev; }, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   // Keep a ref so the socket callback can access the latest user data without
   // re-subscribing every time allDriverUsers changes.
@@ -295,6 +317,7 @@ export function LiveMap() {
 
   // When project changes, reset country if it no longer belongs to the new project.
   const handleProjectChange = (val: string) => {
+    setBox(null);
     setProjectFilter(val);
     if (countryFilter) {
       const valid = allDriverUsers
@@ -397,7 +420,7 @@ export function LiveMap() {
           className="input"
           style={{ width: '100%', margin: '4px 0 4px', fontSize: 13 }}
           value={countryFilter}
-          onChange={e => setCountryFilter(e.target.value)}
+          onChange={e => { setBox(null); setCountryFilter(e.target.value); }}
         >
           <option value="">All countries</option>
           {countries.map(c => <option key={c} value={c}>{c}</option>)}
@@ -586,7 +609,8 @@ export function LiveMap() {
           />
           <MapAutoResize />
           <Recenter focus={focus} />
-          {!deepLinkDriver && <FitToScope scopeKey={`${projectFilter}|${countryFilter}`} points={fitPoints} />}
+          {box && !deepLinkDriver && <FitBox box={box} />}
+          {!deepLinkDriver && !box && <FitToScope scopeKey={`${projectFilter}|${countryFilter}`} points={fitPoints} />}
 
           {/* Each visible driver's assigned areas, outline only — the streets stay readable. The
               last-clicked driver's are drawn heavier; a driver outside them gets a red ring. */}

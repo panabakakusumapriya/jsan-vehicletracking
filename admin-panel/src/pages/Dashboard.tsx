@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { divIcon, latLngBounds } from 'leaflet';
 import { CircleMarker, MapContainer, Marker, TileLayer, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import { MapAutoResize } from '../lib/MapAutoResize';
@@ -230,7 +230,7 @@ export function Dashboard() {
               ))}
             </div>
             {data.cars.live.length > 0 && (
-              <CarsMap cars={data.cars.live} counts={data.cars.byRegion} colorOf={regionColor} selected={filter.region} onPick={(r) => toggle('region', r)} />
+              <CarsMap cars={data.cars.live} counts={data.cars.byRegion} colorOf={regionColor} selected={filter.region} />
             )}
           </div>}
 
@@ -364,20 +364,25 @@ function OnRoad({ n }: { n: number }) {
 
 /**
  * Today's cars on a map. Zoomed out, each region is one bubble with its count of cars today (a
- * click filters the page by it); zoomed in, each car is a dot at its latest fix with its driver
+ * click opens the Live map on that region's cars); zoomed in, each car is a dot at its latest fix with its driver
  * and plate — solid with a green ring while on the road, faded once its trips are done. The map fits
  * the cars — or the picked region's — when that set of regions changes, not on every minute's
  * refresh, so it does not snap back while someone is panning.
  */
-function CarsMap({ cars, counts, colorOf, selected, onPick }: {
-  cars: LiveCar[]; counts: (CarCount & { region: string })[]; colorOf: (r: string) => string; selected?: string; onPick: (r: string) => void;
+function CarsMap({ cars, counts, colorOf, selected }: {
+  cars: LiveCar[]; counts: (CarCount & { region: string })[]; colorOf: (r: string) => string; selected?: string;
 }) {
   const [zoom, setZoom] = useState(3);
+  const navigate = useNavigate();
   const regions = useMemo(() => {
     const m = new Map<string, LiveCar[]>();
     for (const c of cars) m.set(c.region, [...(m.get(c.region) ?? []), c]);
     return [...m.entries()].map(([region, list]) => ({
       region,
+      box: [
+        Math.min(...list.map((c) => c.lat)), Math.min(...list.map((c) => c.lon)),
+        Math.max(...list.map((c) => c.lat)), Math.max(...list.map((c) => c.lon)),
+      ].map((x) => x.toFixed(4)).join(','),
       count: counts.find((c) => c.region === region)?.today ?? list.length,
       now: counts.find((c) => c.region === region)?.now ?? list.filter((c) => c.onRoad).length,
       lat: list.reduce((s, c) => s + c.lat, 0) / list.length,
@@ -396,14 +401,14 @@ function CarsMap({ cars, counts, colorOf, selected, onPick }: {
         <ZoomWatch onZoom={setZoom} />
         {zoom < ZOOMED_IN
           ? regions.map((r) => (
-            <Marker key={r.region} position={[r.lat, r.lon]} eventHandlers={{ click: () => onPick(r.region) }}
+            <Marker key={r.region} position={[r.lat, r.lon]} eventHandlers={{ click: () => navigate(`/?bbox=${r.box}`) }}
               opacity={selected && selected !== r.region ? 0.45 : 1}
               icon={divIcon({
                 className: '',
                 iconSize: [0, 0],
                 html: `<div class="dash-bubble" style="background:${colorOf(r.region)}">${r.count}</div>`,
               })}>
-              <Tooltip direction="top" offset={[0, -16]}>{r.region}: {r.count} {r.count === 1 ? 'car' : 'cars'} today · {r.now} on the road now</Tooltip>
+              <Tooltip direction="top" offset={[0, -16]}>{r.region}: {r.count} {r.count === 1 ? 'car' : 'cars'} today · {r.now} on the road now<br /><span className="muted">Click to open on the Live map</span></Tooltip>
             </Marker>
           ))
           : cars.map((c, i) => (
