@@ -121,6 +121,19 @@ function assert(cond, msg) {
   assert(await Trip.countDocuments({ importBatchId: batch }) === 0 && await LocationPoint.countDocuments({ clientId: /^vts:/ }) === 0, 'revert removes the batch\'s trips and points');
   assert(await Trip.countDocuments({ driverId: joel._id }) === 2, '…and nothing else');
 
+  // VTS's cleaned route as the trip's route: no road-matching, cut where it jumps across a gap.
+  fs.mkdirSync(path.join(dir, 'clean'));
+  const route = [[-37.80, 144.96], [-37.795, 144.96], [-37.79, 144.96], [-37.60, 144.96] /* 21 km jump */, [-37.595, 144.96], [17.45, 78.36] /* Hyderabad */];
+  for (const s of sessions) fs.writeFileSync(path.join(dir, 'clean', `${s._id}.json`), JSON.stringify(route.map(([latitude, longitude]) => ({ latitude, longitude }))));
+  execFileSync(process.execPath, ['src/seed/importVtsSessions.js', `--dump=${dir}`, `--token-file=${tokenFile}`, '--concurrency=2', '--apply'], {
+    cwd: path.join(__dirname, '..'), env: { ...process.env, MONGODB_URI: uri }, encoding: 'utf8',
+  });
+  const routed = await Trip.findOne({ importSourceId: 'vts:s1' }).lean();
+  assert(routed.mapMatchStatus === 'matched' && routed.cleanedMatchedRatio === 1, 'with a VTS route the trip is matched straight away, no road server');
+  assert(routed.cleanedRouteShapes.length === 2, 'the route is cut at the 21 km jump, and the Hyderabad fix is gone');
+  assert(routed.cleanedDistanceMeters > 1500 && routed.cleanedDistanceMeters < 1800, `route length counts the roads, not the jump (${routed.cleanedDistanceMeters} m)`);
+  assert(routed.ukmStatus !== 'pending' && routed.linkCoverageStatus !== 'pending', 'UKM and coverage are worked out as for any trip');
+
   console.log(`\n${passed} assertions passed`);
   fs.rmSync(dir, { recursive: true, force: true });
   await mongoose.disconnect();

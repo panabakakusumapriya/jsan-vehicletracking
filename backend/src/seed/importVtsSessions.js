@@ -72,6 +72,8 @@ const CREATE_MISSING = args.get('create-missing-drivers') === true;
 const LIMIT = args.has('limit') ? Number(args.get('limit')) : Infinity;
 const ONLY = args.has('only') ? String(args.get('only')) : null;
 const PROCESS = args.get('no-process') !== true;
+// Route source: VTS's own cleaned route (default), or --snap to road-match through Valhalla here.
+const SNAP = args.get('snap') === true;
 const CONCURRENCY = Math.max(1, Math.min(8, Number(args.get('concurrency')) || 1));
 const REVERT = args.has('revert') ? String(args.get('revert')) : null;
 const DEFAULT_ZONE = 'Australia/Melbourne';
@@ -121,6 +123,43 @@ async function rawPoints(dump, token, id) {
     .map((p) => ({ ...p, at: new Date(p.timestamp) }))
     .filter((p) => !Number.isNaN(p.at.getTime()))
     .sort((a, b) => a.at - b.at);
+}
+
+/**
+ * VTS's own cleaned route for a session: `/locations/session/:id` without `raw` is the road-snapped
+ * trace VTS made (its length is the session's `cleanedDistance`). Used as the trip's route, so the
+ * import needs no road-matching of its own. Cut wherever it jumps more than ROUTE_GAP_M in one step —
+ * across a recording gap the trace is a straight line, and a straight line must not be drawn or
+ * credited as road.
+ */
+const ROUTE_GAP_M = 3000;
+async function cleanedRoute(dump, token, id) {
+  const dir = path.join(dump, 'clean');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${id}.json`);
+  let list;
+  if (fs.existsSync(file)) list = JSON.parse(fs.readFileSync(file, 'utf8'));
+  else {
+    const r = await vtsGet(token, `/locations/session/${id}`);
+    list = Array.isArray(r) ? r : r.locations || [];
+    fs.writeFileSync(file, JSON.stringify(list));
+  }
+  const pts = list
+    .filter((p) => Number.isFinite(p.latitude) && Number.isFinite(p.longitude) && inAustralia(p))
+    .map((p) => ({ lat: p.latitude, lon: p.longitude }));
+  const runs = [];
+  let run = [];
+  let meters = 0;
+  for (const p of pts) {
+    const prev = run[run.length - 1];
+    const d = prev ? haversineMeters(prev, p) : 0;
+    if (prev && d > ROUTE_GAP_M) { runs.push(run); run = []; }
+    else meters += d;
+    run.push(p);
+  }
+  runs.push(run);
+  const kept = runs.filter((r) => r.length >= 2);
+  return { runs: kept, meters: Math.round(meters), count: kept.reduce((n, r) => n + r.length, 0) };
 }
 
 function distanceOf(points) {
@@ -262,7 +301,48 @@ async function main() {
   log(`\nImporting ${todo.length} sessions as batch ${batch}`);
 
   const { processTrip } = PROCESS ? require('../services/mapMatcher') : {};
-  const outcomes = { matched: 0, skipped: 0, failed: 0, byWorker: 0 };
+  const { attributeTrip } = require('../services/globalUkm');
+  const { attributeTripLinks } = require('../services/linkCoverage');
+  const { recomputeDriverUkm } = require('../services/roadSegments');
+  const { featuresFromPoints, verdictFields } = require('../services/tripNoise');
+  const { encodePolyline6 } = require('../services/valhalla');
+  const env = require('../config/env');
+  const outcomes = { matched: 0, skipped: 0, failed: 0, byWorker: 0, leftForWorker: 0 };
+  const touchedDrivers = new Set();
+
+  /**
+   * What the map-matcher does with a trip, minus the matching: VTS's route stands in for Valhalla's.
+   * Same parked-jitter verdict from the raw fixes, same three attributions, same order.
+   */
+  const settleWithVtsRoute = async (trip, raw, route) => {
+    const verdict = verdictFields(featuresFromPoints(raw.map((p) => ({ lat: p.latitude, lon: p.longitude, recordedAt: p.at, accuracy: p.accuracy }))));
+    if (verdict && verdict.parkedJitter) {
+      await Trip.updateOne({ _id: trip._id }, { $set: { ...verdict, mapMatchStatus: 'skipped', ukmStatus: 'skipped', linkCoverageStatus: 'skipped' } });
+      return 'skipped';
+    }
+    await Trip.updateOne({ _id: trip._id }, {
+      $set: {
+        ...(verdict || {}),
+        cleanedRouteShapes: route.runs.map((r) => encodePolyline6(r)),
+        cleanedDistanceMeters: route.meters,
+        cleanedPointCount: route.count,
+        cleanedMatchedRatio: 1, // snapped by VTS
+        mapMatchStatus: 'matched',
+        mapMatchedAt: new Date(),
+        mapMatchError: null,
+      },
+    });
+    touchedDrivers.add(String(trip.driverId));
+    try {
+      await attributeTrip(trip._id);
+    } catch (e) { console.error(`global UKM failed for ${trip._id}: ${e.message}`); }
+    if (env.LINK_COVERAGE_ENABLED) {
+      try {
+        await attributeTripLinks(trip._id);
+      } catch (e) { console.error(`link coverage failed for ${trip._id}: ${e.message}`); }
+    }
+    return 'matched';
+  };
   let trips = 0, points = 0, skipped = 0, abroad = 0;
   // Several sessions at once: the database work overlaps, while road-matching requests still go
   // out one at a time, spaced as the shared server is owed (valhalla.js politeDelay).
@@ -326,7 +406,16 @@ async function main() {
         points += e.insertedDocs?.length ?? 0;
       }
     }
+    const route = PROCESS && !SNAP ? await cleanedRoute(dump, token, s._id) : null;
+    if (route && route.count >= 2) {
+      trips++;
+      outcomes[await settleWithVtsRoute(trip, pts, route)]++;
+      if (trips % 10 === 0) log(`  ${trips}/${todo.length} trips, ${points} points ${JSON.stringify(outcomes)}`);
+      return;
+    }
+    // No VTS route (or --snap / --no-process): pending, for road-matching.
     await Trip.updateOne({ _id: trip._id }, { $set: { mapMatchStatus: 'pending' } });
+    if (route) { trips++; outcomes.leftForWorker++; return; }
     trips++;
     if (PROCESS) outcomes[(await processTrip(trip._id)) || 'byWorker']++;
     if (trips % 10 === 0) log(`  ${trips}/${todo.length} trips, ${points} points${PROCESS ? ` ${JSON.stringify(outcomes)}` : ''}`);
@@ -335,6 +424,10 @@ async function main() {
   await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
     while (queue.length) await importOne(queue.shift());
   }));
+  // The per-driver figure the matcher recomputes after each trip: once per driver is enough here.
+  for (const d of touchedDrivers) {
+    try { await recomputeDriverUkm(d); } catch (e) { console.error(`driver UKM failed for ${d}: ${e.message}`); }
+  }
   log(`\nDone: ${trips} trips, ${points} points, ${skipped} skipped (under 2 fixes in Australia), ${abroad} fixes outside Australia dropped. Batch ${batch}.`);
   log(PROCESS
     ? `Processed: ${JSON.stringify(outcomes)} (byWorker = the worker claimed it first; it finishes it the same way).`
