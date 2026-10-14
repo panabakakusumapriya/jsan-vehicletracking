@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { PageIcon } from '../components/AppIcon';
 import { api, viewerTimeZone } from '../lib/api';
@@ -116,18 +116,27 @@ export function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hover, setHover] = useState<number | null>(null);
+  // A minute's tick keeps "on the road now" current; the refresh it causes is silent.
+  const [tick, setTick] = useState(0);
+  const lastQuery = useRef('');
+  useEffect(() => {
+    const id = setInterval(() => { if (document.visibilityState === 'visible') setTick((n) => n + 1); }, 60000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (!isAdminRole(user?.role)) return;
     const q = new URLSearchParams({ from, to, grain, tz: viewerTimeZone() });
     if (filter.projectId) q.set('projectId', filter.projectId);
     if (filter.region) q.set('region', filter.region);
-    setLoading(true);
+    const silent = lastQuery.current === q.toString();
+    lastQuery.current = q.toString();
+    if (!silent) setLoading(true);
     api.get<Overview>(`/api/analytics/overview?${q}`)
       .then((r) => { setData(r); setError(null); })
-      .catch((e) => setError(e instanceof Error ? e.message : 'Could not load the dashboard'))
-      .finally(() => setLoading(false));
-  }, [user?.role, from, to, grain, filter]);
+      .catch((e) => { if (!silent) setError(e instanceof Error ? e.message : 'Could not load the dashboard'); })
+      .finally(() => { if (!silent) setLoading(false); });
+  }, [user?.role, from, to, grain, filter, tick]);
 
   const pickGrain = (g: Grain) => {
     setGrain(g);
@@ -227,7 +236,7 @@ export function Dashboard() {
           {data.cars && <div className="card dash-card">
             <div className="dash-card-head">
               <h3>Active cars by region</h3>
-              <span className="muted">on the road now · drove in this period — click a region to filter by it</span>
+              <span className="muted">regions with a car on the road now, updated every minute — click one to filter by it</span>
             </div>
             <div className="dash-cars">
               <div className="dash-car total">
@@ -235,8 +244,9 @@ export function Dashboard() {
                 <div className="n"><i className={data.cars.now ? 'live' : ''} />{nf.format(data.cars.now)}<small> on the road now</small></div>
                 <div className="p">{nf.format(data.cars.period)} drove in this period</div>
               </div>
-              {data.cars.byRegion.length === 0 && <div className="muted" style={{ alignSelf: 'center', fontSize: 13 }}>No cars out in this period.</div>}
-              {data.cars.byRegion.map((r) => (
+              {/* Only regions with a car out right now; a region with none drops out until one is. */}
+              {!data.cars.byRegion.some((r) => r.now > 0) && <div className="muted" style={{ alignSelf: 'center', fontSize: 13 }}>No car is on the road right now.</div>}
+              {data.cars.byRegion.filter((r) => r.now > 0).map((r) => (
                 <button key={r.region} className={`dash-car${filter.region === r.region ? ' sel' : filter.region ? ' dim' : ''}`}
                   onClick={() => toggle('region', r.region)}>
                   <div className="r">{r.region}</div>
