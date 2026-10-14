@@ -17,6 +17,9 @@ const tripSchema = new mongoose.Schema(
      * which trips were real. Null on everything the fleet actually recorded.
      */
     importBatchId: { type: String, default: null, index: true },
+    // The record an imported trip came from in its source system ("vts:<sessionId>"), so a re-run
+    // of the import skips it. Null on everything recorded here.
+    importSourceId: { type: String, default: null },
     driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     vehicleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', default: null },
