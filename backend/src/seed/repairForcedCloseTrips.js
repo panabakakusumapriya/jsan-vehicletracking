@@ -14,10 +14,18 @@
  * the rest.
  *
  * Some phones kept one trip id for days, so the late points are cut into one trip per driving
- * session, at any gap over SESSION_GAP_MS. The first takes the key ingest would now use
- * (`<clientTripId>~<endedAt ms>`), the rest `#2`, `#3`… A session under MIN_SESSION_POINTS joins
- * the one before it; a trip whose whole late part is that small (usually just the phone's own
- * end marker arriving after the close) is left alone rather than turned into a 0 km trip.
+ * session, at any gap over SESSION_GAP_MS, keyed `<clientTripId>~repair-<endedAt ms>`, then `#2`,
+ * `#3`… Deliberately NOT the key live ingest uses for a continuation (`~<endedAt ms>`): a phone on
+ * an old build still sending under the old id must get a fresh live trip from ingest, not have
+ * today's driving appended to a closed trip this script made days earlier — and a re-run after
+ * deploy must not pour old points into a live continuation. A trip whose whole late part is tiny
+ * (usually just the phone's own end marker arriving after the close) is left alone rather than
+ * turned into a 0 km trip.
+ *
+ * Only trips force-closed for length: closeReason 'overlong', or (closed before that field
+ * existed) null without the 'superseded' signature — another of the driver's trips starting
+ * within minutes of the close. A superseded trip with later points is a second phone on the same
+ * account, which ingest deliberately leaves appending.
  *
  * Safety
  *   - DRY RUN unless --apply. Writes nothing without it.
@@ -33,6 +41,7 @@ const { connectDB } = require('../config/db');
 const env = require('../config/env');
 const { haversineMeters } = require('../utils/geo');
 const { timezoneFromCoords } = require('../utils/tzFromCoords');
+const { PIPELINE_RESET_SET, PIPELINE_RESET_UNSET } = require('../services/tripReset');
 
 const args = new Map(
   process.argv.slice(2).map((a) => {
@@ -42,10 +51,10 @@ const args = new Map(
 );
 const APPLY = args.get('apply') === true;
 const ONLY = args.has('trip') ? String(args.get('trip')) : null;
-const GRACE_MS = 2 * 60 * 1000; // = CONTINUE_AFTER_MS in tracking.controller.js
 const MIN_LATE_MS = 10 * 60 * 1000;
 const SESSION_GAP_MS = 30 * 60 * 1000;
-const MIN_SESSION_POINTS = 20;
+const MIN_LATE_POINTS = 20;
+const SUPERSEDED_WINDOW_MS = 3 * 60 * 1000;
 const MIN_LATE_METERS = 500;
 const log = (...a) => console.log(...a);
 
@@ -75,7 +84,11 @@ function measure(points) {
   };
 }
 
-/** Cut a time-ordered run at gaps over SESSION_GAP_MS; fold too-small sessions into a neighbour. */
+/**
+ * Cut a time-ordered run into driving sessions at gaps over SESSION_GAP_MS. Never folded across a
+ * gap, however small a session: that would stretch a trip over days and add the straight line
+ * between the two places to its distance.
+ */
 function sessions(points) {
   const out = [];
   for (const p of points) {
@@ -83,29 +96,16 @@ function sessions(points) {
     if (cur && p.recordedAt - cur[cur.length - 1].recordedAt <= SESSION_GAP_MS) cur.push(p);
     else out.push([p]);
   }
-  const merged = [];
-  for (const s of out) {
-    if (merged.length && s.length < MIN_SESSION_POINTS) merged[merged.length - 1].push(...s);
-    else merged.push(s);
-  }
-  if (merged.length > 1 && merged[0].length < MIN_SESSION_POINTS) merged[1].unshift(...merged.shift());
-  return merged;
+  return out;
 }
 
-/** Everything the pipeline derives, back to "not worked out yet". */
+/** The shared pipeline reset, plus the matcher's own bookkeeping. */
 const RESET_SET = {
-  mapMatchStatus: 'pending', mapMatchError: null, mapMatchedAt: null, cleanedDistanceMeters: null,
-  cleanedMatchedRatio: null, cleanedPointCount: null, ukmMeters: null, ukmWithinTripMeters: null,
-  ukmComputedAt: null, ukmStatus: 'pending', distinctRoadMeters: null, sameTripRepeatMeters: null,
-  historicalDuplicateMeters: null, globalUniqueMeters: null, unmatchedReviewMeters: null,
-  globalUkmComputedAt: null, linkCoverageStatus: 'pending', linkCoverageComputedAt: null,
-  inAreaMeters: null, outAreaMeters: null, linkUkmMeters: null, linkUkmNetworkMeters: null,
-  linkCoveredCount: null, effectiveUkmMeters: null, ukmBasis: null, assignedNetworkVersionId: null,
-  parkedJitter: false, parkedJitterAt: null, parkedJitterMeters: null, parkedJitterSpreadMeters: null,
+  ...PIPELINE_RESET_SET,
+  mapMatchError: null, mapMatchedAt: null, cleanedPointCount: null, ukmComputedAt: null,
+  ukmBasis: null, assignedNetworkVersionId: null,
 };
-const RESET_UNSET = {
-  cleanedRouteShapes: 1, ukmNewShapes: 1, ukmUniqueShapes: 1, ukmDuplicateShapes: 1, outAreaShapes: 1, linkUkmShapes: 1,
-};
+const RESET_UNSET = { ...PIPELINE_RESET_UNSET };
 
 async function main() {
   await connectDB();
@@ -115,12 +115,16 @@ async function main() {
   const LocationPoint = require('../models/LocationPoint');
   const CoverageSegment = require('../models/CoverageSegment');
   const LinkCoverage = require('../models/LinkCoverage');
-  const { continuationKey } = require('../controllers/tracking.controller');
+  const { CONTINUE_AFTER_MS } = require('../controllers/tracking.controller');
+  const repairKey = (clientTripId, endedAt) => `${clientTripId}~repair-${new Date(endedAt).getTime()}`;
   const maxMs = env.TRIP_MAX_DURATION_HOURS * 60 * 60 * 1000;
 
   const filter = ONLY
     ? { _id: new mongoose.Types.ObjectId(ONLY) }
-    : { importBatchId: null, status: 'completed', endedAt: { $ne: null }, 'lastLocation.recordedAt': { $ne: null } };
+    : {
+      importBatchId: null, status: 'completed', closeReason: { $in: ['overlong', null] },
+      endedAt: { $ne: null }, 'lastLocation.recordedAt': { $ne: null },
+    };
   const trips = (await Trip.find(filter)
     .select('clientTripId driverId managerId vehicleId projectId coverageScopeId coverageCycleId startedAt endedAt lastLocation timezone')
     .sort({ startedAt: 1 })
@@ -138,11 +142,18 @@ async function main() {
   let repaired = 0;
   let skipped = 0;
   for (const t of trips) {
-    const cut = new Date(t.endedAt.getTime() + GRACE_MS);
+    if (!ONLY) {
+      const superseder = await Trip.exists({
+        driverId: t.driverId, _id: { $ne: t._id }, clientTripId: { $not: /~/ },
+        startedAt: { $gte: new Date(t.endedAt - SUPERSEDED_WINDOW_MS), $lte: new Date(t.endedAt.getTime() + SUPERSEDED_WINDOW_MS) },
+      });
+      if (superseder) { skipped++; continue; }
+    }
+    const cut = new Date(t.endedAt.getTime() + CONTINUE_AFTER_MS);
     const fields = '_id lat lon speedKmh heading recordedAt';
     const late = await LocationPoint.find({ tripId: t._id, recordedAt: { $gt: cut } }).sort({ recordedAt: 1 }).select(fields).lean();
     if (!late.length) continue;
-    if (late.length < MIN_SESSION_POINTS && measure(late).distanceMeters < MIN_LATE_METERS) {
+    if (late.length < MIN_LATE_POINTS && measure(late).distanceMeters < MIN_LATE_METERS) {
       skipped++;
       continue;
     }
@@ -161,7 +172,7 @@ async function main() {
     repaired++;
     if (!APPLY) continue;
 
-    const baseKey = continuationKey(t.clientTripId, t.endedAt);
+    const baseKey = repairKey(t.clientTripId, t.endedAt);
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       const key = i === 0 ? baseKey : `${baseKey}#${i + 1}`;
@@ -204,7 +215,7 @@ async function main() {
       $unset: RESET_UNSET,
     });
   }
-  log(`\n${repaired} trips ${APPLY ? 'repaired' : 'to repair'} into ${newTrips} new trips (${movedTotal} points); ${skipped} left alone (only a tiny tail after the close).`);
+  log(`\n${repaired} trips ${APPLY ? 'repaired' : 'to repair'} into ${newTrips} new trips (${movedTotal} points); ${skipped} left alone (a tiny tail, or closed by the driver's other phone).`);
   if (APPLY) log('All of them are pending: the map-match worker snaps them and works out UKM and coverage.');
   else log('Dry run — nothing written. Add --apply.');
 }

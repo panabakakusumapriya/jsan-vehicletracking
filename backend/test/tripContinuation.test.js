@@ -92,6 +92,22 @@ function assert(cond, msg) {
   assert((await tripOf('d1')).status === 'timed_out', 'a 9-hour-old timed-out trip is not revived by fresh points');
   assert((await tripOf(continuationKey('d1', d1.endedAt)))?.status === 'active', '…they open a continuation instead');
 
+  // ── 3a. One batch straddling the cap: the tail stays, the rest continues, nothing is revived ──
+  // (Review finding: reviving the trip for its in-cap tail let the continuation's creation close it
+  // again as 'superseded', and every later batch was appended to it closed.)
+  const startX = now - (8 * 60 + 5) * MIN;
+  await Trip.create({
+    clientTripId: 'x1', driverId: driver._id, status: 'timed_out', startedAt: new Date(startX),
+    endedAt: new Date(now - 10 * MIN), closeReason: 'dead',
+  });
+  await ingest([pt('x1', startX + (7 * 60 + 55) * MIN), pt('x1', startX + (8 * 60 + 3) * MIN)]);
+  const x1 = await tripOf('x1');
+  const xKey = continuationKey('x1', x1.endedAt);
+  assert(x1.status === 'timed_out' && await pointsOf('x1') === 1, 'the in-cap tail joins the trip, which is not revived');
+  assert((await tripOf(xKey))?.status === 'active' && await pointsOf(xKey) === 1, '…and the rest opens a live continuation');
+  await ingest([pt('x1', now + 2 * MIN)]);
+  assert(await pointsOf(xKey) === 2 && await pointsOf('x1') === 1, 'the next batch reaches the continuation, not the closed trip');
+
   // ── 3b. Yesterday's drive, its offline backlog synced today: still one trip ──
   await Trip.create({
     clientTripId: 'o1', driverId: driver._id, status: 'timed_out', startedAt: new Date(now - 20 * 60 * MIN),

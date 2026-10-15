@@ -22,6 +22,7 @@ const { getDriverRoads, getDriverRoadsVersion } = require('../services/driverRoa
 const { scopeForProject } = require('../services/coverageScope');
 const { rebuildScope } = require('../services/globalUkm');
 const { classifyTrip } = require('../services/tripNoise');
+const { PIPELINE_RESET_SET, PIPELINE_RESET_UNSET } = require('../services/tripReset');
 const mongoose = require('mongoose');
 const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezone');
 const { certify } = require('./academy.controller');
@@ -74,14 +75,19 @@ const continuationKey = (clientTripId, endedAt) => `${clientTripId}~${new Date(e
 
 async function splitAfterForcedClose(driverId, groups) {
   const maxMs = env.TRIP_MAX_DURATION_HOURS * 60 * 60 * 1000;
+  // Every trip looked up here, by client trip id (null = none yet), so ingest does not fetch it
+  // again; and the trips whose later points were moved on, which ingest must not revive — a
+  // revived trip would be closed again at once as 'superseded' by its own continuation's creation,
+  // and its next batch appended to it closed.
+  const trips = new Map();
+  const continued = new Set();
   const work = [...groups.keys()];
   while (work.length) {
     const key = work.shift();
     const pts = groups.get(key);
     if (!pts || !pts.length) continue;
-    const trip = await Trip.findOne({ clientTripId: key, driverId })
-      .select('status endedAt startedAt closeReason')
-      .lean();
+    if (!trips.has(key)) trips.set(key, await Trip.findOne({ clientTripId: key, driverId }));
+    const trip = trips.get(key);
     if (!trip || !trip.endedAt) continue;
     const forced = trip.status === 'completed' && trip.closeReason === 'overlong';
     const timedOut = trip.status === 'timed_out' && Number.isFinite(maxMs) && maxMs > 0;
@@ -98,8 +104,10 @@ async function splitAfterForcedClose(driverId, groups) {
     else groups.delete(key);
     const next = continuationKey(key, trip.endedAt);
     groups.set(next, [...(groups.get(next) || []), ...later]);
+    continued.add(key);
     work.push(next);
   }
+  return { trips, continued };
 }
 
 exports.ingest = asyncHandler(async (req, res) => {
@@ -116,7 +124,7 @@ exports.ingest = asyncHandler(async (req, res) => {
     groups.get(key).push(p);
   }
 
-  await splitAfterForcedClose(driver._id, groups);
+  const { trips: knownTrips, continued } = await splitAfterForcedClose(driver._id, groups);
 
   const acceptedClientIds = [];
   // Points that could not become LocationPoints. They are PRESERVED in RejectedPoint (raw, exactly
@@ -130,8 +138,10 @@ exports.ingest = asyncHandler(async (req, res) => {
     pts.sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt));
     const first = pts[0];
 
-    // Upsert the trip for this clientTripId.
-    let trip = await Trip.findOne({ clientTripId, driverId: driver._id });
+    // Upsert the trip for this clientTripId (already fetched by the split, usually).
+    let trip = knownTrips.has(clientTripId)
+      ? knownTrips.get(clientTripId)
+      : await Trip.findOne({ clientTripId, driverId: driver._id });
     if (!trip) {
       // Enforce single active session: close any lingering active trips for this driver.
       const superseded = await Trip.find({ driverId: driver._id, status: 'active' })
@@ -190,7 +200,7 @@ exports.ingest = asyncHandler(async (req, res) => {
     //
     // The freshness check keeps an offline sync of genuinely old data from resurrecting history:
     // only points recent enough that the session could still be running count as "still driving".
-    if (trip.status === 'timed_out') {
+    if (trip.status === 'timed_out' && !continued.has(clientTripId)) {
       const newestMs = new Date(pts[pts.length - 1].recordedAt).getTime();
       const stillLive = Number.isFinite(newestMs)
         && Date.now() - newestMs < env.SESSION_DEAD_AFTER_SECONDS * 1000;
@@ -202,51 +212,11 @@ exports.ingest = asyncHandler(async (req, res) => {
               status: 'active',
               endedAt: null,
               closeReason: null,
-              // The trip is about to grow, so any snapped route already computed for it describes
-              // only part of the drive. Send it back through matching once it finally closes,
-              // rather than leaving a cleaned layer and a UKM figure frozen mid-trip.
-              mapMatchStatus: 'pending',
-              cleanedDistanceMeters: null,
-              cleanedMatchedRatio: null,
-              ukmMeters: null,
-              ukmWithinTripMeters: null,
-              // Same reasoning for the global figures: the trip is about to grow, so anything
-              // derived from its current geometry describes only part of the drive. Back to
-              // 'pending' — not 0, which would claim the trip covered no new road.
-              ukmStatus: 'pending',
-              distinctRoadMeters: null,
-              sameTripRepeatMeters: null,
-              historicalDuplicateMeters: null,
-              globalUniqueMeters: null,
-              unmatchedReviewMeters: null,
-              globalUkmComputedAt: null,
-              // And the assigned-network figures, for the same reason. A live trip must not carry
-              // an in/out-of-area split or a UKM frozen from before the timeout.
-              linkCoverageStatus: 'pending',
-              linkCoverageComputedAt: null,
-              inAreaMeters: null,
-              outAreaMeters: null,
-              linkUkmMeters: null,
-              linkUkmNetworkMeters: null,
-              linkCoveredCount: null,
-              effectiveUkmMeters: null,
-              // And the parked-jitter verdict: it described a closed point set, but the trip is
-              // about to grow, so it is re-made from the full trace at the next close. Leaving a
-              // stale flag on a live trip would also hide a real drive from reports mid-session.
-              parkedJitter: false,
-              parkedJitterAt: null,
-              parkedJitterMeters: null,
-              parkedJitterSpreadMeters: null,
+              // The trip is about to grow: everything derived from its old point set goes back
+              // to pending and is re-made when it finally closes. See services/tripReset.js.
+              ...PIPELINE_RESET_SET,
             },
-            $unset: {
-              cleanedRouteShapes: 1,
-              ukmNewShapes: 1,
-              endLocation: 1,
-              ukmUniqueShapes: 1,
-              ukmDuplicateShapes: 1,
-              outAreaShapes: 1,
-              linkUkmShapes: 1,
-            },
+            $unset: { ...PIPELINE_RESET_UNSET, endLocation: 1 },
           }
         );
         // Its claims on the customer's links were made on a partial drive; they are re-made when
@@ -1458,6 +1428,7 @@ exports.myHistory = asyncHandler(async (req, res) => {
   });
 });
 
-// Shared with src/seed/repairForcedCloseTrips.js, so a repaired trip takes the same continuation
-// key a later batch from the phone would look for.
+// For the tests. The repair script keys its trips differently on purpose (`~repair-`), so it never
+// collides with a live continuation; it shares only CONTINUE_AFTER_MS.
 exports.continuationKey = continuationKey;
+exports.CONTINUE_AFTER_MS = CONTINUE_AFTER_MS;
