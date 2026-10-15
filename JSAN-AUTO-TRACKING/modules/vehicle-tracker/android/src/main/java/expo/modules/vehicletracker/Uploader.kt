@@ -109,11 +109,6 @@ object Uploader {
     private var zeroAckCount = 0
 
     /**
-     * Clear any standing backoff. Called when connectivity returns: whatever the server was doing
-     * when we last failed, a fresh network is reason enough to try again now rather than sit out
-     * the remainder of a five-minute penalty.
-     */
-    /**
      * Upload speed, for the app's Sync screen: how long one batch of BATCH points takes (smoothed),
      * and when the last one went through. Lets "about a minute left" be measured on this phone,
      * on this connection, rather than guessed.
@@ -137,6 +132,12 @@ object Uploader {
         lastProblem = null
     }
 
+    /**
+     * Clear any standing backoff. Called when connectivity returns: whatever the server was doing
+     * when we last failed, a fresh network is reason enough to try again now rather than sit out
+     * the remainder of a five-minute penalty. Also by the driver's own "Try again now" — never by
+     * an automatic retry, which would turn the backoff into a re-upload loop.
+     */
     fun resetBackoff() {
         backoffMs = 0L
         nextAttemptAtMs = 0L

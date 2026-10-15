@@ -44,8 +44,17 @@ class VehicleTrackerModule : Module() {
             TrackingService.endTripAndStop(context)
         }
 
-        /** Upload what is queued now — the driver asked, so skip any backoff still running. */
+        /** Upload what is queued, unless the uploader is backing off after failures. */
         AsyncFunction("flushNow") {
+            Uploader.schedule(context.applicationContext)
+        }
+
+        /**
+         * The driver's own "Try again now": skips any backoff still running. Only for an explicit
+         * tap — automatic retries go through flushNow, or a failing server would be hit every few
+         * seconds by every phone left on the Sync screen.
+         */
+        AsyncFunction("syncNow") {
             Uploader.resetBackoff()
             Uploader.schedule(context.applicationContext)
         }

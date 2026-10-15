@@ -51,9 +51,12 @@ export default function SyncScreen() {
   const openedAt = useRef(Date.now());
   const lastNudge = useRef(0);
   const doneRef = useRef(false);
+  /** Set when the driver chooses to stay: nothing may sign them out after that. */
+  const cancelledRef = useRef(false);
+  const finishTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const finish = useCallback(async () => {
-    if (doneRef.current) return;
+    if (doneRef.current || cancelledRef.current) return;
     doneRef.current = true;
     setFinishing(true);
     await signOut();
@@ -74,21 +77,29 @@ export default function SyncScreen() {
       setSt(next);
       const tripEndedOrGaveUp = !next.tripOpen || now - openedAt.current > TRIP_END_GRACE_MS;
       if (next.queued === 0 && tripEndedOrGaveUp) {
-        setTimeout(() => { void finish(); }, 1_200); // let "all uploaded" be seen
+        if (!finishTimer.current) finishTimer.current = setTimeout(() => { void finish(); }, 1_200); // let "all uploaded" be seen
         return;
       }
-      if (next.online && !next.uploading && next.queued > 0 && now - lastNudge.current > NUDGE_MS) {
+      // Automatic nudges respect the uploader's backoff (flushNow), and stop while the login is
+      // refused — only the driver's own "Try again now" skips the wait.
+      if (next.online && next.problem !== 'auth' && !next.uploading && next.queued > 0 && now - lastNudge.current > NUDGE_MS) {
         lastNudge.current = now;
         VehicleTracker.flushNow().catch(() => {});
       }
     };
     void tick();
     const id = setInterval(() => { void tick(); }, POLL_MS);
-    return () => { alive = false; clearInterval(id); };
+    return () => {
+      alive = false;
+      clearInterval(id);
+      if (finishTimer.current) clearTimeout(finishTimer.current);
+    };
   }, [finish]);
 
   /** Back to work: tracking starts again; the ended trip stays ended and the next drive is a new one. */
   const stay = useCallback(() => {
+    cancelledRef.current = true;
+    if (finishTimer.current) { clearTimeout(finishTimer.current); finishTimer.current = null; }
     setSigningOut(false);
     VehicleTracker.start().catch(() => {});
     if (router.canGoBack()) router.back();
@@ -103,7 +114,7 @@ export default function SyncScreen() {
 
   const retry = () => {
     lastNudge.current = Date.now();
-    VehicleTracker.flushNow().catch(() => {});
+    VehicleTracker.syncNow().catch(() => {});
   };
 
   const signOutAnyway = () => {

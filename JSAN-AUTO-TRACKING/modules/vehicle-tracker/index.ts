@@ -101,8 +101,38 @@ export const unavailableReason: string | null = isSupported
     ? 'Background tracking runs on Android only.'
     : 'This build does not include the tracking module, so GPS tracking is off. Install a development build to enable it.';
 
+/** One configure at a time: Home and TrackingBootstrap both call it at sign-in. */
+let configuring: Promise<void> = Promise.resolve();
+
+/**
+ * Point the engine at this driver's login.
+ *
+ * Another driver's trip points still on the phone go up first, under THEIR login, which the engine
+ * still holds until this call replaces it — otherwise the next upload would file them as this
+ * driver's trips. Done here, behind one lock, because two callers configure at sign-in and the
+ * first to write the new login would defeat a drain the other was still running. Best effort: up to
+ * DRAIN_MS, and it never blocks sign-in; without a connection the points stay on the phone.
+ */
+const DRAIN_MS = 20_000;
 export async function configure(apiBaseUrl: string, token: string, driverId: string): Promise<void> {
-  if (native) await native.configure(apiBaseUrl, token, driverId);
+  if (!native) return;
+  const run = configuring.then(async () => {
+    try {
+      const prev = await native.getStatus();
+      if (prev?.driverId && prev.driverId !== driverId && prev.queued > 0) {
+        const until = Date.now() + DRAIN_MS;
+        let queued = prev.queued;
+        while (queued > 0 && Date.now() < until) {
+          await native.flushNow();
+          await new Promise((r) => setTimeout(r, 1_000));
+          queued = (await native.getStatus()).queued;
+        }
+      }
+    } catch { /* status unavailable on an old build: configure as before */ }
+    await native.configure(apiBaseUrl, token, driverId);
+  });
+  configuring = run.catch(() => {});
+  return run;
 }
 
 export async function start(): Promise<void> {
@@ -143,6 +173,13 @@ export type SyncStatus = {
   /** A trip is still open on the phone. */
   tripOpen: boolean;
 };
+
+/** The driver's "Try again now": also skips the uploader's backoff. Never for automatic retries. */
+export async function syncNow(): Promise<void> {
+  if (!native) return;
+  if (typeof native.syncNow === 'function') await native.syncNow();
+  else await native.flushNow();
+}
 
 export async function getSyncStatus(): Promise<SyncStatus> {
   if (native && typeof native.getSyncStatus === 'function') return native.getSyncStatus();
@@ -219,6 +256,7 @@ export default {
   flushNow,
   getStatus,
   getSyncStatus,
+  syncNow,
   getDaylightInfo,
   setDaylightOnly,
   setTimezone,

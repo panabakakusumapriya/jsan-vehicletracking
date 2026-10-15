@@ -4,7 +4,7 @@ import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { useAuth } from '@/src/lib/auth';
 import { API_BASE_URL } from '@/src/lib/config';
 import { getPermissionHealth } from '@/src/lib/permissions';
-import { isSigningOut, uploadWhatIsLeft } from '@/src/lib/tripSync';
+import { isSigningOut } from '@/src/lib/tripSync';
 
 /**
  * Starting the engine without a location grant is not merely useless, it is fatal on Android 14+:
@@ -53,13 +53,7 @@ export function TrackingBootstrap() {
       try {
         const tz = user.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
         if (tz) await VehicleTracker.setTimezone(tz);
-        // A different driver's trip points still on this phone go up under THEIR login, which the
-        // native uploader still holds, before this sign-in replaces it — otherwise they would be
-        // filed as this driver's trips. Needs a connection; best effort, it never blocks sign-in.
-        const prev = await VehicleTracker.getStatus().catch(() => null);
-        if (prev && prev.driverId && prev.driverId !== user._id && prev.queued > 0) {
-          await uploadWhatIsLeft(20_000).catch(() => null);
-        }
+        // configure() first uploads a previous driver's leftover points under their own login.
         await VehicleTracker.configure(API_BASE_URL, token, user._id);
         // configure() is always safe and must persist regardless; only the START waits for the
         // grant. The AppState listener below picks it up the moment the driver comes back from

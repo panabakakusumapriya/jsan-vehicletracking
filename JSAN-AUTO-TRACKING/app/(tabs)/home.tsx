@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   RefreshControl,
   ScrollView,
@@ -230,6 +231,12 @@ export default function Home() {
       } else {
         router.push('/sync' as any);
       }
+    } catch {
+      // Something failed part-way (the trip may already be ended). Back to normal: tracking on
+      // again — the next drive is a new trip — and the driver can simply try again.
+      setSigningOut(false);
+      VehicleTracker.start().catch(() => {});
+      Alert.alert('Could not sign out', 'Something went wrong while saving your trip. You are still signed in — please try again.');
     } finally {
       setSigningOutUi(false);
     }

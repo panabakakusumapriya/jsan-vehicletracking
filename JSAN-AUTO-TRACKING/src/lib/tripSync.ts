@@ -28,6 +28,7 @@ export async function uploadWhatIsLeft(timeoutMs: number): Promise<SyncStatus> {
   let st = await VehicleTracker.getSyncStatus();
   let lastNudge = 0;
   while (!allUploaded(st) && Date.now() < until) {
+    if (st.problem === 'auth') break; // the server refuses this login: retrying cannot help
     if (!st.uploading && st.queued > 0 && Date.now() - lastNudge > 2_500) {
       lastNudge = Date.now();
       await VehicleTracker.flushNow();

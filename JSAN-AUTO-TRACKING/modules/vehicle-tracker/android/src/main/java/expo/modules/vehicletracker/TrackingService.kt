@@ -417,6 +417,7 @@ class TrackingService : Service() {
         }
 
         private const val ACTION_END_AND_STOP = "expo.modules.vehicletracker.END_AND_STOP"
+        private const val TRIP_POINT_SAVE_MS = 30_000L
 
         /** True between onCreate and onDestroy: whether a service instance exists to ask. */
         @Volatile
@@ -1384,6 +1385,7 @@ class TrackingService : Service() {
         TrackingConfig.setCurrentTripId(this, null)
         TrackingConfig.setTripStartedAt(this, 0L)
         TrackingConfig.clearLastTripPoint(this)
+        tripPointSavedAtMs = 0L
         TrackingConfig.setIdleSince(this, wallNow)
         idleStartedElapsedMs = now
         tripStartedElapsedMs = 0L
@@ -1436,7 +1438,7 @@ class TrackingService : Service() {
             recordedAt   = iso(if (location.time > 0) location.time else now),
             tripStatus   = status,
         ))
-        if (status == "active") TrackingConfig.setLastTripPoint(this, lat, lon, if (location.time > 0) location.time else now)
+        if (status == "active") rememberTripPoint(lat, lon, if (location.time > 0) location.time else now)
     }
 
     /** Insert a point without a live Location object (heartbeats, trip-end marker). */
@@ -1455,7 +1457,20 @@ class TrackingService : Service() {
             recordedAt   = iso(now),
             tripStatus   = status,
         ))
-        if (status == "active") TrackingConfig.setLastTripPoint(this, lat, lon, now)
+        if (status == "active") rememberTripPoint(lat, lon, now)
+    }
+
+    /**
+     * Persist the newest trip point for savedTripIsOver / closeTripFromPrefs — at most every
+     * TRIP_POINT_SAVE_MS, not on every fix: each write rewrites the whole prefs file, and the value
+     * is only read after a restart, where half a minute of staleness changes nothing.
+     */
+    private var tripPointSavedAtMs = 0L
+    private fun rememberTripPoint(lat: Double, lon: Double, atMs: Long) {
+        val now = SystemClock.elapsedRealtime()
+        if (tripPointSavedAtMs != 0L && now - tripPointSavedAtMs < TRIP_POINT_SAVE_MS) return
+        tripPointSavedAtMs = now
+        TrackingConfig.setLastTripPoint(this, lat, lon, atMs)
     }
 
     /** The stop timeout in force: the project's setting when the panel set one, else the default. */
