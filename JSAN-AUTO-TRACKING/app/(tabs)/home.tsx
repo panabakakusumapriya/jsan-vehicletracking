@@ -217,6 +217,23 @@ export default function Home() {
    * what is left, and signs them out itself when everything is up.
    */
   const [signingOutUi, setSigningOutUi] = useState(false);
+  /**
+   * Ask first. Drivers were signing out for a lunch break and only signing back in after they had
+   * already set off again, so the first stretch of the afternoon was never recorded (Vincentius
+   * Geraldo, 15 Oct 2026: 3.4 km). Nothing records while signed out; say so before it happens.
+   */
+  const confirmSignOut = () => {
+    if (signingOutUi) return;
+    Alert.alert(
+      'Sign out?',
+      'While you are signed out, your driving is not recorded. Sign in again before you start driving.',
+      [
+        { text: 'Stay signed in', style: 'cancel' },
+        { text: 'Sign out', style: 'destructive', onPress: () => { void startSignOut(); } },
+      ],
+    );
+  };
+
   const startSignOut = async () => {
     if (signingOutUi) return;
     setSigningOutUi(true);
@@ -282,7 +299,7 @@ export default function Home() {
             must keep the button. Hiding it on a missing value would strand drivers signed in on
             a shared handset with no way to hand it over. */}
         {user?.showLogout !== false && (
-          <TouchableOpacity style={s.signOutBtn} onPress={startSignOut} disabled={signingOutUi}>
+          <TouchableOpacity style={s.signOutBtn} onPress={confirmSignOut} disabled={signingOutUi}>
             <Text style={s.signOutText}>{signingOutUi ? 'Signing out…' : 'Sign out'}</Text>
           </TouchableOpacity>
         )}
