@@ -113,6 +113,46 @@ export async function stop(): Promise<void> {
   if (native) await native.stop();
 }
 
+/**
+ * Sign-out: end the open trip, then stop tracking — so the trip can never carry over into the next
+ * sign-in. Over-the-air JS can reach a binary built before this existed, where only stop() is there.
+ */
+export async function endTripAndStop(): Promise<void> {
+  if (!native) return;
+  if (typeof native.endTripAndStop === 'function') await native.endTripAndStop();
+  else await native.stop();
+}
+
+/** Why uploads are not going through right now, when they are not. */
+export type SyncProblem = 'offline' | 'auth' | 'server' | 'network' | null;
+
+/** What the Sync screen needs: what is left, whether it can upload, and how fast it does. */
+export type SyncStatus = {
+  /** Trip points saved on this phone, not yet on the server. */
+  queued: number;
+  online: boolean;
+  /** An upload is in flight right now. */
+  uploading: boolean;
+  /** Points per upload request. */
+  batchSize: number;
+  /** How long one request has been taking on this phone (smoothed), ms; 0 = none measured yet. */
+  avgBatchMs: number;
+  /** When the last upload went through (epoch ms); 0 = not since the app started. */
+  lastSuccessAt: number;
+  problem: SyncProblem;
+  /** A trip is still open on the phone. */
+  tripOpen: boolean;
+};
+
+export async function getSyncStatus(): Promise<SyncStatus> {
+  if (native && typeof native.getSyncStatus === 'function') return native.getSyncStatus();
+  const st = await getStatus();
+  return {
+    queued: st.queued, online: true, uploading: false, batchSize: 200, avgBatchMs: 0,
+    lastSuccessAt: 0, problem: null, tripOpen: Boolean(st.currentTripId),
+  };
+}
+
 export async function flushNow(): Promise<void> {
   if (native) await native.flushNow();
 }
@@ -175,8 +215,10 @@ export default {
   configure,
   start,
   stop,
+  endTripAndStop,
   flushNow,
   getStatus,
+  getSyncStatus,
   getDaylightInfo,
   setDaylightOnly,
   setTimezone,

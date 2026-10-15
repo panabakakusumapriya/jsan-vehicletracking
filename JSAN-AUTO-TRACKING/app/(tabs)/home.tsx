@@ -17,6 +17,7 @@ import { TrackingChecklist } from '@/src/components/TrackingChecklist';
 import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
 import { ensurePermissions } from '@/src/lib/permissions';
+import { setSigningOut, uploadWhatIsLeft } from '@/src/lib/tripSync';
 import { deviceTimezone } from '@/src/lib/timezone';
 
 type UiState = 'starting' | 'idle' | 'tracking' | 'blocked' | 'night';
@@ -208,6 +209,32 @@ export default function Home() {
     setRefreshing(false);
   };
 
+  /**
+   * Sign out: end the trip FIRST — a trip left open was resumed by the next sign-in and that day's
+   * driving filed under the previous one — then upload what the phone still holds. Done in a few
+   * seconds: signed out straight away. Not done: the Sync screen takes over and shows the driver
+   * what is left, and signs them out itself when everything is up.
+   */
+  const [signingOutUi, setSigningOutUi] = useState(false);
+  const startSignOut = async () => {
+    if (signingOutUi) return;
+    setSigningOutUi(true);
+    setSigningOut(true);
+    try {
+      await VehicleTracker.endTripAndStop().catch(() => {});
+      const st = await uploadWhatIsLeft(4_000);
+      if (st.queued === 0) {
+        await signOut();
+        setSigningOut(false);
+        router.replace('/login');
+      } else {
+        router.push('/sync' as any);
+      }
+    } finally {
+      setSigningOutUi(false);
+    }
+  };
+
   const retryPermissions = async () => {
     const perm = await ensurePermissions();
     if (perm.ok && token && user) {
@@ -248,8 +275,8 @@ export default function Home() {
             must keep the button. Hiding it on a missing value would strand drivers signed in on
             a shared handset with no way to hand it over. */}
         {user?.showLogout !== false && (
-          <TouchableOpacity style={s.signOutBtn} onPress={async () => { await signOut(); router.replace('/login'); }}>
-            <Text style={s.signOutText}>Sign out</Text>
+          <TouchableOpacity style={s.signOutBtn} onPress={startSignOut} disabled={signingOutUi}>
+            <Text style={s.signOutText}>{signingOutUi ? 'Signing out…' : 'Sign out'}</Text>
           </TouchableOpacity>
         )}
       </View>

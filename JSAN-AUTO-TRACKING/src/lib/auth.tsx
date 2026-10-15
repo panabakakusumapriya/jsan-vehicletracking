@@ -6,6 +6,7 @@ import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { apiLogin, apiLogout, apiMe, apiUpdateTimezone, setUnauthorizedHandler, type AuthUser } from './api';
 import { clearMapPrefs } from './mapPrefs';
 import { clearRoadCache } from './roadCache';
+import { setSigningOut } from './tripSync';
 import { deviceTimezone } from './timezone';
 
 type AuthState = {
@@ -149,8 +150,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   refreshUserRef.current = refreshUser;
 
   const signOut = async () => {
+    // END the trip, not just stop tracking: a trip left open on the phone was resumed by the next
+    // sign-in, and that whole day's driving was filed under the day before. Normally Home already
+    // did this before uploading (src/lib/tripSync.ts); repeating it is harmless.
     try {
-      await VehicleTracker.stop();
+      await VehicleTracker.endTripAndStop();
     } catch {
       // ignore — module may be unavailable on this platform
     }
@@ -164,6 +168,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // driver's assignment and route history; the next person to sign in must not inherit them.
     try { await clearRoadCache(); } catch { /* nothing to clean, or storage unavailable */ }
     try { await clearMapPrefs(state.user?._id); } catch { /* same */ }
+    setSigningOut(false);
     setState({ loading: false, token: null, user: null });
   };
 
@@ -182,7 +187,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    */
   useEffect(() => {
     setUnauthorizedHandler(async () => {
-      try { await VehicleTracker.stop(); } catch { /* module may be absent */ }
+      // Ended, not just stopped, for the same reason as signOut(). The points stay on the phone and
+      // upload once the driver signs in again.
+      try { await VehicleTracker.endTripAndStop(); } catch { /* module may be absent */ }
       // Same cleanup as signOut(): this path ends a session too, and on a shared handset the
       // next driver must not inherit this one's cached roads, history and camera. The user id is
       // read back from storage because this handler is registered once and would otherwise close

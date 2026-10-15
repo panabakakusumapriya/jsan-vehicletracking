@@ -39,8 +39,29 @@ class VehicleTrackerModule : Module() {
             TrackingService.stop(context)
         }
 
+        /** Sign-out: end the open trip (end marker queued for upload), then stop tracking. */
+        AsyncFunction("endTripAndStop") {
+            TrackingService.endTripAndStop(context)
+        }
+
+        /** Upload what is queued now — the driver asked, so skip any backoff still running. */
         AsyncFunction("flushNow") {
+            Uploader.resetBackoff()
             Uploader.schedule(context.applicationContext)
+        }
+
+        /** What the Sync screen shows: how much is left, whether it can go, and how fast it goes. */
+        AsyncFunction("getSyncStatus") {
+            mapOf(
+                "queued" to LocationDatabase(context).count(),
+                "online" to NetworkUtil.isOnline(context),
+                "uploading" to Uploader.busy,
+                "batchSize" to Uploader.BATCH_SIZE,
+                "avgBatchMs" to Uploader.avgBatchMs,
+                "lastSuccessAt" to Uploader.lastSuccessAt,
+                "problem" to Uploader.lastProblem,
+                "tripOpen" to (TrackingConfig.currentTripId(context) != null),
+            )
         }
 
         AsyncFunction("getStatus") {

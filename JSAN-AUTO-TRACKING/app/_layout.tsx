@@ -560,6 +560,8 @@ function RootLayoutInner() {
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="timezone-setup" />
           <Stack.Screen name="academy" options={{ animation: "slide_from_bottom" }} />
+          {/* Sign-out with trip points still on the phone. No swipe-back: leaving it is "Stay signed in". */}
+          <Stack.Screen name="sync" options={{ animation: "slide_from_bottom", gestureEnabled: false }} />
         </Stack>
         <StatusBar style="auto" />
         {/* Post-login hard gate: mid-session permission loss blocks the app until fixed. */}

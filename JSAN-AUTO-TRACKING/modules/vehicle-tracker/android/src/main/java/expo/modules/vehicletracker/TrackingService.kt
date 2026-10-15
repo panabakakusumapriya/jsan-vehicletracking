@@ -415,6 +415,79 @@ class TrackingService : Service() {
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, TrackingService::class.java))
         }
+
+        private const val ACTION_END_AND_STOP = "expo.modules.vehicletracker.END_AND_STOP"
+
+        /** True between onCreate and onDestroy: whether a service instance exists to ask. */
+        @Volatile
+        var running: Boolean = false
+            private set
+
+        /**
+         * Sign-out: END the open trip, then stop. Stopping alone used to leave the trip id saved on
+         * the phone, and the next sign-in (the next morning, say) resumed it: the server reopened a
+         * day-old trip, force-closed it as overlong, and the whole new day's driving was filed under
+         * the previous day (Vincentius Geraldo, 15 Oct 2026).
+         *
+         * A running service ends the trip itself, from its own state (the last recorded fix). With
+         * no service running there is no such state, so the persisted last trip point stands in.
+         */
+        fun endTripAndStop(ctx: Context) {
+            TrackingConfig.setEnabled(ctx, false)
+            if (running) {
+                try {
+                    ctx.startService(Intent(ctx, TrackingService::class.java).setAction(ACTION_END_AND_STOP))
+                    return
+                } catch (e: Exception) {
+                    Log.w("JSANTracking", "end-and-stop intent refused: ${e.message}")
+                }
+            }
+            closeTripFromPrefs(ctx)
+            stop(ctx)
+        }
+
+        private fun isoUtc(ms: Long): String =
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+                .apply { timeZone = TimeZone.getTimeZone("UTC") }
+                .format(Date(ms))
+
+        /**
+         * End the saved trip without a service instance: an end marker at the last point the trip
+         * recorded, stamped with WHEN it was recorded (the moment the vehicle really stopped, not
+         * the moment someone noticed), then forget the trip. No saved point, no marker: the
+         * server's dead-trip watchdog closes it instead. Returns whether a trip was open.
+         */
+        fun closeTripFromPrefs(ctx: Context): Boolean {
+            val tripId = TrackingConfig.currentTripId(ctx) ?: return false
+            val at = TrackingConfig.lastTripPointAt(ctx)
+            val lat = TrackingConfig.lastTripPointLat(ctx)
+            val lon = TrackingConfig.lastTripPointLon(ctx)
+            if (at > 0L && !lat.isNaN() && !lon.isNaN()) {
+                try {
+                    LocationDatabase(ctx).insert(QueuedPoint(
+                        clientId     = UUID.randomUUID().toString(),
+                        clientTripId = tripId,
+                        lat          = lat,
+                        lon          = lon,
+                        speedKmh     = 0.0,
+                        heading      = null,
+                        accuracy     = null,
+                        altitude     = null,
+                        batteryLevel = null,
+                        isMoving     = false,
+                        recordedAt   = isoUtc(at),
+                        tripStatus   = "ended",
+                    ))
+                } catch (e: Exception) {
+                    Log.w("JSANTracking", "could not queue the end marker: ${e.message}")
+                }
+            }
+            TrackingConfig.setCurrentTripId(ctx, null)
+            TrackingConfig.setTripStartedAt(ctx, 0L)
+            TrackingConfig.clearLastTripPoint(ctx)
+            Uploader.schedule(ctx)
+            return true
+        }
     }
 
     private lateinit var fused: FusedLocationProviderClient
@@ -570,6 +643,7 @@ class TrackingService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        running = true
         fused  = LocationServices.getFusedLocationProviderClient(this)
         db     = LocationDatabase(this)
         motion = MotionClassifier(applicationContext)
@@ -579,6 +653,17 @@ class TrackingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_END_AND_STOP) {
+            val tripId = TrackingConfig.currentTripId(this)
+            if (tripId != null) {
+                if (runtimeStarted) endTrip(tripId, SystemClock.elapsedRealtime())
+                else closeTripFromPrefs(this)
+            }
+            triggerUpload()
+            runtimeStarted = false
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (runtimeStarted) {
             if (intent?.getBooleanExtra(EXTRA_ACTIVITY_WAKE, false) == true && dormant) {
                 dormant = false
@@ -615,12 +700,24 @@ class TrackingService : Service() {
         val now = SystemClock.elapsedRealtime()
         val wallNow = System.currentTimeMillis()
 
+        // A trip saved from before this start is resumed only while it is still in progress: its
+        // last point newer than the stop timeout, and the trip under the 8 h cap. Anything older is
+        // over (the service was stopped, killed, or the phone was off), and resuming it is how a
+        // whole new day's driving ended up filed under the previous day. Ended instead, at the
+        // point and time it really stopped.
+        if (TrackingConfig.currentTripId(this) != null && savedTripIsOver(wallNow)) {
+            Log.i("JSANTracking", "Saved trip is over: ending it instead of resuming")
+            closeTripFromPrefs(this)
+        }
+
         // If a trip was active before the service was killed (START_STICKY restart),
         // restore the movement timer so we don't immediately end the trip on restart.
         // hasLastRecorded stays false — processFix will re-anchor on the first fix.
         if (TrackingConfig.currentTripId(this) != null) {
             acquireWakeLock()
-            tripStartedElapsedMs = now
+            // From the trip's real start, so the 8 h cap still counts the time before the restart.
+            val startedAt = TrackingConfig.tripStartedAt(this)
+            tripStartedElapsedMs = if (startedAt > 0L) now - (wallNow - startedAt).coerceAtLeast(0L) else now
             if (lastMovedMs == 0L) lastMovedMs = now
             if (lastHeartbeatMs == 0L) lastHeartbeatMs = now
         } else {
@@ -689,6 +786,7 @@ class TrackingService : Service() {
         uploadTicker.removeCallbacks(uploadRunnable)
         releaseWakeLock()
         try { unregisterReceiver(connectivityReceiver) } catch (_: Exception) {}
+        running = false
         super.onDestroy()
     }
 
@@ -1226,7 +1324,7 @@ class TrackingService : Service() {
 
         // Hard cap: a "trip" running past TRIP_MAX_DURATION_MS is a forgotten session. End it
         // now — the server snaps it, and the next movement starts a fresh trip cleanly.
-        if (tripStartedElapsedMs > 0L && now - tripStartedElapsedMs >= TRIP_MAX_DURATION_MS) {
+        if (tripStartedElapsedMs != 0L && now - tripStartedElapsedMs >= TRIP_MAX_DURATION_MS) {
             endTrip(tripId, now, wallNow)
             return
         }
@@ -1238,9 +1336,7 @@ class TrackingService : Service() {
         // N is the driver's project setting when the admin panel has set one, and the built-in
         // default otherwise. Read on every tick rather than cached at trip start, so an admin
         // changing it takes effect on a trip that is already running.
-        val tripEndAfterMs =
-            TrackingConfig.tripEndNoMoveMs(this).let { if (it > 0L) it else TRIP_END_NO_MOVE_MS }
-        if (lastMovedMs > 0L && now - lastMovedMs >= tripEndAfterMs) {
+        if (lastMovedMs > 0L && now - lastMovedMs >= tripEndAfterMs()) {
             // The full grace passed at a dead stop → the vehicle is genuinely parked. Any real
             // movement inside the grace resets the clock and the trip simply continues.
             endTrip(tripId, now, wallNow)
@@ -1281,9 +1377,13 @@ class TrackingService : Service() {
         // no end marker; the server's dead-trip watchdog closes the trip instead.
         if (hasLastRecorded) {
             insertPoint(lastRecordedLat, lastRecordedLon, 0.0, tripId, "ended", wallNow)
+        } else {
+            // No fix since a restart: end where the trip last recorded, when it recorded it.
+            closeTripFromPrefs(this)
         }
         TrackingConfig.setCurrentTripId(this, null)
         TrackingConfig.setTripStartedAt(this, 0L)
+        TrackingConfig.clearLastTripPoint(this)
         TrackingConfig.setIdleSince(this, wallNow)
         idleStartedElapsedMs = now
         tripStartedElapsedMs = 0L
@@ -1336,6 +1436,7 @@ class TrackingService : Service() {
             recordedAt   = iso(if (location.time > 0) location.time else now),
             tripStatus   = status,
         ))
+        if (status == "active") TrackingConfig.setLastTripPoint(this, lat, lon, if (location.time > 0) location.time else now)
     }
 
     /** Insert a point without a live Location object (heartbeats, trip-end marker). */
@@ -1354,6 +1455,25 @@ class TrackingService : Service() {
             recordedAt   = iso(now),
             tripStatus   = status,
         ))
+        if (status == "active") TrackingConfig.setLastTripPoint(this, lat, lon, now)
+    }
+
+    /** The stop timeout in force: the project's setting when the panel set one, else the default. */
+    private fun tripEndAfterMs(): Long =
+        TrackingConfig.tripEndNoMoveMs(this).let { if (it > 0L) it else TRIP_END_NO_MOVE_MS }
+
+    /**
+     * Is the trip saved from before this start already over? Over when its newest point is older
+     * than the stop timeout (nothing recorded for as long as it takes to end a trip anyway) or the
+     * trip is past the 8 h cap. With nothing saved to judge by it is over: resuming blind is the
+     * failure this exists to stop, while ending a live trip costs only a split at the restart.
+     */
+    private fun savedTripIsOver(wallNow: Long): Boolean {
+        val startedAt = TrackingConfig.tripStartedAt(this)
+        val lastAt = maxOf(startedAt, TrackingConfig.lastTripPointAt(this))
+        if (lastAt <= 0L) return true
+        if (startedAt > 0L && wallNow - startedAt >= TRIP_MAX_DURATION_MS) return true
+        return wallNow - lastAt > tripEndAfterMs()
     }
 
     // ── Speed ─────────────────────────────────────────────────────────────────

@@ -68,6 +68,25 @@ object TrackingConfig {
     fun setTripStartedAt(ctx: Context, ms: Long) =
         prefs(ctx).edit().putLong("tripStartedAt", ms).apply()
 
+    /**
+     * The newest point recorded INTO the current trip: when (epoch ms) and where. Persisted so a
+     * service that comes back after being stopped or killed can tell a trip still in progress
+     * from one that is long over — and end the latter where and when it really stopped.
+     */
+    fun lastTripPointAt(ctx: Context): Long = prefs(ctx).getLong("lastTripPointAt", 0L)
+    fun lastTripPointLat(ctx: Context): Double =
+        Double.fromBits(prefs(ctx).getLong("lastTripPointLat", Double.NaN.toBits()))
+    fun lastTripPointLon(ctx: Context): Double =
+        Double.fromBits(prefs(ctx).getLong("lastTripPointLon", Double.NaN.toBits()))
+    fun setLastTripPoint(ctx: Context, lat: Double, lon: Double, atMs: Long) =
+        prefs(ctx).edit()
+            .putLong("lastTripPointAt", atMs)
+            .putLong("lastTripPointLat", lat.toBits())
+            .putLong("lastTripPointLon", lon.toBits())
+            .apply()
+    fun clearLastTripPoint(ctx: Context) =
+        prefs(ctx).edit().remove("lastTripPointAt").remove("lastTripPointLat").remove("lastTripPointLon").apply()
+
     /** epoch ms when speed first dropped to ~0 within the current trip (0 = moving). */
     fun stillSince(ctx: Context): Long = prefs(ctx).getLong("stillSince", 0L)
     fun setStillSince(ctx: Context, ms: Long) = prefs(ctx).edit().putLong("stillSince", ms).apply()

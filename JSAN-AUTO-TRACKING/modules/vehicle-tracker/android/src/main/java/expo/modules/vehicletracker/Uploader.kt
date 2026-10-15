@@ -113,6 +113,30 @@ object Uploader {
      * when we last failed, a fresh network is reason enough to try again now rather than sit out
      * the remainder of a five-minute penalty.
      */
+    /**
+     * Upload speed, for the app's Sync screen: how long one batch of BATCH points takes (smoothed),
+     * and when the last one went through. Lets "about a minute left" be measured on this phone,
+     * on this connection, rather than guessed.
+     */
+    const val BATCH_SIZE = BATCH
+    @Volatile
+    var avgBatchMs: Long = 0L
+        private set
+    @Volatile
+    var lastSuccessAt: Long = 0L
+        private set
+    @Volatile
+    var lastProblem: String? = null
+        private set
+    val busy: Boolean get() = running
+    val backingOffUntil: Long get() = nextAttemptAtMs
+
+    private fun recordBatch(ms: Long) {
+        avgBatchMs = if (avgBatchMs == 0L) ms else (avgBatchMs * 7 + ms * 3) / 10
+        lastSuccessAt = System.currentTimeMillis()
+        lastProblem = null
+    }
+
     fun resetBackoff() {
         backoffMs = 0L
         nextAttemptAtMs = 0L
@@ -150,11 +174,13 @@ object Uploader {
             }
 
             if (!NetworkUtil.isOnline(ctx)) {
+                lastProblem = "offline"
                 Log.d(TAG, "Upload skipped: device offline")
                 skipBackoff = true
                 return 0
             }
 
+            if (lastProblem == "offline") lastProblem = null // connected again
             val db = LocationDatabase(ctx)
             while (true) {
                 val batch = db.batch(BATCH)
@@ -173,6 +199,7 @@ object Uploader {
 
                 var success = false
                 var lastCode = 0
+                val sentAt = System.currentTimeMillis()
                 for (attempt in 1..MAX_RETRIES) {
                     try {
                         client.newCall(req).execute().use { resp ->
@@ -202,6 +229,7 @@ object Uploader {
                                         return uploaded
                                     }
                                     db.deleteIds(ids)
+                                    recordBatch(System.currentTimeMillis() - sentAt)
                                     uploaded += ids.size
                                     success = true
                                     zeroAckHeadId = null
@@ -211,6 +239,7 @@ object Uploader {
                                 resp.code == 401 || resp.code == 403 -> {
                                     // Auth problem — no point retrying, emit error
                                     Log.e(TAG, "Upload auth failure: HTTP ${resp.code}")
+                                    lastProblem = "auth"
                                     TrackerEvents.emit("onUploadError", mapOf(
                                         "reason" to "auth_failure",
                                         "message" to "Authentication failed — please open the app to re-login.",
@@ -240,6 +269,7 @@ object Uploader {
                 }
 
                 if (!success) {
+                    lastProblem = if (lastCode >= 500) "server" else "network"
                     Log.e(TAG, "Upload failed after $MAX_RETRIES attempts (last HTTP $lastCode), keeping ${batch.size} points")
                     break // leave points in DB, retry after the backoff below
                 }
