@@ -90,7 +90,7 @@ async function closeDeadTrips(extraFilter = {}) {
 
   const res = await Trip.updateMany(
     { _id: { $in: toClose.map((t) => t._id) } },
-    { $set: { status: 'timed_out', endedAt: new Date() } }
+    { $set: { status: 'timed_out', endedAt: new Date(), closeReason: 'dead' } }
   );
 
   // Fire-and-forget UKM computation for each closed trip, and the parked-jitter verdict with it:
@@ -124,7 +124,7 @@ async function closeOverlongTrips() {
 
   const res = await Trip.updateMany(
     { _id: { $in: overlong.map((t) => t._id) } },
-    { $set: { status: 'completed', endedAt: new Date() } }
+    { $set: { status: 'completed', endedAt: new Date(), closeReason: 'overlong' } }
   );
   // Fire-and-forget UKM computation, same as the dead-trip close, plus the parked-jitter verdict —
   // an overnight session left reporting at a parking spot is exactly the shape this catches.

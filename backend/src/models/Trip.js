@@ -38,6 +38,12 @@ const tripSchema = new mongoose.Schema(
     },
     startedAt: { type: Date, required: true },
     endedAt: { type: Date, default: null },
+    // Who closed it. 'device' = the phone's end signal; 'dead' = the watchdog after GPS silence;
+    // 'superseded' = the same driver started another trip; 'overlong' = force-closed past
+    // TRIP_MAX_DURATION_HOURS. Only 'overlong' changes ingest: points the phone keeps sending under
+    // that trip's id afterwards open a continuation trip instead of vanishing into the closed one.
+    // Null on trips closed before this field existed.
+    closeReason: { type: String, enum: ['device', 'dead', 'superseded', 'overlong', null], default: null },
     startLocation: { type: coordSchema, default: null },
     endLocation: { type: coordSchema, default: null },
     lastLocation: {

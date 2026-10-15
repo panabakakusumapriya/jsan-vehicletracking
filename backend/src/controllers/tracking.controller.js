@@ -47,6 +47,61 @@ const { sendCompressed } = require('../utils/compressedJson');
  * Returns { accepted, acceptedClientIds, rejected, rejectedClientIds } — the device deletes
  * every acked row. Rejected ids are acked TOO (so the queue drains) but were not stored.
  */
+/**
+ * Points recorded after their trip was force-closed for running too long start a new trip.
+ *
+ * The case (Vincentius Geraldo, 15 Oct 2026): a driver signed out mid-trip, the phone kept the trip
+ * id, and the next morning's sign-in resumed it. The server reopened the 21-hour-old trip, the
+ * watchdog force-closed it as over TRIP_MAX_DURATION_HOURS 25 s later, and because a completed trip
+ * is never reopened, the whole morning's driving (4,700 points) was appended to the previous
+ * day's closed trip: absent from that day, never road-matched, no UKM, no coverage. Since 15 Sep
+ * that happened to 23 trips across 12 drivers.
+ *
+ * So points the phone keeps sending under such a trip's id after the close go to a continuation
+ * trip keyed `<clientTripId>~<endedAt ms>` — the same key every later batch derives, so they all
+ * land in one trip, which closes normally (the phone's own end signal, or the watchdog). A
+ * continuation can itself be force-closed and continued again.
+ *
+ * Only for 'overlong' closes, and for a timed-out trip's points recorded past the cap — measured
+ * from the trip's start to the POINT, not to now, so an offline backlog of an ordinary drive synced
+ * the next day still joins its own trip. A trip closed because the same driver started another one
+ * ('superseded') keeps the old append behaviour: with one account signed in on two phones, a
+ * continuation there would close the other phone's trip, whose next batch would open another
+ * continuation, and so on for every batch.
+ */
+const CONTINUE_AFTER_MS = 2 * 60 * 1000;
+const continuationKey = (clientTripId, endedAt) => `${clientTripId}~${new Date(endedAt).getTime()}`;
+
+async function splitAfterForcedClose(driverId, groups) {
+  const maxMs = env.TRIP_MAX_DURATION_HOURS * 60 * 60 * 1000;
+  const work = [...groups.keys()];
+  while (work.length) {
+    const key = work.shift();
+    const pts = groups.get(key);
+    if (!pts || !pts.length) continue;
+    const trip = await Trip.findOne({ clientTripId: key, driverId })
+      .select('status endedAt startedAt closeReason')
+      .lean();
+    if (!trip || !trip.endedAt) continue;
+    const forced = trip.status === 'completed' && trip.closeReason === 'overlong';
+    const timedOut = trip.status === 'timed_out' && Number.isFinite(maxMs) && maxMs > 0;
+    if (!forced && !timedOut) continue;
+    // A force-close stamps the server's clock, so a short tail recorded just before it can arrive
+    // after it. A timed-out trip keeps everything recorded within the cap of its start.
+    const cut = forced
+      ? new Date(trip.endedAt).getTime() + CONTINUE_AFTER_MS
+      : Math.max(new Date(trip.endedAt).getTime(), new Date(trip.startedAt).getTime() + maxMs);
+    const later = pts.filter((p) => new Date(p.recordedAt).getTime() > cut);
+    if (!later.length) continue;
+    const kept = pts.filter((p) => !later.includes(p));
+    if (kept.length) groups.set(key, kept);
+    else groups.delete(key);
+    const next = continuationKey(key, trip.endedAt);
+    groups.set(next, [...(groups.get(next) || []), ...later]);
+    work.push(next);
+  }
+}
+
 exports.ingest = asyncHandler(async (req, res) => {
   const driver = req.user;
   const points = Array.isArray(req.body?.points) ? req.body.points : [];
@@ -60,6 +115,8 @@ exports.ingest = asyncHandler(async (req, res) => {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(p);
   }
+
+  await splitAfterForcedClose(driver._id, groups);
 
   const acceptedClientIds = [];
   // Points that could not become LocationPoints. They are PRESERVED in RejectedPoint (raw, exactly
@@ -83,7 +140,7 @@ exports.ingest = asyncHandler(async (req, res) => {
       if (superseded.length) {
         await Trip.updateMany(
           { _id: { $in: superseded.map((t) => t._id) } },
-          { $set: { status: 'completed', endedAt: new Date() } }
+          { $set: { status: 'completed', endedAt: new Date(), closeReason: 'superseded' } }
         );
         // A lingering session is often the app left reporting while the vehicle sat parked, so
         // these are prime jitter candidates — verdict them like any other close.
@@ -144,6 +201,7 @@ exports.ingest = asyncHandler(async (req, res) => {
             $set: {
               status: 'active',
               endedAt: null,
+              closeReason: null,
               // The trip is about to grow, so any snapped route already computed for it describes
               // only part of the drive. Send it back through matching once it finally closes,
               // rather than leaving a cleaned layer and a UKM figure frozen mid-trip.
@@ -311,6 +369,7 @@ exports.ingest = asyncHandler(async (req, res) => {
     if (endSignal && trip.status === 'active') {
       update.$set.status = endSignal.tripStatus === 'timed_out' ? 'timed_out' : 'completed';
       update.$set.endedAt = new Date(endSignal.recordedAt);
+      update.$set.closeReason = 'device';
       update.$set.endLocation = { lat: endSignal.lat, lon: endSignal.lon };
     }
     if (!Object.keys(update.$inc).length) delete update.$inc;
@@ -1398,3 +1457,7 @@ exports.myHistory = asyncHandler(async (req, res) => {
     trips: out,
   });
 });
+
+// Shared with src/seed/repairForcedCloseTrips.js, so a repaired trip takes the same continuation
+// key a later batch from the phone would look for.
+exports.continuationKey = continuationKey;
