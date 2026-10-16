@@ -684,6 +684,62 @@ select.input { cursor: pointer; }
 .login-card-foot { text-align:center; font-size:11.5px; color:#9ca3af; margin-top:22px; margin-bottom:0; line-height:1.5; }
 .login-divider { height:1px; background:#f3f4f6; margin:4px 0 24px; }
 
+/* Readable on the dark panel (the old #374151/#4b5563 greys were close to invisible). */
+.login-left-content > p { color:#9aa4b2; }
+.login-feature-text span { color:#8b95a5; }
+.login-left-foot { color:#8b95a5; }
+.login-left-foot svg { opacity:0.6; }
+.login-feature-list { gap:8px; }
+.login-feature { padding:9px 12px; }
+
+/* The fleet, drawn (pages/Login.tsx FleetMap): the left panel's backdrop, fading up from the
+   bottom behind the text — the Coverage page's colours: blue = driven, grey = still to drive,
+   green outline = a work area. Decorative. */
+.login-map {
+  position:absolute; left:0; right:0; bottom:44px; width:100%; height:46%;
+  z-index:0; pointer-events:none;
+}
+.lm-grid path { stroke:rgba(148,190,232,0.14); stroke-width:3; fill:none; }
+.lm-area { fill:rgba(34,197,94,0.06); stroke:#22c55e; stroke-opacity:0.75; stroke-width:1.6; stroke-dasharray:6 5; }
+.lm-driven {
+  fill:none; stroke:#3b8ee8; stroke-width:4.5; stroke-linecap:round; stroke-linejoin:round;
+  filter:drop-shadow(0 0 5px rgba(59,142,232,0.6));
+}
+.lm-driven.lm-anim { stroke-dasharray:700; stroke-dashoffset:700; animation:lm-draw 9s linear infinite; }
+.lm-driven.lm-late { animation-delay:-3.5s; }
+@keyframes lm-draw {
+  0% { stroke-dashoffset:700; opacity:1; }
+  80% { stroke-dashoffset:0; opacity:1; }
+  100% { stroke-dashoffset:0; opacity:0; }
+}
+.lm-pin path { fill:#f59e0b; stroke:#0b1a33; stroke-width:1.5; }
+.lm-pin circle { fill:#0b1a33; }
+.lm-car-halo { fill:rgba(59,142,232,0.25); }
+.lm-car-dot { fill:#fff; stroke:#3b8ee8; stroke-width:3; }
+
+/* The panel's content sits above the backdrop. */
+.login-brand-row, .login-left-content, .login-left-foot { position:relative; z-index:1; }
+
+.login-app-link {
+  margin-left:auto; display:inline-flex; align-items:center; gap:6px;
+  padding:5px 11px; border-radius:999px; font-size:11.5px; font-weight:700;
+  color:#7db8e8; background:rgba(0,80,169,0.18); border:1px solid rgba(0,80,169,0.4);
+  transition:background 0.15s, color 0.15s;
+}
+.login-app-link:hover { color:#fff; background:rgba(0,80,169,0.45); }
+
+/* Show / hide password, and the Caps Lock hint */
+.login-eye {
+  display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  width:40px; height:40px; margin-right:4px; border:0; border-radius:9px;
+  background:transparent; color:#9ca3af; cursor:pointer;
+}
+.login-eye:hover { color:#0050a9; background:rgba(0,80,169,0.07); }
+.login-caps { margin-top:7px; font-size:12px; font-weight:600; color:#b45309; }
+
+/* Short screens: the feature list gives way; the backdrop drawing stays. */
+@media (max-height: 860px) { .login-feature-list { display:none; } }
+
 @media (max-width: 960px) {
   .login-bg { grid-template-columns: 1fr; }
   .login-left { display: none; }

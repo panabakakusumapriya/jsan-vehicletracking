@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
+import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 
 const MailSVG = () => (
@@ -19,55 +20,124 @@ const ArrowSVG = () => (
     <path d="M5 12h14M12 5l7 7-7 7"/>
   </svg>
 );
-const PinSVG = () => (
+const EyeSVG = ({ off }: { off?: boolean }) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>
+    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>
+    {off && <path d="M3 3l18 18"/>}
   </svg>
 );
-const RouteSVG = () => (
+const MapSVG = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="6" cy="19" r="3"/>
-    <path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/>
-    <circle cx="18" cy="5" r="3"/>
+    <path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14M15 6v14"/>
   </svg>
 );
-const UsersSVG = () => (
+const ClockSVG = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
-    <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+    <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
   </svg>
 );
-const ShieldSVG = () => (
+const RoadSVG = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    <path d="M4 21 9 3M20 21 15 3M12 5v2M12 11v2M12 17v2"/>
   </svg>
 );
-const LockSmSVG = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="3" y="11" width="18" height="11" rx="2"/>
-    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+const PhoneSVG = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>
+  </svg>
+);
+const DownloadSVG = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>
   </svg>
 );
 
+/** What this platform actually does — the same words the panel's own pages use. */
 const features = [
-  { SVG: PinSVG,    title: 'Live GPS Tracking',    desc: 'Real-time driver positions on an interactive map' },
-  { SVG: RouteSVG,  title: 'Automated Trip Logs',  desc: 'Every journey recorded start-to-finish automatically' },
-  { SVG: UsersSVG,  title: 'Fleet Management',      desc: 'Drivers, vehicles, and managers in one place' },
-  { SVG: ShieldSVG, title: 'Role-based Access',     desc: 'Granular permissions across admin, manager & driver' },
+  { SVG: MapSVG,   title: 'Live map',               desc: 'Every vehicle on one map, as it drives' },
+  { SVG: ClockSVG, title: 'Trips & working hours',  desc: 'Start, end, km and hours — recorded automatically' },
+  { SVG: RoadSVG,  title: 'UKM & road coverage',    desc: 'New road driven, measured against customer networks' },
+  { SVG: PhoneSVG, title: 'Driver app',             desc: 'Keeps recording offline, syncs when back in signal' },
 ];
+
+/**
+ * The fleet, drawn — the left panel's backdrop, fading up from the bottom behind the text, so it
+ * shows on any screen height. A street grid (roads still to drive), a work area outlined in green,
+ * roads already driven in blue, two vehicles on their way and a driver's marker: the Coverage
+ * page's colour language. Decorative only; it carries no data.
+ *
+ * The vehicles ride SVG motion paths, so they scale with the drawing. With reduced motion asked
+ * for, nothing moves: the routes are drawn in full and the vehicles parked along them.
+ */
+const reduceMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+function FleetMap() {
+  const routeA = 'M -10 236 H 96 V 150 H 232 V 86 H 372 V 30';
+  const routeB = 'M 490 270 H 372 V 214 H 232 V 250 H 150 V 214 H 96';
+  return (
+    <svg className="login-map" viewBox="0 0 480 340" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+      <defs>
+        <linearGradient id="lm-fade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#fff" stopOpacity="0" />
+          <stop offset="0.45" stopColor="#fff" stopOpacity="0.55" />
+          <stop offset="1" stopColor="#fff" stopOpacity="1" />
+        </linearGradient>
+        <mask id="lm-mask"><rect width="480" height="340" fill="url(#lm-fade)" /></mask>
+      </defs>
+      <g mask="url(#lm-mask)">
+        <g className="lm-grid">
+          {[30, 86, 150, 214, 236, 270, 300].map((y) => <path key={`h${y}`} d={`M 0 ${y} H 480`} />)}
+          {[40, 96, 150, 232, 300, 372, 430].map((x) => <path key={`v${x}`} d={`M ${x} 0 V 340`} />)}
+        </g>
+        <path className="lm-area" d="M 70 120 H 260 V 250 H 70 Z" />
+        <path id="lm-route-a" className={`lm-driven${reduceMotion ? '' : ' lm-anim'}`} d={routeA} />
+        <path id="lm-route-b" className={`lm-driven${reduceMotion ? '' : ' lm-anim lm-late'}`} d={routeB} />
+        <g className="lm-pin" transform="translate(300 214)">
+          <path d="M0 -14 C -6 -14 -9 -9.5 -9 -6 C -9 0 0 8 0 8 C 0 8 9 0 9 -6 C 9 -9.5 6 -14 0 -14 Z" />
+          <circle cx="0" cy="-6" r="3" />
+        </g>
+        {[{ id: 'lm-route-a', begin: '0s', at: '0.55' }, { id: 'lm-route-b', begin: '-3.5s', at: '0.35' }].map((car) => (
+          <g key={car.id} className="lm-car">
+            <circle r="10" className="lm-car-halo" />
+            <circle r="5.5" className="lm-car-dot" />
+            {reduceMotion ? (
+              <animateMotion dur="1s" fill="freeze" keyPoints={`${car.at};${car.at}`} keyTimes="0;1" calcMode="linear">
+                <mpath href={`#${car.id}`} />
+              </animateMotion>
+            ) : (
+              <animateMotion dur="9s" begin={car.begin} repeatCount="indefinite" keyPoints="0;1;1" keyTimes="0;0.8;1" calcMode="linear">
+                <mpath href={`#${car.id}`} />
+              </animateMotion>
+            )}
+          </g>
+        ))}
+      </g>
+    </svg>
+  );
+}
 
 export function Login() {
   const { signIn, token, user } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [capsLock, setCapsLock] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
+  const [driverApp, setDriverApp] = useState<{ version: string; downloadUrl: string } | null>(null);
 
   // A driver sent here from a shared link (e.g. /academy) goes back to it after signing in.
   const nextParam = new URLSearchParams(window.location.search).get('next');
   const driverHome = nextParam && nextParam.startsWith('/driver') ? nextParam : '/driver';
+
+  // The current driver app, for the "get the app" link. Public endpoint; no link if it fails.
+  useEffect(() => {
+    api.get<{ version: string | null; downloadUrl?: string }>('/api/app/current')
+      .then((r) => { if (r.version && r.downloadUrl) setDriverApp({ version: r.version, downloadUrl: r.downloadUrl }); })
+      .catch(() => {});
+  }, []);
 
   if (token && user) return <Navigate to={user.role === 'user' ? driverHome : '/'} replace />;
 
@@ -84,11 +154,14 @@ export function Login() {
     }
   };
 
+  const watchCaps = (e: React.KeyboardEvent<HTMLInputElement>) => setCapsLock(e.getModifierState('CapsLock'));
+
   return (
     <div className="login-bg">
 
-      {/* ══ Left — dark brand panel ══ */}
+      {/* ══ Left — the fleet ══ */}
       <div className="login-left">
+        <FleetMap />
         <div className="login-brand-row">
           <div className="login-brand-icon">
             <img src="/brand/logo.png" alt="JSAN" />
@@ -97,15 +170,16 @@ export function Login() {
         </div>
 
         <div className="login-left-content">
-          <div className="login-left-tag">Fleet Management Platform</div>
+          <div className="login-left-tag">Fleet operations · Australia &amp; New Zealand</div>
           <h2>
-            Track every mile.<br />
-            <em>One command center.</em>
+            Every road driven.<br />
+            <em>Every kilometre counted.</em>
           </h2>
           <p>
-            Built for logistics teams that need real-time visibility,
-            reliable GPS tracking, and smart fleet reporting.
+            Live positions, trip logs, UKM and customer road coverage for every vehicle
+            in the field — from the driver&rsquo;s phone to this dashboard.
           </p>
+
           <div className="login-feature-list">
             {features.map(({ SVG, title, desc }) => (
               <div className="login-feature" key={title}>
@@ -120,27 +194,32 @@ export function Login() {
         </div>
 
         <div className="login-left-foot">
-          <LockSmSVG />
-          End-to-end encrypted &nbsp;·&nbsp; Driver app on Android
+          <PhoneSVG />
+          <span>Driver app for Android</span>
+          {driverApp && (
+            <a className="login-app-link" href={driverApp.downloadUrl} rel="noopener">
+              <DownloadSVG /> Download v{driverApp.version}
+            </a>
+          )}
         </div>
       </div>
 
-      {/* ══ Right — clean form ══ */}
+      {/* ══ Right — sign in ══ */}
       <div className="login-right">
         <div className="login-card">
 
           <div className="login-card-header">
             {/* Full-colour wordmark — this half of the screen is white, so it needs no tile. */}
             <img className="login-wordmark" src="/brand/logo.png" alt="JSAN ATLAS ops" />
-            <h1 className="login-title">Sign in</h1>
+            <h1 className="login-title">Sign in to the fleet dashboard</h1>
             <p className="login-sub">
-              Enter your credentials to access the fleet dashboard.
+              Live map, trips, coverage and reports for your projects.
             </p>
           </div>
 
           <form onSubmit={submit} noValidate>
             <div className="login-field">
-              <label className="login-label" htmlFor="lg-email">Email</label>
+              <label className="login-label" htmlFor="lg-email">Work email</label>
               <div className={`login-input-wrap${focused === 'email' ? ' focused' : ''}`}>
                 <span className="login-input-icon"><MailSVG /></span>
                 <input
@@ -164,15 +243,27 @@ export function Login() {
                 <input
                   id="lg-pass"
                   className="login-input"
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
                   placeholder="••••••••"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
+                  onKeyUp={watchCaps}
+                  onKeyDown={watchCaps}
                   onFocus={() => setFocused('password')}
-                  onBlur={() => setFocused(null)}
+                  onBlur={() => { setFocused(null); setCapsLock(false); }}
                 />
+                <button
+                  type="button"
+                  className="login-eye"
+                  onClick={() => setShowPassword(v => !v)}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  title={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  <EyeSVG off={showPassword} />
+                </button>
               </div>
+              {capsLock && <div className="login-caps">Caps Lock is on</div>}
             </div>
 
             {error && (
@@ -189,7 +280,8 @@ export function Login() {
           </form>
 
           <p className="login-card-foot">
-            Admins &amp; managers access the fleet dashboard &nbsp;·&nbsp; Drivers access the driver portal
+            Admins &amp; managers open the fleet dashboard and stay signed in on this device for 7 days.
+            Drivers open the driver portal.
           </p>
         </div>
       </div>
