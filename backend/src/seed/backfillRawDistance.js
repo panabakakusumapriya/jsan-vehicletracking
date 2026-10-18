@@ -58,21 +58,26 @@ async function main() {
   if (args.has('since')) filter.startedAt = { $gte: new Date(String(args.get('since'))) };
   if (args.has('driver')) filter.driverId = new mongoose.Types.ObjectId(String(args.get('driver')));
 
-  const total = await Trip.countDocuments(filter);
+  // An id list up front and a retry per trip, not one long cursor: a dropped Atlas connection an
+  // hour in must cost one trip's retry, not the whole run.
+  const ids = (await Trip.find(filter).select('_id').sort({ startedAt: 1 }).lean()).map((t) => t._id);
+  const total = ids.length;
   log(`${total} recorded trips to check${APPLY ? '' : ' (dry run)'}`);
-  const cur = Trip.find(filter).select('_id driverId startedAt distanceMeters cleanedDistanceMeters rawDistanceBefore').sort({ startedAt: 1 }).lean().cursor();
+  const withRetry = async (fn) => { for (let i = 1; ; i++) { try { return await fn(); } catch (e) { if (i >= 5) throw e; log(`  retry ${i} after: ${e.message}`); await new Promise((r) => setTimeout(r, 5000 * i)); } } };
   const changes = [];
   let seen = 0, beforeSum = 0, afterSum = 0;
-  for await (const t of cur) {
+  for (const id of ids) {
     seen++;
-    const pts = await LocationPoint.find({ tripId: t._id }).select('lat lon recordedAt accuracy').sort({ recordedAt: 1 }).lean();
+    const t = await withRetry(() => Trip.findById(id).select('_id driverId startedAt distanceMeters cleanedDistanceMeters rawDistanceBefore').lean());
+    if (!t) continue;
+    const pts = await withRetry(() => LocationPoint.find({ tripId: t._id }).select('lat lon recordedAt accuracy').sort({ recordedAt: 1 }).lean());
     const after = Math.round(sumMeters(pts));
     const before = t.distanceMeters || 0;
     beforeSum += before; afterSum += after;
     if (Math.abs(after - before) > Math.max(50, before * 0.01)) {
       changes.push({ tripId: String(t._id), driverId: String(t.driverId), startedAt: t.startedAt, before, after, cleaned: t.cleanedDistanceMeters ?? null });
       if (APPLY) {
-        await Trip.updateOne({ _id: t._id }, { $set: { distanceMeters: after, ...(t.rawDistanceBefore == null ? { rawDistanceBefore: before } : {}) } });
+        await withRetry(() => Trip.updateOne({ _id: t._id }, { $set: { distanceMeters: after, ...(t.rawDistanceBefore == null ? { rawDistanceBefore: before } : {}) } }));
       }
     }
     if (seen % 500 === 0) log(`  ${seen}/${total} checked, ${changes.length} would change`);

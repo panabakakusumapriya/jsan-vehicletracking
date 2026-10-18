@@ -26,6 +26,11 @@
  *   4. node src/seed/replaceDaysWithVts.js --settle=<batch> --apply
  *      (re-attribute the same drivers' neighbouring trips and refresh their UKM)
  *   Undo: node src/seed/replaceDaysWithVts.js --undo=<batch> --apply, then importer --revert.
+ *
+ * Built to be interrupted: each day is copied, removed and its claims released as one unit, with a
+ * retry on a dropped connection, and the batch file grows a day at a time. A run that dies can be
+ * continued with --batch=<id>; days already archived have no Atlas data left and simply fall out
+ * of the plan. Every run first releases any claim still held by an already-archived trip.
  */
 const fs = require('fs');
 const path = require('path');
@@ -41,6 +46,8 @@ const args = new Map(
   })
 );
 const APPLY = args.get('apply') === true;
+const withRetry = async (what, fn) => { for (let i = 1; ; i++) { try { return await fn(); } catch (e) { if (i >= 5) throw e; console.log(`  ${what}: retry ${i} after ${e.message}`); await new Promise((r) => setTimeout(r, 5000 * i)); } } };
+const insertIgnoringDuplicates = async (coll, docs) => { for (let i = 0; i < docs.length; i += 2000) { try { await coll.insertMany(docs.slice(i, i + 2000), { ordered: false }); } catch (e) { if (e.code !== 11000 && !(e.writeErrors && e.writeErrors.every((w) => w.code === 11000))) throw e; } } };
 const VTS_PROJECT = String(args.get('vts-project') || '6a3233e935b68ccdc47a9785');
 const MARGIN = 0.10;
 const MIN_GAIN_M = 3000;
@@ -73,6 +80,16 @@ async function main() {
 
   if (args.has('undo')) return undo(String(args.get('undo')), { db, Trip, LocationPoint, CoverageSegment, LinkCoverage });
   if (args.has('settle')) return settle(String(args.get('settle')), { db, Trip, User });
+
+  // Claims an archived trip still holds (a run that died before releasing them) are released first.
+  const archivedIds = (await db.collection('archivedtrips').find({}).project({ _id: 1 }).toArray()).map((x) => x._id);
+  if (archivedIds.length) {
+    const held = await CoverageSegment.countDocuments({ firstTripId: { $in: archivedIds } }) + await LinkCoverage.countDocuments({ firstTripId: { $in: archivedIds } });
+    if (held) {
+      log(`${held} road claims still held by ${archivedIds.length} already-archived trips${APPLY ? ' — releasing' : ' (would be released)'}`);
+      if (APPLY) { await CoverageSegment.deleteMany({ firstTripId: { $in: archivedIds } }); await LinkCoverage.deleteMany({ firstTripId: { $in: archivedIds } }); }
+    }
+  }
 
   const dump = args.get('dump');
   if (!dump) throw new Error('--dump=<dir> is required');
@@ -124,27 +141,33 @@ async function main() {
   log(`\n${plan.length} days, ${nTrips} Atlas trips to archive, VTS holds ${km(gain)} km more on them.`);
   if (!APPLY) return log('Dry run — nothing written. Add --apply to archive these days, then run the importer.');
 
-  const batch = `vtsday-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(3).toString('hex')}`;
+  const batch = args.has('batch') ? String(args.get('batch')) : `vtsday-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(3).toString('hex')}`;
   const archivedTrips = db.collection('archivedtrips');
   const archivedPoints = db.collection('archivedlocationpoints');
-  let tripsDone = 0, pointsDone = 0;
-  const allIds = [];
+  const batchFile = path.join(dump, `${batch}.json`);
+  const record = fs.existsSync(batchFile) ? JSON.parse(fs.readFileSync(batchFile, 'utf8')) : { batch, plan: [] };
+  let tripsDone = 0, pointsDone = 0, segDone = 0, lnkDone = 0, daysDone = 0;
   for (const p of plan) {
     const ids = p.trips.map((t) => t._id);
-    allIds.push(...ids);
-    const full = await Trip.find({ _id: { $in: ids } }).lean();
-    const pts = await LocationPoint.find({ tripId: { $in: ids } }).lean();
-    const meta = { batch, archivedAt: new Date(), reason: 'VTS day fuller', day: p.day, driverId: p.uid, atlasKm: p.atlas / 1000, vtsKm: p.vts / 1000, vtsSessions: p.sessions };
-    if (full.length) await archivedTrips.insertMany(full.map((t) => ({ ...t, archive: meta })), { ordered: false });
-    if (pts.length) await archivedPoints.insertMany(pts.map((x) => ({ ...x, archiveBatch: batch })), { ordered: false });
-    await LocationPoint.deleteMany({ tripId: { $in: ids } });
-    await Trip.deleteMany({ _id: { $in: ids } });
-    tripsDone += full.length; pointsDone += pts.length;
+    await withRetry(`${p.name} ${p.day}`, async () => {
+      const full = await Trip.find({ _id: { $in: ids } }).lean();
+      const pts = await LocationPoint.find({ tripId: { $in: ids } }).lean();
+      const meta = { batch, archivedAt: new Date(), reason: 'VTS day fuller', day: p.day, driverId: p.uid, atlasKm: p.atlas / 1000, vtsKm: p.vts / 1000, vtsSessions: p.sessions };
+      if (full.length) await insertIgnoringDuplicates(archivedTrips, full.map((t) => ({ ...t, archive: meta })));
+      if (pts.length) await insertIgnoringDuplicates(archivedPoints, pts.map((x) => ({ ...x, archiveBatch: batch })));
+      await LocationPoint.deleteMany({ tripId: { $in: ids } });
+      await Trip.deleteMany({ _id: { $in: ids } });
+      const seg = await CoverageSegment.deleteMany({ firstTripId: { $in: ids } });
+      const lnk = await LinkCoverage.deleteMany({ firstTripId: { $in: ids } });
+      tripsDone += full.length; pointsDone += pts.length; segDone += seg.deletedCount; lnkDone += lnk.deletedCount;
+    });
+    record.plan.push({ uid: String(p.uid), day: p.day, trips: ids.map(String), sessions: p.sessions });
+    fs.writeFileSync(batchFile, JSON.stringify(record));
+    daysDone++;
+    log(`  ${daysDone}/${plan.length} ${p.day} ${p.name}: ${ids.length} trips archived`);
   }
-  const seg = await CoverageSegment.deleteMany({ firstTripId: { $in: allIds } });
-  const lnk = await LinkCoverage.deleteMany({ firstTripId: { $in: allIds } });
-  fs.writeFileSync(path.join(dump, `${batch}.json`), JSON.stringify({ batch, plan: plan.map((p) => ({ uid: String(p.uid), day: p.day, trips: p.trips.map((t) => String(t._id)), sessions: p.sessions })) }));
-  log(`\nArchived ${tripsDone} trips and ${pointsDone} points as batch ${batch}; released ${seg.deletedCount} road segments and ${lnk.deletedCount} network links.`);
+  log(`
+Archived ${tripsDone} trips and ${pointsDone} points as batch ${batch}; released ${segDone} road segments and ${lnkDone} network links.`);
   log(`Now: node src/seed/importVtsSessions.js --dump=... --token-file=... --apply   then   node src/seed/replaceDaysWithVts.js --settle=${batch} --apply`);
   log(`Undo: node src/seed/replaceDaysWithVts.js --undo=${batch} --apply`);
 }
