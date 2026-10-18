@@ -356,6 +356,7 @@ async function main() {
   };
   let trips = 0, points = 0, skipped = 0, abroad = 0, routeOnlyCount = 0;
   const errors = [];
+  const partial = new Map();
   // Several sessions at once: the database work overlaps, while road-matching requests still go
   // out one at a time, spaced as the shared server is owed (valhalla.js politeDelay).
   const importOne = async ({ s, email }) => {
@@ -411,6 +412,9 @@ async function main() {
       ukmStatus: 'pending',
       linkCoverageStatus: 'pending',
     });
+    // Remembered until the session is fully in: a failure part-way (a dropped connection) removes
+    // the half-written trip again, so a re-run redoes the session instead of skipping it as done.
+    partial.set(s._id, trip._id);
     const now = new Date();
     for (let i = 0; i < pts.length; i += 5000) {
       const docs = pts.slice(i, i + 5000).map((p) => ({
@@ -458,9 +462,20 @@ async function main() {
       // it. A re-run picks up whatever did not make it in.
       try {
         await importOne(item);
+        partial.delete(item.s._id);
       } catch (e) {
         errors.push(item.s._id);
         console.error(`session ${item.s._id} failed: ${e.message}`);
+        const tripId = partial.get(item.s._id);
+        if (tripId) {
+          try {
+            await LocationPoint.deleteMany({ tripId });
+            await Trip.deleteOne({ _id: tripId });
+            partial.delete(item.s._id);
+          } catch (e2) {
+            console.error(`  could not remove the half-written trip ${tripId}: ${e2.message} — remove it before re-running`);
+          }
+        }
       }
     }
   }));
