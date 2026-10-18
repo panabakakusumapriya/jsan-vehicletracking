@@ -162,6 +162,14 @@ async function cleanedRoute(dump, token, id) {
   return { runs: kept, meters: Math.round(meters), count: kept.reduce((n, r) => n + r.length, 0) };
 }
 
+/** A VTS cleaned route already fetched to <dump>/clean/<id>.json with at least two points. */
+function hasCachedRoute(dump, id) {
+  try {
+    const f = path.join(dump, 'clean', `${id}.json`);
+    return fs.existsSync(f) && fs.statSync(f).size > 60;
+  } catch { return false; }
+}
+
 function distanceOf(points) {
   let meters = 0;
   let prev = null;
@@ -249,7 +257,10 @@ async function main() {
   for (const s of sessions) {
     const email = String(s.driver.email || '').toLowerCase();
     if (s.isActive) { stats.active++; continue; }
-    if (!s.totalLocations) { stats.noPoints++; continue; }
+    // VTS's counters are zero on some sessions that still carry a cleaned route (190 of 196 on
+    // projaustralia, Apr–Sep 2026): the planning stage used to drop them here, before the route-only
+    // path could see them, and 21,000 km went missing. A session with a cached VTS route is kept.
+    if (!s.totalLocations && !(s.cleanedDistance > 0) && !hasCachedRoute(dump, s._id)) { stats.noPoints++; continue; }
     if (TEST_EMAILS.has(email)) { stats.testAccount++; continue; }
     if (already.has(`vts:${s._id}`)) { stats.alreadyImported++; continue; }
     const u = byEmail.get(email);
