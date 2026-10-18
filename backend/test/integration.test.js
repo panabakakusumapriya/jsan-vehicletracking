@@ -48,21 +48,30 @@ function assert(cond, msg) {
   const tzDriver = await User.findById(driver._id);
   assert(tzDriver.timezone === 'Asia/Kolkata', 'driver record picked up the same zone');
 
-  // second point ~1.5km away advances distance
-  const p2 = { clientId: 'c2', clientTripId: 't1', lat: 17.4223, lon: 78.4556, speedKmh: 45, recordedAt: '2026-07-08T10:00:10.000Z', tripStatus: 'active' };
+  // second point ~1.5km away, two minutes later (45 km/h — a drive, not a jump), advances distance
+  const p2 = { clientId: 'c2', clientTripId: 't1', lat: 17.4223, lon: 78.4556, speedKmh: 45, recordedAt: '2026-07-08T10:02:00.000Z', tripStatus: 'active' };
   r = await auth(request(app).post('/api/tracking/ingest')).send({ points: [p2] });
   let trip = await Trip.findOne({ clientTripId: 't1' });
   assert(Math.round(trip.distanceMeters) > 1400 && Math.round(trip.distanceMeters) < 1700, `distance accumulated ~${Math.round(trip.distanceMeters)}m`);
   assert(trip.maxSpeedKmh === 45, 'max speed tracked (45)');
   assert(trip.pointCount === 2, 'point count is 2');
 
+  // GPS ANOMALIES do not become kilometres (utils/rawDistance.js): a fix 50 km away five seconds
+  // later is a jump, and the hop back from it is too. The points are stored; the distance is not.
+  const jump = { clientId: 'cj', clientTripId: 't1', lat: 17.9, lon: 78.4556, speedKmh: 45, recordedAt: '2026-07-08T10:02:05.000Z', tripStatus: 'active' };
+  const back = { clientId: 'cb', clientTripId: 't1', lat: 17.4224, lon: 78.4557, speedKmh: 45, recordedAt: '2026-07-08T10:02:10.000Z', tripStatus: 'active' };
+  await auth(request(app).post('/api/tracking/ingest')).send({ points: [jump, back] });
+  trip = await Trip.findOne({ clientTripId: 't1' });
+  assert(Math.round(trip.distanceMeters) > 1400 && Math.round(trip.distanceMeters) < 1700, `a 50 km GPS jump adds no distance (${Math.round(trip.distanceMeters)}m)`);
+  assert(trip.pointCount === 4, 'the jump points are still stored');
+
   // IDEMPOTENCY: re-send p1+p2 -> no new points, still ack'd
   r = await auth(request(app).post('/api/tracking/ingest')).send({ points: [p1, p2] });
   assert(r.body.accepted === 2, 'duplicate resend still ack\'d (so device can delete local)');
-  assert((await Point.countDocuments()) === 2, 'no duplicate points inserted (idempotent)');
+  assert((await Point.countDocuments()) === 4, 'no duplicate points inserted (idempotent)');
 
   // trip END signal (speed 0)
-  const p3 = { clientId: 'c3', clientTripId: 't1', lat: 17.4223, lon: 78.4556, speedKmh: 0, recordedAt: '2026-07-08T10:00:20.000Z', tripStatus: 'ended' };
+  const p3 = { clientId: 'c3', clientTripId: 't1', lat: 17.4223, lon: 78.4556, speedKmh: 0, recordedAt: '2026-07-08T10:02:20.000Z', tripStatus: 'ended' };
   await auth(request(app).post('/api/tracking/ingest')).send({ points: [p3] });
   trip = await Trip.findOne({ clientTripId: 't1' });
   assert(trip.status === 'completed' && trip.endedAt, 'trip closed on ended signal');

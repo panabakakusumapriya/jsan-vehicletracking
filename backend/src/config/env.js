@@ -321,6 +321,14 @@ module.exports = {
   // side of the line the map-matcher put them.
   AREA_BOUNDARY_BUFFER_METERS: parseFloat(process.env.AREA_BOUNDARY_BUFFER_METERS || '20'),
 
+  // ---- Raw distance: which steps between consecutive fixes count as driving (utils/rawDistance.js) ----
+  // Faster than this between two fixes is a GPS jump, not a drive. The fleet's roads top out at 110.
+  RAW_MAX_SPEED_KMH: parseFloat(process.env.RAW_MAX_SPEED_KMH || '160'),
+  // Across a silence longer than this the straight line between fixes is not road.
+  RAW_MAX_GAP_MINUTES: parseFloat(process.env.RAW_MAX_GAP_MINUTES || '15'),
+  // A fix with a larger reported error radius does not place the vehicle well enough to measure from.
+  RAW_MAX_ACCURACY_M: parseFloat(process.env.RAW_MAX_ACCURACY_M || '50'),
+
   // ---- Driver route history: GET /api/tracking/my-history ----
   MY_HISTORY_DEFAULT_DAYS: parseInt(process.env.MY_HISTORY_DEFAULT_DAYS || '30', 10),
   MY_HISTORY_MAX_DAYS: parseInt(process.env.MY_HISTORY_MAX_DAYS || '180', 10),

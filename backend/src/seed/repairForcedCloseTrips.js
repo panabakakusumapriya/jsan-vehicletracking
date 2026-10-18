@@ -39,7 +39,7 @@
  */
 const { connectDB } = require('../config/db');
 const env = require('../config/env');
-const { haversineMeters } = require('../utils/geo');
+const { sumMeters } = require('../utils/rawDistance');
 const { timezoneFromCoords } = require('../utils/tzFromCoords');
 const { PIPELINE_RESET_SET, PIPELINE_RESET_UNSET } = require('../services/tripReset');
 
@@ -60,14 +60,9 @@ const log = (...a) => console.log(...a);
 
 /** Distance, count, ends and top speed of a point run — the way ingest accumulates them. */
 function measure(points) {
-  let meters = 0;
+  const meters = sumMeters(points);
   let maxSpeed = 0;
-  for (let i = 0; i < points.length; i++) {
-    const p = points[i];
-    if (i > 0) {
-      const d = haversineMeters(points[i - 1], p);
-      if (d >= 5) meters += d;
-    }
+  for (const p of points) {
     if (p.speedKmh > maxSpeed && p.speedKmh <= 250) maxSpeed = p.speedKmh;
   }
   const first = points[0];
@@ -150,7 +145,7 @@ async function main() {
       if (superseder) { skipped++; continue; }
     }
     const cut = new Date(t.endedAt.getTime() + CONTINUE_AFTER_MS);
-    const fields = '_id lat lon speedKmh heading recordedAt';
+    const fields = '_id lat lon speedKmh heading accuracy recordedAt';
     const late = await LocationPoint.find({ tripId: t._id, recordedAt: { $gt: cut } }).sort({ recordedAt: 1 }).select(fields).lean();
     if (!late.length) continue;
     if (late.length < MIN_LATE_POINTS && measure(late).distanceMeters < MIN_LATE_METERS) {

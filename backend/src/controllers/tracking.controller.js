@@ -23,6 +23,7 @@ const { scopeForProject } = require('../services/coverageScope');
 const { rebuildScope } = require('../services/globalUkm');
 const { classifyTrip } = require('../services/tripNoise');
 const { PIPELINE_RESET_SET, PIPELINE_RESET_UNSET } = require('../services/tripReset');
+const { stepMeters } = require('../utils/rawDistance');
 const mongoose = require('mongoose');
 const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezone');
 const { certify } = require('./academy.controller');
@@ -314,16 +315,15 @@ exports.ingest = asyncHandler(async (req, res) => {
       }
 
       if (p.clientId) acceptedClientIds.push(p.clientId);
-      if (last) {
-        const segDist = haversineMeters(last, { lat: p.lat, lon: p.lon });
-        // Only accumulate distance for real movement (> 5 m)
-        if (segDist >= 5) addedDistance += segDist;
-      }
+      // Raw distance with GPS anomalies thrown out (utils/rawDistance.js): a step counts only when
+      // the phone could have driven it — later in time, inside the gap limit, accurate enough, and
+      // under the speed cap. The straight line between two fixes is not road otherwise.
+      addedDistance += stepMeters(last, { lat: p.lat, lon: p.lon, recordedAt, accuracy: doc.accuracy });
       // Clamped: a single multipath teleport from an old build must not brand the trip with a
       // 211 km/h "top speed" forever. New builds reject these device-side; this is the backstop.
       if (doc.speedKmh > maxSpeed && doc.speedKmh <= 250) maxSpeed = doc.speedKmh;
       addedCount += 1;
-      last = { lat: p.lat, lon: p.lon, speed: doc.speedKmh, heading: doc.heading, recordedAt };
+      last = { lat: p.lat, lon: p.lon, speed: doc.speedKmh, heading: doc.heading, accuracy: doc.accuracy, recordedAt };
     }
 
     // Did the device signal the trip ended (speed hit 0) or timed out (20-min no-move)?

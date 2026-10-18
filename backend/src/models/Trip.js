@@ -53,6 +53,9 @@ const tripSchema = new mongoose.Schema(
           lon: Number,
           speed: Number,
           heading: Number,
+          // The fix's reported error radius, carried so the next batch's first step can be judged
+          // against it (utils/rawDistance.js). Absent on trips from before it was recorded.
+          accuracy: Number,
           recordedAt: Date,
         },
         { _id: false }
@@ -61,6 +64,9 @@ const tripSchema = new mongoose.Schema(
     },
     timezone: { type: String, default: null },
     distanceMeters: { type: Number, default: 0 },
+    // What distanceMeters read before seed/backfillRawDistance.js recomputed it with the anomaly
+    // rules; null when it never changed. Kept so the recompute can be undone trip by trip.
+    rawDistanceBefore: { type: Number, default: null },
     maxSpeedKmh: { type: Number, default: 0 },
     pointCount: { type: Number, default: 0 },
     // ---- Map-matched ("cleaned") layer — see services/mapMatcher.js + services/valhalla.js ----
