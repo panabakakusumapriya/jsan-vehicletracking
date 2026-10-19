@@ -147,13 +147,13 @@ tbody tr:hover { background: #f6f7fd; }
 .cov-tabs button { border-radius: 8px; border-bottom: 0; padding: 10px 15px; }
 .cov-tabs button.active { background: #fff; border-bottom: 0; box-shadow: 0 2px 6px #19243b0a; }
 .cov-notice, .cov-job-row, .cov-details, .cov-file { border-radius: 12px; }
-.login-left { background: radial-gradient(ellipse at 10% 0%, #1b497b80, transparent 60%), linear-gradient(150deg, #012f62, #05132b); }
+.login-left { background: #fff; }
 .login-brand-icon { border-radius: 12px; box-shadow: 0 8px 25px #00000020; }
-.login-feature { border-color: #ffffff12; background: #ffffff04; border-radius: 14px; }
-.login-feature-icon { color: #7db8e8; background: #7db8e814; border-radius: 11px; }
-.login-feature-text span { color: #a4b4cc; }
-.login-left-foot { color: #a4b4cc; }
-.login-left-content h2 em { color: #7db8e8; }
+.login-feature { border-color: var(--line); background: #fff; border-radius: 14px; }
+.login-feature-icon { color: var(--brand); background: var(--brand-light); border-radius: 11px; }
+.login-feature-text span { color: var(--muted); }
+.login-left-foot { color: var(--muted); }
+.login-left-content h2 em { color: var(--brand); }
 .login-right { background: radial-gradient(ellipse at 100% 0%, #e8f4fc, transparent 65%), #f7f9fc; }
 .login-card { max-width: 420px; padding: 32px; background: #fff; border: 1px solid var(--line); border-radius: 24px; box-shadow: 0 20px 65px #1826440a; }
 .login-title { color: var(--text); font-weight: 750; }
@@ -215,13 +215,13 @@ summary { color: var(--text-2); }
 .page-emblem--users, .page-emblem--phone, .page-emblem--folder,
 .page-emblem--health, .page-emblem--shield, .page-emblem--weather,
 .page-emblem--history { color: var(--brand); background: var(--brand-light); }
-.login-feature-icon { color: #7db8e8; }
-.login-left-tag { color: #bfe0f7; border-color: #7db8e859; background: #0050a930; }
+.login-feature-icon { color: var(--brand); }
+.login-left-tag { color: var(--brand); border-color: #0050a938; background: #0050a912; }
 .stat::before { background: linear-gradient(90deg, var(--brand), var(--brand-cyan)); }
 
-.login-left-content h2 em { background: linear-gradient(110deg, #7db8e8 0%, #ffffff 45%, #62b4e8 55%, #7db8e8 100%) 100% 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; }
-.login-left-content > p { color: #b4c9df; }
-.login-left-tag::before { background: #7db8e8; box-shadow: 0 0 6px #7db8e899; }
+.login-left-content h2 em { background: linear-gradient(110deg, #0050a9 0%, #3b8ee8 40%, #7db8e8 50%, #3b8ee8 60%, #0050a9 100%) 100% 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; }
+.login-left-content > p { color: var(--text-2); }
+.login-left-tag::before { background: var(--brand); box-shadow: 0 0 6px #0050a999; }
 
 /* Secondary product wordmark, aligned with the JSAN logo above. */
 .sidebar .brand { gap: 8px; }
