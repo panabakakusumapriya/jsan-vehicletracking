@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
-import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { isAdminRole } from '../lib/types';
 import { FleetField } from '../components/FleetField';
@@ -48,11 +47,6 @@ const PhoneSVG = () => (
     <rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>
   </svg>
 );
-const DownloadSVG = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>
-  </svg>
-);
 
 /** What this platform actually does — the same words the panel's own pages use. */
 const features = [
@@ -83,18 +77,10 @@ export function Login() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
-  const [driverApp, setDriverApp] = useState<{ version: string; downloadUrl: string } | null>(null);
 
   // A driver sent here from a shared link (e.g. /academy) goes back to it after signing in.
   const nextParam = new URLSearchParams(window.location.search).get('next');
   const driverHome = nextParam && nextParam.startsWith('/driver') ? nextParam : '/driver';
-
-  // The current driver app, for the "get the app" link. Public endpoint; no link if it fails.
-  useEffect(() => {
-    api.get<{ version: string | null; downloadUrl?: string }>('/api/app/current')
-      .then((r) => { if (r.version && r.downloadUrl) setDriverApp({ version: r.version, downloadUrl: r.downloadUrl }); })
-      .catch(() => {});
-  }, []);
 
   /**
    * Where a signed-in account lands. Admins and superadmins open the fleet Dashboard; managers and
@@ -157,15 +143,6 @@ export function Login() {
           </div>
         </div>
 
-        <div className="login-left-foot login-enter" style={stagger(8)}>
-          <PhoneSVG />
-          <span>Driver app for Android</span>
-          {driverApp && (
-            <a className="login-app-link" href={driverApp.downloadUrl} rel="noopener">
-              <DownloadSVG /> Download v{driverApp.version}
-            </a>
-          )}
-        </div>
       </div>
 
       {/* ══ Right — sign in ══ */}
