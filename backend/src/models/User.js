@@ -42,6 +42,15 @@ const userSchema = new mongoose.Schema(
     lastLoginAt: { type: Date, default: null },
     activeSessionId: { type: String, default: null },
     sessionLastSeenAt: { type: Date, default: null },
+    /**
+     * When the password was last set. Every token issued before this moment is refused — by the
+     * REST middleware and the socket handshake alike — so changing a password signs that account
+     * out everywhere at once: a shared login being retired, a leaked password, a lost phone.
+     * Without it an old session stayed valid until its JWT ran out (a week on the panel, a year
+     * on a driver's phone). Stamped by the pre-save hook below whenever passwordHash changes.
+     * Null on accounts that predate the field, which are treated as never changed.
+     */
+    passwordChangedAt: { type: Date, default: null },
 
     // The tenancy boundary(-ies) this account operates inside. Required for
     // manager/team_lead/user at creation time (enforced in user.controller.js, not here, so
@@ -94,6 +103,14 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Hooked on save rather than inside setPassword so a seed that writes passwordHash directly
+// (seedAustraliaNewZealand.js, importVtsSessions.js) stamps it too. A new account is stamped at
+// creation, which is harmless: no token can predate the account.
+userSchema.pre('save', function stampPasswordChange(next) {
+  if (this.isModified('passwordHash')) this.passwordChangedAt = new Date();
+  next();
+});
 
 userSchema.methods.setPassword = async function setPassword(plain) {
   this.passwordHash = await bcrypt.hash(plain, 10);

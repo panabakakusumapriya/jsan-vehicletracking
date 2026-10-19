@@ -1,5 +1,5 @@
 const { Server } = require('socket.io');
-const { verifyToken } = require('../utils/jwt');
+const { verifyToken, issuedBeforePasswordChange } = require('../utils/jwt');
 const User = require('../models/User');
 
 let io = null;
@@ -18,6 +18,8 @@ function initSocket(server) {
       const payload = verifyToken(token);
       const user = await User.findById(payload.sub);
       if (!user || !user.active) return next(new Error('unauthorized'));
+      // Same rule as the REST middleware: a token from before a password change is refused.
+      if (issuedBeforePasswordChange(payload, user)) return next(new Error('unauthorized'));
       socket.user = user;
       return next();
     } catch (err) {

@@ -119,6 +119,10 @@ function createApp() {
         superadmin: true,
         panelTokenWeek: true,
         analyticsDashboard: true,
+        // Setting an account's password refuses every token issued before the change (REST and
+        // socket), so a reset signs that account out everywhere at once. Before this build an old
+        // token stayed valid until its JWT expiry. See User.passwordChangedAt.
+        passwordChangeSignsOut: true,
       },
     })
   );

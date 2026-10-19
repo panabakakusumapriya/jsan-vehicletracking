@@ -2,6 +2,7 @@ const User = require('../models/User');
 const Project = require('../models/Project');
 const asyncHandler = require('../utils/asyncHandler');
 const { isAdmin, isSuperadmin } = require('../utils/roles');
+const { signToken } = require('../utils/jwt');
 const { canManageDriver, linkedOrOnProjects } = require('../utils/scope');
 const custody = require('../services/assetCustody');
 const { releaseAllForDriver } = custody;
@@ -310,10 +311,13 @@ exports.update = asyncHandler(async (req, res) => {
   if (b.password) await user.setPassword(b.password);
 
   await user.save();
-  if (assetProblems.length) {
-    return res.json({ user: user.toSafeJSON(), warning: assetProblems.map((p) => p.error).join('; ') });
-  }
-  res.json({ user: user.toSafeJSON() });
+  const out = { user: user.toSafeJSON() };
+  // Setting a password refuses every token issued before it — including the one this request
+  // arrived with when someone resets their OWN. Hand back a fresh token so that caller carries on
+  // signed in instead of being bounced to the login screen by its own change.
+  if (b.password && String(user._id) === String(req.user._id)) out.token = signToken(user);
+  if (assetProblems.length) out.warning = assetProblems.map((p) => p.error).join('; ');
+  res.json(out);
 });
 
 // DELETE /api/users/:id  (soft delete: mark inactive)
