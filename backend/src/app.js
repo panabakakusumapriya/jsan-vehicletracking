@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const env = require('./config/env');
 
 function createApp() {
   const app = express();
@@ -51,6 +52,9 @@ function createApp() {
       ok: true,
       service: 'jsan-tracking-api',
       time: new Date().toISOString(),
+      // The token lifetimes actually in force — configuration, not code — so a host variable that
+      // quietly overrides a default is visible from outside. See PANEL_JWT_EXPIRES_IN in env.js.
+      tokenLifetime: { panel: env.PANEL_JWT_EXPIRES_IN, driver: env.DRIVER_JWT_EXPIRES_IN },
       features: {
         databaseHotels: true,
         // Uploads are stored in MongoDB (GridFS) and survive a redeploy. When false, this build

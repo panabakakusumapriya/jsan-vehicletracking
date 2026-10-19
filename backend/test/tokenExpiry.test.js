@@ -18,6 +18,10 @@ function assert(cond, msg) {
   // so this test is hermetic like the rest of the suite — it is checking that env.js's
   // DRIVER_JWT_EXPIRES_IN default matches this value, not depending on it.
   process.env.DRIVER_JWT_EXPIRES_IN = '365d';
+  // The panel DEFAULT is under test: '' is "set" to dotenv (so .env cannot fill it in) and falsy
+  // to env.js (so the default applies). The OLD name is set to what the Railway host carried for
+  // ten days after the week shipped — it must change nothing now.
+  process.env.PANEL_JWT_EXPIRES_IN = '';
   process.env.JWT_EXPIRES_IN = '30d';
 
   const { connectDB } = require('../src/config/db');
@@ -31,7 +35,8 @@ function assert(cond, msg) {
 
   console.log('\n── config ──');
   assert(env.DRIVER_JWT_EXPIRES_IN === '365d', 'driver expiry is 365d');
-  assert(env.JWT_EXPIRES_IN === '30d', 'admin/manager expiry is unaffected, still 30d');
+  assert(env.PANEL_JWT_EXPIRES_IN === '7d', 'panel expiry defaults to 7d');
+  assert(env.JWT_EXPIRES_IN === undefined, 'the retired JWT_EXPIRES_IN host variable is not read at all');
 
   const driver = new User({ name: 'Driver', email: 'driver@x.com', role: 'user' });
   await driver.setPassword('pw123456'); await driver.save();
@@ -51,12 +56,12 @@ function assert(cond, msg) {
   const adminToken = signToken(admin);
   const { iat: aIat, exp: aExp } = jwt.decode(adminToken);
   const adminDays = Math.round((aExp - aIat) / DAY);
-  assert(adminDays === 30, `admin token still lives 30 days (got ${adminDays})`);
+  assert(adminDays === 7, `admin token lives 7 days despite a stale JWT_EXPIRES_IN=30d in the environment (got ${adminDays})`);
 
   const managerToken = signToken(manager);
   const { iat: mIat, exp: mExp } = jwt.decode(managerToken);
   const managerDays = Math.round((mExp - mIat) / DAY);
-  assert(managerDays === 30, `manager (non-driver role) also gets the 30-day expiry, not the driver one`);
+  assert(managerDays === 7, `manager (non-driver role) also gets the 7-day expiry, not the driver one`);
 
   console.log('\n── through the real /login endpoint ──');
   const request = require('supertest');
@@ -71,7 +76,10 @@ function assert(cond, msg) {
   const adminLogin = await request(app).post('/api/auth/login').send({ email: 'admin@x.com', password: 'pw123456' });
   const adminLoginDecoded = jwt.decode(adminLogin.body.token);
   const adminLoginDays = Math.round((adminLoginDecoded.exp - adminLoginDecoded.iat) / DAY);
-  assert(adminLogin.status === 200 && adminLoginDays === 30, 'a real admin login still issues a 30-day token');
+  assert(adminLogin.status === 200 && adminLoginDays === 7, 'a real admin login issues a 7-day token');
+
+  const health = await request(app).get('/health');
+  assert(health.body.tokenLifetime?.panel === '7d' && health.body.tokenLifetime?.driver === '365d', '/health reports the lifetimes in force');
 
   console.log('\n── one driver account, signed in on two phones at once ──');
   const meOk = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${driverLogin.body.token}`);

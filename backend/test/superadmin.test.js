@@ -20,7 +20,7 @@ function assert(cond, msg) {
   process.env.JWT_SECRET = 'superadmin_test_secret_1234567890';
   // The DEFAULT is under test. An empty value is "set" to dotenv (so .env cannot fill it in) and
   // falsy to env.js (so the default applies).
-  process.env.JWT_EXPIRES_IN = '';
+  process.env.PANEL_JWT_EXPIRES_IN = '';
   process.env.DRIVER_JWT_EXPIRES_IN = '';
   const { connectDB } = require('../src/config/db');
   await connectDB();

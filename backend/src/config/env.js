@@ -16,9 +16,17 @@ module.exports = {
   MONGODB_URI: process.env.MONGODB_URI,
   JWT_SECRET: process.env.JWT_SECRET,
   // Admin/manager/team_lead tokens — a week: the panel is used from browsers, often shared
-  // office machines, so a sign-in that lingered for a month was the wrong trade. Set
-  // JWT_EXPIRES_IN on the host to override (it was 30d until 2026-10-09).
-  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
+  // office machines, so a sign-in that lingered for a month was the wrong trade (it was 30d
+  // until 2026-10-09). Set PANEL_JWT_EXPIRES_IN on the host to override.
+  //
+  // Renamed from JWT_EXPIRES_IN on 2026-10-19, and the old name is deliberately NOT read any
+  // more. The Railway host carried JWT_EXPIRES_IN=30d from the .env template, so after the 7d
+  // default shipped the live API went on issuing 30-day panel tokens for ten days without anyone
+  // noticing — a stale override silently beat a deliberate change. A fresh name means the week
+  // takes effect on deploy with no dashboard step to remember; anyone who truly wants a longer
+  // panel sign-in has to set the new variable on purpose. GET /health reports the lifetime in
+  // force, so the next such drift is visible from outside.
+  PANEL_JWT_EXPIRES_IN: process.env.PANEL_JWT_EXPIRES_IN || '7d',
   // Driver-portal (mobile app) tokens. A driver may be signed in on several phones at once
   // (see auth.controller.js login) — a lost/stolen phone is revoked by
   // deactivating the account, not by waiting out the JWT — so a long-lived token here trades

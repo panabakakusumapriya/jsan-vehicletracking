@@ -19,7 +19,7 @@ const nextSecond = () => new Promise((r) => setTimeout(r, 1100 - (Date.now() % 1
   const mongod = await MongoMemoryServer.create();
   process.env.MONGODB_URI = mongod.getUri('password_change_test');
   process.env.JWT_SECRET = 'password_change_test_secret_1234567890';
-  process.env.JWT_EXPIRES_IN = '7d';
+  process.env.PANEL_JWT_EXPIRES_IN = '7d';
   process.env.DRIVER_JWT_EXPIRES_IN = '365d';
 
   const { connectDB } = require('../src/config/db');
