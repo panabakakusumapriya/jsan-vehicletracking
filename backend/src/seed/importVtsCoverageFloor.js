@@ -50,6 +50,7 @@
  * Inputs are dumps of the VTS API: `geofences/roads?projectId=` ({roads:[{g:[[lat,lon]…],c,by}]}),
  * `drivers`, and optionally `locations/project-tracks` (for dates; without it every claim is dated
  * now). Options: --project="PRJ-025-HE-DRIVE-AUSGNZ" --buffer=15 --min-fraction=0.3 --min-meters=50
+ * --create-missing-drivers (inactive placeholder accounts for coverage owners with no account here)
  * --bbox=latMin,latMax,lonMin,lonMax (limit to an area, for checking) --report=<file.json>
  */
 const fs = require('fs');
@@ -67,6 +68,9 @@ const args = new Map(
 const PROJECT_NAME = String(args.get('project') || 'PRJ-025-HE-DRIVE-AUSGNZ');
 const APPLY = args.get('apply') === true;
 const REVERT = args.has('revert') ? String(args.get('revert')) : null;
+const CREATE_MISSING = args.get('create-missing-drivers') === true;
+// Test logins on VTS — never real driving (as in importVtsSessions.js).
+const TEST_EMAILS = new Set(['autest@vts.com', 'projaus@gmail.com']);
 const BUFFER = Number(args.get('buffer') || 15);
 const MIN_FRACTION = Number(args.get('min-fraction') || 0.3);
 const MIN_METERS = Number(args.get('min-meters') || 50);
@@ -232,7 +236,8 @@ async function revert(batch) {
   if (!APPLY) return log('Dry run — add --apply to remove them.');
   const c = await LinkCoverage.deleteMany({ importBatchId: batch });
   const t = await Trip.deleteMany({ importBatchId: batch });
-  log(`Removed ${c.deletedCount} claims and ${t.deletedCount} trips.`);
+  const u = await require('../models/User').collection.deleteMany({ importBatchId: batch, active: false });
+  log(`Removed ${c.deletedCount} claims, ${t.deletedCount} trips and ${u.deletedCount} placeholder accounts.`);
 }
 
 async function main() {
@@ -261,9 +266,26 @@ async function main() {
   const vtsById = new Map((Array.isArray(vtsList) ? vtsList : vtsList.drivers || []).map((d) => [String(d._id), d]));
   const users = await User.find({ role: 'user' }).select('_id name email').lean();
   const userByEmail = new Map(users.map((u) => [String(u.email).toLowerCase(), u]));
+  // A VTS driver with no account here — or one VTS itself no longer knows (deleted there, while the
+  // roads they drove stay painted on its map) — gets an inactive placeholder with --create-missing-
+  // drivers, so their roads are not the ones left below VTS. Ids are fixed now so claims can name
+  // them in a dry run; the accounts are written only with --apply. VTS test logins are never credited.
+  const placeholders = new Map();
   const accountFor = (vtsDriverId) => {
     const d = vtsById.get(String(vtsDriverId));
-    return d ? userByEmail.get(String(d.email || '').toLowerCase()) || null : null;
+    const email = String((d && d.email) || '').toLowerCase();
+    if (TEST_EMAILS.has(email)) return null;
+    const existing = email ? userByEmail.get(email) : null;
+    if (existing || !CREATE_MISSING) return existing || null;
+    if (!placeholders.has(String(vtsDriverId))) {
+      placeholders.set(String(vtsDriverId), {
+        _id: new mongoose.Types.ObjectId(),
+        name: d ? String(d.name).replace(/\s+(HTL?|SMD)\d+$/i, '').trim() : `VTS driver ${String(vtsDriverId).slice(-6)} (removed from VTS)`,
+        email: email || `vts-${vtsDriverId}@removed.vts.invalid`,
+        placeholder: true,
+      });
+    }
+    return placeholders.get(String(vtsDriverId));
   };
 
   const cleared = new Set(
@@ -368,6 +390,7 @@ async function main() {
   }
   log('Credited to:');
   for (const [name, r] of [...perDriver].sort((a, b) => b[1].m - a[1].m)) log(`  ${name.padEnd(36)} ${String(r.links).padStart(6)} links ${km(r.m).padStart(8)} km`);
+  for (const p of placeholders.values()) log(`${APPLY ? 'Creating' : 'Would create'} inactive placeholder account: ${p.name} <${p.email}>`);
   if (skipped.cleared) log(`Left alone — cleared by a manager: ${skipped.cleared} links, ${skipped.clearedKm.toFixed(1)} km`);
   for (const [k, r] of skipped.noAccount) log(`Left alone — no account here for ${k}: ${r.links} links, ${r.km.toFixed(1)} km`);
   if (args.has('report')) {
@@ -379,8 +402,28 @@ async function main() {
   if (!APPLY) return log('\nDry run — nothing written. Add --apply.');
   if (!claims.length) return log('\nNothing to write.');
 
-  // One placeholder trip per (driver, delivery).
   const batch = `vtsfloor-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(3).toString('hex')}`;
+  for (const p of placeholders.values()) {
+    if (!claims.some((c) => c.user === p)) continue;
+    const u = new User({
+      _id: p._id,
+      name: p.name,
+      email: p.email,
+      role: 'user',
+      projectIds: [project._id],
+      country: 'AU',
+      // Inactive on purpose: the account exists to own VTS's coverage, not to be signed into.
+      active: false,
+    });
+    await u.setPassword(crypto.randomBytes(24).toString('hex'));
+    await withRetry(() => u.save());
+    // Not a User schema field, so written past the model: it is only what lets --revert remove
+    // exactly the accounts this batch made.
+    await withRetry(() => User.collection.updateOne({ _id: u._id }, { $set: { importBatchId: batch } }));
+    log(`Created placeholder ${p.name} <${p.email}>`);
+  }
+
+  // One placeholder trip per (driver, delivery).
   const groups = new Map();
   for (const c of claims) {
     const key = `${c.user._id}:${c.version}`;
