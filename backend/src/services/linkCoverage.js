@@ -1,7 +1,9 @@
+const mongoose = require('mongoose');
 const Trip = require('../models/Trip');
 const RoadLink = require('../models/RoadLink');
 const LinkCoverage = require('../models/LinkCoverage');
 const NetworkVersion = require('../models/NetworkVersion');
+const WorkArea = require('../models/WorkArea');
 const CoverageReset = require('../models/CoverageReset');
 const User = require('../models/User');
 const env = require('../config/env');
@@ -137,12 +139,41 @@ function sampleLink(coords) {
   return samples;
 }
 
+const boxesIntersect = (a, b) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+
+// Where each delivery lies, so a route is only looked up against the ones it could reach. The union
+// of its areas' bboxes, padded for links that sit outside every area. A delivery with no areas
+// (a roads-only import) has no extent and is always looked up.
+const EXTENT_TTL_MS = 10 * 60 * 1000;
+const EXTENT_PAD_DEG = 0.02;
+const extentCache = new Map();
+async function versionExtent(networkVersionId) {
+  const key = String(networkVersionId);
+  const hit = extentCache.get(key);
+  if (hit && Date.now() - hit.at < EXTENT_TTL_MS) return hit.box;
+  const [row] = await WorkArea.aggregate([
+    { $match: { networkVersionId: new mongoose.Types.ObjectId(key), 'bbox.3': { $exists: true } } },
+    {
+      $group: {
+        _id: null,
+        w: { $min: { $arrayElemAt: ['$bbox', 0] } },
+        s: { $min: { $arrayElemAt: ['$bbox', 1] } },
+        e: { $max: { $arrayElemAt: ['$bbox', 2] } },
+        n: { $max: { $arrayElemAt: ['$bbox', 3] } },
+      },
+    },
+  ]);
+  const box = row ? [row.w - EXTENT_PAD_DEG, row.s - EXTENT_PAD_DEG, row.e + EXTENT_PAD_DEG, row.n + EXTENT_PAD_DEG] : null;
+  extentCache.set(key, { at: Date.now(), box });
+  return box;
+}
+
 /**
  * Every link of the version that the route passes near. Windowed by route length: each window's
  * padded bbox is one $geoIntersects on the 2dsphere index, and a window never spans a gap between
  * two separately-matched shapes (the bbox across a gap would be all countryside).
  */
-async function candidateLinks(networkVersionId, items) {
+async function candidateLinks(networkVersionId, items, extent = null) {
   const links = new Map();
   let pts = [];
   let acc = 0;
@@ -151,6 +182,12 @@ async function candidateLinks(networkVersionId, items) {
   const flush = async () => {
     if (!pts.length) return;
     const [w, s, e, n] = bboxPad(bboxOf(pts), env.LINK_COVER_BUFFER_METERS + 5);
+    // A window nowhere near the delivery cannot find any of its links: skip the round trip.
+    if (extent && !boxesIntersect([w, s, e, n], extent)) {
+      pts = [];
+      acc = 0;
+      return;
+    }
     const rows = await RoadLink.find({
       networkVersionId,
       geometry: {
@@ -275,20 +312,50 @@ function routeSample(steps, n = 24) {
  * { ctx: null } when the project has no active network, { ctx, steps: [] } when the trip has no
  * usable geometry, and the full picture otherwise. Nothing here writes.
  */
-async function analyseTrip(trip) {
+async function analyseTrip(trip, { others: withOthers = true } = {}) {
   // Walked first: where the route went is what decides which of the project's live deliveries
   // the trip is measured against (see pickVersion in assignedAreas.js).
   const steps = walkTrip(trip);
   const ctx = await assignedAreasForTrip(trip, routeSample(steps));
   if (!ctx) return { ctx: null };
 
-  if (!steps.length) return { ctx, steps, index: null, covered: new Map(), split: null };
+  if (!steps.length) return { ctx, steps, index: null, covered: new Map(), split: null, others: [] };
 
   const index = routeIndex(steps);
   const split = ctx.areas.length ? splitByArea(index.items, ctx.areas) : null;
   const links = await candidateLinks(ctx.networkVersionId, index.items);
   const covered = matchLinks(index, links);
-  return { ctx, steps, index, covered, split };
+
+  /**
+   * The same drive also covers whatever OTHER live delivery's links lie under it.
+   *
+   * Deliveries can overlap on the ground — PRJ-025's two Queensland deliveries share much of
+   * Brisbane — and the ledger is keyed per delivery. Measured against one delivery only, a trip
+   * left the other copy of every street it drove red on the map and on the phones, under a route
+   * that plainly drove it: 1,133 km on just 16 trips in the Brisbane audit of 2026-10-19, and the
+   * main reason the map read below the old VTS app's. So coverage is claimed in every delivery the
+   * route reaches. The trip's FIGURES (UKM, in/out of area, basis) stay with ctx's delivery alone.
+   */
+  const others = [];
+  if (withOthers) {
+    const box = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const it of index.items) {
+      for (const [x, y] of [it.p, it.q]) {
+        if (x < box[0]) box[0] = x;
+        if (y < box[1]) box[1] = y;
+        if (x > box[2]) box[2] = x;
+        if (y > box[3]) box[3] = y;
+      }
+    }
+    for (const v of ctx.liveVersionIds || []) {
+      if (String(v) === String(ctx.networkVersionId)) continue;
+      const extent = await versionExtent(v);
+      if (extent && !boxesIntersect(box, extent)) continue;
+      const found = matchLinks(index, await candidateLinks(v, index.items, extent));
+      if (found.size) others.push({ networkVersionId: v, covered: found });
+    }
+  }
+  return { ctx, steps, index, covered, split, others };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -497,7 +564,8 @@ async function computeTripLinkMetrics(tripId, analysis = null) {
     return { tripId: trip._id, ...set, ...eff };
   };
 
-  const a = analysis || (await analyseTrip(trip));
+  // Figures are the trip's own delivery's only, so the other deliveries are not looked up.
+  const a = analysis || (await analyseTrip(trip, { others: false }));
   if (!a.ctx) {
     return finish({
       ...NULL_METRICS,
@@ -583,11 +651,21 @@ async function attributeTripLinks(tripId) {
       // A trip that can no longer claim anything must not keep what it claimed before. A re-match
       // that lost its geometry, or a drop to review under a no-claim policy, would otherwise leave
       // its streets blue on every phone and unclaimable by the next driver over them.
-      if (analysis.ctx) await releaseLinks(trip._id, analysis.ctx.networkVersionId);
+      if (analysis.ctx) await releaseLinks(trip._id);
       return await computeTripLinkMetrics(trip._id, analysis);
     }
 
     const displaced = await claimLinks(trip, analysis.ctx, analysis.covered);
+    for (const other of analysis.others) {
+      const ctx = { ...analysis.ctx, networkVersionId: other.networkVersionId };
+      for (const d of await claimLinks(trip, ctx, other.covered)) displaced.add(d);
+    }
+    // claimLinks releases within each delivery it visits; a delivery the route no longer reaches
+    // at all (a re-match moved it) is not visited, so what the trip held there goes here.
+    await LinkCoverage.deleteMany({
+      firstTripId: trip._id,
+      networkVersionId: { $nin: [analysis.ctx.networkVersionId, ...analysis.others.map((o) => o.networkVersionId)] },
+    });
     const result = await computeTripLinkMetrics(trip._id, analysis);
     for (const other of displaced) {
       if (String(other) === String(trip._id)) continue;
@@ -605,9 +683,14 @@ async function attributeTripLinks(tripId) {
   }
 }
 
-/** Drop every claim this trip holds in one version's ledger. */
-function releaseLinks(tripId, networkVersionId) {
-  return LinkCoverage.deleteMany({ networkVersionId, firstTripId: tripId });
+/**
+ * Drop every claim this trip holds. In every delivery: a trip claims in each one its route drove
+ * (see analyseTrip), so releasing only the delivery it is measured against would strand the rest.
+ * The second argument is accepted for older callers and ignored.
+ */
+// eslint-disable-next-line no-unused-vars
+function releaseLinks(tripId, _networkVersionId) {
+  return LinkCoverage.deleteMany({ firstTripId: tripId });
 }
 
 /**
@@ -643,9 +726,13 @@ async function rebuildNetworkCoverage(networkVersionId, { onProgress } = {}) {
   for (const trip of trips) {
     if (!eligibility(trip).eligible) continue;
     const analysis = await analyseTrip(trip);
-    if (!analysis.ctx || String(analysis.ctx.networkVersionId) !== String(version._id)) continue;
-    if (!analysis.steps.length) continue;
-    await claimLinks(trip, analysis.ctx, analysis.covered);
+    if (!analysis.ctx || !analysis.steps.length) continue;
+    // Measured against this delivery, or merely drove some of it (see analyseTrip's `others`).
+    const mine = String(analysis.ctx.networkVersionId) === String(version._id)
+      ? analysis.covered
+      : analysis.others.find((o) => String(o.networkVersionId) === String(version._id))?.covered;
+    if (!mine) continue;
+    await claimLinks(trip, { ...analysis.ctx, networkVersionId: version._id }, mine);
     claimed += 1;
     if (onProgress && claimed % 25 === 0) onProgress({ phase: 'claim', done: claimed, total: trips.length });
   }

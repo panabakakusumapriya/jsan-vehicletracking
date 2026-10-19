@@ -108,6 +108,10 @@ async function assignedAreasForTrip(trip, samplePoints = []) {
   return {
     networkVersionId: version._id,
     projectId: version.projectId,
+    // Every live delivery of the same project, the chosen one included. The trip's figures belong
+    // to `networkVersionId` alone, but its road coverage is claimed in each of these the route
+    // actually drove (linkCoverage.analyseTrip) — deliveries can overlap on the ground.
+    liveVersionIds: versions.filter((v) => String(v.projectId) === String(version.projectId)).map((v) => v._id),
     // Held during the trip: these decide the basis, the in/out-of-area split and "outside your
     // area" — what the driver was asked to do at the time.
     areas: inVersion(areas),

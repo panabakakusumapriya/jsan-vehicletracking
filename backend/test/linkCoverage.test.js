@@ -330,6 +330,48 @@ const near = (a, b, tol, msg) => assert(a != null && Math.abs(a - b) <= tol, `${
     near(r.linkUkmMeters, steps(4), 2, 'handing the polygon on keeps the first driver\'s early work as theirs');
   }
 
+  // ── Test: two live deliveries over the same ground ──
+  // PRJ-025's two Queensland deliveries overlap. A trip used to claim only in the one it was
+  // measured against, leaving the other copy of every street it drove red.
+  console.log('\n── Two live deliveries of the same ground ──');
+  {
+    const { releaseLinks } = require('../src/services/linkCoverage');
+    await reset();
+    const v2 = await NetworkVersion.create({ projectId: project._id, label: 'top-up', status: 'active' });
+    const area2 = await WorkArea.create({
+      projectId: project._id, networkVersionId: v2._id, areaCode: 'P2-1', name: 'Wallan P2',
+      geometry: { type: 'Polygon', coordinates: POLY }, bbox: [7.99, 49.999, 8.01, 50.005],
+    });
+    for (const [linkId, coords] of [['M1', line(8, 0, 2)], ['M2', line(8, 2, 4)]]) {
+      await RoadLink.create({
+        projectId: project._id, networkVersionId: v2._id, linkId, dirTravel: 'B', areaId: area2._id, areaCode: 'P2-1',
+        geometry: { type: 'LineString', coordinates: coords }, lengthMeters: lineLength(coords),
+      });
+    }
+    const d = await makeDriver('Both', [project._id]);
+    const t = await makeTrip(d, project, [shape(8, 0, 4)], 0, 20);
+    await attributeTripLinks(t._id);
+    const held = async () => (await LinkCoverage.find({ firstTripId: t._id }).select('linkId').lean()).map((r) => r.linkId).sort().join(',');
+    assert((await held()) === 'L1,L2,M1,M2', 'the drive claims its streets in BOTH deliveries');
+    const r = await reload(t);
+    assert(r.linkCoveredCount === 2, "the trip's own figures still count one delivery's links, not both");
+
+    // A re-match that shortens the route gives back the far half in both deliveries.
+    await Trip.updateOne({ _id: t._id }, { $set: { cleanedRouteShapes: [shape(8, 0, 2)] } });
+    await attributeTripLinks(t._id);
+    assert((await held()) === 'L1,M1', 'a shorter route releases what it no longer drove, in both deliveries');
+
+    // Rebuilding the delivery the trip is NOT measured against restores its claims there.
+    const primary = String((await reload(t)).assignedNetworkVersionId);
+    const otherVersion = primary === String(v2._id) ? version._id : v2._id;
+    await LinkCoverage.deleteMany({ networkVersionId: otherVersion });
+    await rebuildNetworkCoverage(otherVersion);
+    assert((await held()) === 'L1,M1', 'a rebuild of the other delivery replays the trip that drove it');
+
+    await releaseLinks(t._id, primary);
+    assert((await held()) === '', 'releasing a trip drops its claims in every delivery');
+  }
+
   await mongoose.disconnect();
   await mongod.stop();
   console.log(`\n🎉 ASSIGNED-NETWORK COVERAGE VERIFIED — ${passed} assertions passed`);
