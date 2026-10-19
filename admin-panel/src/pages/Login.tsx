@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { isAdminRole } from '../lib/types';
 import { FleetField } from '../components/FleetField';
 
 const MailSVG = () => (
@@ -95,14 +96,21 @@ export function Login() {
       .catch(() => {});
   }, []);
 
-  if (token && user) return <Navigate to={user.role === 'user' ? driverHome : '/'} replace />;
+  /**
+   * Where a signed-in account lands. Admins and superadmins open the fleet Dashboard; managers and
+   * team leads open the Live Map, because the Dashboard is admin-only (panel and API alike) and
+   * would only bounce them there. Drivers go to the driver portal, or back to a shared link.
+   */
+  const homeFor = (role: string) => (role === 'user' ? driverHome : isAdminRole(role) ? '/dashboard' : '/');
+
+  if (token && user) return <Navigate to={homeFor(user.role)} replace />;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
       const u = await signIn(email.trim(), password);
-      navigate(u.role === 'user' ? driverHome : '/', { replace: true });
+      navigate(homeFor(u.role), { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -166,7 +174,7 @@ export function Login() {
 
           <div className="login-card-header">
             {/* Full-colour wordmark — this half of the screen is white, so it needs no tile. */}
-            <img className="login-wordmark" src="/brand/logo.png" alt="JSAN ATLAS ops" />
+            <img className="login-wordmark" src="/brand/logo.png" alt="ATLAS ops" />
             <h1 className="login-title">Sign in to the fleet dashboard</h1>
             <p className="login-sub">
               Live map, trips, coverage and reports for your projects.
