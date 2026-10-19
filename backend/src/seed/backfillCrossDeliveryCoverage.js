@@ -6,10 +6,11 @@
  * main network and its P2 top-up — the other copy of every street it drove stayed red. New trips
  * get this from the engine as they are matched; this catches up the ones matched before.
  *
- * It runs each trip through attributeTripLinks, the worker's own path, so nothing here has rules of
- * its own: claims, takeovers, releases and the trip's figures come out exactly as a fresh
- * attribution would make them. Only trips measured against a delivery that shares the project with
- * another live delivery are visited — a lone delivery has nothing to gain.
+ * Each trip goes through linkCoverage.claimInOtherDeliveries — the engine's own matching and claim
+ * rules, applied to the deliveries other than the one the trip is measured against. Its own
+ * delivery's claims and its figures are already right and are not redone, which halves the road
+ * lookups. Only trips measured against a delivery whose extent meets another's are visited.
+ * Idempotent: a re-run, or an overlap after --since, changes nothing already claimed.
  *
  * Usage
  *   node src/seed/backfillCrossDeliveryCoverage.js                       # dry run: which trips
@@ -26,7 +27,7 @@ const args = new Map(
 );
 const PROJECT_NAME = String(args.get('project') || 'PRJ-025-HE-DRIVE-AUSGNZ');
 const APPLY = args.get('apply') === true;
-const CONCURRENCY = Math.max(1, Math.min(8, Number(args.get('concurrency')) || 4));
+const CONCURRENCY = Math.max(1, Math.min(12, Number(args.get('concurrency')) || 6));
 const log = (...a) => console.log(...a);
 
 async function main() {
@@ -36,7 +37,7 @@ async function main() {
   const Project = require('../models/Project');
   const LinkCoverage = require('../models/LinkCoverage');
   const { liveNetworkVersions } = require('../services/liveNetworks');
-  const { attributeTripLinks } = require('../services/linkCoverage');
+  const { claimInOtherDeliveries } = require('../services/linkCoverage');
 
   const project = await Project.findOne({ name: PROJECT_NAME }).select('_id').lean();
   if (!project) throw new Error(`Project ${PROJECT_NAME} not found`);
@@ -78,6 +79,7 @@ async function main() {
 
   let done = 0;
   let failed = 0;
+  let links = 0;
   const queue = [...ids];
   await Promise.all(
     Array.from({ length: CONCURRENCY }, async () => {
@@ -85,7 +87,8 @@ async function main() {
         const id = queue.shift();
         for (let attempt = 1; ; attempt++) {
           try {
-            await attributeTripLinks(id);
+            const r = await claimInOtherDeliveries(id);
+            if (r) links += r.links;
             break;
           } catch (err) {
             if (attempt >= 5) {
@@ -98,7 +101,7 @@ async function main() {
           }
         }
         done += 1;
-        if (done % 25 === 0) log(`  ${done}/${ids.length} (last ${id})`);
+        if (done % 25 === 0) log(`  ${done}/${ids.length} (last ${id}, ${links.toLocaleString()} links matched in other deliveries)`);
       }
     })
   );

@@ -336,26 +336,30 @@ async function analyseTrip(trip, { others: withOthers = true } = {}) {
    * main reason the map read below the old VTS app's. So coverage is claimed in every delivery the
    * route reaches. The trip's FIGURES (UKM, in/out of area, basis) stay with ctx's delivery alone.
    */
-  const others = [];
-  if (withOthers) {
-    const box = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const it of index.items) {
-      for (const [x, y] of [it.p, it.q]) {
-        if (x < box[0]) box[0] = x;
-        if (y < box[1]) box[1] = y;
-        if (x > box[2]) box[2] = x;
-        if (y > box[3]) box[3] = y;
-      }
-    }
-    for (const v of ctx.liveVersionIds || []) {
-      if (String(v) === String(ctx.networkVersionId)) continue;
-      const extent = await versionExtent(v);
-      if (extent && !boxesIntersect(box, extent)) continue;
-      const found = matchLinks(index, await candidateLinks(v, index.items, extent));
-      if (found.size) others.push({ networkVersionId: v, covered: found });
+  const others = withOthers ? await otherDeliveries(ctx, index) : [];
+  return { ctx, steps, index, covered, split, others };
+}
+
+/** The links each OTHER live delivery has under this route: [{ networkVersionId, covered }]. */
+async function otherDeliveries(ctx, index) {
+  const box = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const it of index.items) {
+    for (const [x, y] of [it.p, it.q]) {
+      if (x < box[0]) box[0] = x;
+      if (y < box[1]) box[1] = y;
+      if (x > box[2]) box[2] = x;
+      if (y > box[3]) box[3] = y;
     }
   }
-  return { ctx, steps, index, covered, split, others };
+  const others = [];
+  for (const v of ctx.liveVersionIds || []) {
+    if (String(v) === String(ctx.networkVersionId)) continue;
+    const extent = await versionExtent(v);
+    if (extent && !boxesIntersect(box, extent)) continue;
+    const found = matchLinks(index, await candidateLinks(v, index.items, extent));
+    if (found.size) others.push({ networkVersionId: v, covered: found });
+  }
+  return others;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -528,6 +532,31 @@ async function claimLinks(trip, ctx, matched) {
   });
 
   return displaced;
+}
+
+/**
+ * Claim a trip's roads in the live deliveries OTHER than the one it is measured against, leaving
+ * its own delivery's claims and its figures as they are. The catch-up for trips attributed before
+ * analyseTrip looked beyond one delivery (seed/backfillCrossDeliveryCoverage.js); attributeTripLinks
+ * does all of this and more for a trip being attributed now. Trips it displaces are re-measured,
+ * since a delivery that is "other" for this trip may be the one they are measured against.
+ */
+async function claimInOtherDeliveries(tripId) {
+  if (!env.LINK_COVERAGE_ENABLED) return null;
+  const trip = await Trip.findById(tripId).select(TRIP_FIELDS).lean();
+  if (!trip || (trip.status !== 'completed' && trip.status !== 'timed_out')) return null;
+  if (!eligibility(trip).eligible) return null;
+  const steps = walkTrip(trip);
+  if (!steps.length) return null;
+  const ctx = await assignedAreasForTrip(trip, routeSample(steps));
+  if (!ctx) return null;
+  const others = await otherDeliveries(ctx, routeIndex(steps));
+  const displaced = new Set();
+  for (const other of others) {
+    for (const d of await claimLinks(trip, { ...ctx, networkVersionId: other.networkVersionId }, other.covered)) displaced.add(d);
+  }
+  for (const d of displaced) if (String(d) !== String(trip._id)) await computeTripLinkMetrics(d);
+  return { deliveries: others.length, links: others.reduce((n, o) => n + o.covered.size, 0) };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -780,6 +809,7 @@ async function recomputeForAssignment(projectId, assignments) {
 
 module.exports = {
   attributeTripLinks,
+  claimInOtherDeliveries,
   computeTripLinkMetrics,
   recomputeForAssignment,
   rebuildNetworkCoverage,

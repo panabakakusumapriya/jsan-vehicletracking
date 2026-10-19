@@ -356,6 +356,15 @@ const near = (a, b, tol, msg) => assert(a != null && Math.abs(a - b) <= tol, `${
     const r = await reload(t);
     assert(r.linkCoveredCount === 2, "the trip's own figures still count one delivery's links, not both");
 
+    // The catch-up for trips attributed before this: only the other delivery is touched.
+    const { claimInOtherDeliveries } = require('../src/services/linkCoverage');
+    const own = String(r.assignedNetworkVersionId);
+    await LinkCoverage.deleteMany({ firstTripId: t._id, networkVersionId: { $ne: r.assignedNetworkVersionId } });
+    const ownBefore = JSON.stringify(await LinkCoverage.find({ networkVersionId: own }).select('-_id -createdAt').sort({ linkId: 1 }).lean());
+    const caught = await claimInOtherDeliveries(t._id);
+    assert(caught.deliveries === 1 && caught.links === 2 && (await held()) === 'L1,L2,M1,M2', 'the catch-up restores the claims in the other delivery');
+    assert(JSON.stringify(await LinkCoverage.find({ networkVersionId: own }).select('-_id -createdAt').sort({ linkId: 1 }).lean()) === ownBefore, "…and leaves the trip's own delivery untouched");
+
     // A re-match that shortens the route gives back the far half in both deliveries.
     await Trip.updateOne({ _id: t._id }, { $set: { cleanedRouteShapes: [shape(8, 0, 2)] } });
     await attributeTripLinks(t._id);
