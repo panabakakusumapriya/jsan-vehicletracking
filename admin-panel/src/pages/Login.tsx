@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
+import { isAdminRole } from '../lib/types';
 import { FleetField } from '../components/FleetField';
 
 const MailSVG = () => (
@@ -81,14 +82,21 @@ export function Login() {
   const nextParam = new URLSearchParams(window.location.search).get('next');
   const driverHome = nextParam && nextParam.startsWith('/driver') ? nextParam : '/driver';
 
-  if (token && user) return <Navigate to={user.role === 'user' ? driverHome : '/'} replace />;
+  /**
+   * Where a signed-in account lands. Admins and superadmins open the fleet Dashboard; managers and
+   * team leads open the Live Map, because the Dashboard is admin-only (panel and API alike) and
+   * would only bounce them there. Drivers go to the driver portal, or back to a shared link.
+   */
+  const homeFor = (role: string) => (role === 'user' ? driverHome : isAdminRole(role) ? '/dashboard' : '/');
+
+  if (token && user) return <Navigate to={homeFor(user.role)} replace />;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
       const u = await signIn(email.trim(), password);
-      navigate(u.role === 'user' ? driverHome : '/', { replace: true });
+      navigate(homeFor(u.role), { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
