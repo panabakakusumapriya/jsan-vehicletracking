@@ -141,18 +141,21 @@ function sampleLink(coords) {
 
 const boxesIntersect = (a, b) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
 
-// Where each delivery lies, so a route is only looked up against the ones it could reach. The union
-// of its areas' bboxes, padded for links that sit outside every area. A delivery with no areas
-// (a roads-only import) has no extent and is always looked up.
-const EXTENT_TTL_MS = 10 * 60 * 1000;
+// Where each delivery lies, so a route is only looked up against the ones it could reach: the union
+// of its areas' bboxes and of its links that sit outside every area. The second part is not a
+// rounding error — PRJ-025's Queensland delivery has 196k such links (31 %) running clear across
+// the state while its areas stop at Toowoomba, and an extent of areas alone skipped every route
+// out there. A delivery with neither has no extent and is always looked up.
+const EXTENT_TTL_MS = 60 * 60 * 1000;
 const EXTENT_PAD_DEG = 0.02;
 const extentCache = new Map();
 async function versionExtent(networkVersionId) {
   const key = String(networkVersionId);
   const hit = extentCache.get(key);
   if (hit && Date.now() - hit.at < EXTENT_TTL_MS) return hit.box;
-  const [row] = await WorkArea.aggregate([
-    { $match: { networkVersionId: new mongoose.Types.ObjectId(key), 'bbox.3': { $exists: true } } },
+  const id = new mongoose.Types.ObjectId(key);
+  const [areas] = await WorkArea.aggregate([
+    { $match: { networkVersionId: id, 'bbox.3': { $exists: true } } },
     {
       $group: {
         _id: null,
@@ -163,7 +166,24 @@ async function versionExtent(networkVersionId) {
       },
     },
   ]);
-  const box = row ? [row.w - EXTENT_PAD_DEG, row.s - EXTENT_PAD_DEG, row.e + EXTENT_PAD_DEG, row.n + EXTENT_PAD_DEG] : null;
+  // Links outside every area, by their first vertex (rides the networkVersionId+areaId index).
+  const [loose] = await RoadLink.aggregate([
+    { $match: { networkVersionId: id, areaId: null } },
+    { $project: { p: { $arrayElemAt: ['$geometry.coordinates', 0] } } },
+    {
+      $group: {
+        _id: null,
+        w: { $min: { $arrayElemAt: ['$p', 0] } },
+        s: { $min: { $arrayElemAt: ['$p', 1] } },
+        e: { $max: { $arrayElemAt: ['$p', 0] } },
+        n: { $max: { $arrayElemAt: ['$p', 1] } },
+      },
+    },
+  ]);
+  const union = [areas, loose].filter((r) => r && Number.isFinite(r.w)).reduce((acc, r) => (acc
+    ? [Math.min(acc[0], r.w), Math.min(acc[1], r.s), Math.max(acc[2], r.e), Math.max(acc[3], r.n)]
+    : [r.w, r.s, r.e, r.n]), null);
+  const box = union ? [union[0] - EXTENT_PAD_DEG, union[1] - EXTENT_PAD_DEG, union[2] + EXTENT_PAD_DEG, union[3] + EXTENT_PAD_DEG] : null;
   extentCache.set(key, { at: Date.now(), box });
   return box;
 }

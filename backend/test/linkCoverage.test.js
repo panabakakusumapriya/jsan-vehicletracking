@@ -348,6 +348,15 @@ const near = (a, b, tol, msg) => assert(a != null && Math.abs(a - b) <= tol, `${
         geometry: { type: 'LineString', coordinates: coords }, lengthMeters: lineLength(coords),
       });
     }
+    // And a road in neither delivery's areas, well beyond their outlines (the Queensland delivery
+    // has 196k such links) — made before anything is attributed, as an import would.
+    for (const [v, linkId] of [[version._id, 'L5'], [v2._id, 'M5']]) {
+      const coords = line(8, 30, 32);
+      await RoadLink.create({
+        projectId: project._id, networkVersionId: v, linkId, dirTravel: 'B', areaId: null, areaCode: null,
+        geometry: { type: 'LineString', coordinates: coords }, lengthMeters: lineLength(coords),
+      });
+    }
     const d = await makeDriver('Both', [project._id]);
     const t = await makeTrip(d, project, [shape(8, 0, 4)], 0, 20);
     await attributeTripLinks(t._id);
@@ -364,6 +373,12 @@ const near = (a, b, tol, msg) => assert(a != null && Math.abs(a - b) <= tol, `${
     const caught = await claimInOtherDeliveries(t._id);
     assert(caught.deliveries === 1 && caught.links === 2 && (await held()) === 'L1,L2,M1,M2', 'the catch-up restores the claims in the other delivery');
     assert(JSON.stringify(await LinkCoverage.find({ networkVersionId: own }).select('-_id -createdAt').sort({ linkId: 1 }).lean()) === ownBefore, "…and leaves the trip's own delivery untouched");
+
+    // The drive out to that road claims it in both deliveries.
+    const far = await makeTrip(d, project, [shape(8, 30, 32)], 60, 70);
+    await attributeTripLinks(far._id);
+    const farHeld = (await LinkCoverage.find({ firstTripId: far._id }).select('linkId').lean()).map((x) => x.linkId).sort().join(',');
+    assert(farHeld === 'L5,M5', `a road outside every area is claimed in both deliveries (got ${farHeld})`);
 
     // A re-match that shortens the route gives back the far half in both deliveries.
     await Trip.updateOne({ _id: t._id }, { $set: { cleanedRouteShapes: [shape(8, 0, 2)] } });
