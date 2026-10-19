@@ -620,7 +620,8 @@ select.input { cursor: pointer; }
   margin: 0 0 26px;
 }
 
-.login-left-content { max-width: 860px; }
+/* Centred in the space below the brand row (the panel has no footer since the app link went). */
+.login-left-content { max-width: 860px; margin-block: auto; }
 
 .login-left-tag {
   position:relative; overflow:hidden;
