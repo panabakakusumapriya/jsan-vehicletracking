@@ -177,15 +177,23 @@ async function settle(batch, { db, Trip, User }) {
   const { attributeTrip } = require('../services/globalUkm');
   const { attributeTripLinks } = require('../services/linkCoverage');
   const { recomputeDriverUkm } = require('../services/roadSegments');
-  const meta = await db.collection('archivedtrips').find({ 'archive.batch': batch }).project({ 'archive.driverId': 1, 'archive.day': 1 }).toArray();
+  const meta = await db.collection('archivedtrips').find({ 'archive.batch': batch }).project({ 'archive.driverId': 1, 'archive.day': 1, 'archive.archivedAt': 1 }).toArray();
   if (!meta.length) throw new Error(`No archived trips for batch ${batch}`);
+  // Resumable: a trip whose figures were already re-made after the archive is skipped, so a run
+  // that was interrupted (a dropped connection, the machine out of memory) picks up where it stopped.
+  const archivedAt = new Date(Math.min(...meta.map((m) => new Date(m.archive.archivedAt).getTime())));
   const todo = new Map();
+  let already = 0;
   for (const m of meta) {
     const d0 = new Date(`${m.archive.day}T00:00:00Z`);
-    const near = await Trip.find({ driverId: m.archive.driverId, status: { $in: ['completed', 'timed_out'] }, startedAt: { $gte: new Date(d0.getTime() - SETTLE_DAYS * 86400e3), $lte: new Date(d0.getTime() + (SETTLE_DAYS + 1) * 86400e3) } }).select('_id driverId').sort({ startedAt: 1 }).lean();
-    for (const t of near) todo.set(String(t._id), t);
+    const near = await Trip.find({ driverId: m.archive.driverId, status: { $in: ['completed', 'timed_out'] }, startedAt: { $gte: new Date(d0.getTime() - SETTLE_DAYS * 86400e3), $lte: new Date(d0.getTime() + (SETTLE_DAYS + 1) * 86400e3) } }).select('_id driverId globalUkmComputedAt linkCoverageComputedAt ukmStatus linkCoverageStatus').sort({ startedAt: 1 }).lean();
+    for (const t of near) {
+      const done = t.globalUkmComputedAt >= archivedAt && t.linkCoverageComputedAt >= archivedAt && t.ukmStatus !== 'pending' && t.linkCoverageStatus !== 'pending';
+      if (done) { if (!todo.has(String(t._id))) already++; continue; }
+      todo.set(String(t._id), t);
+    }
   }
-  log(`${todo.size} trips to re-attribute around ${new Set(meta.map((m) => m.archive.day)).size} replaced days${APPLY ? '' : ' (dry run)'}`);
+  log(`${todo.size} trips to re-attribute around ${new Set(meta.map((m) => m.archive.day)).size} replaced days (${already} already done since the archive)${APPLY ? '' : ' (dry run)'}`);
   if (!APPLY) return;
   let n = 0;
   for (const t of todo.values()) {
