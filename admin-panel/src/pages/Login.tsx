@@ -108,7 +108,7 @@ export function Login() {
           <div className="login-brand-icon">
             <img src="/brand/logo.png" alt="JSAN" />
           </div>
-          <div className="login-brand-name">JSAN ATLAS <span>ops</span></div>
+          <div className="login-brand-name">ATLAS <span>ops</span></div>
         </div>
 
         <div className="login-left-content">
