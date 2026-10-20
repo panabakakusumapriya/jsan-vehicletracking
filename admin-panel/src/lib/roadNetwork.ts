@@ -8,7 +8,8 @@ import { API_URL, api, tokenStore } from './api';
  * delivery does, so the browser keeps it, and so does this module for as long as the page is open.
  * Positions come out as Float32 offsets from the delivery's own centre, to be drawn with
  * COORDINATE_SYSTEM.LNGLAT_OFFSETS: float32 near an origin is precise to a few centimetres, where
- * float32 absolute longitudes would be off by metres.
+ * float32 absolute longitudes would be off by metres. The latitude offsets are not plain degrees —
+ * see latOffsetFor below.
  */
 
 export interface RoadNet {
@@ -18,7 +19,7 @@ export interface RoadNet {
   vertexCount: number;
   /** [lon, lat] every position is an offset from. */
   origin: [number, number];
-  /** lon/lat offsets in degrees, two per vertex. */
+  /** lon/lat offsets in degrees, two per vertex — the latitude one corrected for deck.gl (latOffsetFor). */
   positions: Float32Array;
   /** Vertex index each link starts at; one extra entry at the end. */
   startIndices: Uint32Array;
@@ -49,6 +50,36 @@ export interface RoadState {
 
 const decoded = new Map<string, RoadNet>(); // `${versionId}-${key}`
 
+const RAD = Math.PI / 180;
+const UNITS_PER_DEGREE = 512 / 360; // deck.gl's common space: the world is 512 units wide
+const mercatorY = (lat: number) => (512 / (2 * Math.PI)) * Math.log(Math.tan(Math.PI / 4 + (lat * RAD) / 2));
+
+/**
+ * The latitude offset to hand deck.gl so that a vertex is drawn exactly where it is.
+ *
+ * deck.gl turns an LNGLAT_OFFSETS latitude offset into map units with a second-order series around
+ * the origin's latitude (@math.gl/web-mercator getDistanceScales, highPrecision; project_offset_ in
+ * its shader): y = d × (unitsPerDegreeY + unitsPerDegreeY2 × d). Longitude is linear on the map and
+ * comes out exact, but the third-order term it drops grows with the cube of the distance from the
+ * origin — and a delivery's origin is the centre of its whole bbox. Queensland's main delivery is
+ * centred at 22.6° S, so Brisbane's roads (27.5° S) were drawn 875 m north of their streets and
+ * Cairns' 1.4 km south: on the map The Gap looked half undriven while its claims were all there.
+ *
+ * So the offset is not lat − lat0 but the d that solves that same quadratic for the exact Mercator
+ * distance from the origin — what deck.gl draws is then right to about a centimetre, anywhere in
+ * the delivery. Written as 2T / (b + √(b² + 4aT)), the root that is stable when a is tiny.
+ */
+function latOffsetFor(lat0: number) {
+  const cos0 = Math.cos(lat0 * RAD);
+  const b = UNITS_PER_DEGREE / cos0;
+  const a = (UNITS_PER_DEGREE * ((RAD * Math.tan(lat0 * RAD)) / cos0)) / 2;
+  const y0 = mercatorY(lat0);
+  return (lat: number) => {
+    const t = mercatorY(lat) - y0;
+    return (2 * t) / (b + Math.sqrt(Math.max(0, b * b + 4 * a * t)));
+  };
+}
+
 function decode(buf: ArrayBuffer): RoadNet {
   const view = new DataView(buf);
   const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
@@ -68,6 +99,7 @@ function decode(buf: ArrayBuffer): RoadNet {
   // Undo the deltas in integers (exact), then make each vertex an offset from the origin.
   const ox = Math.round(origin[0] * scale);
   const oy = Math.round(origin[1] * scale);
+  const latOffset = latOffsetFor(oy / scale);
   const positions = new Float32Array(header.vertexCount * 2);
   let lon = 0;
   let lat = 0;
@@ -75,7 +107,7 @@ function decode(buf: ArrayBuffer): RoadNet {
     lon += coords[i];
     lat += coords[i + 1];
     positions[i] = (lon - ox) / scale;
-    positions[i + 1] = (lat - oy) / scale;
+    positions[i + 1] = latOffset(lat / scale);
   }
   return {
     versionId: header.versionId,
