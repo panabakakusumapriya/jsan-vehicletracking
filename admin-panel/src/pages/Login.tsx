@@ -118,7 +118,7 @@ export function Login() {
 
   return (
     <div className="login-bg">
-      {/* The street-view capture drive behind both columns, with its HUD over the left one. */}
+      {/* The street-view capture drive, behind both columns. */}
       <StreetCapture />
 
       {/* ══ Left — the capture drive ══ */}
@@ -128,10 +128,6 @@ export function Login() {
             <img src="/brand/logo.png" alt="JSAN" />
           </div>
           <div className="login-brand-name">ATLAS <span>ops</span></div>
-        </div>
-        <div className="login-scene-label login-enter" style={stagger(1)}>
-          <strong>Street-level capture</strong>
-          <span>360° imagery · road coverage · QC</span>
         </div>
       </div>
 

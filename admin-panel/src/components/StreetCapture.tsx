@@ -3,13 +3,11 @@ import { useEffect, useRef } from 'react';
 /**
  * The login screen's backdrop: a street-view capture drive, seen from a chase camera. A JSAN
  * capture car with a 360° camera on a roof mast drives down a street drawn as a point cloud —
- * road, kerbs, lane markings, building facades with their windows, trees and street lights —
- * coloured by height in blue on white and fading into the distance. Every few seconds the camera
- * takes a frame: a ring flashes out from the camera head and a capture wave sweeps over the
- * street around the car, and the buildings it reaches turn a deeper blue, as captured.
- *
- * Over it sit HUD cards in the panel's own terms (frames, UKM, links matched, sync), ticking as
- * the car drives. All of it is decorative: no real drive or account data is shown.
+ * road, kerbs, lane markings, building facades with their windows, and trees — coloured by
+ * height in blue on white and fading into the distance. The buildings are what it captures: every
+ * few seconds the camera takes a frame, a ring flashes out from the camera head and a wave sweeps
+ * the street, a viewfinder frames the next building on each side, and that building fills in a
+ * deeper blue, as captured.
  *
  * Canvas 2D in one requestAnimationFrame loop. The canvas covers the whole login screen; the car
  * is centred in the left 70%, under the column the grid gives the sign-in card (max(460px, 30%)).
@@ -17,7 +15,7 @@ import { useEffect, useRef } from 'react';
  * pauses while the tab is hidden. With reduced motion asked for, one still frame is drawn.
  */
 
-type Building = { side: number; z0: number; len: number; x: number; depth: number; hgt: number; cap: number };
+type Building = { side: number; z0: number; len: number; x: number; depth: number; hgt: number; cap: number; shotAt: number };
 type Tree = { side: number; z: number; shape: number; cap: number };
 type Pulse = { born: number; z: number };
 
@@ -39,13 +37,11 @@ const CELL = 0.7; // the facade point grid, metres
 const FAR = 190; // how far down the street is drawn
 const ROAD_EDGE = 5.6; // the kerb
 const LANE_EDGE = 3.4;
-const CAPTURE_EVERY_M = 22; // a visible capture every this many metres (the HUD counts a frame every 5 m)
+const CAPTURE_EVERY_M = 22; // a capture every this many metres
 const WAVE_SPEED = 34; // m/s the capture wave travels out from the car
 const WAVE_LIFE = 1.4;
 const RING_LIFE = 0.9;
-const START_KM = 12.4;
-const START_FRAME = 4812;
-
+const SHOT_LIFE = 1.3; // how long a building's viewfinder stays up
 /** Small seeded generator, so the street is different on every load but stable within one. */
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -70,19 +66,8 @@ const TREE_SHAPES: Array<Array<[number, number, number]>> = Array.from({ length:
   return pts;
 });
 
-const pad = (n: number, len: number) => String(n).padStart(len, '0');
-
-/** A mini coverage map for the HUD: a few streets, with the drive's route drawing itself over them. */
-const MINI_STREETS = 'M4 14H116M4 34H116M4 54H116M18 4V60M48 4V60M78 4V60M104 4V60';
-const MINI_ROUTE = 'M18 58V34H48V14H78V34H104V54H78';
-
 export function StreetCapture() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const hudRef = useRef<HTMLDivElement>(null);
-  const floatRef = useRef<HTMLDivElement>(null);
-  const el = useRef<Record<string, HTMLElement | null>>({});
-  const bind = (key: string) => (node: HTMLElement | null) => { el.current[key] = node; };
-
   useEffect(() => {
     const canvas = canvasRef.current;
     const host = canvas?.parentElement;
@@ -100,12 +85,6 @@ export function StreetCapture() {
     let camZ = 0; // the chase camera's distance along the street
     let dist = 0; // metres driven since the page opened
     let nextCapture = CAPTURE_EVERY_M * 0.5;
-    let frameNo = START_FRAME;
-    let link = 12084471;
-    let gps = 0.8;
-    let hudAt = 0;
-    let chip = 0;
-    let chipAt = 0;
     const buildings: Building[] = [];
     const trees: Tree[] = [];
     const nextBuilding = [0, 0]; // per side (left, right): where the next building starts
@@ -123,7 +102,7 @@ export function StreetCapture() {
         while (nextBuilding[s] < camZ + FAR + 40) {
           const z0 = nextBuilding[s] + 2 + rand() * 5;
           const len = 8 + rand() * 16;
-          buildings.push({ side, z0, len, x: 10.5 + rand() * 3.5, depth: 8 + rand() * 6, hgt: 6 + rand() * rand() * 20, cap: 0 });
+          buildings.push({ side, z0, len, x: 9 + rand() * 3, depth: 8 + rand() * 6, hgt: 8 + rand() * rand() * 20, cap: 0, shotAt: 0 });
           nextBuilding[s] = z0 + len;
         }
         while (nextTree[s] < camZ + FAR + 40) {
@@ -148,23 +127,51 @@ export function StreetCapture() {
       carCx = leftW / 2;
       hy = h * 0.42;
       f = h * 0.95;
-      layoutHud(leftW);
       if (still) draw(performance.now());
     }
 
-    /** Show only the HUD pieces that fit beside the car, and park the frame card above its right. */
-    function layoutHud(leftW: number) {
-      const carHalf = (f / CAR_AHEAD) * 1.05;
-      const cards = el.current.cards;
-      const padL = Math.min(72, Math.max(28, w * 0.045)); // the cards' CSS left: clamp(28px, 4.5vw, 72px)
-      if (cards) cards.style.display = carCx - carHalf > padL + 236 + 16 ? '' : 'none';
-      const card = floatRef.current;
-      if (card) {
-        const left = carCx + carHalf * 0.55;
-        card.style.left = `${left}px`;
-        card.style.top = `${Math.max(120, hy - 150)}px`;
-        card.style.display = left + 250 < leftW - 16 ? '' : 'none';
+    /** A capture frames the nearest building ahead on each side that hasn't been captured yet. */
+    function frameBuildings(now: number) {
+      for (const side of [-1, 1]) {
+        let best: Building | null = null;
+        for (const b of buildings) {
+          const zr = b.z0 - camZ;
+          if (b.side !== side || b.cap || b.shotAt || zr < 14 || zr > 70) continue;
+          if (!best || b.z0 < best.z0) best = b;
+        }
+        if (best) best.shotAt = now;
       }
+    }
+
+    /** The viewfinder over a building being captured: corner brackets round its facade, and a flash. */
+    function drawShot(g: CanvasRenderingContext2D, b: Building, now: number) {
+      const age = (now - b.shotAt) / 1000;
+      if (age > SHOT_LIFE) return;
+      const X = b.side * b.x;
+      const zA = Math.max(b.z0, camZ + 2);
+      const zB = b.z0 + b.len;
+      if (zB <= zA) return;
+      const sx = (z: number) => vx + (f * (X - camX)) / (z - camZ);
+      const sy = (y: number, z: number) => hy + (f * (CAM_H + bob - y)) / (z - camZ);
+      const x0 = Math.min(sx(zA), sx(zB)); const x1 = Math.max(sx(zA), sx(zB));
+      const y0 = Math.min(sy(b.hgt, zA), sy(b.hgt, zB)); const y1 = Math.max(sy(0, zA), sy(0, zB));
+      const pad = 6;
+      const L = x0 - pad; const R = x1 + pad; const T = y0 - pad; const B = y1 + pad;
+      // The brackets close in a little as the frame is taken, then fade.
+      const settle = Math.min(1, age / 0.25);
+      const grow = (1 - settle) * 10;
+      const fade = age < SHOT_LIFE - 0.4 ? 1 : (SHOT_LIFE - age) / 0.4;
+      if (age < 0.3) {
+        g.fillStyle = `rgba(${ACCENT}, ${(0.14 * (1 - age / 0.3)).toFixed(3)})`;
+        g.fillRect(L, T, R - L, B - T);
+      }
+      const arm = Math.max(8, Math.min(22, (R - L) * 0.22, (B - T) * 0.22));
+      g.lineWidth = 2; g.strokeStyle = `rgba(${BRAND}, ${(0.9 * fade).toFixed(3)})`;
+      g.beginPath();
+      for (const [cx, cy, dx, dy] of [[L - grow, T - grow, 1, 1], [R + grow, T - grow, -1, 1], [L - grow, B + grow, 1, -1], [R + grow, B + grow, -1, -1]]) {
+        g.moveTo(cx + dx * arm, cy); g.lineTo(cx, cy); g.lineTo(cx, cy + dy * arm);
+      }
+      g.stroke();
     }
 
     /** The capture wave's brightness at a ground position: a ring travelling out from each capture. */
@@ -207,42 +214,10 @@ export function StreetCapture() {
       if (dist >= nextCapture) {
         nextCapture += CAPTURE_EVERY_M;
         pulses.push({ born: now, z: camZ + CAR_AHEAD });
-        capture();
+        frameBuildings(now);
       }
       pulses = pulses.filter((p) => now - p.born < Math.max(WAVE_LIFE, RING_LIFE) * 1000);
       grow();
-      if (now - hudAt > 250) { hudAt = now; tick(kmh); }
-      if (now - chipAt > 3200) { chipAt = now; chip = (chip + 1) % 4; setChip(); }
-    }
-
-    /** A frame taken: the frame card shows it, briefly flashing. */
-    function capture() {
-      frameNo = START_FRAME + Math.floor(dist / 5);
-      if (rand() < 0.45) link += 1 + Math.floor(rand() * 40);
-      gps = Math.min(1.2, Math.max(0.5, gps + (rand() - 0.5) * 0.2));
-      const e = el.current;
-      if (e.fFrame) e.fFrame.textContent = pad(frameNo, 6);
-      if (e.fLink) e.fLink.textContent = String(link);
-      if (e.fGps) e.fGps.textContent = `±${gps.toFixed(1)} m`;
-      if (e.fHead) e.fHead.textContent = `N ${pad(10 + Math.round(rand() * 5), 3)}°`;
-      const card = floatRef.current;
-      if (card) { card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash'); }
-    }
-
-    /** The HUD's running numbers. */
-    function tick(kmh: number) {
-      const e = el.current;
-      const set = (k: string, s: string) => { const n = e[k]; if (n && n.textContent !== s) n.textContent = s; };
-      set('frames', pad(START_FRAME + Math.floor(dist / 5), 6));
-      set('speed', `${Math.round(kmh)} km/h`);
-      set('km', `${(START_KM + dist / 1000).toFixed(1)} km`);
-      set('cov', `${Math.min(99.9, 61.4 + (dist / 1000) * 0.8).toFixed(1)}%`);
-      set('links', (1284 + Math.floor(dist / 120)).toLocaleString('en-AU'));
-      set('stamp', `FRAMES ${(START_FRAME + Math.floor(dist / 5)).toLocaleString('en-AU')}`);
-    }
-
-    function setChip() {
-      hudRef.current?.querySelectorAll('.sc-chip').forEach((c, i) => c.classList.toggle('on', i === chip));
     }
 
     /** The capture car from behind: white body, blue glass and light bar, a 360° camera on a mast. */
@@ -397,18 +372,6 @@ export function StreetCapture() {
         }
         if ((z % 9) < 3.2) point(0, 0, z, 6, 0.9, 0);
       }
-      // Street lights, every 32 m, staggered across the street.
-      const p0 = Math.floor(camZ / 32);
-      for (let k = p0; k * 32 < camZ + FAR; k++) {
-        for (const sd of [-1, 1]) {
-          const z = k * 32 + (sd > 0 ? 16 : 0);
-          const x = sd * 6.2;
-          const lit = litAt(x, z, now);
-          for (let y = 0; y <= 8; y += 0.3) point(x, y, z, 5, 0.85, lit);
-          for (let a = 0.2; a <= 1.6; a += 0.2) point(x - sd * a, 8 + a * 0.12, z, 6, 0.85, lit);
-        }
-      }
-
       // Trees on the footpath.
       for (const t of trees) {
         const x0 = t.side * 7.6;
@@ -426,10 +389,11 @@ export function StreetCapture() {
         const stepM = CELL * lod;
         const X = b.side * b.x;
         const litNear = litAt(X, Math.max(b.z0, camZ + CAR_AHEAD), now);
-        if (litNear > 0.45) b.cap = 1;
+        // Captured once its frame is taken; it fills in deeper from then on.
+        if (b.shotAt && !b.cap && now - b.shotAt > 250) b.cap = 1;
         const rows = Math.floor(b.hgt / CELL);
         const cols = Math.floor(b.len / CELL);
-        const toneOf = (y: number) => Math.min(7, 1 + Math.round((5 * y) / 24) + b.cap);
+        const toneOf = (y: number) => Math.min(7, 1 + Math.round((5 * y) / 24) + b.cap * 2);
         const base = 0.72 + b.cap * 0.2;
         for (let col = 0; col <= cols; col += lod) {
           const zz = b.z0 + col * CELL;
@@ -463,6 +427,7 @@ export function StreetCapture() {
         g.fill();
       }
 
+      for (const b of buildings) if (b.shotAt) drawShot(g, b, now);
       drawCar(g, now);
     }
 
@@ -484,8 +449,6 @@ export function StreetCapture() {
 
     camZ = 0;
     grow();
-    tick(48);
-    setChip();
     const ro = new ResizeObserver(resize);
     ro.observe(host);
     resize();
@@ -505,51 +468,5 @@ export function StreetCapture() {
     };
   }, []);
 
-  return (
-    <>
-      <canvas ref={canvasRef} className="sc-canvas" aria-hidden="true" />
-      <div ref={hudRef} className="sc-hud" aria-hidden="true">
-        <div className="sc-cards" ref={bind('cards')}>
-          <div className="sc-card">
-            <div className="sc-card-head"><i className="sc-live" /> Capture live</div>
-            <dl>
-              <dt>Frames</dt><dd ref={bind('frames')}>—</dd>
-              <dt>Interval</dt><dd>5.0 m</dd>
-              <dt>Camera</dt><dd>360° · 6 lens</dd>
-              <dt>Speed</dt><dd ref={bind('speed')}>—</dd>
-            </dl>
-          </div>
-          <div className="sc-card">
-            <div className="sc-card-head">Road coverage</div>
-            <svg className="sc-mini" viewBox="0 0 120 64">
-              <path d={MINI_STREETS} />
-              <path className="sc-mini-route" d={MINI_ROUTE} pathLength={100} />
-            </svg>
-            <dl>
-              <dt>UKM today</dt><dd ref={bind('km')}>—</dd>
-              <dt>Network</dt><dd className="sc-good" ref={bind('cov')}>—</dd>
-              <dt>Links matched</dt><dd ref={bind('links')}>—</dd>
-              <dt>Sync</dt><dd className="sc-good">Up to date</dd>
-            </dl>
-          </div>
-        </div>
-
-        <div className="sc-float" ref={floatRef}>
-          <div className="sc-card-head sc-good">Frame captured</div>
-          <dl>
-            <dt>Frame</dt><dd ref={bind('fFrame')}>{pad(START_FRAME, 6)}</dd>
-            <dt>Link ID</dt><dd ref={bind('fLink')}>12084471</dd>
-            <dt>Heading</dt><dd ref={bind('fHead')}>N 012°</dd>
-            <dt>GPS</dt><dd ref={bind('fGps')}>±0.8 m</dd>
-          </dl>
-          <div className="sc-float-foot">Front · Rear · Left · Right</div>
-        </div>
-
-        <div className="sc-chips">
-          {['360°', 'Front', 'Left', 'Right'].map((c) => <span className="sc-chip" key={c}>{c}</span>)}
-        </div>
-        <div className="sc-stamp"><span ref={bind('stamp')}>FRAMES</span> · GPS locked</div>
-      </div>
-    </>
-  );
+  return <canvas ref={canvasRef} className="sc-canvas" aria-hidden="true" />;
 }
