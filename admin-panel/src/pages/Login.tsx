@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
+import { API_URL } from '../lib/api';
 import { isAdminRole } from '../lib/types';
-import { FleetField } from '../components/FleetField';
+import { StreetCapture } from '../components/StreetCapture';
 
 const MailSVG = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -27,44 +28,50 @@ const EyeSVG = ({ off }: { off?: boolean }) => (
     {off && <path d="M3 3l18 18"/>}
   </svg>
 );
-const MapSVG = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14M15 6v14"/>
-  </svg>
-);
-const ClockSVG = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
-  </svg>
-);
-const RoadSVG = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M4 21 9 3M20 21 15 3M12 5v2M12 11v2M12 17v2"/>
-  </svg>
-);
-const PhoneSVG = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/>
-  </svg>
-);
 
-/** What this platform actually does — the same words the panel's own pages use. */
+/** What this platform actually does — the same words the panel's own pages use. Shown one at a time under the form. */
 const features = [
-  { SVG: MapSVG,   title: 'Live map',               desc: 'Every vehicle on one map, as it drives' },
-  { SVG: ClockSVG, title: 'Trips & working hours',  desc: 'Start, end, km and hours — recorded automatically' },
-  { SVG: RoadSVG,  title: 'UKM & road coverage',    desc: 'New road driven, measured against customer networks' },
-  { SVG: PhoneSVG, title: 'Driver app',             desc: 'Keeps recording offline, syncs when back in signal' },
+  { title: 'Live map',              desc: 'Every capture vehicle on one map, as it drives' },
+  { title: 'Trips & working hours', desc: 'Start, end, km and hours, recorded automatically' },
+  { title: 'UKM & road coverage',   desc: 'New road captured, measured against the customer network' },
+  { title: 'Driver app',            desc: 'Keeps recording offline, syncs when back in signal' },
 ];
 
 /** Entrance order for the panel's content: each piece rises a beat after the one before. */
 const stagger = (i: number) => ({ '--i': i } as React.CSSProperties);
 
-/** Lets a feature card's glow follow the pointer (the CSS reads --mx / --my). */
-function spotlight(e: React.MouseEvent<HTMLDivElement>) {
-  const el = e.currentTarget;
-  const r = el.getBoundingClientRect();
-  el.style.setProperty('--mx', `${e.clientX - r.left}px`);
-  el.style.setProperty('--my', `${e.clientY - r.top}px`);
+type ServerState = 'checking' | 'online' | 'offline';
+const SERVER_TEXT: Record<ServerState, string> = { checking: 'Checking server…', online: 'Server online', offline: 'Server unreachable' };
+
+/** Whether the API answers, checked on open and every 30 s, so a sign-in failure isn't a mystery. */
+function useServerState(): ServerState {
+  const [state, setState] = useState<ServerState>('checking');
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      try {
+        const res = await fetch(`${API_URL}/health`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+        if (alive) setState(res.ok ? 'online' : 'offline');
+      } catch {
+        if (alive) setState('offline');
+      }
+    };
+    check();
+    const id = setInterval(check, 30000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+  return state;
+}
+
+/** The feature shown under the form, moving on every few seconds (held still with reduced motion). */
+function useRotatingFeature() {
+  const [i, setI] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const id = setInterval(() => setI((n) => (n + 1) % features.length), 4500);
+    return () => clearInterval(id);
+  }, []);
+  return i;
 }
 
 export function Login() {
@@ -77,6 +84,8 @@ export function Login() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
+  const server = useServerState();
+  const featureIdx = useRotatingFeature();
 
   // A driver sent here from a shared link (e.g. /academy) goes back to it after signing in.
   const nextParam = new URLSearchParams(window.location.search).get('next');
@@ -105,41 +114,25 @@ export function Login() {
   };
 
   const watchCaps = (e: React.KeyboardEvent<HTMLInputElement>) => setCapsLock(e.getModifierState('CapsLock'));
+  const feature = features[featureIdx];
 
   return (
     <div className="login-bg">
+      {/* The street-view capture drive behind both columns, with its HUD over the left one. */}
+      <StreetCapture />
 
-      {/* ══ Left — the fleet ══ */}
+      {/* ══ Left — the capture drive ══ */}
       <div className="login-left">
-        <FleetField className="login-field-canvas" />
         <div className="login-brand-row login-enter" style={stagger(0)}>
           <div className="login-brand-icon">
             <img src="/brand/logo.png" alt="JSAN" />
           </div>
           <div className="login-brand-name">ATLAS <span>ops</span></div>
         </div>
-
-        <div className="login-left-content">
-          <div className="login-left-tag login-enter" style={stagger(1)}>Live fleet tracking &amp; road coverage</div>
-          <h2 className="login-enter" style={stagger(2)}>
-            Every road driven.<br />
-            <em>Every kilometre counted.</em>
-          </h2>
-         
-
-          <div className="login-feature-list">
-            {features.map(({ SVG, title, desc }, i) => (
-              <div className="login-feature login-enter" key={title} style={stagger(4 + i)} onMouseMove={spotlight}>
-                <div className="login-feature-icon"><SVG /></div>
-                <div className="login-feature-text">
-                  <strong>{title}</strong>
-                  <span>{desc}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+        <div className="login-scene-label login-enter" style={stagger(1)}>
+          <strong>Street-level capture</strong>
+          <span>360° imagery · road coverage · QC</span>
         </div>
-
       </div>
 
       {/* ══ Right — sign in ══ */}
@@ -147,11 +140,14 @@ export function Login() {
         <div className="login-card">
 
           <div className="login-card-header">
-            {/* Full-colour wordmark — this half of the screen is white, so it needs no tile. */}
-            <img className="login-wordmark" src="/brand/logo.png" alt="ATLAS ops" />
+            <div className="login-card-top">
+              {/* Full-colour wordmark — the card is white, so it needs no tile. */}
+              <img className="login-wordmark" src="/brand/logo.png" alt="ATLAS ops" />
+              <span className={`login-server login-server--${server}`} role="status">{SERVER_TEXT[server]}</span>
+            </div>
             <h1 className="login-title">Sign in to the fleet dashboard</h1>
             <p className="login-sub">
-              Live map, trips, coverage and reports for your projects.
+              Live map, trips, road coverage and reports for every capture drive.
             </p>
           </div>
 
@@ -217,7 +213,10 @@ export function Login() {
             </button>
           </form>
 
-          
+          <div className="login-inside">
+            <span className="login-inside-tag">Inside</span>
+            <span className="login-inside-text" key={featureIdx}><strong>{feature.title}</strong> · {feature.desc}</span>
+          </div>
         </div>
       </div>
 

@@ -147,14 +147,7 @@ tbody tr:hover { background: #f6f7fd; }
 .cov-tabs button { border-radius: 8px; border-bottom: 0; padding: 10px 15px; }
 .cov-tabs button.active { background: #fff; border-bottom: 0; box-shadow: 0 2px 6px #19243b0a; }
 .cov-notice, .cov-job-row, .cov-details, .cov-file { border-radius: 12px; }
-.login-left { background: #fff; }
 .login-brand-icon { border-radius: 12px; box-shadow: 0 8px 25px #00000020; }
-.login-feature { border-color: var(--line); background: #fff; border-radius: 14px; }
-.login-feature-icon { color: var(--brand); background: var(--brand-light); border-radius: 11px; }
-.login-feature-text span { color: var(--muted); }
-.login-left-foot { color: var(--muted); }
-.login-left-content h2 em { color: var(--brand); }
-.login-right { background: #fff; }
 .login-card { max-width: 420px; padding: 32px; background: #fff; border: 0; border-radius: 24px; box-shadow: 0 18px 60px #18264414; }
 .login-title { color: var(--text); font-weight: 750; }
 .login-input-wrap { border-radius: 11px; border-color: var(--line-2); }
@@ -215,13 +208,8 @@ summary { color: var(--text-2); }
 .page-emblem--users, .page-emblem--phone, .page-emblem--folder,
 .page-emblem--health, .page-emblem--shield, .page-emblem--weather,
 .page-emblem--history { color: var(--brand); background: var(--brand-light); }
-.login-feature-icon { color: var(--brand); }
-.login-left-tag { color: var(--brand); border-color: #0050a938; background: #0050a912; }
 .stat::before { background: linear-gradient(90deg, var(--brand), var(--brand-cyan)); }
 
-.login-left-content h2 em { background: linear-gradient(110deg, #0050a9 0%, #3b8ee8 40%, #7db8e8 50%, #3b8ee8 60%, #0050a9 100%) 100% 0 / 250% 100%; -webkit-background-clip: text; background-clip: text; }
-.login-left-content > p { color: var(--text-2); }
-.login-left-tag::before { background: var(--brand); box-shadow: 0 0 6px #0050a999; }
 
 /* Secondary product wordmark, aligned with the JSAN logo above. */
 .sidebar .brand { gap: 8px; }
