@@ -151,6 +151,16 @@ function assert(cond, msg) {
   const gone = await auth(request(app).get(`/api/trips/export-jobs/${built._id}/download`));
   assert(gone.status === 410 && /run it again/.test(gone.body.error || ''), `a zip that has expired says so (got ${gone.status})`);
 
+  console.log('\n── a zip built where this server cannot reach it is rebuilt here, not refused ──');
+  const elsewhere = await auth(request(app).post('/api/trips/export-jobs')).send({ format: 'kml', layer: 'raw' });
+  // As a server on the older code leaves it: ready, its zip on that server's own disk.
+  await ExportJob.updateOne({ _id: elsewhere.body.jobId }, { $set: { status: 'ready', filePath: '/tmp/jsan-exports/on-another-server.zip', fileId: null, bytes: 1234 } });
+  const healed = await auth(request(app).get(`/api/trips/export-jobs/${elsewhere.body.jobId}/download`)).buffer(true).parse(binary);
+  const healedJob = await ExportJob.findById(elsewhere.body.jobId);
+  assert(healed.status === 200 && healed.body.slice(0, 2).toString() === 'PK', `the download is rebuilt and served (got ${healed.status})`);
+  assert(!!healedJob.fileId && healed.body.length === healedJob.bytes, 'from the shared store, whole');
+  assert(healedJob.status === 'ready' && healedJob.done === 3, `with every trip in it (got ${healedJob.done})`);
+
   await mongoose.disconnect();
   await mongod.stop();
   console.log(`\n🎉 BACKGROUND EXPORT JOBS VERIFIED — ${passed} assertions passed\n`);

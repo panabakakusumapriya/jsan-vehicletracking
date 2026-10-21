@@ -234,4 +234,5 @@ function stopExportRunner() {
   timer = null;
 }
 
-module.exports = { startExportRunner, stopExportRunner, tick, cleanupArtifacts, EXPORT_DIR, EXPORT_BUCKET, ORIGIN };
+// runJob doubles as the download's rebuild: same frozen filter, same file, stored in GridFS.
+module.exports = { startExportRunner, stopExportRunner, tick, cleanupArtifacts, runJob, EXPORT_DIR, EXPORT_BUCKET, ORIGIN };

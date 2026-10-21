@@ -6,7 +6,7 @@ const User = require('../models/User');
 const LocationPoint = require('../models/LocationPoint');
 const ExportJob = require('../models/ExportJob');
 const fileStore = require('../utils/fileStore');
-const { EXPORT_BUCKET, ORIGIN: EXPORT_ORIGIN } = require('../services/exportRunner');
+const { EXPORT_BUCKET, ORIGIN: EXPORT_ORIGIN, runJob: buildExport } = require('../services/exportRunner');
 const asyncHandler = require('../utils/asyncHandler');
 const { workMsExpr } = require('../utils/workHours');
 const { accessibleDriverFilter } = require('../utils/scope');
@@ -344,9 +344,20 @@ exports.getExportJob = asyncHandler(async (req, res) => {
 
 // GET /api/trips/export-jobs/:id/download
 exports.downloadExportJob = asyncHandler(async (req, res) => {
-  const job = await ExportJob.findOne({ _id: req.params.id, requestedBy: req.user._id });
+  let job = await ExportJob.findOne({ _id: req.params.id, requestedBy: req.user._id });
   if (!job) return res.status(404).json({ error: 'Export job not found' });
   if (job.status !== 'ready') return res.status(409).json({ error: `Export is ${job.status}` });
+  // Ready, but its zip is somewhere this server cannot read: built by a server on the older code
+  // (which kept zips on its own disk, and claims any queued job whoever queued it), or on a disk a
+  // restart has since wiped. Rebuild it here from the job's frozen filter — the same trips, the
+  // same file — instead of sending the user back to start again.
+  if (!job.fileId && (!job.filePath || !fs.existsSync(job.filePath))) {
+    await buildExport(job);
+    job = await ExportJob.findById(job._id);
+    if (!job || !job.fileId) {
+      return res.status(500).json({ error: job?.error || 'Could not rebuild the export — please run it again' });
+    }
+  }
   if (job.fileId) {
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${String(job.fileName || 'trips.zip').replace(/["\r\n]/g, '')}"`);
@@ -362,10 +373,7 @@ exports.downloadExportJob = asyncHandler(async (req, res) => {
     });
     return stream.pipe(res);
   }
-  // A job from before the shared store: its zip was on the disk of the server that built it.
-  if (!job.filePath || !fs.existsSync(job.filePath)) {
-    return res.status(410).json({ error: 'Export file has been cleaned up — please run it again' });
-  }
+  // A job from before the shared store whose zip is still on this server's disk.
   res.download(job.filePath, job.fileName);
 });
 
