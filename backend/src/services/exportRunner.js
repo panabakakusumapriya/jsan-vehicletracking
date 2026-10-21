@@ -33,7 +33,10 @@ const { decodePolyline6 } = require('./roadSegments');
  * And a job is built by the server that created it: ORIGIN is stamped on the job at request time
  * and the runner claims only its own, so a stray process sharing the database never takes
  * another deployment's work. A job nobody has claimed for ADOPT_AFTER_MS is open to any runner,
- * so one queued just before a restart is not stranded.
+ * so one queued just before a restart is not stranded. An unstamped job (from a server still on
+ * the older code, which writes no origin) is NOT treated as anyone's: it is left to the server that
+ * queued it and adopted only after the same wait, so a laptop on the production database cannot
+ * take Railway's jobs while Railway runs a build from before this change.
  */
 
 const EXPORT_DIR = path.join(os.tmpdir(), 'jsan-exports');
@@ -191,8 +194,8 @@ async function tick() {
   const job = await ExportJob.findOneAndUpdate(
     {
       status: 'queued',
-      // Ours, unstamped (queued before the stamp existed), or left unclaimed long enough to adopt.
-      $or: [{ origin: ORIGIN }, { origin: null }, { createdAt: { $lt: new Date(Date.now() - ADOPT_AFTER_MS) } }],
+      // Ours, or left unclaimed long enough to adopt (unstamped jobs included — see above).
+      $or: [{ origin: ORIGIN }, { createdAt: { $lt: new Date(Date.now() - ADOPT_AFTER_MS) } }],
     },
     { $set: { status: 'running', startedAt: new Date() } },
     { sort: { createdAt: 1 }, new: true }

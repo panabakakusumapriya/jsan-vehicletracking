@@ -56,7 +56,7 @@ function assert(cond, msg) {
   console.log('\n── a queued snapped job is picked up, built, and marked ready ──');
   const job = await ExportJob.create({
     requestedBy: driver._id, format: 'kml', layer: 'snapped',
-    filter: { status: { $in: ['completed', 'timed_out'] } }, total: 3,
+    filter: { status: { $in: ['completed', 'timed_out'] } }, total: 3, origin: ORIGIN,
   });
 
   const ranId = await tick();
@@ -97,11 +97,18 @@ function assert(cond, msg) {
   // Straight to the collection: Mongoose treats createdAt as immutable and drops it from updates.
   await ExportJob.collection.updateOne({ _id: foreign._id }, { $set: { createdAt: new Date(Date.now() - 2 * 60_000) } });
   assert(String(await tick()) === String(foreign._id), 'one left unclaimed for over a minute is adopted, not stranded');
+  const legacy = await ExportJob.create({
+    requestedBy: driver._id, format: 'kml', layer: 'raw',
+    filter: { status: { $in: ['completed', 'timed_out'] } }, total: 3,
+  });
+  assert((await tick()) === null, 'a fresh unstamped job (older server code) is not taken — it is not ours');
+  await ExportJob.collection.updateOne({ _id: legacy._id }, { $set: { createdAt: new Date(Date.now() - 2 * 60_000) } });
+  assert(String(await tick()) === String(legacy._id), 'but it too is adopted once left for over a minute');
 
   console.log('\n── a failing job is recorded, not left running forever ──');
   const bad = await ExportJob.create({
     requestedBy: driver._id, format: 'kml', layer: 'raw',
-    filter: { startedAt: { $gte: 'not-a-date' } }, total: 1,
+    filter: { startedAt: { $gte: 'not-a-date' } }, total: 1, origin: ORIGIN,
   });
   await tick();
   const badAfter = await ExportJob.findById(bad._id);
