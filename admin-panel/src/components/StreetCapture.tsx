@@ -2,12 +2,13 @@ import { useEffect, useRef } from 'react';
 
 /**
  * The login screen's backdrop: a street-view capture drive, seen from a chase camera. A JSAN
- * capture car with a 360° camera on a roof mast drives down a street drawn as a point cloud —
- * road, kerbs, lane markings, building facades with their windows, and trees — coloured by
- * height in blue on white and fading into the distance. The buildings are what it captures: every
- * few seconds the camera takes a frame, a ring flashes out from the camera head and a wave sweeps
- * the street, a viewfinder frames the next building on each side, and that building fills in a
- * deeper blue, as captured.
+ * capture car with a 360° camera on a roof mast drives down a street lined with 3D buildings:
+ * solid white-and-blue volumes with a lit facade to the road, a shaded end wall, windows set into
+ * both, and on some a setback upper tier. The road and footpaths are pale surfaces with a point
+ * cloud of road grid, kerbs and lane markings over them. Everything fades into a pale haze with distance. The buildings are
+ * what it captures: every few seconds the camera takes a frame, a ring flashes out from the camera
+ * head and a wave sweeps the street, a viewfinder frames the next building on each side, and that
+ * building's windows light up deep blue, as captured.
  *
  * Canvas 2D in one requestAnimationFrame loop. The canvas covers the whole login screen; the car
  * is centred in the left 70%, under the column the grid gives the sign-in card (max(460px, 30%)).
@@ -15,8 +16,12 @@ import { useEffect, useRef } from 'react';
  * pauses while the tab is hidden. With reduced motion asked for, one still frame is drawn.
  */
 
-type Building = { side: number; z0: number; len: number; x: number; depth: number; hgt: number; cap: number; shotAt: number };
-type Tree = { side: number; z: number; shape: number; cap: number };
+type Building = {
+  side: number; z0: number; len: number; x: number; depth: number; hgt: number;
+  tierH: number; tierIn: number; // a setback upper storey (tierH 0 = none)
+  bay: number; floor: number; ribbon: boolean; // window spacing, storey height, banded or punched windows
+  cap: number; shotAt: number;
+};
 type Pulse = { born: number; z: number };
 
 // Tones, lightest to deepest: the land-dot blue (--brand-2) down to the brand blue (--brand).
@@ -33,7 +38,7 @@ const NAVY = '#0d1b33';
 const CAR_X = -1.7; // the car keeps to the left lane
 const CAR_AHEAD = 5.5; // metres from the chase camera to the car's rear
 const CAM_H = 2.6; // the chase camera's height above the road
-const CELL = 0.7; // the facade point grid, metres
+const NEAR = 1.5; // faces closer than this to the camera are clipped
 const FAR = 190; // how far down the street is drawn
 const ROAD_EDGE = 5.6; // the kerb
 const LANE_EDGE = 3.4;
@@ -53,18 +58,6 @@ function rng(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
-/** Four tree canopies as point offsets [x, y, z], shared by every tree on the street. */
-const TREE_SHAPES: Array<Array<[number, number, number]>> = Array.from({ length: 4 }, (_, k) => {
-  const r = rng(91 + k * 17);
-  const pts: Array<[number, number, number]> = [];
-  for (let i = 0; i < 70; i++) {
-    const u = r() * Math.PI * 2; const v = Math.acos(2 * r() - 1); const d = Math.cbrt(r());
-    pts.push([Math.sin(v) * Math.cos(u) * 1.8 * d, 4.6 + Math.cos(v) * 1.5 * d, Math.sin(v) * Math.sin(u) * 1.8 * d]);
-  }
-  for (let y = 0; y < 3.3; y += 0.35) pts.push([0, y, 0]);
-  return pts;
-});
 
 export function StreetCapture() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -86,9 +79,7 @@ export function StreetCapture() {
     let dist = 0; // metres driven since the page opened
     let nextCapture = CAPTURE_EVERY_M * 0.5;
     const buildings: Building[] = [];
-    const trees: Tree[] = [];
     const nextBuilding = [0, 0]; // per side (left, right): where the next building starts
-    const nextTree = [4, 11];
     let pulses: Pulse[] = [];
     const buckets: number[][] = PALETTE.map(() => []);
     const pointer = { x: 0, on: false };
@@ -102,16 +93,18 @@ export function StreetCapture() {
         while (nextBuilding[s] < camZ + FAR + 40) {
           const z0 = nextBuilding[s] + 2 + rand() * 5;
           const len = 8 + rand() * 16;
-          buildings.push({ side, z0, len, x: 9 + rand() * 3, depth: 8 + rand() * 6, hgt: 8 + rand() * rand() * 20, cap: 0, shotAt: 0 });
+          const hgt = 8 + rand() * rand() * 20;
+          const tiered = hgt > 11 && rand() < 0.4;
+          buildings.push({
+            side, z0, len, x: 9 + rand() * 3, depth: 8 + rand() * 6, hgt,
+            tierH: tiered ? 3.5 + rand() * 8 : 0, tierIn: 2 + rand() * 1.5,
+            bay: 2.2 + rand() * 1.1, floor: 3.1 + rand() * 0.5, ribbon: rand() < 0.3,
+            cap: 0, shotAt: 0,
+          });
           nextBuilding[s] = z0 + len;
-        }
-        while (nextTree[s] < camZ + FAR + 40) {
-          trees.push({ side, z: nextTree[s], shape: Math.floor(rand() * TREE_SHAPES.length), cap: 0 });
-          nextTree[s] += 11 + rand() * 8;
         }
       }
       for (let i = buildings.length - 1; i >= 0; i--) if (buildings[i].z0 + buildings[i].len < camZ - 2) buildings.splice(i, 1);
-      for (let i = trees.length - 1; i >= 0; i--) if (trees[i].z < camZ - 4) trees.splice(i, 1);
     }
 
     function resize() {
@@ -154,7 +147,8 @@ export function StreetCapture() {
       const sx = (z: number) => vx + (f * (X - camX)) / (z - camZ);
       const sy = (y: number, z: number) => hy + (f * (CAM_H + bob - y)) / (z - camZ);
       const x0 = Math.min(sx(zA), sx(zB)); const x1 = Math.max(sx(zA), sx(zB));
-      const y0 = Math.min(sy(b.hgt, zA), sy(b.hgt, zB)); const y1 = Math.max(sy(0, zA), sy(0, zB));
+      const top = b.hgt + b.tierH;
+      const y0 = Math.min(sy(top, zA), sy(top, zB)); const y1 = Math.max(sy(0, zA), sy(0, zB));
       const pad = 6;
       const L = x0 - pad; const R = x1 + pad; const T = y0 - pad; const B = y1 + pad;
       // The brackets close in a little as the frame is taken, then fade.
@@ -172,6 +166,103 @@ export function StreetCapture() {
         g.moveTo(cx + dx * arm, cy); g.lineTo(cx, cy); g.lineTo(cx, cy + dy * arm);
       }
       g.stroke();
+    }
+
+    /** Screen position of a world point (in front of the camera). */
+    const proj = (x: number, y: number, z: number): [number, number] => {
+      const zr = z - camZ;
+      return [vx + (f * (x - camX)) / zr, hy + (f * (CAM_H + bob - y)) / zr];
+    };
+    /** Add a world-space quad to the current path. */
+    function quad(g: CanvasRenderingContext2D, pts: Array<[number, number, number]>) {
+      pts.forEach(([x, y, z], i) => { const [px, py] = proj(x, y, z); if (i) g.lineTo(px, py); else g.moveTo(px, py); });
+      g.closePath();
+    }
+
+    /**
+     * One block of a building as a solid: its facade to the road (x = X, from za to zb), its end
+     * wall towards the camera (z = z0, running back from the road), windows set into both, and its
+     * edges. A captured building's windows turn deep blue.
+     */
+    function drawBlock(g: CanvasRenderingContext2D, b: Building, X: number, z0: number, za: number, zb: number, y0: number, y1: number, depth: number) {
+      const sd = b.side;
+      const back = X + sd * depth;
+      const lit = sd < 0 ? 1 : 0.97; // light from the left: left-hand facades a touch brighter
+      const cap = b.cap;
+      const far = zb - camZ;
+      const showWindows = (f * 1.4) / far > 2.2;
+
+      // End wall, in shade.
+      if (z0 >= camZ + NEAR) {
+        g.beginPath(); quad(g, [[X, y0, z0], [back, y0, z0], [back, y1, z0], [X, y1, z0]]);
+        g.fillStyle = cap ? '#c9dcf1' : '#d6e3f2'; g.fill();
+        g.lineWidth = 1; g.strokeStyle = `rgba(${BRAND}, 0.3)`; g.stroke();
+        if (showWindows) {
+          g.beginPath();
+          for (let fy = y0 + 1.1; fy + 1.5 < y1 - 0.5; fy += b.floor) {
+            if (b.ribbon) { quad(g, [[X + sd * 0.8, fy, z0], [back - sd * 0.8, fy, z0], [back - sd * 0.8, fy + 1.3, z0], [X + sd * 0.8, fy + 1.3, z0]]); continue; }
+            for (let wx = 1; wx + 1.3 < depth - 0.6; wx += b.bay) {
+              quad(g, [[X + sd * wx, fy, z0], [X + sd * (wx + 1.3), fy, z0], [X + sd * (wx + 1.3), fy + 1.5, z0], [X + sd * wx, fy + 1.5, z0]]);
+            }
+          }
+          g.fillStyle = cap ? 'rgba(0, 80, 169, 0.62)' : 'rgba(125, 184, 232, 0.42)'; g.fill();
+        }
+      }
+
+      // Facade to the road, lit, darker towards its foot.
+      const [, ty] = proj(X, y1, za);
+      const [, by] = proj(X, y0, za);
+      const grad = g.createLinearGradient(0, ty, 0, by);
+      grad.addColorStop(0, cap ? '#eef5fd' : '#fbfdff');
+      grad.addColorStop(1, cap ? '#d7e6f6' : '#e2ebf6');
+      g.beginPath(); quad(g, [[X, y0, za], [X, y1, za], [X, y1, zb], [X, y0, zb]]);
+      g.globalAlpha *= lit;
+      g.fillStyle = grad; g.fill();
+      g.globalAlpha /= lit;
+      g.lineWidth = 1; g.strokeStyle = `rgba(${BRAND}, 0.32)`; g.stroke();
+      if (showWindows) {
+        g.beginPath();
+        for (let fy = y0 + 1.1; fy + 1.5 < y1 - 0.5; fy += b.floor) {
+          if (b.ribbon) {
+            const a = Math.max(za, z0 + 0.8); const e = zb - 0.8;
+            if (e > a) quad(g, [[X, fy, a], [X, fy + 1.3, a], [X, fy + 1.3, e], [X, fy, e]]);
+            continue;
+          }
+          for (let wz = z0 + 1; wz + 1.4 < zb - 0.6; wz += b.bay) {
+            if (wz < za) continue;
+            quad(g, [[X, fy, wz], [X, fy + 1.5, wz], [X, fy + 1.5, wz + 1.4], [X, fy, wz + 1.4]]);
+          }
+        }
+        g.fillStyle = cap ? 'rgba(0, 80, 169, 0.72)' : 'rgba(125, 184, 232, 0.5)'; g.fill();
+      }
+      // Parapet: a firmer line along the roof edge.
+      g.beginPath();
+      const [p0x, p0y] = proj(X, y1, za); const [p1x, p1y] = proj(X, y1, zb);
+      g.moveTo(p0x, p0y); g.lineTo(p1x, p1y);
+      g.lineWidth = 1.6; g.strokeStyle = `rgba(${BRAND}, 0.45)`; g.stroke();
+    }
+
+    /** The buildings, far to near so nearer ones cover those behind, each fading into the haze. */
+    function drawBuildings(g: CanvasRenderingContext2D, now: number) {
+      const shown = buildings.filter((b) => b.z0 + b.len > camZ + NEAR + 0.5 && b.z0 - camZ < FAR);
+      shown.sort((a, b) => b.z0 - a.z0);
+      for (const b of shown) {
+        // Captured once its frame is taken; its windows light up from then on.
+        if (b.shotAt && !b.cap && now - b.shotAt > 250) b.cap = 1;
+        const za = Math.max(b.z0, camZ + NEAR);
+        const zb = b.z0 + b.len;
+        const zr = za - camZ;
+        g.globalAlpha = Math.max(0, Math.min(1, Math.pow(1 - zr / FAR, 1.1)));
+        const X = b.side * b.x;
+        if (b.tierH) {
+          const tz0 = b.z0 + 1.5; const tzb = zb - 1.5;
+          if (tzb > Math.max(tz0, camZ + NEAR)) {
+            drawBlock(g, b, X + b.side * b.tierIn, tz0, Math.max(tz0, camZ + NEAR), tzb, b.hgt, b.hgt + b.tierH, Math.max(2, b.depth - b.tierIn - 1));
+          }
+        }
+        drawBlock(g, b, X, b.z0, za, zb, 0, b.hgt, b.depth);
+      }
+      g.globalAlpha = 1;
     }
 
     /** The capture wave's brightness at a ground position: a ring travelling out from each capture. */
@@ -349,7 +440,19 @@ export function StreetCapture() {
 
       for (const b of buckets) b.length = 0;
 
-      // The road surface: a ground grid locked to the street, sparser with distance.
+      // The ground as surfaces: the carriageway and the footpaths, fading out towards the horizon.
+      const zN = camZ + NEAR; const zF = camZ + FAR;
+      const ground = (x0: number, x1: number, near: string) => {
+        const grad = g.createLinearGradient(0, hy, 0, h);
+        grad.addColorStop(0, 'rgba(255, 255, 255, 0)'); grad.addColorStop(0.35, near); grad.addColorStop(1, near);
+        g.beginPath(); quad(g, [[x0, 0, zN], [x1, 0, zN], [x1, 0, zF], [x0, 0, zF]]);
+        g.fillStyle = grad; g.fill();
+      };
+      ground(-ROAD_EDGE, ROAD_EDGE, '#e8eff8');
+      ground(-14, -ROAD_EDGE, '#f3f7fc');
+      ground(ROAD_EDGE, 14, '#f3f7fc');
+
+      // The road grid: points locked to the street, sparser with distance.
       const g0 = Math.ceil((camZ + 1.2) / 1.6);
       for (let k = g0; k * 1.6 < camZ + FAR; k++) {
         const zr = k * 1.6 - camZ;
@@ -372,51 +475,7 @@ export function StreetCapture() {
         }
         if ((z % 9) < 3.2) point(0, 0, z, 6, 0.9, 0);
       }
-      // Trees on the footpath.
-      for (const t of trees) {
-        const x0 = t.side * 7.6;
-        const lit = litAt(x0, t.z, now);
-        if (lit > 0.45) t.cap = 1;
-        for (const [dx, dy, dz] of TREE_SHAPES[t.shape]) point(x0 + dx, dy, t.z + dz, dy > 3 ? 3 + t.cap : 4, 0.7, lit);
-      }
-
-      // Building facades, windows left open, with the near end wall and a firmer roof line.
-      for (const b of buildings) {
-        const nearZr = b.z0 - camZ;
-        if (b.z0 + b.len < camZ + 1.2 || nearZr > FAR) continue;
-        // Coarser cells further away, in whole multiples so the near grid never shifts.
-        const lod = nearZr < 40 ? 1 : nearZr < 90 ? 2 : 4;
-        const stepM = CELL * lod;
-        const X = b.side * b.x;
-        const litNear = litAt(X, Math.max(b.z0, camZ + CAR_AHEAD), now);
-        // Captured once its frame is taken; it fills in deeper from then on.
-        if (b.shotAt && !b.cap && now - b.shotAt > 250) b.cap = 1;
-        const rows = Math.floor(b.hgt / CELL);
-        const cols = Math.floor(b.len / CELL);
-        const toneOf = (y: number) => Math.min(7, 1 + Math.round((5 * y) / 24) + b.cap * 2);
-        const base = 0.72 + b.cap * 0.2;
-        for (let col = 0; col <= cols; col += lod) {
-          const zz = b.z0 + col * CELL;
-          const lit = litAt(X, zz, now);
-          for (let row = 0; row <= rows; row += lod) {
-            // Windows: three-by-two holes in the facade, between floors and piers.
-            if (lod === 1 && row > 1 && row < rows - 1 && col % 4 !== 0 && row % 3 !== 0) continue;
-            const y = row * CELL;
-            point(X, y, zz, toneOf(y), base, lit);
-          }
-          point(X, rows * CELL, zz + stepM / 2, Math.min(7, toneOf(b.hgt) + 1), base + 0.15, lit);
-        }
-        // The corners, drawn denser and deeper, so each building reads as a box.
-        for (let y = 0; y <= rows * CELL; y += stepM / 2) {
-          point(X, y, b.z0, Math.min(7, toneOf(y) + 1), base + 0.15, litNear);
-          point(X, y, b.z0 + cols * CELL, Math.min(7, toneOf(y) + 1), base + 0.15, litNear);
-        }
-        if (b.z0 > camZ + 1.2) {
-          for (let xx = 0; xx <= b.depth; xx += stepM) {
-            for (let y = 0; y <= rows * CELL; y += stepM) point(X + b.side * xx, y, b.z0, toneOf(y), base * 0.7, litNear);
-          }
-        }
-      }
+      drawBuildings(g, now);
 
       for (let i = 0; i < buckets.length; i++) {
         const q = buckets[i];
