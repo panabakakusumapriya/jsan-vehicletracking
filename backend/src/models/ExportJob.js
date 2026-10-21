@@ -32,7 +32,12 @@ const exportJobSchema = new mongoose.Schema(
     // download that is quietly part-raw does not pass unnoticed.
     fellBackToRaw: { type: Number, default: 0 },
     fileName: { type: String, default: null },
+    // The finished zip in GridFS (bucket 'tripExports'), so whichever server answers the download
+    // can serve it. filePath is only set on jobs from before that, whose zip sat on one disk.
+    fileId: { type: mongoose.Schema.Types.ObjectId, default: null },
     filePath: { type: String, default: null },
+    // The server that created the job (services/exportRunner.js ORIGIN) — the one that builds it.
+    origin: { type: String, default: null },
     bytes: { type: Number, default: 0 },
     error: { type: String, default: null },
     startedAt: { type: Date, default: null },

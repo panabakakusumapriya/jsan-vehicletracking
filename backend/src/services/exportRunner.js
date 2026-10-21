@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const archiver = require('archiver');
 const ExportJob = require('../models/ExportJob');
+const fileStore = require('../utils/fileStore');
 const Trip = require('../models/Trip');
 const LocationPoint = require('../models/LocationPoint');
 // Required for their side effect of registering the schema: the populate() calls below reference
@@ -20,9 +21,29 @@ const { decodePolyline6 } = require('./roadSegments');
  * One job at a time, deliberately. The work is CPU-bound (polyline decode, KML string building,
  * zip deflate) on the same process that serves the API, so running several concurrently would
  * make the whole panel unresponsive rather than making any single export finish sooner.
+ *
+ * The finished zip is kept in GridFS, not on this container's disk. It used to stay in /tmp and
+ * be served from there, which only works when the process that built it is the one that answers
+ * the download: a redeploy or restart in between wiped it, and on 21 Oct 2026 a development
+ * server on a laptop, pointed at the production database, claimed about half of production's
+ * jobs and built them on the laptop — every one of those downloads came back "Export file has
+ * been cleaned up". The zip is still assembled in /tmp (archiver writes a stream) and uploaded
+ * once complete; any server can then serve it.
+ *
+ * And a job is built by the server that created it: ORIGIN is stamped on the job at request time
+ * and the runner claims only its own, so a stray process sharing the database never takes
+ * another deployment's work. A job nobody has claimed for ADOPT_AFTER_MS is open to any runner,
+ * so one queued just before a restart is not stranded.
  */
 
 const EXPORT_DIR = path.join(os.tmpdir(), 'jsan-exports');
+const EXPORT_BUCKET = 'tripExports';
+// Stable for the life of a container; differs between Railway and a laptop sharing its database.
+const ORIGIN = os.hostname();
+const ADOPT_AFTER_MS = 60_000;
+// A stored zip is deleted once its job record has gone (TTL, 24 h) and it is at least this old,
+// so the sweep never races an upload that has not recorded its file id yet.
+const ORPHAN_MIN_AGE_MS = 10 * 60_000;
 const TRIP_CHUNK = 25; // trips per point-fetch — bounds peak memory, see below
 
 let timer = null;
@@ -64,6 +85,7 @@ async function runJob(job) {
   const wantSnapped = job.layer === 'snapped';
   const fileName = `trips_${wantSnapped ? 'snapped_' : ''}${new Date(job.createdAt).toISOString().slice(0, 10)}_${String(job._id).slice(-6)}.zip`;
   const filePath = path.join(EXPORT_DIR, fileName);
+  let stored = null;
 
   try {
     const trips = await Trip.find(job.filter)
@@ -124,13 +146,21 @@ async function runJob(job) {
     await archive.finalize();
     await finished;
 
-    const { size } = fs.statSync(filePath);
+    // Into the shared store, then off this disk: the local copy was only ever scaffolding.
+    stored = await fileStore.putStream(fs.createReadStream(filePath), {
+      filename: fileName,
+      bucketName: EXPORT_BUCKET,
+      contentType: 'application/zip',
+      metadata: { jobId: job._id },
+    });
+    try { fs.unlinkSync(filePath); } catch { /* the sweep will get it */ }
     await ExportJob.updateOne(
       { _id: job._id },
-      { $set: { status: 'ready', fileName, filePath, bytes: size, done, fellBackToRaw: fellBack, completedAt: new Date() } }
+      { $set: { status: 'ready', fileName, fileId: stored.id, filePath: null, bytes: stored.bytes, done, fellBackToRaw: fellBack, completedAt: new Date() } }
     );
   } catch (err) {
     try { fs.existsSync(filePath) && fs.unlinkSync(filePath); } catch { /* nothing to clean */ }
+    if (stored) await fileStore.remove(stored.id, EXPORT_BUCKET);
     await ExportJob.updateOne(
       { _id: job._id },
       { $set: { status: 'failed', error: String(err.message).slice(0, 500), completedAt: new Date() } }
@@ -138,14 +168,20 @@ async function runJob(job) {
   }
 }
 
-/** Delete artifacts whose job record has expired (or vanished via TTL). */
+/** Delete artifacts whose job record has expired (or vanished via TTL): stored zips and local leftovers. */
 async function cleanupArtifacts() {
+  const ready = await ExportJob.find({ status: 'ready' }).select('fileName fileId').lean();
+  const liveIds = new Set(ready.filter((j) => j.fileId).map((j) => String(j.fileId)));
+  const old = await fileStore.list({ uploadDate: { $lt: new Date(Date.now() - ORPHAN_MIN_AGE_MS) } }, EXPORT_BUCKET);
+  for (const f of old) {
+    if (!liveIds.has(String(f._id))) await fileStore.remove(f._id, EXPORT_BUCKET);
+  }
+
   if (!fs.existsSync(EXPORT_DIR)) return;
-  const live = new Set(
-    (await ExportJob.find({ status: 'ready' }).select('fileName').lean()).map((j) => j.fileName)
-  );
+  // Jobs from before the shared store still name a file on disk; keep those until they expire.
+  const liveNames = new Set(ready.filter((j) => !j.fileId).map((j) => j.fileName));
   for (const f of fs.readdirSync(EXPORT_DIR)) {
-    if (live.has(f)) continue;
+    if (liveNames.has(f)) continue;
     try { fs.unlinkSync(path.join(EXPORT_DIR, f)); } catch { /* already gone */ }
   }
 }
@@ -153,7 +189,11 @@ async function cleanupArtifacts() {
 /** One sweep: claim the oldest queued job and build it. Exported so tests can drive it. */
 async function tick() {
   const job = await ExportJob.findOneAndUpdate(
-    { status: 'queued' },
+    {
+      status: 'queued',
+      // Ours, unstamped (queued before the stamp existed), or left unclaimed long enough to adopt.
+      $or: [{ origin: ORIGIN }, { origin: null }, { createdAt: { $lt: new Date(Date.now() - ADOPT_AFTER_MS) } }],
+    },
     { $set: { status: 'running', startedAt: new Date() } },
     { sort: { createdAt: 1 }, new: true }
   );
@@ -191,4 +231,4 @@ function stopExportRunner() {
   timer = null;
 }
 
-module.exports = { startExportRunner, stopExportRunner, tick, cleanupArtifacts, EXPORT_DIR };
+module.exports = { startExportRunner, stopExportRunner, tick, cleanupArtifacts, EXPORT_DIR, EXPORT_BUCKET, ORIGIN };

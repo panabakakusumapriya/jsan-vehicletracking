@@ -60,6 +60,8 @@ function createApp() {
         // Uploads are stored in MongoDB (GridFS) and survive a redeploy. When false, this build
         // still writes them to the container's ephemeral disk.
         durableUploads: true,
+        // Trip export zips are kept in GridFS and built only by the server that queued them.
+        durableExports: true,
         // Work areas can be imported without a road-network layer.
         optionalRoadLayer: true,
         // A roads-ONLY upload attaches to the project's active version instead of being rejected,

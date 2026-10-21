@@ -5,6 +5,8 @@ const Trip = require('../models/Trip');
 const User = require('../models/User');
 const LocationPoint = require('../models/LocationPoint');
 const ExportJob = require('../models/ExportJob');
+const fileStore = require('../utils/fileStore');
+const { EXPORT_BUCKET, ORIGIN: EXPORT_ORIGIN } = require('../services/exportRunner');
 const asyncHandler = require('../utils/asyncHandler');
 const { workMsExpr } = require('../utils/workHours');
 const { accessibleDriverFilter } = require('../utils/scope');
@@ -317,6 +319,8 @@ exports.createExportJob = asyncHandler(async (req, res) => {
     // let a later permission change alter what an already-requested export contains.
     filter,
     total,
+    // Built by this server's runner, not by any other process that shares the database.
+    origin: EXPORT_ORIGIN,
   });
 
   res.status(202).json({ jobId: job._id, status: job.status, total });
@@ -343,6 +347,22 @@ exports.downloadExportJob = asyncHandler(async (req, res) => {
   const job = await ExportJob.findOne({ _id: req.params.id, requestedBy: req.user._id });
   if (!job) return res.status(404).json({ error: 'Export job not found' });
   if (job.status !== 'ready') return res.status(409).json({ error: `Export is ${job.status}` });
+  if (job.fileId) {
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${String(job.fileName || 'trips.zip').replace(/["\r\n]/g, '')}"`);
+    if (job.bytes) res.setHeader('Content-Length', String(job.bytes));
+    const stream = fileStore.openDownload(job.fileId, EXPORT_BUCKET);
+    stream.on('error', () => {
+      if (res.headersSent) return res.end();
+      // res.json keeps a Content-Type already set, so the zip headers go first.
+      res.removeHeader('Content-Type');
+      res.removeHeader('Content-Disposition');
+      res.removeHeader('Content-Length');
+      res.status(410).json({ error: 'Export file has expired — please run it again' });
+    });
+    return stream.pipe(res);
+  }
+  // A job from before the shared store: its zip was on the disk of the server that built it.
   if (!job.filePath || !fs.existsSync(job.filePath)) {
     return res.status(410).json({ error: 'Export file has been cleaned up — please run it again' });
   }

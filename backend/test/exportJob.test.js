@@ -24,7 +24,13 @@ function assert(cond, msg) {
   const User = require('../src/models/User');
   const LocationPoint = require('../src/models/LocationPoint');
   const ExportJob = require('../src/models/ExportJob');
-  const { tick, cleanupArtifacts } = require('../src/services/exportRunner');
+  const { tick, cleanupArtifacts, EXPORT_BUCKET, ORIGIN } = require('../src/services/exportRunner');
+  const fileStore = require('../src/utils/fileStore');
+  const storedBytes = async (id) => {
+    let n = 0;
+    for await (const chunk of fileStore.openDownload(id, EXPORT_BUCKET)) n += chunk.length;
+    return n;
+  };
 
   const driver = new User({ name: 'Exp Driver', email: 'e@x.com', role: 'user' });
   await driver.setPassword('pw123456');
@@ -59,17 +65,38 @@ function assert(cond, msg) {
   const after = await ExportJob.findById(job._id);
   assert(after.status === 'ready', `status is ready (got ${after.status}${after.error ? ': ' + after.error : ''})`);
   assert(after.done === 3, `progress counted every trip (got ${after.done})`);
-  assert(after.bytes > 0, `the artifact has real bytes on disk (got ${after.bytes})`);
-  assert(fs.existsSync(after.filePath), 'the zip exists at the recorded path');
+  assert(after.bytes > 0, `the artifact has real bytes (got ${after.bytes})`);
 
-  // The size the job reports must match the file, or the download can be served truncated.
-  assert(fs.statSync(after.filePath).size === after.bytes, 'recorded byte count matches the file actually on disk');
+  console.log('\n── the zip lives in the shared store, not on the disk of the server that built it ──');
+  assert(!!after.fileId, 'the job records its stored file');
+  assert(!after.filePath, 'and no local path, which another server could not read');
+  // The size the job reports must match the stored file, or the download can be served truncated.
+  assert((await storedBytes(after.fileId)) === after.bytes, 'recorded byte count matches the stored zip');
+  const leftovers = fs.existsSync(require('../src/services/exportRunner').EXPORT_DIR)
+    ? fs.readdirSync(require('../src/services/exportRunner').EXPORT_DIR).filter((f) => f === after.fileName)
+    : [];
+  assert(leftovers.length === 0, 'the scaffolding copy in /tmp is removed once stored');
 
   console.log('\n── a mixed range still exports every trip, and says so ──');
   assert(after.fellBackToRaw === 1, `the unmatched trip fell back to raw and was counted (got ${after.fellBackToRaw})`);
 
   console.log('\n── the queue is drained, so a second tick does nothing ──');
   assert((await tick()) === null, 'no job left to claim');
+
+  console.log('\n── a job is built by the server that created it ──');
+  const foreign = await ExportJob.create({
+    requestedBy: driver._id, format: 'kml', layer: 'raw',
+    filter: { status: { $in: ['completed', 'timed_out'] } }, total: 3, origin: 'some-other-host',
+  });
+  assert((await tick()) === null, 'a fresh job from another server is left for that server');
+  const own = await ExportJob.create({
+    requestedBy: driver._id, format: 'kml', layer: 'raw',
+    filter: { status: { $in: ['completed', 'timed_out'] } }, total: 3, origin: ORIGIN,
+  });
+  assert(String(await tick()) === String(own._id), 'a job stamped with this server is built here');
+  // Straight to the collection: Mongoose treats createdAt as immutable and drops it from updates.
+  await ExportJob.collection.updateOne({ _id: foreign._id }, { $set: { createdAt: new Date(Date.now() - 2 * 60_000) } });
+  assert(String(await tick()) === String(foreign._id), 'one left unclaimed for over a minute is adopted, not stranded');
 
   console.log('\n── a failing job is recorded, not left running forever ──');
   const bad = await ExportJob.create({
@@ -81,11 +108,41 @@ function assert(cond, msg) {
   assert(badAfter.status === 'failed', `a broken filter ends as failed (got ${badAfter.status})`);
   assert(!!badAfter.error, 'and the reason is recorded for the user');
 
-  console.log('\n── cleanup removes artifacts with no live job ──');
-  const orphanPath = after.filePath;
+  console.log('\n── cleanup removes stored zips with no live job ──');
+  const orphanId = after.fileId;
   await ExportJob.deleteOne({ _id: after._id });
   await cleanupArtifacts();
-  assert(!fs.existsSync(orphanPath), 'the file is deleted once its job record is gone');
+  assert((await fileStore.list({ _id: orphanId }, EXPORT_BUCKET)).length === 1, 'a recent upload is left alone (its job may not have recorded it yet)');
+  await mongoose.connection.db.collection(`${EXPORT_BUCKET}.files`).updateOne({ _id: orphanId }, { $set: { uploadDate: new Date(Date.now() - 60 * 60_000) } });
+  await cleanupArtifacts();
+  assert((await fileStore.list({ _id: orphanId }, EXPORT_BUCKET)).length === 0, 'the stored zip is deleted once its job record is gone');
+  const ownAfter = await ExportJob.findById(own._id);
+  assert((await fileStore.list({ _id: ownAfter.fileId }, EXPORT_BUCKET)).length === 1, 'a zip whose job is still live is kept');
+
+  console.log('\n── the download is served from the store, by any server ──');
+  const request = require('supertest');
+  const { createApp } = require('../src/app');
+  const app = createApp();
+  const admin = new User({ name: 'Exp Admin', email: 'admin@x.com', role: 'admin' });
+  await admin.setPassword('pw123456');
+  await admin.save();
+  const token = (await request(app).post('/api/auth/login').send({ email: 'admin@x.com', password: 'pw123456' })).body.token;
+  const auth = (r) => r.set('Authorization', `Bearer ${token}`);
+  const created = await auth(request(app).post('/api/trips/export-jobs')).send({ format: 'kml', layer: 'raw' });
+  assert(created.status === 202, `the export is queued (got ${created.status})`);
+  const httpJob = await ExportJob.findById(created.body.jobId);
+  assert(httpJob.origin === ORIGIN, 'the job is stamped with the server that queued it');
+  assert(String(await tick()) === String(created.body.jobId), 'and that server builds it');
+  const built = await ExportJob.findById(created.body.jobId);
+  const binary = (res, cb) => { const parts = []; res.on('data', (c) => parts.push(c)); res.on('end', () => cb(null, Buffer.concat(parts))); };
+  const dl = await auth(request(app).get(`/api/trips/export-jobs/${built._id}/download`)).buffer(true).parse(binary);
+  assert(dl.status === 200, `the download succeeds (got ${dl.status})`);
+  assert(/application\/zip/.test(dl.headers['content-type'] || ''), 'served as a zip');
+  assert(/attachment; filename="trips_/.test(dl.headers['content-disposition'] || ''), 'with the zip file name');
+  assert(dl.body.length === built.bytes && dl.body.slice(0, 2).toString() === 'PK', `the whole zip arrives (got ${dl.body.length} of ${built.bytes} bytes)`);
+  await fileStore.remove(built.fileId, EXPORT_BUCKET);
+  const gone = await auth(request(app).get(`/api/trips/export-jobs/${built._id}/download`));
+  assert(gone.status === 410 && /run it again/.test(gone.body.error || ''), `a zip that has expired says so (got ${gone.status})`);
 
   await mongoose.disconnect();
   await mongod.stop();

@@ -104,9 +104,14 @@ function toObjectId(id) {
   return typeof id === 'string' ? new mongoose.Types.ObjectId(id) : id;
 }
 
+/** Stored files matching `filter` (GridFS files fields: _id, filename, uploadDate, metadata, length). */
+async function list(filter = {}, bucketName = BUCKET) {
+  return bucket(bucketName).find(filter).toArray();
+}
+
 /** A readable stream of a stored file, for sending it straight back to a browser. */
 function openDownload(id, bucketName = BUCKET) {
   return bucket(bucketName).openDownloadStream(toObjectId(id));
 }
 
-module.exports = { putStream, downloadTo, exists, remove, openDownload, BUCKET };
+module.exports = { putStream, downloadTo, exists, remove, openDownload, list, BUCKET };
