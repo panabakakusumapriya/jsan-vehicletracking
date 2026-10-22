@@ -568,6 +568,10 @@ function ProgressTab({
   // Driven tracks are off by default: they are the heaviest layer on the map and the one a
   // manager turns ON to answer a specific question, rather than the backdrop they browse in.
   const [showTracks, setShowTracks] = useState(false);
+  // Driver markers (incl. thousands imported from VTS) on/off — kept for the next visit.
+  const [markersOn, setMarkersOnState] = useState(() => { try { return localStorage.getItem('cov-markers') !== '0'; } catch { return true; } });
+  const setMarkersOn = (on: boolean) => { setMarkersOnState(on); try { localStorage.setItem('cov-markers', on ? '1' : '0'); } catch { /* not remembered */ } };
+  const [markerCount, setMarkerCount] = useState(0);
   const [tracksFrom, setTracksFrom] = useState(() => isoDay(-14));
   const [tracksTo, setTracksTo] = useState(() => isoDay(0));
   const [tracksMeta, setTracksMeta] = useState<{
@@ -1086,7 +1090,7 @@ function ProgressTab({
 
   /** Drawn layers, counted for the badge on the Layers button so a closed panel still says so. */
   const layersOn =
-    Number(showAreasLayer) + Number(roadScope !== 'off') + Number(showTracks) + Number(showPositions);
+    Number(showAreasLayer) + Number(roadScope !== 'off') + Number(showTracks) + Number(showPositions) + Number(markersOn);
 
   /**
    * Denominators come from the SUMMARY, which is project-wide. `version` is only the newest
@@ -1607,6 +1611,19 @@ function ProgressTab({
                     still out. Refreshes every minute.
                   </p>
                 </section>
+
+                <section>
+                  <header>
+                    <span>Driver markers</span>
+                    <Switch checked={markersOn} onChange={setMarkersOn} title="Markers drivers dropped on this ground">
+                      <span className="sr-only">Show driver markers</span>
+                    </Switch>
+                  </header>
+                  <p className="cov-layer-hint">
+                    {markerCount.toLocaleString()} marker{markerCount === 1 ? '' : 's'} dropped on this ground in the
+                    last year, from the app and VTS. Click one on the map for details.
+                  </p>
+                </section>
               </div>
             )}
           </div>
@@ -1711,6 +1728,9 @@ function ProgressTab({
           // Refetch when assignments move or an area is signed off — both change what is drawn.
           assignedKey={`${assignments.length}:${reloadKey}`}
           showTracks={showTracks}
+          markersOn={markersOn}
+          onMarkersOnChange={setMarkersOn}
+          onMarkerCount={setMarkerCount}
           tracksFrom={tracksFrom}
           tracksTo={tracksTo}
           // With one polygon picked, narrow the tracks to trips recorded while it was assigned —

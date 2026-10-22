@@ -1237,6 +1237,7 @@ select.input { cursor: pointer; }
 /* Folded: one small line in the corner. */
 .cov-map-legend.is-min { padding: 3px 4px 3px 9px; gap: 0; }
 
+
 .cov-map-overlay {
   position: absolute;
   inset: 0;

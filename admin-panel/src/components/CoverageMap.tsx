@@ -181,6 +181,9 @@ export function CoverageMap({
   highlightAreaIds,
   onTracksMeta,
   areaPopupId,
+  markersOn,
+  onMarkersOnChange,
+  onMarkerCount,
   areaPopup,
   driverPins,
   selectedPinId,
@@ -212,6 +215,11 @@ export function CoverageMap({
   selectedIds?: string[];
   /** Click on a polygon. `additive` is true when shift/ctrl was held. */
   onToggleSelect?: (areaId: string, additive: boolean) => void;
+  /** Driver markers on/off, when the page owns the switch (Coverage → Layers). */
+  markersOn?: boolean;
+  onMarkersOnChange?: (on: boolean) => void;
+  /** How many driver markers lie on this ground, for the page's switch. */
+  onMarkerCount?: (n: number) => void;
   /** areaId -> colour of the driver holding it, for the 'driver' mode. */
   driverColorByArea?: Record<string, [number, number, number]>;
   /** areaId -> names of every driver holding it. Shown in the tooltip; the fill can only carry one
@@ -297,10 +305,28 @@ export function CoverageMap({
   const [areas, setAreas] = useState<AreaCollection | null>(null);
   /**
    * Markers drivers dropped on this delivery's ground (the last year), drawn as pins over the
-   * roads — the reviewer sees "Road Is Impassable" where the red road is. Toggle in the legend.
+   * roads — the reviewer sees "Road Is Impassable" where the red road is. Switched on and off from
+   * the map's own corner button (and the legend); the choice is kept for the next visit, since
+   * thousands of imported VTS markers can crowd the roads out.
    */
   const [fieldMarkers, setFieldMarkers] = useState<TripMarker[]>([]);
-  const [showMarkers, setShowMarkers] = useState(true);
+  const [ownShowMarkers, setShowMarkersState] = useState(() => {
+    try {
+      return localStorage.getItem('cov-markers') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const showMarkers = markersOn ?? ownShowMarkers;
+  const setShowMarkers = (on: boolean) => {
+    if (onMarkersOnChange) return onMarkersOnChange(on);
+    setShowMarkersState(on);
+    try {
+      localStorage.setItem('cov-markers', on ? '1' : '0');
+    } catch {
+      /* private window: the switch still works, it just is not remembered */
+    }
+  };
   // The map key can be folded down to one line; the choice is kept for the next visit.
   const [legendMin, setLegendMin] = useState(() => {
     try {
@@ -675,7 +701,7 @@ export function CoverageMap({
     let alive = true;
     api
       .get<{ markers: TripMarker[] }>(`/api/markers?days=365&bbox=${[w - pad, s - pad, e + pad, n + pad].join(',')}`)
-      .then((r) => { if (alive) setFieldMarkers(r.markers); })
+      .then((r) => { if (alive) { setFieldMarkers(r.markers); onMarkerCount?.(r.markers.length); } })
       .catch(() => { /* auxiliary — the coverage map must not degrade over it */ });
     return () => { alive = false; };
   }, [areaBbox]);
