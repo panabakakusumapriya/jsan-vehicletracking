@@ -148,19 +148,32 @@ def scan(vts_uri: str, create_accounts: bool, say=print) -> dict:
                 zones[uid] = user.get("timezone") or (last or {}).get("timezone") or DEFAULT_ZONE
             return zones[uid]
 
-        def days_of(user) -> set:
+        def days_of(user) -> dict:
+            """day -> km this driver recorded on Atlas itself that day (matched route km, else raw)."""
             uid = user["_id"]
             if uid not in days:
                 z = zone_of(user)
-                days[uid] = {
-                    local_day(t["startedAt"], t.get("timezone") or z)
-                    for t in atlas.trips.find(
-                        {"driverId": uid, "parkedJitter": {"$ne": True}, "distanceMeters": {"$gt": 0},
-                         "importBatchId": {"$not": re.compile("^vts-")}},
-                        {"startedAt": 1, "timezone": 1},
-                    )
-                }
+                per: dict = defaultdict(float)
+                for t in atlas.trips.find(
+                    {"driverId": uid, "parkedJitter": {"$ne": True}, "distanceMeters": {"$gt": 0},
+                     "importBatchId": {"$not": re.compile("^vts-")}},
+                    {"startedAt": 1, "timezone": 1, "cleanedDistanceMeters": 1, "distanceMeters": 1},
+                ):
+                    per[local_day(t["startedAt"], t.get("timezone") or z)] += (t.get("cleanedDistanceMeters") or t.get("distanceMeters") or 0) / 1000
+                days[uid] = per
             return days[uid]
+
+        # VTS km per driver-day: every session of that driver that day (cleaned km), imported or not.
+        # A day where VTS never measured any session (no cleanedDistance) reads "not measured", not 0.
+        vts_day_km: dict = defaultdict(float)
+        vts_day_measured: set = set()
+        for s in sessions:
+            vu = by_vts_id.get(s["driver"], {})
+            u = atlas_users.get(str(vu.get("email", "")).lower())
+            key = (s["driver"], local_day(s.get("startTime"), zone_of(u) if u else DEFAULT_ZONE))
+            if s.get("cleanedDistance") is not None:
+                vts_day_measured.add(key)
+                vts_day_km[key] += (s.get("cleanedDistance") or 0) / 1000
 
         rows = []
         already = 0
@@ -185,8 +198,13 @@ def scan(vts_uri: str, create_accounts: bool, say=print) -> dict:
                 status = DAY_HAS_DATA
             else:
                 status = READY
+            atlas_km = round(days_of(user).get(day, 0.0), 1) if user else None
+            vts_km = round(vts_day_km.get((s["driver"], day), 0.0), 1) if (s["driver"], day) in vts_day_measured else None
             rows.append({
                 "day": day,
+                "atlas_km": atlas_km,
+                "vts_km": vts_km,
+                "diff": None if atlas_km is None or vts_km is None else round(vts_km - atlas_km, 1),
                 "driver": vu.get("name") or email or str(s["driver"]),
                 "session": str(s["_id"]),
                 "raw": int(s.get("totalLocations") or 0),
@@ -291,7 +309,7 @@ def run_window() -> None:
         tree = ttk.Treeview(frame, columns=[c for c, _, _ in cols], show="headings")
         for c, title, width in cols:
             tree.heading(c, text=title)
-            tree.column(c, width=width, anchor="w" if c in ("driver", "status", "session", "plate") else "center")
+            tree.column(c, width=width, anchor="w" if c in ("driver", "status", "session", "plate") else "e" if c in ("km", "atlas_km", "vts_km", "diff") else "center")
         sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
         tree.pack(side="left", fill="both", expand=True)
@@ -300,7 +318,8 @@ def run_window() -> None:
 
     s_frame, s_tree = table(tabs, [
         ("day", "Date", 90), ("driver", "Driver", 230), ("raw", "Raw GPS fixes", 100), ("cleaned", "Cleaned points", 105),
-        ("km", "Cleaned km", 85), ("plate", "Plate", 90), ("status", "What import does", 330), ("session", "VTS session", 190),
+        ("km", "Session km", 80), ("atlas_km", "Atlas km (day)", 100), ("vts_km", "VTS km (day)", 95), ("diff", "VTS − Atlas", 85),
+        ("plate", "Plate", 80), ("status", "What import does", 320), ("session", "VTS session", 180),
     ])
     m_frame, m_tree = table(tabs, [
         ("day", "Date", 90), ("driver", "Driver", 260), ("red", "Red", 60), ("yellow", "Yellow", 60), ("blue", "Blue", 60),
@@ -431,7 +450,11 @@ def run_window() -> None:
         s_tree.delete(*s_tree.get_children())
         order = {READY: 0, NEW_DRIVER: 1, ACTIVE: 2, DAY_HAS_DATA: 3}
         for r in sorted(result["sessions"], key=lambda r: (order.get(r["status"], 9), r["day"], r["driver"])):
-            s_tree.insert("", "end", values=[r["day"], r["driver"], r["raw"], r["cleaned"], r["km"], r["plate"], r["status"], r["session"]])
+            fmt = lambda v: "—" if v is None else f"{v:,.1f}"
+            diff = "—" if r["diff"] is None else f"{r['diff']:+,.1f}"
+            tag = "vtsmore" if (r["diff"] or 0) > max(3, 0.1 * (r["atlas_km"] or 0)) else ""
+            s_tree.insert("", "end", values=[r["day"], r["driver"], r["raw"], r["cleaned"], r["km"], fmt(r["atlas_km"]), fmt(r["vts_km"]), diff, r["plate"], r["status"], r["session"]], tags=(tag,))
+        s_tree.tag_configure("vtsmore", background="#fff4e5")
         m_tree.delete(*m_tree.get_children())
         for r in result["markers"]:
             m_tree.insert("", "end", values=[r["day"], r["driver"], r["red"], r["yellow"], r["blue"], r["green"], r["total"], r["status"]])
@@ -482,6 +505,10 @@ def main() -> None:
         for k, v in sorted(r["summary"].items(), key=lambda kv: -kv[1]):
             print(f"  {v:5}  {k}")
         print(f"  {r['already']:5}  already in Atlas")
+        for row in r["sessions"]:
+            if row["status"] == DAY_HAS_DATA:
+                f = lambda v, sign="": "      —" if v is None else format(v, sign + "7.1f")
+                print(f"    kept {row['day']}  {row['driver'][:26]:26}  Atlas {f(row['atlas_km'])} km   VTS {f(row['vts_km'])} km   diff {f(row['diff'], '+')}")
         for row in r["sessions"]:
             if row["status"] in (READY, NEW_DRIVER):
                 print(f"    {row['day']}  {row['driver'][:28]:28}  raw {row['raw']:6}  cleaned {row['cleaned']:6}  {row['km']:7} km  {row['session']}")
