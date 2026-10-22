@@ -49,6 +49,10 @@ READY = "Ready to import"
 NEW_DRIVER = "Ready — new driver, account will be created"
 NO_ACCOUNT = "Skipped — driver has no Atlas account"
 DAY_HAS_DATA = "Kept — Atlas already has this driver's trips that day"
+REPLACEABLE = "Replace with VTS — VTS has more km (tick 'Replace Atlas days')"
+# The day-replace rule, as in backend/src/seed/replaceDaysWithVts.js.
+REPLACE_MARGIN = 0.10
+REPLACE_MIN_GAIN_KM = 3.0
 ACTIVE = "Waiting — still recording on VTS"
 EMPTY = "Skipped — under 2 GPS fixes and no cleaned route"
 TEST = "Skipped — VTS test login"
@@ -200,6 +204,9 @@ def scan(vts_uri: str, create_accounts: bool, say=print) -> dict:
                 status = READY
             atlas_km = round(days_of(user).get(day, 0.0), 1) if user else None
             vts_km = round(vts_day_km.get((s["driver"], day), 0.0), 1) if (s["driver"], day) in vts_day_measured else None
+            if status == DAY_HAS_DATA and atlas_km is not None and vts_km is not None \
+                    and vts_km > atlas_km * (1 + REPLACE_MARGIN) and vts_km - atlas_km > REPLACE_MIN_GAIN_KM:
+                status = REPLACEABLE
             rows.append({
                 "day": day,
                 "atlas_km": atlas_km,
@@ -288,6 +295,7 @@ def run_window() -> None:
     bar.pack(fill="x")
     create_var = tk.BooleanVar(value=True)
     dry_var = tk.BooleanVar(value=False)
+    replace_var = tk.BooleanVar(value=False)
     b_scan = ttk.Button(bar, text="Scan for missing data")
     b_sessions = ttk.Button(bar, text="Import sessions")
     b_markers = ttk.Button(bar, text="Import markers")
@@ -297,6 +305,10 @@ def run_window() -> None:
         b.grid(row=0, column=i, padx=(0, 6))
     ttk.Checkbutton(bar, text="Create accounts for new VTS drivers", variable=create_var).grid(row=0, column=5, padx=8)
     ttk.Checkbutton(bar, text="Dry run (write nothing)", variable=dry_var).grid(row=0, column=6)
+    ttk.Checkbutton(
+        bar, variable=replace_var,
+        text=f"Replace Atlas days where VTS has more km (over {int(REPLACE_MARGIN * 100)}% and {REPLACE_MIN_GAIN_KM:g} km) with VTS raw + cleaned",
+    ).grid(row=1, column=0, columnspan=7, sticky="w", pady=(6, 0))
     status_var = tk.StringVar(value="Paste the VTS database connection string, then Scan.")
     ttk.Label(root, textvariable=status_var, padding=(10, 0, 10, 6), foreground="#0050a9").pack(fill="x")
 
@@ -389,7 +401,13 @@ def run_window() -> None:
         env = {**os.environ, "VTS_MONGODB_URI": uri}
 
         def work():
+            ctx: dict = {}
             for title, script, args in steps:
+                if callable(args):
+                    args = args(ctx)
+                    if args is None:
+                        events.put(("log", f"\n=== {title}: nothing to do ==="))
+                        continue
                 events.put(("log", f"\n=== {title} ({datetime.now():%H:%M:%S}) ==="))
                 cmd = [node, script, *args]
                 try:
@@ -405,6 +423,9 @@ def run_window() -> None:
                 for line in proc.stdout:
                     if "MongoDB" in line and ("connected" in line or "disconnected" in line):
                         continue
+                    m = re.search(r"as batch (vtsday-[\w-]+)", line)
+                    if m:
+                        ctx["vtsday"] = m.group(1)
                     events.put(("log", line))
                 code = proc.wait()
                 proc_holder["proc"] = None
@@ -423,18 +444,36 @@ def run_window() -> None:
             args[1].append("--apply")
         return ("Sessions: raw GPS + cleaned route", *args)
 
+    def replace_steps() -> list:
+        """Archive the Atlas days VTS has more of (restorable); the session import then fills them."""
+        return [
+            ("Replace: archive Atlas days where VTS has more km", "src/seed/replaceDaysWithVts.js",
+             ["--from-db", f"--margin={REPLACE_MARGIN}", f"--min-gain-km={REPLACE_MIN_GAIN_KM}"] + ([] if dry_var.get() else ["--apply"])),
+        ]
+
+    def settle_step():
+        return ("Replace: re-settle coverage around the replaced days", "src/seed/replaceDaysWithVts.js",
+                lambda ctx: None if dry_var.get() or "vtsday" not in ctx else [f"--settle={ctx['vtsday']}", "--apply"])
+
+    def sessions_chain() -> list:
+        if not replace_var.get():
+            return [session_step()]
+        return [*replace_steps(), session_step(), settle_step()]
+
     def marker_step():
         return ("Markers", "src/seed/importVtsMarkers.js", [] if dry_var.get() else ["--apply"])
 
     def confirm(what: str) -> bool:
         if dry_var.get():
             return True
-        return messagebox.askyesno("Import into Atlas ops", f"Import {what} into Atlas ops now?\n\nEverything is written under one batch id, shown at the end of the log with its undo command.")
+        extra = ("\n\nReplaced days: that day's Atlas trips are archived (not deleted) and can be restored with "
+                 "the undo command in the log.") if replace_var.get() else ""
+        return messagebox.askyesno("Import into Atlas ops", f"Import {what} into Atlas ops now?\n\nEverything is written under one batch id, shown at the end of the log with its undo command.{extra}")
 
     b_scan.configure(command=start_scan)
-    b_sessions.configure(command=lambda: confirm("the missing sessions") and run_steps([session_step()]))
+    b_sessions.configure(command=lambda: confirm("the missing sessions" + (", replacing the Atlas days where VTS has more km" if replace_var.get() else "")) and run_steps(sessions_chain()))
     b_markers.configure(command=lambda: confirm("the missing markers") and run_steps([marker_step()]))
-    b_all.configure(command=lambda: confirm("the missing sessions, then markers") and run_steps([session_step(), marker_step()]))
+    b_all.configure(command=lambda: confirm("the missing sessions" + (" (replacing the Atlas days where VTS has more km)" if replace_var.get() else "") + ", then markers") and run_steps([*sessions_chain(), marker_step()]))
 
     def stop():
         p = proc_holder.get("proc")
@@ -448,7 +487,7 @@ def run_window() -> None:
     # --- event pump ------------------------------------------------------------------------
     def show(result: dict) -> None:
         s_tree.delete(*s_tree.get_children())
-        order = {READY: 0, NEW_DRIVER: 1, ACTIVE: 2, DAY_HAS_DATA: 3}
+        order = {READY: 0, NEW_DRIVER: 1, REPLACEABLE: 2, ACTIVE: 3, DAY_HAS_DATA: 4}
         for r in sorted(result["sessions"], key=lambda r: (order.get(r["status"], 9), r["day"], r["driver"])):
             fmt = lambda v: "—" if v is None else f"{v:,.1f}"
             diff = "—" if r["diff"] is None else f"{r['diff']:+,.1f}"
@@ -459,9 +498,10 @@ def run_window() -> None:
         for r in result["markers"]:
             m_tree.insert("", "end", values=[r["day"], r["driver"], r["red"], r["yellow"], r["blue"], r["green"], r["total"], r["status"]])
         to_import = result["summary"].get(READY, 0) + result["summary"].get(NEW_DRIVER, 0)
+        replaceable = result["summary"].get(REPLACEABLE, 0)
         ready_markers = sum(r["total"] for r in result["markers"] if r["status"] == READY)
         status_var.set(
-            f"Sessions: {to_import} to import · {len(result['sessions']) - to_import} not imported (see reasons) · {result['already']} already in Atlas"
+            f"Sessions: {to_import} to import · {replaceable} could replace a fuller-on-VTS day · {len(result['sessions']) - to_import - replaceable} not imported (see reasons) · {result['already']} already in Atlas"
             f"      Markers: {result['missing_markers']} not in Atlas ({ready_markers} ready)"
         )
         tabs.select(s_frame)
@@ -506,7 +546,7 @@ def main() -> None:
             print(f"  {v:5}  {k}")
         print(f"  {r['already']:5}  already in Atlas")
         for row in r["sessions"]:
-            if row["status"] == DAY_HAS_DATA:
+            if row["status"] in (DAY_HAS_DATA, REPLACEABLE):
                 f = lambda v, sign="": "      —" if v is None else format(v, sign + "7.1f")
                 print(f"    kept {row['day']}  {row['driver'][:26]:26}  Atlas {f(row['atlas_km'])} km   VTS {f(row['vts_km'])} km   diff {f(row['diff'], '+')}")
         for row in r["sessions"]:

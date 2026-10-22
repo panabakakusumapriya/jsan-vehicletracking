@@ -19,6 +19,8 @@
  * imported VTS trips can take them.
  *
  * Steps
+ *   With --from-db (VTS_MONGODB_URI, read-only) VTS sessions are read from the VTS database itself
+ *   instead of a dump; --margin=0.10 and --min-gain-km=3 set the rule above.
  *   1. node src/seed/replaceDaysWithVts.js --dump=<dir>            # dry run: the day list
  *   2. node src/seed/replaceDaysWithVts.js --dump=<dir> --apply    # archive the losing Atlas days
  *   3. node src/seed/importVtsSessions.js --dump=<dir> --token-file=<f> --apply
@@ -33,6 +35,7 @@
  * of the plan. Every run first releases any claim still held by an already-archived trip.
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { connectDB } = require('../config/db');
@@ -49,8 +52,9 @@ const APPLY = args.get('apply') === true;
 const withRetry = async (what, fn) => { for (let i = 1; ; i++) { try { return await fn(); } catch (e) { if (i >= 5) throw e; console.log(`  ${what}: retry ${i} after ${e.message}`); await new Promise((r) => setTimeout(r, 5000 * i)); } } };
 const insertIgnoringDuplicates = async (coll, docs) => { for (let i = 0; i < docs.length; i += 2000) { try { await coll.insertMany(docs.slice(i, i + 2000), { ordered: false }); } catch (e) { if (e.code !== 11000 && !(e.writeErrors && e.writeErrors.every((w) => w.code === 11000))) throw e; } } };
 const VTS_PROJECT = String(args.get('vts-project') || '6a3233e935b68ccdc47a9785');
-const MARGIN = 0.10;
-const MIN_GAIN_M = 3000;
+const MARGIN = args.has('margin') ? Number(args.get('margin')) : 0.10;
+const MIN_GAIN_M = args.has('min-gain-km') ? Number(args.get('min-gain-km')) * 1000 : 3000;
+const FROM_DB = args.get('from-db') === true;
 const SETTLE_DAYS = 7;
 const TEST_EMAILS = new Set(['autest@vts.com', 'projaus@gmail.com']);
 const log = (...a) => console.log(...a);
@@ -66,6 +70,42 @@ function routeLength(dump, id) {
     if (d < 3000) m += d;
   }
   return m;
+}
+
+/** Length of a VTS cleaned route ([{latitude, longitude}]), ignoring jumps over 3 km. */
+function lengthOf(pts) {
+  let m = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const d = haversineMeters({ lat: pts[i - 1].latitude, lon: pts[i - 1].longitude }, { lat: pts[i].latitude, lon: pts[i].longitude });
+    if (d < 3000) m += d;
+  }
+  return m;
+}
+
+/** --from-db: drivers and sessions from the VTS database, shaped as the API dump is. Read-only. */
+async function loadVtsDb() {
+  if (!process.env.VTS_MONGODB_URI) throw new Error('--from-db needs VTS_MONGODB_URI (the VTS database, read-only)');
+  const { MongoClient } = require('mongoose').mongo;
+  const client = new MongoClient(process.env.VTS_MONGODB_URI, { readPreference: 'secondaryPreferred' });
+  await client.connect();
+  const vdb = client.db();
+  const users = await vdb.collection('users').find({}, { projection: { name: 1, email: 1, project: 1 } }).toArray();
+  const drivers = users.map((u) => ({ _id: String(u._id), name: u.name, email: u.email, project: u.project ? { _id: String(u.project) } : null }));
+  const byId = new Map(drivers.map((d) => [d._id, d]));
+  const docs = await vdb.collection('sessions')
+    .find({ driver: { $in: users.filter((u) => String(u.project) === VTS_PROJECT).map((u) => u._id) } },
+      { projection: { driver: 1, startTime: 1, isActive: 1, cleanedDistance: 1, 'stats.totalDistance': 1 } })
+    .toArray();
+  const sessions = docs.map((d) => {
+    const drv = byId.get(String(d.driver)) || { _id: String(d.driver) };
+    return { ...d, _id: String(d._id), driver: { _id: drv._id, name: drv.name, email: drv.email }, startTime: new Date(d.startTime).toISOString() };
+  });
+  // A cleaned route's length, for sessions VTS never stored a cleanedDistance for (fetched on demand).
+  const routeMeters = async (id) => {
+    const doc = await vdb.collection('sessions').findOne({ _id: new (require('mongoose').mongo.ObjectId)(String(id)) }, { projection: { cleanedRoute: 1 } });
+    return lengthOf((doc && doc.cleanedRoute) || []);
+  };
+  return { drivers, sessions, routeMeters, close: () => client.close() };
 }
 
 async function main() {
@@ -91,22 +131,32 @@ async function main() {
     }
   }
 
-  const dump = args.get('dump');
-  if (!dump) throw new Error('--dump=<dir> is required');
-  const drivers = new Map(JSON.parse(fs.readFileSync(path.join(dump, 'drivers.json'), 'utf8')).map((d) => [d._id, d]));
-  const sessions = JSON.parse(fs.readFileSync(path.join(dump, 'sessions_all.json'), 'utf8'))
+  const dump = FROM_DB ? String(args.get('dump') || path.join(os.tmpdir(), 'vts-sync-cache')) : args.get('dump');
+  if (!dump) throw new Error('--dump=<dir> is required (or --from-db)');
+  fs.mkdirSync(dump, { recursive: true });
+  const vtsDb = FROM_DB ? await loadVtsDb() : null;
+  const drivers = new Map((vtsDb ? vtsDb.drivers : JSON.parse(fs.readFileSync(path.join(dump, 'drivers.json'), 'utf8'))).map((d) => [d._id, d]));
+  const sessions = (vtsDb ? vtsDb.sessions : JSON.parse(fs.readFileSync(path.join(dump, 'sessions_all.json'), 'utf8')))
     .filter((s) => s.driver && drivers.get(s.driver._id)?.project?._id === VTS_PROJECT && !s.isActive && !TEST_EMAILS.has(String(s.driver.email).toLowerCase()));
   const imported = new Set((await Trip.find({ importSourceId: /^vts:/ }).select('importSourceId').lean()).map((t) => t.importSourceId.slice(4)));
   const users = new Map((await User.find({ role: 'user' }).select('email name timezone').lean()).map((u) => [String(u.email).toLowerCase(), u]));
 
   // VTS km per driver-day, counting only days that still have un-imported sessions with something in them.
   const days = new Map();
+  const dayOf = (s, u) => formatDateInZone(new Date(s.startTime), u.timezone || 'Australia/Brisbane');
+  const openDays = new Set();
+  for (const s of sessions) {
+    const u = users.get(String(s.driver.email).toLowerCase());
+    if (u && !imported.has(s._id)) openDays.add(`${u._id}|${dayOf(s, u)}`);
+  }
   for (const s of sessions) {
     const u = users.get(String(s.driver.email).toLowerCase());
     if (!u) continue;
     const zone = u.timezone || 'Australia/Brisbane';
-    const day = formatDateInZone(new Date(s.startTime), zone);
-    const m = s.cleanedDistance > 0 ? s.cleanedDistance : routeLength(dump, s._id) || (s.stats?.totalDistance || 0);
+    const day = dayOf(s, u);
+    let m = s.cleanedDistance > 0 ? s.cleanedDistance : routeLength(dump, s._id);
+    if (!m && vtsDb && openDays.has(`${u._id}|${day}`)) m = await withRetry(`route ${s._id}`, () => vtsDb.routeMeters(s._id));
+    m = m || (s.stats?.totalDistance || 0);
     const k = `${u._id}|${day}`;
     const o = days.get(k) || { uid: u._id, name: u.name, zone, day, vts: 0, sessions: [], pending: false };
     o.vts += m;
@@ -168,7 +218,7 @@ async function main() {
   }
   log(`
 Archived ${tripsDone} trips and ${pointsDone} points as batch ${batch}; released ${segDone} road segments and ${lnkDone} network links.`);
-  log(`Now: node src/seed/importVtsSessions.js --dump=... --token-file=... --apply   then   node src/seed/replaceDaysWithVts.js --settle=${batch} --apply`);
+  log(`Now: node src/seed/importVtsSessions.js ${FROM_DB ? '--from-db' : '--dump=... --token-file=...'} --apply   then   node src/seed/replaceDaysWithVts.js --settle=${batch} --apply`);
   log(`Undo: node src/seed/replaceDaysWithVts.js --undo=${batch} --apply`);
 }
 
