@@ -30,6 +30,8 @@ const markerSchema = new mongoose.Schema(
     clientId: { type: String },
     /** When the driver actually pressed the button (device clock); createdAt is upload time. */
     recordedAt: { type: Date, required: true },
+    /** Set on markers brought in from another system (seed/importVtsMarkers.js) — what --revert removes. */
+    importBatchId: { type: String, default: null },
   },
   { timestamps: true }
 );
