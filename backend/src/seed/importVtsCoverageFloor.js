@@ -273,15 +273,17 @@ async function main() {
   const placeholders = new Map();
   const accountFor = (vtsDriverId) => {
     const d = vtsById.get(String(vtsDriverId));
-    const email = String((d && d.email) || '').toLowerCase();
+    // A driver VTS has deleted has no email; the placeholder made for them on an earlier run carries
+    // this one, so it is looked up too — otherwise every re-run tried to create a duplicate.
+    const email = String((d && d.email) || '').toLowerCase() || `vts-${vtsDriverId}@removed.vts.invalid`;
     if (TEST_EMAILS.has(email)) return null;
-    const existing = email ? userByEmail.get(email) : null;
+    const existing = userByEmail.get(email) || null;
     if (existing || !CREATE_MISSING) return existing || null;
     if (!placeholders.has(String(vtsDriverId))) {
       placeholders.set(String(vtsDriverId), {
         _id: new mongoose.Types.ObjectId(),
         name: d ? String(d.name).replace(/\s+(HTL?|SMD)\d+$/i, '').trim() : `VTS driver ${String(vtsDriverId).slice(-6)} (removed from VTS)`,
-        email: email || `vts-${vtsDriverId}@removed.vts.invalid`,
+        email,
         placeholder: true,
       });
     }
