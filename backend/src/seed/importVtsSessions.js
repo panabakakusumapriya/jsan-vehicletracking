@@ -35,11 +35,17 @@
  *   - Reverting removes trips and points only. Coverage they won is recomputed by the normal
  *     backfill (src/seed/backfillLinkCoverage.js) afterwards.
  *
- * Input: a dump of the VTS API (sessions_all.json, drivers.json) in --dump, and a VTS bearer token
- * in --token-file, used read-only to fetch each session's raw points (cached to <dump>/points).
+ * Input, one of:
+ *   --from-db   the VTS database itself (VTS_MONGODB_URI, read-only): drivers and sessions from
+ *               `users`/`sessions`, raw fixes from `locationpoints`, VTS's cleaned route from the
+ *               session's `cleanedRoute`. Both come in when VTS has both; a session whose raw fixes
+ *               VTS no longer holds comes in on its cleaned route alone. --dump is then only a cache.
+ *   --dump      a dump of the VTS API (sessions_all.json, drivers.json) plus a VTS bearer token in
+ *               --token-file, used read-only to fetch each session's raw points and cleaned route.
  *
  * Usage
  * -----
+ *   VTS_MONGODB_URI=… node src/seed/importVtsSessions.js --from-db [--apply] [--create-missing-drivers]
  *   node src/seed/importVtsSessions.js --dump=<dir> --token-file=<file>
  *   node src/seed/importVtsSessions.js --dump=<dir> --token-file=<file> --apply [--limit=1] [--only=<sessionId>]
  *   node src/seed/importVtsSessions.js --revert=<importBatchId>
@@ -48,6 +54,7 @@
  *          --create-missing-drivers  --no-process  --concurrency=4
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
@@ -76,6 +83,9 @@ const PROCESS = args.get('no-process') !== true;
 const SNAP = args.get('snap') === true;
 const CONCURRENCY = Math.max(1, Math.min(8, Number(args.get('concurrency')) || 1));
 const REVERT = args.has('revert') ? String(args.get('revert')) : null;
+const FROM_DB = args.get('from-db') === true;
+// With --from-db, the open read-only connection to the VTS database (see loadFromVtsDb).
+let vtsDb = null;
 const DEFAULT_ZONE = 'Australia/Melbourne';
 // Test logins on VTS — never real driving.
 const TEST_EMAILS = new Set(['autest@vts.com', 'projaus@gmail.com']);
@@ -113,7 +123,13 @@ async function rawPoints(dump, token, id) {
   const file = path.join(dir, `${id}.json`);
   let list;
   if (fs.existsSync(file)) list = JSON.parse(fs.readFileSync(file, 'utf8'));
-  else {
+  else if (vtsDb) {
+    list = await vtsDb.collection('locationpoints')
+      .find({ session: new vtsDb.ObjectId(String(id)) }, { projection: { _id: 0, latitude: 1, longitude: 1, speed: 1, accuracy: 1, heading: 1, timestamp: 1 } })
+      .sort({ timestamp: 1 })
+      .toArray();
+    fs.writeFileSync(file, JSON.stringify(list));
+  } else {
     const r = await vtsGet(token, `/locations/session/${id}?raw=true`);
     list = Array.isArray(r) ? r : r.locations || [];
     fs.writeFileSync(file, JSON.stringify(list));
@@ -139,7 +155,11 @@ async function cleanedRoute(dump, token, id) {
   const file = path.join(dir, `${id}.json`);
   let list;
   if (fs.existsSync(file)) list = JSON.parse(fs.readFileSync(file, 'utf8'));
-  else {
+  else if (vtsDb) {
+    const doc = await vtsDb.collection('sessions').findOne({ _id: new vtsDb.ObjectId(String(id)) }, { projection: { cleanedRoute: 1 } });
+    list = (doc && doc.cleanedRoute) || [];
+    fs.writeFileSync(file, JSON.stringify(list));
+  } else {
     const r = await vtsGet(token, `/locations/session/${id}`);
     list = Array.isArray(r) ? r : r.locations || [];
     fs.writeFileSync(file, JSON.stringify(list));
@@ -186,6 +206,43 @@ function distanceOf(points) {
   return Math.round(meters);
 }
 
+/**
+ * --from-db: drivers and sessions read from the VTS database, shaped as the API dump is, so
+ * everything after this point is the same code path. Read-only: queries only.
+ */
+async function loadFromVtsDb() {
+  if (!process.env.VTS_MONGODB_URI) throw new Error('--from-db needs VTS_MONGODB_URI (the VTS database, read-only)');
+  const { MongoClient, ObjectId } = require('mongoose').mongo;
+  const client = new MongoClient(process.env.VTS_MONGODB_URI, { readPreference: 'secondaryPreferred' });
+  await client.connect();
+  vtsDb = client.db();
+  vtsDb.ObjectId = ObjectId;
+  vtsDb.client = client;
+  const users = await vtsDb.collection('users').find({}, { projection: { name: 1, email: 1, project: 1 } }).toArray();
+  const drivers = users.map((u) => ({ _id: String(u._id), name: u.name, email: u.email, project: u.project ? { _id: String(u.project) } : null }));
+  const byId = new Map(drivers.map((d) => [d._id, d]));
+  const docs = await vtsDb.collection('sessions').aggregate([
+    { $match: { driver: { $in: users.filter((u) => String(u.project) === VTS_PROJECT).map((u) => u._id) } } },
+    { $project: {
+      driver: 1, startTime: 1, endTime: 1, isActive: 1, lastHeartbeat: 1, totalLocations: 1, cleanedDistance: 1, licensePlate: 1,
+      cleanedRouteCount: { $size: { $ifNull: ['$cleanedRoute', []] } },
+    } },
+  ]).toArray();
+  const sessions = docs.map((d) => {
+    const drv = byId.get(String(d.driver)) || { _id: String(d.driver) };
+    return {
+      ...d,
+      _id: String(d._id),
+      driver: { _id: drv._id, name: drv.name, email: drv.email },
+      startTime: d.startTime && new Date(d.startTime).toISOString(),
+      endTime: d.endTime ? new Date(d.endTime).toISOString() : null,
+      lastHeartbeat: d.lastHeartbeat ? new Date(d.lastHeartbeat).toISOString() : null,
+    };
+  });
+  log(`VTS database: ${drivers.length} users, ${sessions.length} projaustralia sessions`);
+  return { drivers, sessions };
+}
+
 async function revert(batch) {
   const Trip = require('../models/Trip');
   const LocationPoint = require('../models/LocationPoint');
@@ -202,10 +259,12 @@ async function main() {
   await connectDB();
   if (REVERT) return revert(REVERT);
 
-  const dump = args.get('dump');
+  // --from-db reads VTS directly; the dump dir is then only a cache of fetched fixes and routes.
+  const dump = FROM_DB ? String(args.get('dump') || path.join(os.tmpdir(), 'vts-sync-cache')) : args.get('dump');
   const tokenFile = args.get('token-file');
-  if (!dump || !tokenFile) throw new Error('--dump=<dir> and --token-file=<file> are required');
-  const token = fs.readFileSync(tokenFile, 'utf8').trim();
+  if (!FROM_DB && (!dump || !tokenFile)) throw new Error('--dump=<dir> and --token-file=<file> are required (or --from-db)');
+  const token = tokenFile ? fs.readFileSync(tokenFile, 'utf8').trim() : null;
+  const fromDb = FROM_DB ? await loadFromVtsDb() : null;
 
   const User = require('../models/User');
   const Trip = require('../models/Trip');
@@ -216,8 +275,8 @@ async function main() {
   const project = await Project.findOne({ name: PROJECT_NAME }).lean();
   if (!project) throw new Error(`No project named ${PROJECT_NAME}`);
 
-  const vtsDrivers = new Map(read(dump, 'drivers.json').map((d) => [d._id, d]));
-  const sessions = read(dump, 'sessions_all.json')
+  const vtsDrivers = new Map((fromDb ? fromDb.drivers : read(dump, 'drivers.json')).map((d) => [d._id, d]));
+  const sessions = (fromDb ? fromDb.sessions : read(dump, 'sessions_all.json'))
     .filter((s) => s.driver && vtsDrivers.get(s.driver._id)?.project?._id === VTS_PROJECT)
     .filter((s) => !ONLY || s._id === ONLY)
     .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
@@ -260,7 +319,7 @@ async function main() {
     // VTS's counters are zero on some sessions that still carry a cleaned route (190 of 196 on
     // projaustralia, Apr–Sep 2026): the planning stage used to drop them here, before the route-only
     // path could see them, and 21,000 km went missing. A session with a cached VTS route is kept.
-    if (!s.totalLocations && !(s.cleanedDistance > 0) && !hasCachedRoute(dump, s._id)) { stats.noPoints++; continue; }
+    if (!s.totalLocations && !(s.cleanedDistance > 0) && !(s.cleanedRouteCount >= 2) && !hasCachedRoute(dump, s._id)) { stats.noPoints++; continue; }
     if (TEST_EMAILS.has(email)) { stats.testAccount++; continue; }
     if (already.has(`vts:${s._id}`)) { stats.alreadyImported++; continue; }
     const u = byEmail.get(email);
