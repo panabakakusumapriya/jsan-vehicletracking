@@ -580,6 +580,100 @@ select.input { cursor: pointer; }
 }
 @keyframes login-rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
 
+/* The hero: JSAN, the strapline, and the product name large — over a white wash so the street and
+   its buildings never fight the words. */
+.login-hero { position:relative; display:flex; flex-direction:column; align-items:flex-start; max-width:520px; }
+.login-hero::before {
+  content:''; position:absolute; z-index:-1; pointer-events:none;
+  left:-12vw; top:-12vh; width:calc(100% + 22vw); height:calc(100% + 22vh);
+  background:radial-gradient(closest-side, rgba(255,255,255,0.97) 55%, rgba(255,255,255,0.8) 75%, rgba(255,255,255,0));
+}
+.login-hero-logo { height:34px; width:auto; display:block; }
+.login-hero-tag {
+  display:flex; align-items:center; gap:10px; margin:12px 0 0;
+  font-size:10.5px; font-weight:700; letter-spacing:2.6px; text-transform:uppercase; color:#41516b;
+}
+.login-hero-tag i { width:1px; height:11px; background:#a9b6c8; }
+.login-hero-title {
+  margin:clamp(18px, 3vh, 30px) 0 4px; font-size:clamp(44px, 5vw, 76px); line-height:1; font-weight:900;
+  letter-spacing:-0.035em; color:#0d1b33;
+}
+.login-hero-title span { color:#0050a9; }
+.login-hero-sub { margin:0; font-size:clamp(15px, 1.35vw, 21px); font-weight:500; color:#1f3556; letter-spacing:-0.01em; }
+
+/* Glass labels over the street: what the car is doing. */
+.login-tags { position:absolute; inset:0; z-index:1; pointer-events:none; }
+.login-tag {
+  position:absolute; display:inline-flex; align-items:center; gap:8px;
+  padding:7px 12px; border-radius:10px;
+  font-size:12px; font-weight:700; color:#0d1b33;
+  background:rgba(255,255,255,0.82); border:1px solid rgba(59,142,232,0.45);
+  box-shadow:0 6px 20px rgba(0,80,169,0.14), inset 0 0 0 1px rgba(255,255,255,0.6);
+  -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px);
+}
+.login-tag svg { color:#0050a9; }
+.login-tag--capture { left:clamp(28px, 4.5vw, 72px); top:54%; }
+.login-tag--live { left:calc(var(--sc-car-x, 35vw) + 21vh); top:71%; padding:7px 12px 7px 8px; }
+.login-tag--live strong { display:block; font-size:12px; }
+.login-tag--live span:last-child { font-size:10.5px; font-weight:600; color:#41516b; }
+.login-tag-pin {
+  display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:50%;
+  background:#0050a9; box-shadow:0 0 0 4px rgba(59,142,232,0.22);
+}
+.login-tag-pin svg { color:#fff; }
+
+/* Take-off, once signed in: the words and labels lift away with the camera. */
+.login-bg.is-launching .login-hero,
+.login-bg.is-launching .login-tags {
+  transition:opacity 0.9s ease, transform 1.2s cubic-bezier(0.55, 0, 0.3, 1);
+  opacity:0; transform:translateY(-40px);
+}
+.login-bg.is-launching .login-tags { transform:translateY(-90px); }
+
+/* The launch sequence, in the sign-in card's place. */
+.login-card--launch { max-width:440px; }
+.launch-title { margin:0; font-size:28px; font-weight:900; letter-spacing:-0.7px; color:#0d1b33; line-height:1.15; }
+.launch-title span { color:#0050a9; }
+.launch-sub { margin:8px 0 22px; color:#41516b; font-size:14.5px; }
+.launch-progress { display:flex; align-items:center; gap:14px; }
+.launch-bar { flex:1; height:8px; border-radius:999px; background:#e6edf6; overflow:hidden; }
+.launch-bar > div {
+  height:100%; border-radius:inherit;
+  background:linear-gradient(90deg, #0050a9, #3b8ee8);
+  box-shadow:0 0 12px rgba(59,142,232,0.55);
+}
+.launch-pct { font-size:15px; font-weight:800; color:#0d1b33; font-variant-numeric:tabular-nums; min-width:40px; text-align:right; }
+.launch-note { margin:7px 0 24px; font-size:12px; color:#64748b; }
+.launch-steps { list-style:none; margin:0 0 22px; padding:0; display:grid; gap:18px; position:relative; }
+.launch-steps::before { content:''; position:absolute; left:18px; top:20px; bottom:20px; width:1px; background:#dbe5f1; }
+.launch-steps li { position:relative; display:flex; align-items:center; gap:14px; }
+.launch-step-icon {
+  flex-shrink:0; display:inline-flex; align-items:center; justify-content:center;
+  width:37px; height:37px; border-radius:50%; color:#0050a9;
+  background:#fff; border:1px solid #dbe5f1; transition:border-color 0.3s, box-shadow 0.3s;
+}
+.launch-steps li.is-active .launch-step-icon,
+.launch-steps li.is-done .launch-step-icon { border-color:rgba(0,80,169,0.4); box-shadow:0 0 0 4px rgba(59,142,232,0.12); }
+.launch-step-text { flex:1; min-width:0; display:flex; flex-direction:column; }
+.launch-step-text strong { font-size:14px; color:#0d1b33; }
+.launch-step-text span { font-size:12px; color:#64748b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.launch-steps li:not(.is-done):not(.is-active) .launch-step-text { opacity:0.55; }
+.launch-step-state {
+  flex-shrink:0; width:22px; height:22px; border-radius:50%;
+  display:inline-flex; align-items:center; justify-content:center;
+  border:2px solid #dbe5f1; color:#fff; transition:background 0.25s, border-color 0.25s;
+}
+.launch-steps li.is-done .launch-step-state { background:#0050a9; border-color:#0050a9; animation:launch-pop 0.35s ease-out; }
+.launch-steps li.is-active .launch-step-state { border-color:#dbe5f1; border-top-color:#0050a9; animation:spin 0.8s linear infinite; }
+@keyframes launch-pop { 0% { transform:scale(0.6); } 70% { transform:scale(1.12); } 100% { transform:none; } }
+.launch-foot {
+  display:flex; align-items:center; gap:12px; padding:14px 16px; border-radius:12px;
+  background:#eef5fd; border:1px solid #d6e6f7; font-size:12px; color:#41516b;
+}
+.launch-foot strong { display:block; font-size:13px; color:#0050a9; }
+.launch-foot-icon { color:#0050a9; display:inline-flex; }
+.login-title span { color:#0050a9; }
+
 .login-brand-row { display:flex; align-items:center; gap:11px; }
 .login-brand-icon {
   border-radius:10px; flex-shrink:0;
@@ -693,7 +787,7 @@ select.input { cursor: pointer; }
 
 @media (max-width: 960px) {
   .login-bg { grid-template-columns: 1fr; }
-  .login-left, .sc-canvas { display: none; }
+  .login-left, .sc-canvas, .login-tags { display: none; }
   .login-right { padding: 40px 24px; background: #f5f6fa; }
 }
 @media (max-width: 480px) {

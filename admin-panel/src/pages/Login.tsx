@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { API_URL } from '../lib/api';
@@ -28,6 +28,91 @@ const EyeSVG = ({ off }: { off?: boolean }) => (
     {off && <path d="M3 3l18 18"/>}
   </svg>
 );
+
+/** Line icons for the launch steps and the labels over the street, one stroke style throughout. */
+const Icon = ({ d, size = 16 }: { d: string; size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d={d} />
+  </svg>
+);
+const ICONS = {
+  shield: 'M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6l-8-3zM9 12l2 2 4-4',
+  car: 'M5 17h14M6 17v2M18 17v2M3 13l2-5a2 2 0 0 1 1.9-1.4h10.2A2 2 0 0 1 19 8l2 5v4H3v-4zM7 14h.01M17 14h.01',
+  db: 'M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6',
+  map: 'M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2zM9 4v14M15 6v14',
+  camera: 'M4 8h3l2-3h6l2 3h3v11H4V8zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+  pin: 'M12 21s-7-6.2-7-12a7 7 0 0 1 14 0c0 5.8-7 12-7 12zM12 11.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
+  bulb: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.9V16h5v-.2c0-.8.4-1.5 1-1.9A6 6 0 0 0 12 3z',
+  check: 'm5 12.5 4.5 4.5L19 7.5',
+};
+
+/**
+ * What follows a successful sign-in: "Initializing Atlas Ops", a progress bar and four steps that
+ * tick off one after another, about three seconds in all, while the street behind lifts away —
+ * then the workspace opens. The first step is real (the sign-in just succeeded); the others mark
+ * the workspace coming up. Reduced motion shortens it to under a second.
+ */
+const LAUNCH_STEPS = [
+  { icon: ICONS.shield, title: 'Verifying access', done: 0.18 },
+  { icon: ICONS.car, title: 'Syncing fleet', desc: 'Connecting vehicles and their latest positions', done: 0.45 },
+  { icon: ICONS.db, title: 'Loading trips & coverage', desc: 'Retrieving the field work', done: 0.72 },
+  { icon: ICONS.map, title: 'Initializing map layers', desc: 'Preparing the live map and street-level data', done: 0.96 },
+];
+
+function LaunchPanel({ name, onDone }: { name: string; onDone: () => void }) {
+  const [p, setP] = useState(0);
+  const doneRef = useRef(onDone);
+  doneRef.current = onDone;
+  useEffect(() => {
+    const quick = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    const total = quick ? 800 : 3000;
+    const start = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / total);
+      setP(1 - Math.pow(1 - t, 1.6)); // quick at first, settling towards the end
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    const timer = window.setTimeout(() => doneRef.current(), total + 250);
+    return () => { cancelAnimationFrame(raf); window.clearTimeout(timer); };
+  }, []);
+
+  const pct = Math.round(p * 100);
+  return (
+    <div className="launch" role="status" aria-live="polite">
+      <h1 className="launch-title">Initializing <span>Atlas Ops</span></h1>
+      <p className="launch-sub">Preparing your operational workspace</p>
+      <div className="launch-progress">
+        <div className="launch-bar"><div style={{ width: `${pct}%` }} /></div>
+        <span className="launch-pct">{pct}%</span>
+      </div>
+      <div className="launch-note">{pct < 100 ? (pct < 60 ? 'Getting things ready…' : 'Almost ready…') : 'Ready'}</div>
+      <ol className="launch-steps">
+        {LAUNCH_STEPS.map((s, i) => {
+          const done = p >= s.done;
+          const active = !done && (i === 0 || p >= LAUNCH_STEPS[i - 1].done);
+          return (
+            <li key={s.title} className={done ? 'is-done' : active ? 'is-active' : ''}>
+              <span className="launch-step-icon"><Icon d={s.icon} size={17} /></span>
+              <span className="launch-step-text">
+                <strong>{s.title}</strong>
+                <span>{i === 0 ? (name ? `Signed in as ${name}` : 'Authenticating your account') : s.desc}</span>
+              </span>
+              <span className="launch-step-state" aria-label={done ? 'done' : active ? 'in progress' : 'waiting'}>
+                {done ? <Icon d={ICONS.check} size={13} /> : null}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="launch-foot">
+        <span className="launch-foot-icon"><Icon d={ICONS.bulb} size={18} /></span>
+        <span><strong>Global visibility. Street-level detail.</strong>Turning field data into actionable insights.</span>
+      </div>
+    </div>
+  );
+}
 
 /** What this platform actually does — the same words the panel's own pages use. Shown one at a time under the form. */
 const features = [
@@ -98,15 +183,24 @@ export function Login() {
    */
   const homeFor = (role: string) => (role === 'user' ? driverHome : isAdminRole(role) ? '/dashboard' : '/');
 
-  if (token && user) return <Navigate to={homeFor(user.role)} replace />;
+  // After a sign-in made HERE, the launch sequence plays before the workspace opens. The ref is set
+  // before signIn resolves: the auth state lands a render before setLaunch does, and without it
+  // that render would redirect at once and the sequence would never show. Someone who arrives
+  // already signed in goes straight through.
+  const launchingRef = useRef(false);
+  const [launch, setLaunch] = useState<{ home: string; name: string } | null>(null);
+
+  if (token && user && !launchingRef.current) return <Navigate to={homeFor(user.role)} replace />;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true); setError(null);
+    launchingRef.current = true;
     try {
       const u = await signIn(email.trim(), password);
-      navigate(homeFor(u.role), { replace: true });
+      setLaunch({ home: homeFor(u.role), name: u.name || '' });
     } catch (err) {
+      launchingRef.current = false;
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
       setBusy(false);
@@ -117,22 +211,38 @@ export function Login() {
   const feature = features[featureIdx];
 
   return (
-    <div className="login-bg">
-      {/* The street-view capture drive, behind both columns. */}
-      <StreetCapture />
+    <div className={`login-bg${launch ? ' is-launching' : ''}`}>
+      {/* The street-view capture drive, behind both columns; it lifts off once signed in. */}
+      <StreetCapture launching={!!launch} />
 
       {/* ══ Left — the capture drive ══ */}
       <div className="login-left">
-        <div className="login-brand-row login-enter" style={stagger(0)}>
-          <div className="login-brand-icon">
-            <img src="/brand/logo.png" alt="JSAN" />
-          </div>
-          <div className="login-brand-name">ATLAS <span>ops</span></div>
+        <div className="login-hero login-enter" style={stagger(0)}>
+          <img className="login-hero-logo" src="/brand/logo.png" alt="JSAN" />
+          <div className="login-hero-tag"><span>People</span><i /><span>Technology</span><i /><span>Places</span></div>
+          <h2 className="login-hero-title">Atlas <span>Ops</span></h2>
+          <p className="login-hero-sub">Collection Intelligence Platform</p>
         </div>
       </div>
 
-      {/* ══ Right — sign in ══ */}
+      {/* Labels over the street: what the car is doing. */}
+      <div className="login-tags" aria-hidden="true">
+        <div className="login-tag login-tag--capture login-enter" style={stagger(3)}>
+          <Icon d={ICONS.camera} size={14} /> Street View Capture
+        </div>
+        <div className="login-tag login-tag--live login-enter" style={stagger(4)}>
+          <span className="login-tag-pin"><Icon d={ICONS.pin} size={15} /></span>
+          <span><strong>Live Collection</strong>GPS · Imagery</span>
+        </div>
+      </div>
+
+      {/* ══ Right — sign in, then the launch sequence ══ */}
       <div className="login-right">
+        {launch ? (
+          <div className="login-card login-card--launch">
+            <LaunchPanel name={launch.name} onDone={() => navigate(launch.home, { replace: true })} />
+          </div>
+        ) : (
         <div className="login-card">
 
           <div className="login-card-header">
@@ -141,7 +251,7 @@ export function Login() {
               <img className="login-wordmark" src="/brand/logo.png" alt="ATLAS ops" />
               <span className={`login-server login-server--${server}`} role="status">{SERVER_TEXT[server]}</span>
             </div>
-            <h1 className="login-title">Sign in to the fleet dashboard</h1>
+            <h1 className="login-title">Sign in to <span>Atlas Ops</span></h1>
             <p className="login-sub">
               Live map, trips, road coverage and reports for every capture drive.
             </p>
@@ -214,6 +324,7 @@ export function Login() {
             <span className="login-inside-text" key={featureIdx}><strong>{feature.title}</strong> · {feature.desc}</span>
           </div>
         </div>
+        )}
       </div>
 
     </div>

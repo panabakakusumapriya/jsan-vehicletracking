@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { WORLD_LAND } from './worldLand';
 
 /**
  * The login screen's backdrop: a street-view capture drive, seen from a chase camera. A JSAN
@@ -9,6 +10,12 @@ import { useEffect, useRef } from 'react';
  * what it captures: every few seconds the camera takes a frame, a ring flashes out from the camera
  * head and a wave sweeps the street, a viewfinder frames the next building on each side, and that
  * building's windows light up deep blue, as captured.
+ *
+ * Above the street, in the sky, the world as a dot-matrix with location pins dropping onto it one
+ * by one: the programme's reach behind the one street being driven. When `launching` turns true
+ * (the user has just signed in) the camera lifts off: it climbs and speeds up over a couple of
+ * seconds, the street sinks away below and the car drops out of view, while the map and its pins
+ * brighten — the hand-over from the sign-in to the workspace.
  *
  * Canvas 2D in one requestAnimationFrame loop. The canvas covers the whole login screen; the car
  * is centred in the left 70%, under the column the grid gives the sign-in card (max(460px, 30%)).
@@ -47,6 +54,31 @@ const WAVE_SPEED = 34; // m/s the capture wave travels out from the car
 const WAVE_LIFE = 1.4;
 const RING_LIFE = 0.9;
 const SHOT_LIFE = 1.3; // how long a building's viewfinder stays up
+const LIFT_M = 14; // how high the camera climbs on take-off
+const LIFT_S = 2.6; // over how long
+const DOT_BLUE = '125, 184, 232';
+
+/** [lon, lat] of the pins on the sky map: places the programme works, never labelled. */
+const PINS: Array<[number, number]> = [
+  [151.2, -33.9], [153.0, -27.5], [145.0, -37.8], [115.9, -31.9], [138.6, -34.9], [174.8, -36.9], [172.6, -43.5],
+  [103.8, 1.3], [139.7, 35.7], [116.4, 39.9], [78.5, 17.4], [72.9, 19.1], [55.3, 25.2], [28.0, -26.2],
+  [-0.1, 51.5], [8.7, 50.1], [-3.7, 40.4], [12.5, 41.9], [-74.0, 40.7], [-87.6, 41.9], [-118.2, 34.1],
+  [-79.4, 43.7], [-99.1, 19.4], [-46.6, -23.5], [-58.4, -34.6], [36.8, -1.3], [106.8, -6.2],
+];
+
+/** Land cells of the world map as [col, row]. */
+function decodeLand(): Array<[number, number]> {
+  const bytes = Uint8Array.from(atob(WORLD_LAND.bits), (ch) => ch.charCodeAt(0));
+  const cells: Array<[number, number]> = [];
+  const total = WORLD_LAND.cols * WORLD_LAND.rows;
+  for (let i = 0; i < total; i++) {
+    if (bytes[i >> 3] & (1 << (i & 7))) cells.push([i % WORLD_LAND.cols, Math.floor(i / WORLD_LAND.cols)]);
+  }
+  return cells;
+}
+
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
 /** Small seeded generator, so the street is different on every load but stable within one. */
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -59,8 +91,11 @@ function rng(seed: number) {
   };
 }
 
-export function StreetCapture() {
+export function StreetCapture({ launching = false }: { launching?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Read by the animation loop on every frame, so a change needs no restart of the effect.
+  const launchRef = useRef(launching);
+  launchRef.current = launching;
   useEffect(() => {
     const canvas = canvasRef.current;
     const host = canvas?.parentElement;
@@ -85,6 +120,14 @@ export function StreetCapture() {
     const pointer = { x: 0, on: false };
     let par = 0; // eased pointer parallax
     let raf = 0; let last = 0; let disposed = false;
+    // Take-off: when it began (0 = not yet), and how far along it is, 0–1.
+    let launchAt = 0;
+    let lift = 0;
+    let camH = CAM_H;
+    // The sky map: land dots in screen space, and where each pin sits.
+    const land = decodeLand();
+    let mapX = 0; let mapY = 0; let mapScale = 1; let mapDot = 1;
+    const born = performance.now();
 
     /** Extend the street ahead of the camera and drop what has passed behind it. */
     function grow() {
@@ -120,6 +163,15 @@ export function StreetCapture() {
       carCx = leftW / 2;
       hy = h * 0.42;
       f = h * 0.95;
+      // The map hangs in the sky right of centre, clear of the title on the left; the skyline
+      // rises in front of its lower edge.
+      const mapW = Math.min(leftW * 0.66, 700);
+      mapScale = mapW / 360;
+      mapX = Math.min(leftW - mapW - 16, carCx - mapW * 0.3);
+      mapY = h * 0.05;
+      mapDot = Math.max(0.9, WORLD_LAND.step * mapScale * 0.26);
+      // Where the car sits, for the labels the page places beside it.
+      host!.style.setProperty('--sc-car-x', `${carCx}px`);
       if (still) draw(performance.now());
     }
 
@@ -145,7 +197,7 @@ export function StreetCapture() {
       const zB = b.z0 + b.len;
       if (zB <= zA) return;
       const sx = (z: number) => vx + (f * (X - camX)) / (z - camZ);
-      const sy = (y: number, z: number) => hy + (f * (CAM_H + bob - y)) / (z - camZ);
+      const sy = (y: number, z: number) => hy + (f * (camH + bob - y)) / (z - camZ);
       const x0 = Math.min(sx(zA), sx(zB)); const x1 = Math.max(sx(zA), sx(zB));
       const top = b.hgt + b.tierH;
       const y0 = Math.min(sy(top, zA), sy(top, zB)); const y1 = Math.max(sy(0, zA), sy(0, zB));
@@ -171,7 +223,7 @@ export function StreetCapture() {
     /** Screen position of a world point (in front of the camera). */
     const proj = (x: number, y: number, z: number): [number, number] => {
       const zr = z - camZ;
-      return [vx + (f * (x - camX)) / zr, hy + (f * (CAM_H + bob - y)) / zr];
+      return [vx + (f * (x - camX)) / zr, hy + (f * (camH + bob - y)) / zr];
     };
     /** Add a world-space quad to the current path. */
     function quad(g: CanvasRenderingContext2D, pts: Array<[number, number, number]>) {
@@ -285,7 +337,7 @@ export function StreetCapture() {
       if (zr < 1.2 || zr > FAR) return;
       const sx = vx + (f * (x - camX)) / zr;
       if (sx < -4 || sx > w + 4) return;
-      const sy = hy + (f * (CAM_H + bob - y)) / zr;
+      const sy = hy + (f * (camH + bob - y)) / zr;
       if (sy < -4 || sy > h + 4) return;
       const fog = Math.pow(1 - zr / FAR, 1.3) * Math.min(1, (zr - 1.2) / 5);
       const a = Math.min(1, base * fog * (1 + lit * 1.4));
@@ -298,7 +350,11 @@ export function StreetCapture() {
 
     function step(dt: number, now: number) {
       const t = now / 1000;
-      const kmh = 46 + 6 * Math.sin(t / 7) + 2 * Math.sin(t / 2.3);
+      if (launchRef.current && !launchAt) launchAt = now;
+      lift = launchAt ? easeInOut(Math.min(1, (now - launchAt) / 1000 / LIFT_S)) : 0;
+      camH = CAM_H + lift * LIFT_M;
+      // The drive speeds up as the camera climbs away.
+      const kmh = (46 + 6 * Math.sin(t / 7) + 2 * Math.sin(t / 2.3)) * (1 + lift * 2.5);
       const v = kmh / 3.6;
       camZ += v * dt;
       dist += v * dt;
@@ -311,11 +367,60 @@ export function StreetCapture() {
       grow();
     }
 
+    /** A map pin: a blue drop with a white centre, its point at (x, y). */
+    function drawPin(g: CanvasRenderingContext2D, x: number, y: number, size: number, alpha: number) {
+      const r = size * 0.42;
+      const cy = y - size + r;
+      g.globalAlpha = alpha;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.quadraticCurveTo(x - r * 1.15, cy + r * 0.7, x - r, cy);
+      g.arc(x, cy, r, Math.PI, 0);
+      g.quadraticCurveTo(x + r * 1.15, cy + r * 0.7, x, y);
+      g.fillStyle = `rgb(${BRAND})`; g.fill();
+      g.beginPath(); g.arc(x, cy, r * 0.42, 0, Math.PI * 2);
+      g.fillStyle = '#ffffff'; g.fill();
+      g.globalAlpha = 1;
+    }
+
+    /** The sky map: the world as faint dots, pins dropping onto it, all brighter on take-off. */
+    function drawSky(g: CanvasRenderingContext2D, now: number) {
+      const ox = mapX - par * 25;
+      const oy = mapY - lift * h * 0.05; // it drifts up a little as the camera climbs
+      const cell = WORLD_LAND.step * mapScale;
+      g.fillStyle = `rgba(${DOT_BLUE}, ${(0.32 + lift * 0.3).toFixed(3)})`;
+      g.beginPath();
+      for (const [c, r] of land) {
+        const x = ox + (c + 0.5) * cell;
+        const y = oy + (r + 0.5) * cell;
+        g.moveTo(x + mapDot, y);
+        g.arc(x, y, mapDot, 0, Math.PI * 2);
+      }
+      g.fill();
+      // Pins drop in one after another, overshoot a touch, then send out a slow ring.
+      const age = (now - born) / 1000;
+      const size = Math.max(7, Math.min(12, mapScale * 5.5));
+      PINS.forEach(([lon, lat], i) => {
+        const t = still ? 1 : Math.min(1, Math.max(0, (age - 0.4 - i * 0.12) / 0.45));
+        if (t <= 0) return;
+        const x = ox + (lon + 180) * mapScale;
+        const y = oy + (WORLD_LAND.latTop - lat) * mapScale;
+        const back = 1 + 2.7 * Math.pow(t - 1, 3) + 1.7 * Math.pow(t - 1, 2); // ease-out with a small overshoot
+        if (t === 1 && !still) {
+          const p = ((now / 1000) * (1 + lift * 2) + i * 0.37) % 2.4 / 2.4;
+          g.beginPath(); g.arc(x, y, 2 + p * 10, 0, Math.PI * 2);
+          g.lineWidth = 1.2; g.strokeStyle = `rgba(${ACCENT}, ${((1 - p) * (0.35 + lift * 0.4)).toFixed(3)})`; g.stroke();
+        }
+        drawPin(g, x, y - (1 - back) * 16, size, Math.min(1, t * 1.6) * (0.85 + lift * 0.15));
+      });
+    }
+
     /** The capture car from behind: white body, blue glass and light bar, a 360° camera on a mast. */
     function drawCar(g: CanvasRenderingContext2D, now: number) {
       const s = f / CAR_AHEAD; // px per metre at the car
       const cx = vx + (f * (CAR_X - camX)) / CAR_AHEAD;
-      const gy = hy + (f * (CAM_H + bob)) / CAR_AHEAD + (still ? 0 : Math.sin(now / 110) * 0.5);
+      const gy = hy + (f * (camH + bob)) / CAR_AHEAD + (still ? 0 : Math.sin(now / 110) * 0.5);
+      if (gy - 3 * s > h) return; // lifted far enough that the car has dropped out of view
       const X = (m: number) => cx + m * s;
       const Y = (m: number) => gy - m * s;
       const rr = (x0: number, y0: number, x1: number, y1: number, r: number) => {
@@ -432,6 +537,8 @@ export function StreetCapture() {
       vx = carCx - par * 60;
       camX = CAR_X + (still ? 0 : Math.sin(now / 5200) * 0.12);
       bob = still ? 0 : Math.sin(now / 1700) * 0.03;
+
+      drawSky(g, now);
 
       // A faint haze along the horizon, where the street fades out.
       const haze = g.createLinearGradient(0, hy - h * 0.18, 0, hy + h * 0.12);
