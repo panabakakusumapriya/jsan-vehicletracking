@@ -301,6 +301,23 @@ export function CoverageMap({
    */
   const [fieldMarkers, setFieldMarkers] = useState<TripMarker[]>([]);
   const [showMarkers, setShowMarkers] = useState(true);
+  // The map key can be folded down to one line; the choice is kept for the next visit.
+  const [legendMin, setLegendMin] = useState(() => {
+    try {
+      return localStorage.getItem('cov-legend-min') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleLegend = () =>
+    setLegendMin((v) => {
+      try {
+        localStorage.setItem('cov-legend-min', v ? '0' : '1');
+      } catch {
+        /* private window: the fold still works, it just is not remembered */
+      }
+      return !v;
+    });
   const [pickedMarker, setPickedMarker] = useState<TripMarker | null>(null);
   const [tracks, setTracks] = useState<TrackPath[]>([]);
   const trackRequest = useRef(0);
@@ -1042,12 +1059,12 @@ export function CoverageMap({
             : roadsShown
             ? `${roadsShown.toLocaleString()} ${
                 roadScope === 'covered' ? 'driven roads' : roadScope === 'assigned' ? 'roads in assigned areas' : 'roads'
-              }${roadScope === 'covered' ? '' : ` · ${roadsDriven.toLocaleString()} driven (${((roadsDriven / roadsShown) * 100).toFixed(0)}%)`} · ${
-                colorRoadsByDriver ? 'driven roads take the driver’s colour (thick), thin red = still to drive' : 'thick blue = done, thin red = still to drive'
-              }`
+              }${roadScope === 'covered' ? '' : ` · ${roadsDriven.toLocaleString()} driven`}`
             : nets.length
               ? roadScope === 'assigned' ? 'No area is out with a driver' : 'Nothing driven yet'
               : '';
+  // The one figure the folded key keeps: how much of the drawn road is done.
+  const drivenPct = roadsShown && roadScope !== 'covered' ? Math.round((roadsDriven / roadsShown) * 100) : null;
 
   // One card at a time. A picked pin's card takes the place of the area's: the reader asked about
   // the driver, and two callouts on one map end up on top of each other.
@@ -1165,7 +1182,25 @@ export function CoverageMap({
         <MarkerCard marker={pickedMarker} onClose={() => setPickedMarker(null)} style={{ zIndex: 6 }} />
       )}
 
-      <div className="cov-map-legend">
+      <div className={`cov-map-legend${legendMin ? ' is-min' : ''}`}>
+        <div className="cov-legend-head">
+          <span className="cov-legend-title">Map key</span>
+          {drivenPct != null && <span className="cov-legend-sum">{drivenPct}% driven</span>}
+          <button
+            type="button"
+            className="cov-legend-toggle"
+            onClick={toggleLegend}
+            aria-expanded={!legendMin}
+            aria-label={legendMin ? 'Show the map key' : 'Minimise the map key'}
+            title={legendMin ? 'Show the map key' : 'Minimise'}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              {legendMin ? <path d="m6 15 6-6 6 6" /> : <path d="m6 9 6 6 6-6" />}
+            </svg>
+          </button>
+        </div>
+        {!legendMin && (
+        <>
         {mode === 'assignment' ? (
           <>
             {/* Outline first, because it is the fact people look for: whose is this. */}
@@ -1217,30 +1252,42 @@ export function CoverageMap({
             ))}
           </div>
         )}
-        <div className="cov-legend-note">{linksHint}</div>
+        {roadsShown > 0 && !netLoading && !netError && (
+          <div className="cov-legend-row">
+            <span
+              className="cov-line"
+              style={{
+                height: 4,
+                background: colorRoadsByDriver
+                  ? 'linear-gradient(90deg, rgb(225,29,72), rgb(124,58,237), rgb(8,145,178))'
+                  : `rgb(${BLUE.join(',')})`,
+              }}
+            />
+            <span>{colorRoadsByDriver ? 'driven (driver’s colour)' : 'driven'}</span>
+            <span className="cov-line" style={{ height: 2, background: `rgb(${RED.join(',')})` }} />
+            <span>to drive</span>
+          </div>
+        )}
+        {linksHint && <div className="cov-legend-note">{linksHint}</div>}
         {fieldMarkers.length > 0 && (
-          <label className="cov-legend-row" style={{ cursor: 'pointer', gap: 6 }}>
+          <label className="cov-legend-row cov-legend-check">
             <input type="checkbox" checked={showMarkers} onChange={(e) => setShowMarkers(e.target.checked)} />
-            <img src={pinUrl('#ef4444')} alt="" width={11} height={15} />
+            <img src={pinUrl('#ef4444')} alt="" width={10} height={14} />
             <span>
-              {fieldMarkers.length} marker{fieldMarkers.length === 1 ? '' : 's'} dropped by drivers · click one for details
+              {fieldMarkers.length} driver marker{fieldMarkers.length === 1 ? '' : 's'} · click one for details
             </span>
           </label>
         )}
         {driverPins && driverPins.length > 0 && (
-          <div className="cov-legend-note">
-            Pins: where each driver’s last drive ended · green dot = driving now
-          </div>
+          <div className="cov-legend-note">Pins: last drive’s end · green dot = driving now</div>
         )}
-        {onToggleSelect && (
-          <div className="cov-legend-note">
-            Click an area to select it · shift-click to add more
-          </div>
-        )}
+        {onToggleSelect && <div className="cov-legend-note">Click an area to select · shift-click for more</div>}
         {areas && areas.approximated > 0 && (
           <div className="cov-legend-note" style={{ color: 'var(--amber)' }}>
             {areas.approximated} area(s) drawn as bounding boxes — re-import to store real outlines
           </div>
+        )}
+        </>
         )}
       </div>
 
