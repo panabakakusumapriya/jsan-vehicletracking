@@ -135,12 +135,13 @@ export function StreetCapture({ launching = false }: { launching?: boolean }) {
         const side = s ? 1 : -1;
         while (nextBuilding[s] < camZ + FAR + 40) {
           const z0 = nextBuilding[s] + 2 + rand() * 5;
-          const len = 8 + rand() * 16;
-          const hgt = 8 + rand() * rand() * 20;
-          const tiered = hgt > 11 && rand() < 0.4;
+          // Low-rise: mostly two to four storeys, the odd taller one, set a little back from the kerb.
+          const len = 6 + rand() * 11;
+          const hgt = 5 + rand() * rand() * 11;
+          const tiered = hgt > 9 && rand() < 0.35;
           buildings.push({
-            side, z0, len, x: 9 + rand() * 3, depth: 8 + rand() * 6, hgt,
-            tierH: tiered ? 3.5 + rand() * 8 : 0, tierIn: 2 + rand() * 1.5,
+            side, z0, len, x: 10 + rand() * 3, depth: 6 + rand() * 5, hgt,
+            tierH: tiered ? 2.5 + rand() * 3 : 0, tierIn: 1.5 + rand() * 1.2,
             bay: 2.2 + rand() * 1.1, floor: 3.1 + rand() * 0.5, ribbon: rand() < 0.3,
             cap: 0, shotAt: 0,
           });
