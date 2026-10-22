@@ -56,7 +56,7 @@ const RING_LIFE = 0.9;
 const SHOT_LIFE = 1.3; // how long a building's viewfinder stays up
 const LIFT_M = 14; // how high the camera climbs on take-off
 const LIFT_S = 2.6; // over how long
-const DOT_BLUE = '125, 184, 232';
+const MAP_BLUE = '34, 116, 204'; // the sky map's land: a mid blue, darker than the pale street tones
 
 /** [lon, lat] of the pins on the sky map: places the programme works, never labelled. */
 const PINS: Array<[number, number]> = [
@@ -389,7 +389,7 @@ export function StreetCapture({ launching = false }: { launching?: boolean }) {
       const ox = mapX - par * 25;
       const oy = mapY - lift * h * 0.05; // it drifts up a little as the camera climbs
       const cell = WORLD_LAND.step * mapScale;
-      g.fillStyle = `rgba(${DOT_BLUE}, ${(0.32 + lift * 0.3).toFixed(3)})`;
+      g.fillStyle = `rgba(${MAP_BLUE}, ${(0.5 + lift * 0.25).toFixed(3)})`;
       g.beginPath();
       for (const [c, r] of land) {
         const x = ox + (c + 0.5) * cell;
