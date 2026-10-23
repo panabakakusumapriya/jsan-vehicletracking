@@ -44,21 +44,11 @@ const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezo
  * then guaranteed to add up to the same totals.
  */
 
-const COUNTRY_NAMES = {
-  AU: 'Australia', NZ: 'New Zealand', IN: 'India', FR: 'France', DE: 'Germany', IT: 'Italy',
-  SE: 'Sweden', FI: 'Finland', AT: 'Austria', ES: 'Spain', PT: 'Portugal', NL: 'Netherlands',
-  BE: 'Belgium', CH: 'Switzerland', DK: 'Denmark', NO: 'Norway', PL: 'Poland', IE: 'Ireland',
-  GB: 'United Kingdom', UK: 'United Kingdom', CZ: 'Czechia', HU: 'Hungary', GR: 'Greece',
-  RO: 'Romania', US: 'United States', CA: 'Canada', SG: 'Singapore', JP: 'Japan',
-};
+const { normalizeCountry } = require('../utils/country');
 const UNKNOWN = 'Unknown';
 const NO_PROJECT = 'none';
 
-const countryOf = (u) => {
-  const raw = String(u?.country || '').trim();
-  if (!raw) return null;
-  return COUNTRY_NAMES[raw.toUpperCase()] || raw;
-};
+const countryOf = (u) => normalizeCountry(u?.country) || null;
 
 function addDays(dateStr, n) {
   const d = new Date(`${dateStr}T00:00:00Z`);

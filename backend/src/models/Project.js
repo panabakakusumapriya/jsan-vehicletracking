@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { normalizeCountry } = require('../utils/country');
 
 /**
  * A project is the tenancy boundary managers and team leads operate inside. Admins created
@@ -9,7 +10,7 @@ const projectSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, unique: true, trim: true },
     code: { type: String, trim: true, default: null },
-    country: { type: String, trim: true, default: null },
+    country: { type: String, trim: true, default: null, set: normalizeCountry }, // one spelling: utils/country.js
     active: { type: Boolean, default: true },
 
     // Which mobile app tabs are enabled for this project's drivers.

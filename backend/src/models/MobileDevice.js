@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { normalizeCountry } = require('../utils/country');
 
 const STATUSES = ['in_stock', 'assigned', 'repair', 'lost', 'retired'];
 
@@ -30,7 +31,7 @@ const mobileDeviceSchema = new mongoose.Schema(
     phoneScreenguard: { type: String, trim: true, default: null },
 
     managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
-    country: { type: String, trim: true, default: null },
+    country: { type: String, trim: true, default: null, set: normalizeCountry }, // one spelling: utils/country.js
 
     status: { type: String, enum: STATUSES, default: 'in_stock', index: true },
     // CACHE of the open Assignment, so listing the inventory doesn't need a join.

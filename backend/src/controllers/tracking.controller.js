@@ -6,6 +6,7 @@ const AreaAssignment = require('../models/AreaAssignment');
 const { liveNetworkVersions, resolveAssignedAreas } = require('../services/liveNetworks');
 const { releaseLinks } = require('../services/linkCoverage');
 const asyncHandler = require('../utils/asyncHandler');
+const { normalizeCountry } = require('../utils/country');
 const { haversineMeters, simplifyPath } = require('../utils/geo');
 const { decodePolyline6 } = require('../services/roadSegments');
 const { encodePolyline6 } = require('../services/valhalla');
@@ -581,7 +582,8 @@ async function buildUkmTripFilter(req) {
   } else if (project || country) {
     const userQuery = { role: 'user' };
     if (project) userQuery.project = project;
-    if (country) userQuery.country = country;
+    // Stored countries have one spelling now; a link or caller still saying "AU" means Australia.
+    if (country) userQuery.country = normalizeCountry(country);
     const matching = await User.find(userQuery).select('_id');
     driverIdFilter = matching.map(u => u._id);
   }

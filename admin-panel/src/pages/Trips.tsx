@@ -7,6 +7,7 @@ import { AlreadyDrivenTip } from '../components/AlreadyDrivenTip';
 import { pinUrl, type TripMarker } from '../components/TripMarkers';
 import { ExportButtons } from '../components/ExportButtons';
 import { api, downloadFile, viewerTimeZone } from '../lib/api';
+import { normalizeCountry } from '../lib/country';
 import { runExportJob, describeJob } from '../lib/exportJobs';
 import { hm, km, sessionDt, statusBadge, tripMs } from '../lib/format';
 import type { Project, Trip, User } from '../lib/types';
@@ -149,7 +150,8 @@ export function Trips() {
   const status = searchParams.get('status') ?? '';
   const driverId = searchParams.get('driver') ?? '';
   const project = searchParams.get('project') ?? '';
-  const country = searchParams.get('country') ?? '';
+  // An older link may still say country=NZ: read it as the one spelling stored now.
+  const country = normalizeCountry(searchParams.get('country'));
   const from = searchParams.get('from') ?? '';
   const to = searchParams.get('to') ?? '';
   const page = Math.max(1, Number(searchParams.get('page')) || 1);

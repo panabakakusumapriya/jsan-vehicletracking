@@ -5,6 +5,7 @@ import { Modal } from '../components/Modal';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { isAdminRole, type Assignment, type MobileDevice, type Project, type User, type Vehicle } from '../lib/types';
+import { COUNTRY_LIST, normalizeCountry } from '../lib/country';
 
 /**
  * Drivers — and the ONE place assets are allocated.
@@ -635,7 +636,12 @@ function AddDriver({ vehicles, devices, managers, teamLeads, isAdmin, canAssignT
           <F label="Region"><input className="input" value={form.region} onChange={e => set('region', e.target.value)} /></F>
         </Row>
         <Row>
-          <F label="Country"><input className="input" value={form.country} onChange={e => set('country', e.target.value)} placeholder="India" /></F>
+          <F label="Country">
+            {/* Pick from the list (or type): saved as the one spelling, so "AU" and "Australia" are one country. */}
+            <input className="input" list="driver-countries" value={form.country} onChange={e => set('country', e.target.value)}
+              onBlur={e => set('country', normalizeCountry(e.target.value))} placeholder="Australia" />
+            <datalist id="driver-countries">{COUNTRY_LIST.map(c => <option key={c} value={c} />)}</datalist>
+          </F>
           <F label="Driving Location"><input className="input" value={form.drivingLocation} onChange={e => set('drivingLocation', e.target.value)} /></F>
         </Row>
         <F label="Driver Mode"><input className="input" value={form.driverMode} onChange={e => set('driverMode', e.target.value)} /></F>

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { normalizeCountry } = require('../utils/country');
 const bcrypt = require('bcryptjs');
 
 // 'superadmin' is an admin who may also create and manage admins — see utils/roles.js.
@@ -18,7 +19,7 @@ const userSchema = new mongoose.Schema(
     // services/assetCustody.js. The ledger is the source of truth; these exist so the
     // Drivers screen can show and set the current allocation without a join.
     mobileDeviceId: { type: mongoose.Schema.Types.ObjectId, ref: 'MobileDevice', default: null },
-    country: { type: String, trim: true, default: null },
+    country: { type: String, trim: true, default: null, set: normalizeCountry }, // one spelling: utils/country.js
     timezone: { type: String, trim: true, default: null },
     /**
      * Driver Academy — the in-app "how to use this app" course a driver sees after first login.
