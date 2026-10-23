@@ -93,6 +93,41 @@ function pageList(current: number, total: number): (number | '...')[] {
   return list;
 }
 
+/**
+ * The trip a marker belongs to: the one it was linked to, else the one it was dropped during — or
+ * just after, within the same 30 minutes the server allows (drivers stop to flag a spot).
+ */
+function tripOfMarker(m: TripMarker, trips: Trip[]): Trip | undefined {
+  const linked = trips.find((t) => t._id === m.tripId);
+  if (linked) return linked;
+  const at = new Date(m.recordedAt).getTime();
+  const gap = (t: Trip) => {
+    const s0 = new Date(t.startedAt).getTime();
+    const e0 = t.endedAt ? new Date(t.endedAt).getTime() : Date.now();
+    return at < s0 ? s0 - at : at > e0 ? at - e0 : 0;
+  };
+  const nearest = [...trips].sort((a, b) => gap(a) - gap(b))[0];
+  return nearest && gap(nearest) <= 30 * 60 * 1000 ? nearest : undefined;
+}
+
+/** Markers as coloured dots with a count per colour — the same chips as the day row. */
+function MarkerDots({ list }: { list: TripMarker[] }) {
+  const byColor = new Map<string, { color: string; name: string; count: number }>();
+  for (const m of list) {
+    const color = m.category?.color || '#ef4444';
+    const g = byColor.get(color) || { color, name: m.category?.name || 'Marker', count: 0 };
+    g.count += 1;
+    byColor.set(color, g);
+  }
+  return (
+    <span className="trip-marker-dots">
+      {[...byColor.values()].sort((a, b) => b.count - a.count).map((g) => (
+        <span key={g.color} title={`${g.count} × ${g.name}`}><i style={{ background: g.color }} />{g.count}</span>
+      ))}
+    </span>
+  );
+}
+
 /** A date filter's value, N days from today. Local date parts — a UTC ISO slice shifts the day. */
 const isoDay = (offsetDays: number) => {
   const d = new Date();
@@ -160,6 +195,7 @@ export function Trips() {
   const [dayTripsLoading, setDayTripsLoading] = useState<Record<string, boolean>>({});
   /** The markers of each expanded day, keyed like dayTrips. */
   const [dayMarkers, setDayMarkers] = useState<Record<string, TripMarker[]>>({});
+  const [openMarkers, setOpenMarkers] = useState<Record<string, string>>({});
 
   useEffect(() => {
     api.get<{ users: User[] }>('/api/users?role=user').then(r => setDrivers(r.users));
@@ -329,6 +365,20 @@ export function Trips() {
         .trip-marker-dots i { width: 9px; height: 9px; border-radius: 99px; display: inline-block; box-shadow: 0 0 0 1.5px #fff, 0 0 0 2.5px rgba(15,23,42,0.15); }
         .trip-day-markers { padding: 10px 20px 14px 48px; border-top: 1px dashed var(--line-2); }
         .tdm-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); margin-bottom: 6px; }
+        .tdm-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+        .tdm-bar .tdm-title { margin: 0; }
+        .tdm-filter { color: var(--text-2); font-size: 12.5px; }
+        .tdm-toggle { margin-left: auto; border: 1px solid var(--line-2); background: var(--panel); color: var(--brand); font: inherit; font-size: 12.5px; font-weight: 600; border-radius: 7px; padding: 3px 10px; cursor: pointer; }
+        .tdm-toggle:hover { border-color: var(--brand); }
+        .tdm-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12.5px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+        .tdm-table th { text-align: left; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); padding: 6px 10px; background: var(--panel-2); }
+        .tdm-table td { padding: 5px 10px; border-top: 1px solid var(--line); }
+        .tdm-table tr:hover td { background: var(--panel-2); }
+        .tdm-cat { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+        .tdm-links { white-space: nowrap; text-align: right; }
+        .tdm-links a { font-weight: 600; margin-left: 12px; }
+        .tdm-count { border: 1px solid transparent; background: transparent; border-radius: 7px; padding: 2px 6px; cursor: pointer; font: inherit; }
+        .tdm-count:hover, .tdm-count.on { border-color: var(--line-2); background: var(--panel); }
         .tdm-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; padding: 4px 0; }
         .tdm-time { color: var(--muted); }
         .tdm-trip { color: var(--text-2); }
@@ -582,6 +632,7 @@ export function Trips() {
                                 <th title="New customer road this trip drove first, inside the areas its driver held">Assigned UKM</th>
                                 <th title="New customer road this trip drove first, outside the driver's areas">Outside UKM</th>
                                 <th title="Snapped distance driven outside the polygons the driver was assigned during the trip">Outside area</th>
+                                <th title="Markers dropped on this trip, by colour — click to list them">Markers</th>
                                 <th></th>
                               </tr>
                             </thead>
@@ -692,6 +743,20 @@ export function Trips() {
                                     {t.outAreaMeters != null ? km(t.outAreaMeters) : '—'}
                                   </td>
                                   <td onClick={e => e.stopPropagation()}>
+                                    {(() => {
+                                      const mine = (dayMarkers[key] ?? []).filter((m) => tripOfMarker(m, rows ?? [])?._id === t._id);
+                                      if (!mine.length) return <span style={{ color: 'var(--muted)' }}>—</span>;
+                                      const on = openMarkers[key] === t._id;
+                                      return (
+                                        <button type="button" className={`tdm-count${on ? ' on' : ''}`}
+                                          onClick={() => setOpenMarkers((prev) => ({ ...prev, [key]: on ? '' : t._id }))}
+                                          title={on ? 'Hide this trip’s markers' : 'List this trip’s markers'}>
+                                          <MarkerDots list={mine} />
+                                        </button>
+                                      );
+                                    })()}
+                                  </td>
+                                  <td onClick={e => e.stopPropagation()}>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                       {t.status === 'active' && (
                                         <Link to={`/trips/${t._id}/map`} state={{ tripsSearch: searchParams.toString() }} onClick={() => rememberTrip(t._id)} style={{
@@ -749,53 +814,66 @@ export function Trips() {
                                     <td style={{ color: '#d97706' }}>{measured.length ? km(outsideSum) : '—'}</td>
                                     <td style={{ color: out > 0 ? '#d97706' : 'var(--muted)' }}>{outList.length ? km(out) : '—'}</td>
                                     <td />
+                                    <td />
                                   </tr>
                                 </tfoot>
                               );
                             })()}
                           </table>
                         )}
-                        {(dayMarkers[key] ?? []).length > 0 && (
-                          <div className="trip-day-markers">
-                            <div className="tdm-title">Markers this day · {dayMarkers[key].length}</div>
-                            {dayMarkers[key].map((m) => {
-                              // The trip it was linked to; for a marker stamped before linking went
-                              // by time, the trip it was dropped during — or just after, within
-                              // the same 30 minutes the server allows (drivers stop to flag a spot).
-                              const at = new Date(m.recordedAt).getTime();
-                              /** Minutes from the drop to the trip: 0 inside it, else to its nearer end. */
-                              const gap = (t: Trip) => {
-                                const s0 = new Date(t.startedAt).getTime();
-                                const e0 = t.endedAt ? new Date(t.endedAt).getTime() : Date.now();
-                                return at < s0 ? s0 - at : at > e0 ? at - e0 : 0;
-                              };
-                              const nearest = [...(rows ?? [])].sort((a, b) => gap(a) - gap(b))[0];
-                              const trip =
-                                (rows ?? []).find((t) => t._id === m.tripId) ??
-                                (nearest && gap(nearest) <= 30 * 60 * 1000 ? nearest : undefined);
-                              return (
-                                <div key={m.id} className="tdm-row">
-                                  <img src={pinUrl(m.category?.color)} alt="" width={15} height={20} />
-                                  <b>{m.category?.name ?? 'Marker'}</b>
-                                  <span className="tdm-time">{sessionDt(m.recordedAt)}</span>
-                                  <span className="tdm-trip">
-                                    {trip
-                                      ? <>on the trip {sessionDt(trip.startedAt).slice(-5)}–{trip.endedAt ? sessionDt(trip.endedAt).slice(-5) : 'now'}</>
-                                      : 'between trips'}
+                        {(dayMarkers[key] ?? []).length > 0 && (() => {
+                          const all = dayMarkers[key];
+                          const list = rows ?? [];
+                          const open = openMarkers[key] || '';
+                          const onlyTrip = open && open !== 'all' ? list.find((t) => t._id === open) : undefined;
+                          const shown = onlyTrip ? all.filter((m) => tripOfMarker(m, list)?._id === onlyTrip._id) : all;
+                          const hhmm = (d: string) => sessionDt(d).slice(-5);
+                          return (
+                            <div className="trip-day-markers">
+                              <div className="tdm-bar">
+                                <span className="tdm-title">Markers this day</span>
+                                <b>{all.length}</b>
+                                <MarkerDots list={all} />
+                                {onlyTrip && (
+                                  <span className="tdm-filter">
+                                    showing the trip {hhmm(onlyTrip.startedAt)}–{onlyTrip.endedAt ? hhmm(onlyTrip.endedAt) : 'now'} ·{' '}
+                                    <button type="button" className="cov-link" onClick={() => setOpenMarkers((prev) => ({ ...prev, [key]: 'all' }))}>show all {all.length}</button>
                                   </span>
-                                  {m.vehiclePlate && <span className="tdm-plate">{m.vehiclePlate}</span>}
-                                  {m.note && <span className="tdm-note">{m.note}</span>}
-                                  {trip && (
-                                    <Link to={`/trips/${trip._id}/map`} state={{ tripsSearch: searchParams.toString() }} onClick={() => rememberTrip(trip._id)}>See on the trip map →</Link>
-                                  )}
-                                  <a href={`https://www.google.com/maps/search/?api=1&query=${m.lat},${m.lon}`} target="_blank" rel="noreferrer">
-                                    Google Maps ↗
-                                  </a>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
+                                )}
+                                <button type="button" className="tdm-toggle" onClick={() => setOpenMarkers((prev) => ({ ...prev, [key]: open ? '' : 'all' }))}>
+                                  {open ? 'Hide list ▴' : 'Show list ▾'}
+                                </button>
+                              </div>
+                              {open && (
+                                <table className="tdm-table">
+                                  <thead>
+                                    <tr><th>Time</th><th>Marker</th><th>Trip</th><th>Plate</th><th>Note</th><th></th></tr>
+                                  </thead>
+                                  <tbody>
+                                    {shown.map((m) => {
+                                      const trip = tripOfMarker(m, list);
+                                      return (
+                                        <tr key={m.id}>
+                                          <td className="tdm-time">{hhmm(m.recordedAt)}</td>
+                                          <td><span className="tdm-cat"><img src={pinUrl(m.category?.color)} alt="" width={11} height={15} />{m.category?.name ?? 'Marker'}</span></td>
+                                          <td>{trip ? `${hhmm(trip.startedAt)}–${trip.endedAt ? hhmm(trip.endedAt) : 'now'}` : <span className="muted">between trips</span>}</td>
+                                          <td>{m.vehiclePlate ? <span className="tdm-plate">{m.vehiclePlate}</span> : <span className="muted">—</span>}</td>
+                                          <td className="tdm-note">{m.note || <span className="muted">—</span>}</td>
+                                          <td className="tdm-links">
+                                            {trip && (
+                                              <Link to={`/trips/${trip._id}/map`} state={{ tripsSearch: searchParams.toString() }} onClick={() => rememberTrip(trip._id)}>On map</Link>
+                                            )}
+                                            <a href={`https://www.google.com/maps/search/?api=1&query=${m.lat},${m.lon}`} target="_blank" rel="noreferrer">Google ↗</a>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
                     </tr>
                   )}
