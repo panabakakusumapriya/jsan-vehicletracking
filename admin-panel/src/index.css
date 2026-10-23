@@ -1913,6 +1913,8 @@ select.input { cursor: pointer; }
 .dr-stat.static:hover { border-color: var(--line-2); color: var(--muted); }
 /* Trips: the second short row of filters under the bar. */
 .tr-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; }
+.tr-filters .tr-presets { flex-wrap: nowrap; margin: 0 2px; }
+.tr-filters .tr-presets button { height: 32px; padding: 0 12px; font-size: 12.5px; font-weight: 600; }
 .tr-filters select.input.dr-filter { flex: 0 0 auto; height: 32px; padding: 4px 26px 4px 10px; line-height: 1.2; font-size: 13px; }
 .tr-filters .input:not(select) { height: 32px; padding: 4px 10px; font-size: 13px; }
 .tr-export { margin-left: auto; }

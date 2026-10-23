@@ -93,6 +93,13 @@ function pageList(current: number, total: number): (number | '...')[] {
   return list;
 }
 
+/** A date filter's value, N days from today. Local date parts — a UTC ISO slice shifts the day. */
+const isoDay = (offsetDays: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 export function Trips() {
   const [summaries, setSummaries] = useState<DaySummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -133,6 +140,19 @@ export function Trips() {
   // Someone on a single project starts on it (unless the address already names a project).
   const projectScope = useProjectScope();
   useDefaultProject(projectScope, project, (v) => setFilters({ project: v, country: '', driver: '' }));
+
+  // Open on today: a bare /trips shows today's driving rather than every day ever recorded. An
+  // address that already names dates, a driver (a link to "this driver's trips"), or "All dates"
+  // (dates=all, so coming back from a trip keeps that choice) is left as it is.
+  useEffect(() => {
+    if (!searchParams.has('from') && !searchParams.has('to') && !searchParams.has('driver') && !searchParams.has('dates')) {
+      updateParams({ from: isoDay(0), to: isoDay(0) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const today = isoDay(0);
+  const yesterday = isoDay(-1);
+  const pickDays = (f: string, t: string) => setFilters({ from: f, to: t, dates: f || t ? '' : 'all' });
 
   // A day-row's individual trips are fetched lazily on first expand and then cached by key,
   // so collapsing and re-expanding the same row doesn't refetch.
@@ -414,21 +434,33 @@ export function Trips() {
             <option key={d._id} value={d._id}>{d.name}</option>
           ))}
         </select>
+        <div className="cov-presets tr-presets" role="group" aria-label="Date shortcuts">
+          <button type="button" className={from === today && to === today ? 'on' : ''} onClick={() => pickDays(today, today)}>
+            Today
+          </button>
+          <button type="button" className={from === yesterday && to === yesterday ? 'on' : ''} onClick={() => pickDays(yesterday, yesterday)}>
+            Yesterday
+          </button>
+          <button type="button" className={!from && !to ? 'on' : ''} onClick={() => pickDays('', '')}>
+            All dates
+          </button>
+        </div>
         <DateField
           style={{ width: 140 }}
           value={from}
           max={to || undefined}
-          onChange={v => setFilters({ from: v })}
+          onChange={v => setFilters({ from: v, dates: '' })}
         />
         <span style={{ color: 'var(--muted)', fontSize: 13 }}>to</span>
         <DateField
           style={{ width: 140 }}
           value={to}
           min={from || undefined}
-          onChange={v => setFilters({ to: v })}
+          onChange={v => setFilters({ to: v, dates: '' })}
         />
-        {(status || driverId || project || country || from || to) && (
-          <button type="button" className="cov-link" onClick={() => setSearchParams({}, { replace: true })}>
+        {/* Clear goes back to the default view (today, no other filters), not to every day ever. */}
+        {(status || driverId || project || country || from !== today || to !== today) && (
+          <button type="button" className="cov-link" onClick={() => setSearchParams({ from: today, to: today }, { replace: true })}>
             Clear
           </button>
         )}
