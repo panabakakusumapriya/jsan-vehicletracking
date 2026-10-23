@@ -668,6 +668,10 @@ select.input { cursor: pointer; }
 }
 .launch-pct { font-size:15px; font-weight:800; color:#0d1b33; font-variant-numeric:tabular-nums; min-width:40px; text-align:right; }
 .launch-note { margin:7px 0 24px; font-size:12px; color:#64748b; }
+/* Held under the pointer: the bar stops glowing and the spinner stops, so it plainly waits. */
+.launch.is-paused .launch-note { color:#0050a9; font-weight:600; }
+.launch.is-paused .launch-bar > div { box-shadow:none; }
+.launch.is-paused .launch-steps li.is-active .launch-step-state { animation-play-state:paused; }
 .launch-steps { list-style:none; margin:0 0 22px; padding:0; display:grid; gap:18px; position:relative; }
 .launch-steps::before { content:''; position:absolute; left:18px; top:20px; bottom:20px; width:1px; background:#dbe5f1; }
 .launch-steps li { position:relative; display:flex; align-items:center; gap:14px; }

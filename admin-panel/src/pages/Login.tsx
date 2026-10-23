@@ -67,26 +67,41 @@ const READY_HOLD_MS = 900;
 
 function LaunchPanel({ name, onDone }: { name: string; onDone: () => void }) {
   const [p, setP] = useState(0);
+  // Pointer over the panel holds the sequence where it is, so the steps can be read; it carries
+  // on from there when the pointer leaves. Even "Ready" waits, so nothing opens under the pointer.
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
+  pausedRef.current = paused;
   const doneRef = useRef(onDone);
   doneRef.current = onDone;
   useEffect(() => {
     const quick = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     const total = quick ? 800 : LAUNCH_MS;
-    const start = performance.now();
+    const hold = quick ? 150 : READY_HOLD_MS;
+    let elapsed = 0;
+    let last = performance.now();
     let raf = 0;
     const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / total);
+      if (!pausedRef.current) elapsed += now - last;
+      last = now;
+      const t = Math.min(1, elapsed / total);
       setP(t < 1 ? t * (1.15 - 0.15 * t) : 1); // nearly even, easing off a touch at the end
-      if (t < 1) raf = requestAnimationFrame(tick);
+      if (elapsed >= total + hold) doneRef.current();
+      else raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    const timer = window.setTimeout(() => doneRef.current(), total + (quick ? 150 : READY_HOLD_MS));
-    return () => { cancelAnimationFrame(raf); window.clearTimeout(timer); };
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   const pct = Math.round(p * 100);
   return (
-    <div className="launch" role="status" aria-live="polite">
+    <div
+      className={`launch${paused ? ' is-paused' : ''}`}
+      role="status"
+      aria-live="polite"
+      onPointerEnter={() => setPaused(true)}
+      onPointerLeave={() => setPaused(false)}
+    >
       <h1 className="launch-title">Initializing <span>Atlas Ops</span></h1>
       <p className="launch-sub">Preparing your operational workspace</p>
       <div className="launch-progress">
@@ -94,7 +109,9 @@ function LaunchPanel({ name, onDone }: { name: string; onDone: () => void }) {
         <span className="launch-pct">{pct}%</span>
       </div>
       <div className="launch-note">
-        {pct < 100
+        {paused
+          ? 'Paused — move the pointer away to continue'
+          : pct < 100
           ? `${pct < 60 ? 'Getting things ready…' : 'Almost ready…'} (${Math.max(1, Math.ceil(((1 - p) * LAUNCH_MS) / 1000))} s)`
           : 'Ready — opening your workspace'}
       </div>
