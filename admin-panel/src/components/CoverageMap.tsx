@@ -820,11 +820,14 @@ export function CoverageMap({
             // — without it, assigning an area would recolour its outline but not thicken it.
             getLineWidth: [selectionKey, driverColorByArea],
           },
-          onClick: (info: PickingInfo & { srcEvent?: MouseEvent }) => {
+          onClick: (info: PickingInfo, event?: { srcEvent?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } }) => {
             const props = (info.object as AreaFeature | undefined)?.properties;
             if (!props?.areaId) return;
             if (onToggleSelect) {
-              const e = info.srcEvent;
+              // The key state rides on the gesture event (deck.gl's second argument), not on the
+              // picking info: reading info.srcEvent always saw "no key held", so Ctrl-click
+              // replaced the selection instead of adding to it.
+              const e = event?.srcEvent;
               onToggleSelect(props.areaId, Boolean(e && (e.shiftKey || e.ctrlKey || e.metaKey)));
             } else if (onSelectArea) {
               onSelectArea(props.areaId);
@@ -1307,7 +1310,7 @@ export function CoverageMap({
         {driverPins && driverPins.length > 0 && (
           <div className="cov-legend-note">Pins: last drive’s end · green dot = driving now</div>
         )}
-        {onToggleSelect && <div className="cov-legend-note">Click an area to select · shift-click for more</div>}
+        {onToggleSelect && <div className="cov-legend-note">Click an area to select · Ctrl-click (or Shift-click) to add more, then “Assign drivers…”</div>}
         {areas && areas.approximated > 0 && (
           <div className="cov-legend-note" style={{ color: 'var(--amber)' }}>
             {areas.approximated} area(s) drawn as bounding boxes — re-import to store real outlines
