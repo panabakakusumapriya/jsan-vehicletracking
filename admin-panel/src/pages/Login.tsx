@@ -3,7 +3,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { API_URL } from '../lib/api';
 import { isAdminRole } from '../lib/types';
-import { StreetCapture } from '../components/StreetCapture';
+import { StreetCapture, type DriveStats } from '../components/StreetCapture';
 
 const MailSVG = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -44,13 +44,16 @@ const ICONS = {
   pin: 'M12 21s-7-6.2-7-12a7 7 0 0 1 14 0c0 5.8-7 12-7 12zM12 11.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
   bulb: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.9V16h5v-.2c0-.8.4-1.5 1-1.9A6 6 0 0 0 12 3z',
   check: 'm5 12.5 4.5 4.5L19 7.5',
+  building: 'M4 21V5l8-2v18M12 21V9l8 2v10M3 21h18M7 8h2M7 12h2M7 16h2M15 13h2M15 17h2',
+  route: 'M6 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM8 17h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7',
 };
 
 /**
  * What follows a successful sign-in: "Initializing Atlas Ops", a progress bar and four steps that
- * tick off one after another, about three seconds in all, while the street behind lifts away —
- * then the workspace opens. The first step is real (the sign-in just succeeded); the others mark
- * the workspace coming up. Reduced motion shortens it to under a second.
+ * tick off one after another, while the drive carries on behind — then the workspace opens. About
+ * seven seconds in all, each step getting a clear beat of its own, and "Ready" held a moment at
+ * 100%, so the screen can actually be read. The first step is real (the sign-in just succeeded);
+ * the others mark the workspace coming up. Reduced motion shortens it to under a second.
  */
 const LAUNCH_STEPS = [
   { icon: ICONS.shield, title: 'Verifying access', done: 0.18 },
@@ -59,22 +62,25 @@ const LAUNCH_STEPS = [
   { icon: ICONS.map, title: 'Initializing map layers', desc: 'Preparing the live map and street-level data', done: 0.96 },
 ];
 
+const LAUNCH_MS = 6500;
+const READY_HOLD_MS = 900;
+
 function LaunchPanel({ name, onDone }: { name: string; onDone: () => void }) {
   const [p, setP] = useState(0);
   const doneRef = useRef(onDone);
   doneRef.current = onDone;
   useEffect(() => {
     const quick = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    const total = quick ? 800 : 3000;
+    const total = quick ? 800 : LAUNCH_MS;
     const start = performance.now();
     let raf = 0;
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / total);
-      setP(1 - Math.pow(1 - t, 1.6)); // quick at first, settling towards the end
+      setP(t < 1 ? t * (1.15 - 0.15 * t) : 1); // nearly even, easing off a touch at the end
       if (t < 1) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    const timer = window.setTimeout(() => doneRef.current(), total + 250);
+    const timer = window.setTimeout(() => doneRef.current(), total + (quick ? 150 : READY_HOLD_MS));
     return () => { cancelAnimationFrame(raf); window.clearTimeout(timer); };
   }, []);
 
@@ -87,7 +93,11 @@ function LaunchPanel({ name, onDone }: { name: string; onDone: () => void }) {
         <div className="launch-bar"><div style={{ width: `${pct}%` }} /></div>
         <span className="launch-pct">{pct}%</span>
       </div>
-      <div className="launch-note">{pct < 100 ? (pct < 60 ? 'Getting things ready…' : 'Almost ready…') : 'Ready'}</div>
+      <div className="launch-note">
+        {pct < 100
+          ? `${pct < 60 ? 'Getting things ready…' : 'Almost ready…'} (${Math.max(1, Math.ceil(((1 - p) * LAUNCH_MS) / 1000))} s)`
+          : 'Ready — opening your workspace'}
+      </div>
       <ol className="launch-steps">
         {LAUNCH_STEPS.map((s, i) => {
           const done = p >= s.done;
@@ -189,6 +199,8 @@ export function Login() {
   // already signed in goes straight through.
   const launchingRef = useRef(false);
   const [launch, setLaunch] = useState<{ home: string; name: string } | null>(null);
+  // The drive behind the page, as numbers for the cards over the street.
+  const [drive, setDrive] = useState<DriveStats>({ km: 0, kmh: 0, frames: 0, buildings: 0 });
 
   if (token && user && !launchingRef.current) return <Navigate to={homeFor(user.role)} replace />;
 
@@ -213,7 +225,7 @@ export function Login() {
   return (
     <div className={`login-bg${launch ? ' is-launching' : ''}`}>
       {/* The street-view capture drive, behind both columns; it lifts off once signed in. */}
-      <StreetCapture launching={!!launch} />
+      <StreetCapture launching={!!launch} onStats={setDrive} />
 
       {/* ══ Left — the capture drive ══ */}
       <div className="login-left">
@@ -233,6 +245,25 @@ export function Login() {
         <div className="login-tag login-tag--live login-enter" style={stagger(4)}>
           <span className="login-tag-pin"><Icon d={ICONS.pin} size={15} /></span>
           <span><strong>Live Collection</strong>GPS · Imagery</span>
+        </div>
+        <div className="login-stat login-stat--captured login-enter" style={stagger(5)}>
+          <div className="login-stat-head"><Icon d={ICONS.building} size={14} /> Captured this drive</div>
+          <dl>
+            <div><dt>Buildings</dt><dd>{drive.buildings}</dd></div>
+            <div><dt>Frames</dt><dd>{drive.frames}</dd></div>
+            <div><dt>Speed</dt><dd>{Math.round(drive.kmh)} km/h</dd></div>
+          </dl>
+        </div>
+        <div className="login-stat login-stat--route login-enter" style={stagger(6)}>
+          <div className="login-stat-head"><Icon d={ICONS.route} size={14} /> Route progress</div>
+          <div className="login-stat-km">{drive.km.toFixed(2)} <small>km</small></div>
+          <div className="login-stat-sub">Current segment</div>
+          <div className="login-stat-track" aria-hidden="true">
+            {[0, 1, 2, 3].map((k) => {
+              const seg = Math.floor(drive.km / 0.05) % 4;
+              return <i key={k} className={k < seg ? 'is-done' : k === seg ? 'is-on' : ''} />;
+            })}
+          </div>
         </div>
       </div>
 
