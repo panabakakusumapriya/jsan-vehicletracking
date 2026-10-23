@@ -57,6 +57,7 @@ const RING_LIFE = 0.9;
 const SHOT_LIFE = 1.3; // how long a building's viewfinder stays up
 const LIFT_S = 1.8; // how long the map takes to brighten once signed in
 const MAP_BLUE = '62, 146, 240'; // the sky map's land: a bright sky blue
+const SKY_FADE = 64; // px over which the buildings fade out below the map
 const MAP_GLOW = 'rgba(120, 186, 255, 0.95)';
 
 /** [lon, lat] of the pins on the sky map: places the programme works, never labelled. */
@@ -141,6 +142,7 @@ export function StreetCapture({ launching = false, onStats }: { launching?: bool
     // The sky map: land dots in screen space, and where each pin sits.
     const land = decodeLand();
     let mapX = 0; let mapY = 0; let mapScale = 1; let mapDot = 1;
+    let skyLine = 0; // nothing of the street is drawn above this: the map's lower edge, plus a gap
     const born = performance.now();
 
     /** Extend the street ahead of the camera and drop what has passed behind it. */
@@ -176,8 +178,8 @@ export function StreetCapture({ launching = false, onStats }: { launching?: bool
       canvas!.style.height = `${h}px`;
       const leftW = w > 960 ? w - Math.max(460, w * 0.3) : w;
       carCx = leftW / 2;
-      hy = h * 0.42;
-      f = h * 0.95;
+      hy = h * 0.47;
+      f = h * 0.88;
       // The map fills the sky from just right of the title to the sign-in card; the skyline rises
       // in front of its lower edge. On a narrow screen it spans the width behind the title.
       mapX = leftW > 900 ? leftW * 0.36 : 12;
@@ -185,6 +187,7 @@ export function StreetCapture({ launching = false, onStats }: { launching?: bool
       mapScale = mapW / 360;
       mapY = h * 0.025;
       mapDot = Math.max(1, WORLD_LAND.step * mapScale * 0.34);
+      skyLine = mapY + WORLD_LAND.rows * WORLD_LAND.step * mapScale + 10;
       paintLand();
       // Where the car sits, for the labels the page places beside it.
       host!.style.setProperty('--sc-car-x', `${carCx}px`);
@@ -654,10 +657,22 @@ export function StreetCapture({ launching = false, onStats }: { launching?: bool
         g.fill();
       }
 
-      // The map floats in front of the skyline: the nearest buildings rise to the top of the
-      // screen, and behind them it would be lost.
-      drawSky(g, now);
       for (const b of buildings) if (b.shotAt) drawShot(g, b, now);
+
+      // The skyline stops short of the map. The nearest buildings would otherwise rise to the top
+      // of the screen and run into it, so the street (viewfinders too) is erased above the map's lower edge and
+      // fades in over the next few dozen pixels: the buildings dissolve into the sky below the map.
+      g.save();
+      g.globalCompositeOperation = 'destination-out';
+      g.fillStyle = '#000';
+      g.fillRect(0, 0, w, skyLine);
+      const fade = g.createLinearGradient(0, skyLine, 0, skyLine + SKY_FADE);
+      fade.addColorStop(0, 'rgba(0, 0, 0, 1)');
+      fade.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      g.fillStyle = fade;
+      g.fillRect(0, skyLine, w, SKY_FADE);
+      g.restore();
+      drawSky(g, now);
       drawCar(g, now);
     }
 
