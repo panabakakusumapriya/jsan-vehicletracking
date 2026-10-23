@@ -13,6 +13,9 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 // dependency for this internal tool.
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const DEFAULT_PITCH = 55;
+// Flat and light: 55 layers, no building extrusion (liberty has 111 and extrudes every building).
+// For maps whose own data is the heavy part and is read as a plan, like coverage.
+const LIGHT_STYLE = 'https://tiles.openfreemap.org/styles/positron';
 
 export interface Map3DHandle {
   flyTo(center: [number, number], zoom?: number): void;
@@ -48,10 +51,12 @@ interface Map3DProps {
   /** Fires on EVERY camera frame and on resize. For repositioning DOM that is pinned to a place
    *  on the map — keep it cheap, never fetch from it. */
   onMove?: () => void;
+  /** 'light' trades the 3D buildings for a flat basemap that costs the GPU a fraction per frame. */
+  basemap?: 'full' | 'light';
 }
 
 export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
-  { center, zoom = 14, layers, onClick, getTooltip, pitch = DEFAULT_PITCH, onMoveEnd, onMove },
+  { center, zoom = 14, layers, onClick, getTooltip, pitch = DEFAULT_PITCH, onMoveEnd, onMove, basemap = 'full' },
   ref
 ) {
   // Read through refs inside the map effect and the imperative handle: both run once, so a
@@ -77,7 +82,7 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
     try {
       map = new MaplibreMap({
         container: containerRef.current,
-        style: MAP_STYLE,
+        style: basemap === 'light' ? LIGHT_STYLE : MAP_STYLE,
         center,
         zoom,
         pitch: pitchRef.current,
@@ -111,6 +116,26 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
 
     const overlay = new MapboxOverlay({ interleaved: true, layers, onClick, getTooltip });
     map.addControl(overlay);
+
+    // deck.gl answers every mousemove with a hover pick: all pickable layers are drawn again into
+    // an offscreen buffer and read back synchronously, which stalls the GPU. MapLibre's mousemove
+    // carries no button state, so this also happened on every frame of a drag — on the coverage
+    // map that is a second full pass over a million road links per frame while panning. Hover
+    // only means something while the camera is still, so the overlay's handler is only fed then.
+    let moving = false;
+    const overlayMouse = (overlay as unknown as { _handleMouseEvent?: (e: unknown) => void })._handleMouseEvent;
+    const handleMoveStart = () => { moving = true; };
+    const handleMoveStop = () => { moving = false; };
+    const handleHover = (e: { originalEvent?: MouseEvent }) => {
+      if (moving || (e.originalEvent && e.originalEvent.buttons !== 0)) return;
+      overlayMouse?.(e);
+    };
+    if (overlayMouse) {
+      map.off('mousemove', overlayMouse);
+      map.on('mousemove', handleHover);
+      map.on('movestart', handleMoveStart);
+      map.on('moveend', handleMoveStop);
+    }
 
     mapRef.current = map;
     overlayRef.current = overlay;

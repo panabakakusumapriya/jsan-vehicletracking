@@ -1,5 +1,5 @@
 import { COORDINATE_SYSTEM, type Layer, type PickingInfo } from '@deck.gl/core';
-import { DataFilterExtension, PathStyleExtension } from '@deck.gl/extensions';
+import { PathStyleExtension } from '@deck.gl/extensions';
 import { GeoJsonLayer, IconLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../lib/api';
@@ -34,11 +34,10 @@ import { MarkerCard, pinUrl, type TripMarker } from './TripMarkers';
  */
 
 /**
- * Roads are hidden by scope ("in assigned areas", "everything driven") on the GPU rather than by
- * rebuilding the geometry: one value per vertex, 1 shown, 0 not. Hidden roads cannot be hovered
- * either, which an alpha of zero would not give. Built once — deck.gl compares extensions by identity.
+ * One road layer's own geometry: only the links it draws, copied out of the delivery's binary.
+ * `link[k]` is the delivery-wide link index of the layer's k-th path, for the tooltip.
  */
-const ROAD_FILTER = new DataFilterExtension({ filterSize: 1 });
+type RoadBucket = { positions: Float32Array; startIndices: Uint32Array; colors: Uint8Array; link: Uint32Array; length: number };
 const RED: [number, number, number] = [220, 38, 38];
 const BLUE: [number, number, number] = [37, 99, 235];
 
@@ -603,8 +602,14 @@ export function CoverageMap({
         if (roadState?.heldCodes.has(a.code)) flags[i] |= 1;
         if (roadState?.signedOffCodes.has(a.code)) flags[i] |= 2;
       });
-      const colors = new Uint8Array(net.vertexCount * 4);
-      const show = new Float32Array(net.vertexCount);
+      // Pass 1 decides each link's bucket and colour; pass 2 copies it into that bucket's own
+      // arrays. Each layer then holds only what it draws — the GPU used to run every link of the
+      // network through BOTH layers and throw half away in the shader, on every frame and on
+      // every hover pick.
+      const bucketOf = new Uint8Array(net.linkCount); // 0 hidden, 1 to drive, 2 done
+      const colorOf = new Uint32Array(net.linkCount); // RGBA packed
+      const links = [0, 0, 0];
+      const verts = [0, 0, 0];
       let shown = 0;
       let driven = 0;
       for (let i = 0; i < net.linkCount; i++) {
@@ -631,16 +636,44 @@ export function CoverageMap({
           bucket = 2;
           if (driverSet.size > 0) a = 45;
         }
-        for (let v = net.startIndices[i]; v < net.startIndices[i + 1]; v++) {
-          const o = v * 4;
-          colors[o] = c[0];
-          colors[o + 1] = c[1];
-          colors[o + 2] = c[2];
-          colors[o + 3] = a;
-          show[v] = bucket;
-        }
+        bucketOf[i] = bucket;
+        colorOf[i] = (c[0] | (c[1] << 8) | (c[2] << 16) | (a << 24)) >>> 0;
+        links[bucket] += 1;
+        verts[bucket] += net.startIndices[i + 1] - net.startIndices[i];
       }
-      return { net, colors, show, shown, driven };
+      const buckets: RoadBucket[] = [1, 2].map((b) => ({
+        positions: new Float32Array(verts[b] * 2),
+        startIndices: new Uint32Array(links[b] + 1),
+        colors: new Uint8Array(verts[b] * 4),
+        link: new Uint32Array(links[b]),
+        length: links[b],
+      }));
+      const nLink = [0, 0];
+      const nVert = [0, 0];
+      const src = net.positions;
+      for (let i = 0; i < net.linkCount; i++) {
+        const b = bucketOf[i];
+        if (!b) continue;
+        const out = buckets[b - 1];
+        const k = nLink[b - 1]++;
+        out.link[k] = i;
+        out.startIndices[k] = nVert[b - 1];
+        const v0 = net.startIndices[i];
+        const v1 = net.startIndices[i + 1];
+        let w = nVert[b - 1];
+        out.positions.set(src.subarray(v0 * 2, v1 * 2), w * 2);
+        const col = colorOf[i];
+        for (let v = v0; v < v1; v++, w++) {
+          const o = w * 4;
+          out.colors[o] = col & 255;
+          out.colors[o + 1] = (col >>> 8) & 255;
+          out.colors[o + 2] = (col >>> 16) & 255;
+          out.colors[o + 3] = col >>> 24;
+        }
+        nVert[b - 1] = w;
+      }
+      buckets.forEach((out, j) => { out.startIndices[out.length] = nVert[j]; });
+      return { net, todo: buckets[0], done: buckets[1], shown, driven };
     });
   }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet]);
 
@@ -648,27 +681,29 @@ export function CoverageMap({
    * Two layers per delivery over the SAME binary: the roads still to drive first, thin; the driven
    * roads on top, thick. Colour alone was not enough — at a glance the eye reads width before hue,
    * so the work done is the heavier line and what is left sits as the thin red mesh behind it. The
-   * layers share positions and colours; only the filter value (1 to-drive, 2 done) differs.
+   * layers hold disjoint geometry (see roadPaint), so each link is drawn exactly once.
    */
+  const roadPaintRef = useRef(roadPaint);
+  roadPaintRef.current = roadPaint;
+
   const roadLayers = useMemo<Layer[]>(
     () =>
-      roadPaint.flatMap(({ net, colors, show }) =>
+      roadPaint.flatMap(({ net, todo, done }) =>
         (
           [
-            { suffix: 'todo', range: [0.5, 1.5], width: 3, min: 1.3, max: 6 },
-            { suffix: 'done', range: [1.5, 2.5], width: 5, min: 2.4, max: 10 },
+            { suffix: 'todo', part: todo, width: 3, min: 1.3, max: 6 },
+            { suffix: 'done', part: done, width: 5, min: 2.4, max: 10 },
           ] as const
-        ).map(
+        ).filter((b) => b.part.length > 0).map(
           (b) =>
             new PathLayer({
               id: `roads-${net.versionId}-${b.suffix}`,
               data: {
-                length: net.linkCount,
-                startIndices: net.startIndices,
+                length: b.part.length,
+                startIndices: b.part.startIndices,
                 attributes: {
-                  getPath: { value: net.positions, size: 2 },
-                  getColor: { value: colors, size: 4, normalized: true },
-                  getFilterValue: { value: show, size: 1 },
+                  getPath: { value: b.part.positions, size: 2 },
+                  getColor: { value: b.part.colors, size: 4, normalized: true },
                 },
               },
               // The binary is used as-is: open paths, offsets from the delivery's own centre
@@ -683,8 +718,6 @@ export function CoverageMap({
               capRounded: true,
               jointRounded: true,
               pickable: true,
-              extensions: [ROAD_FILTER],
-              filterRange: b.range,
             } as never)
         )
       ),
@@ -997,22 +1030,26 @@ export function CoverageMap({
       };
     }
     if (layerId.startsWith('roads-') && info.index >= 0) {
-      const net = netsRef.current.find((n) => layerId.startsWith(`roads-${n.versionId}-`));
-      if (!net) return null;
+      const paint = roadPaintRef.current.find((r) => layerId.startsWith(`roads-${r.net.versionId}-`));
+      if (!paint) return null;
+      const net = paint.net;
+      const part = layerId.endsWith('-done') ? paint.done : paint.todo;
+      const li = part.link[info.index];
+      if (li === undefined) return null;
       const st = roadStateRef.current;
-      const d = st?.coveredBy.get(net.versionId)?.[info.index] ?? -1;
-      const ai = net.area[info.index];
+      const d = st?.coveredBy.get(net.versionId)?.[li] ?? -1;
+      const ai = net.area[li];
       const area = ai === NO_AREA ? null : net.areas[ai];
       const signed = Boolean(area && st?.signedOffCodes.has(area.code));
       const who = d >= 0 && st && d < st.drivers.length ? st.drivers[d].name : null;
-      const fc = net.fc[info.index];
+      const fc = net.fc[li];
       return {
         html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${
           d >= 0 ? '✓ driven' : signed ? '✓ area signed off' : 'not driven yet'
         }</b>${who ? `<div>by ${escapeHtml(who)}</div>` : ''}${
           d < 0 && signed ? '<div style="opacity:.7">no trip recorded on it</div>' : ''
         }<div style="opacity:.7">${fc ? `FC${fc}` : 'FC ?'}${area ? ` · ${escapeHtml(area.name)}` : ' · outside every area'}</div><div style="opacity:.55;font-family:monospace;font-size:11px">${escapeHtml(
-          linkIdAt(net, info.index)
+          linkIdAt(net, li)
         )}</div></div>`,
       };
     }
@@ -1189,6 +1226,7 @@ export function CoverageMap({
         center={[144.96, -37.81]}
         zoom={7}
         pitch={0}
+        basemap="light"
         layers={layers}
         getTooltip={getTooltip}
         onMoveEnd={handleMoveEnd}
