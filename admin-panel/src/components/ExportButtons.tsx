@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 
 type ExportFormat = 'kml' | 'json';
 export type ExportLayer = 'raw' | 'snapped';
+export type SheetFormat = 'xlsx' | 'csv';
+export type SheetLevel = 'days' | 'trips';
 
 interface ExportButtonsProps {
   onExport: (format: ExportFormat, layer: ExportLayer) => Promise<void>;
@@ -19,7 +21,19 @@ interface ExportButtonsProps {
    * unable to tell a working export from a stuck one.
    */
   status?: string | null;
+  /**
+   * The table as a spreadsheet (Excel: days + trips sheets; CSV: one of them). Shown above the
+   * route files when given — most people exporting from a table want the table.
+   */
+  onSpreadsheet?: (format: SheetFormat, level: SheetLevel) => Promise<void>;
 }
+
+type SheetChoice = { format: SheetFormat; level: SheetLevel; label: string; hint: string };
+const SHEET_CHOICES: SheetChoice[] = [
+  { format: 'xlsx', level: 'days', label: 'Excel (.xlsx)', hint: 'Days and trips sheets, as listed here' },
+  { format: 'csv', level: 'days', label: 'CSV · one row per day', hint: 'Each driver’s day: km, UKM, hours, markers' },
+  { format: 'csv', level: 'trips', label: 'CSV · one row per trip', hint: 'Every trip with its times, km and UKM' },
+];
 
 type Choice = { format: ExportFormat; layer: ExportLayer; label: string; hint: string; needsSnapped?: boolean };
 
@@ -47,7 +61,7 @@ const ChevronIcon = ({ open }: { open: boolean }) => (
   </svg>
 );
 
-export function ExportButtons({ onExport, disabled, snappedAvailable = false, status }: ExportButtonsProps) {
+export function ExportButtons({ onExport, disabled, snappedAvailable = false, status, onSpreadsheet }: ExportButtonsProps) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -69,17 +83,21 @@ export function ExportButtons({ onExport, disabled, snappedAvailable = false, st
     };
   }, [open]);
 
-  const handlePick = async (choice: Choice) => {
+  const run = async (label: string, job: () => Promise<void>) => {
     setOpen(false);
-    setPending(choice.label);
+    setPending(label);
     setError(null);
     try {
-      await onExport(choice.format, choice.layer);
+      await job();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Export failed');
     } finally {
       setPending(null);
     }
+  };
+  const handlePick = (choice: Choice) => run(choice.label, () => onExport(choice.format, choice.layer));
+  const sectionTitle: React.CSSProperties = {
+    padding: '6px 10px 2px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--muted)',
   };
 
   return (
@@ -115,6 +133,28 @@ export function ExportButtons({ onExport, disabled, snappedAvailable = false, st
             padding: 4,
           }}
         >
+          {onSpreadsheet && (
+            <>
+              <div style={sectionTitle}>Spreadsheet</div>
+              {SHEET_CHOICES.map((c) => (
+                <button
+                  key={c.label}
+                  type="button"
+                  role="menuitem"
+                  title={c.hint}
+                  onClick={() => run(c.label, () => onSpreadsheet(c.format, c.level))}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 8, padding: '8px 10px', fontSize: 13, fontWeight: 600, color: 'var(--text-2)', cursor: 'pointer' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+                >
+                  {c.label}
+                  <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--muted)', marginTop: 1 }}>{c.hint}</span>
+                </button>
+              ))}
+              <div style={{ height: 1, background: 'var(--line)', margin: '4px 6px' }} />
+              <div style={sectionTitle}>Routes</div>
+            </>
+          )}
           {CHOICES.map((choice) => {
             const unavailable = !!choice.needsSnapped && !snappedAvailable;
             return (

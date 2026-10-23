@@ -2,7 +2,7 @@ import { PageIcon } from '../components/AppIcon';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DistanceModeToggle, type DistanceMode } from '../components/DistanceModeToggle';
 import { ExportButtons } from '../components/ExportButtons';
-import { api, downloadFile } from '../lib/api';
+import { api, downloadFile, viewerTimeZone } from '../lib/api';
 import { runExportJob, describeJob } from '../lib/exportJobs';
 import { km } from '../lib/format';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
@@ -107,7 +107,9 @@ export function Reports() {
     setError(null);
     const params = new URLSearchParams({ limit: '500' });
     if (driverId) params.set('driverId', driverId);
-    if (date) params.set('date', date);
+    // The trip filter reads from/to (+ the zone they are meant in), not 'date' — sent as 'date' it was
+    // ignored, and the overview listed every day whatever date was picked.
+    if (date) { params.set('from', date); params.set('to', date); params.set('tz', viewerTimeZone()); }
     if (country && !driverId) {
       const ids = drivers.filter(d => d.country === country).map(d => d._id);
       if (ids.length) params.set('driverIds', ids.join(','));
@@ -206,6 +208,18 @@ export function Reports() {
     }
   };
 
+  /** The report as Excel / CSV — the same driver, date and country filters as the overview. */
+  const handleSheet = async (format: 'xlsx' | 'csv', level: 'days' | 'trips') => {
+    const params = new URLSearchParams({ format, level });
+    if (driverId) params.set('driverId', driverId);
+    if (date) { params.set('from', date); params.set('to', date); params.set('tz', viewerTimeZone()); }
+    if (country && !driverId) {
+      const ids = drivers.filter(d => d.country === country).map(d => d._id);
+      if (ids.length) params.set('driverIds', ids.join(','));
+    }
+    await downloadFile(`/api/trips/export-table?${params}`, `report.${format}`);
+  };
+
   const selectedDriver = drivers.find(d => d._id === driverId);
   const center: [number, number] = allPoints.length > 0
     ? [allPoints[0].lon, allPoints[0].lat]
@@ -285,7 +299,7 @@ export function Reports() {
             </button>
           )}
           <DistanceModeToggle mode={mode} onChange={setMode} cleanedAvailable={cleanedAvailable} />
-          <ExportButtons onExport={handleExport} snappedAvailable status={exportStatus} />
+          <ExportButtons onExport={handleExport} onSpreadsheet={handleSheet} snappedAvailable status={exportStatus} />
         </div>
       </div>
 

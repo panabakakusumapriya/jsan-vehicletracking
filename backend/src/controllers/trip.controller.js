@@ -538,6 +538,15 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
   const filter = buildTripFilter(req, scope);
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
   const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+  const { summaries, total } = await daySummaries(filter, { skip: (page - 1) * limit, limit });
+  res.json({ summaries, total, page, limit });
+});
+
+/**
+ * One row per driver per calendar day, for the trips matching `filter` — what the Trips page
+ * lists, and what its spreadsheet export writes. Shared so the two can never disagree.
+ */
+async function daySummaries(filter, { skip = 0, limit = 50 } = {}) {
 
   // Each trip's calendar day depends on the timezone it happened in, not the server's/UTC — a
   // trip starting just after local midnight for a Singapore driver (UTC+8) must bucket into
@@ -641,7 +650,7 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     { $sort: { firstStart: -1 } },
     {
       $facet: {
-        rows: [{ $skip: (page - 1) * limit }, { $limit: limit }],
+        rows: [{ $skip: skip }, { $limit: limit }],
         totalCount: [{ $count: 'count' }],
       },
     },
@@ -699,7 +708,131 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
     }
   }
 
-  res.json({ summaries, total, page, limit });
+  return { summaries, total };
+}
+
+/**
+ * GET /api/trips/export-table?format=xlsx|csv&level=days|trips  + the Trips page's own filters
+ * (status, driverId / driverIds, from / to / tz, date).
+ *
+ * The Trips table as a spreadsheet. Excel holds two sheets — Days (one row per driver per day,
+ * exactly as listed on the page) and Trips (one row per trip) — plus an About sheet saying what
+ * was exported. CSV holds one table, `level` picking which. Times are each driver's local time,
+ * the zone the page groups days in; distances in km to 0.1, working hours in decimal hours.
+ */
+const EXPORT_MAX_ROWS = 20000;
+exports.exportTable = asyncHandler(async (req, res) => {
+  const XLSX = require('xlsx');
+  const format = req.query.format === 'csv' ? 'csv' : 'xlsx';
+  const level = req.query.level === 'trips' ? 'trips' : 'days';
+  const scope = await accessibleDriverFilter(req.user);
+  const filter = buildTripFilter(req, scope);
+
+  const local = (d, tz) => {
+    if (!d) return '';
+    const p = new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date(d))
+      .reduce((o, x) => ({ ...o, [x.type]: x.value }), {});
+    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+  };
+  const km = (m) => (m == null ? null : Math.round(m / 100) / 10);
+  const hours = (ms) => (ms == null ? null : Math.round((ms / 3600000) * 100) / 100);
+
+  const sheets = [];
+  let truncated = false;
+  if (format === 'xlsx' || level === 'days') {
+    const { summaries, total } = await daySummaries(filter, { skip: 0, limit: EXPORT_MAX_ROWS });
+    truncated = truncated || total > summaries.length;
+    sheets.push(['Days', summaries.map((s) => ({
+      Date: s.date,
+      Driver: s.driverName,
+      'Time zone': s.timezone,
+      Trips: s.totalTrips,
+      'Distance (km)': km(s.totalDistance),
+      'Cleaned distance (km)': km(s.totalDistanceCleaned),
+      'UKM (km)': km(s.totalUkm),
+      'Assigned UKM (km)': km(s.assignedUkm),
+      'Outside UKM (km)': km(s.outsideUkm),
+      'Max speed (km/h)': Math.round(s.maxSpeed || 0),
+      'First start': local(s.firstStart, s.timezone),
+      'Last end': local(s.lastEnd, s.timezone),
+      'Working hours': hours(s.workMs),
+      Markers: s.markerCount || 0,
+      'Still driving': s.anyActive ? 'yes' : '',
+    }))]);
+  }
+  if (format === 'xlsx' || level === 'trips') {
+    const trips = await Trip.find(filter)
+      .sort({ startedAt: -1 })
+      .limit(EXPORT_MAX_ROWS + 1)
+      .select('driverId vehicleId status startedAt endedAt distanceMeters cleanedDistanceMeters maxSpeedKmh pointCount effectiveUkmMeters linkUkmMeters linkUkmNetworkMeters inAreaMeters outAreaMeters importBatchId')
+      .populate('driverId', 'name country')
+      .populate('vehicleId', 'plateNumber')
+      .lean();
+    if (trips.length > EXPORT_MAX_ROWS) { truncated = true; trips.length = EXPORT_MAX_ROWS; }
+    sheets.push(['Trips', trips.map((t) => {
+      const tz = timezoneForCountry(t.driverId?.country);
+      const outside = t.linkUkmNetworkMeters == null ? null : Math.max(0, t.linkUkmNetworkMeters - (t.linkUkmMeters || 0));
+      const batch = t.importBatchId ? String(t.importBatchId) : '';
+      return {
+        Date: formatDateInZone(t.startedAt, tz),
+        Driver: t.driverId?.name || '',
+        Vehicle: t.vehicleId?.plateNumber || '',
+        Status: t.status,
+        Started: local(t.startedAt, tz),
+        Ended: local(t.endedAt, tz),
+        'Duration (h)': t.endedAt ? hours(new Date(t.endedAt) - new Date(t.startedAt)) : null,
+        'Distance (km)': km(t.distanceMeters),
+        'Cleaned distance (km)': km(t.cleanedDistanceMeters),
+        'Max speed (km/h)': Math.round(t.maxSpeedKmh || 0),
+        'GPS points': t.pointCount ?? null,
+        'UKM (km)': km(t.effectiveUkmMeters),
+        'Assigned UKM (km)': km(t.linkUkmMeters),
+        'Outside UKM (km)': km(outside),
+        'Inside area (km)': km(t.inAreaMeters),
+        'Outside area (km)': km(t.outAreaMeters),
+        Source: !batch ? 'App' : batch.startsWith('vts') ? 'VTS import' : 'Import',
+        'Trip ID': String(t._id),
+      };
+    })]);
+  }
+
+  const q = req.query;
+  const range = q.date ? String(q.date) : q.from || q.to ? `${q.from || 'start'}_${q.to || 'now'}` : 'all-dates';
+  const name = `trips_${range}${format === 'csv' ? `_${level}` : ''}`;
+  const toSheet = (rows) => {
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const cols = rows.length ? Object.keys(rows[0]) : [];
+    ws['!cols'] = cols.map((c) => ({ wch: Math.min(40, Math.max(c.length + 2, ...rows.slice(0, 200).map((r) => String(r[c] ?? '').length + 1))) }));
+    return ws;
+  };
+
+  if (format === 'csv') {
+    const [, rows] = sheets[0];
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}.csv"`);
+    // The byte-order mark makes Excel read the file as UTF-8 (driver names with accents).
+    return res.send('\uFEFF' + XLSX.utils.sheet_to_csv(toSheet(rows)));
+  }
+
+  const wb = XLSX.utils.book_new();
+  for (const [title, rows] of sheets) XLSX.utils.book_append_sheet(wb, toSheet(rows), title);
+  const about = [
+    ['Atlas ops — trips export'],
+    ['Exported', new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC'],
+    ['Dates', q.date ? String(q.date) : q.from || q.to ? `${q.from || 'first'} to ${q.to || 'latest'}` : 'all dates'],
+    ['Status', q.status ? String(q.status) : 'all'],
+    ['Drivers', q.driverId ? 'one driver' : q.driverIds ? `${String(q.driverIds).split(',').length} drivers` : 'all you can see'],
+    ['Times', "each driver's local time"],
+    ['Distances', 'km; UKM = new road driven first (Assigned: inside the driver\'s areas; Outside: elsewhere on the network)'],
+    ...(truncated ? [['Note', `Capped at ${EXPORT_MAX_ROWS.toLocaleString()} rows per sheet — narrow the dates for the rest`]] : []),
+  ];
+  const aws = XLSX.utils.aoa_to_sheet(about);
+  aws['!cols'] = [{ wch: 12 }, { wch: 90 }];
+  XLSX.utils.book_append_sheet(wb, aws, 'About');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}.xlsx"`);
+  res.send(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }));
 });
 
 // GET /api/trips/export?format=kml|json&status=&driverId=&driverIds=&from=&to=

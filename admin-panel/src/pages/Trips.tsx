@@ -6,7 +6,7 @@ import { DateField } from '../components/DateField';
 import { AlreadyDrivenTip } from '../components/AlreadyDrivenTip';
 import { pinUrl, type TripMarker } from '../components/TripMarkers';
 import { ExportButtons } from '../components/ExportButtons';
-import { api, viewerTimeZone } from '../lib/api';
+import { api, downloadFile, viewerTimeZone } from '../lib/api';
 import { runExportJob, describeJob } from '../lib/exportJobs';
 import { hm, km, sessionDt, statusBadge, tripMs } from '../lib/format';
 import type { Project, Trip, User } from '../lib/types';
@@ -321,6 +321,16 @@ export function Trips() {
   // Bulk exports run as a background job — see lib/exportJobs.ts. Zipping a whole date range
   // inside the request timed out on large ranges and produced truncated files that still
   // downloaded as though they had succeeded.
+  /** The table itself as Excel / CSV — the same filters the rows above were loaded with. */
+  const handleSheet = async (format: 'xlsx' | 'csv', level: 'days' | 'trips') => {
+    const params = buildParams(1);
+    params.delete('page');
+    params.delete('limit');
+    params.set('format', format);
+    params.set('level', level);
+    await downloadFile(`/api/trips/export-table?${params}`, `trips.${format}`);
+  };
+
   const handleExport = async (format: 'kml' | 'json', layer: 'raw' | 'snapped') => {
     const params: Record<string, string> = { format, layer };
     if (status) params.status = status;
@@ -515,7 +525,7 @@ export function Trips() {
           </button>
         )}
         <div className="tr-export">
-          <ExportButtons onExport={handleExport} disabled={total === 0} snappedAvailable status={exportStatus} />
+          <ExportButtons onExport={handleExport} onSpreadsheet={handleSheet} disabled={total === 0} snappedAvailable status={exportStatus} />
         </div>
       </div>
 
