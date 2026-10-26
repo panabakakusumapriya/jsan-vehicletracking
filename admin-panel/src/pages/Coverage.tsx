@@ -1098,6 +1098,8 @@ function ProgressTab({
    * delivery, and mixing the two printed "335 assigned" beside "134 work areas".
    */
   const covered = summary?.coveredMeters || 0;
+  // UKM to date in the deliveries in view — the same figure as the UKM page and the Dashboard.
+  const ukm = summary?.ukmMeters ?? null;
   const target = summary?.targetMeters || version.targetMeters;
   const remaining = Math.max(0, target - covered);
   const totalAreas = summary?.totalAreas ?? version.counts.areas;
@@ -1435,16 +1437,23 @@ function ProgressTab({
       <div ref={headRef} className="cov-head-row">
         {filterBar}
         <div className="card cov-strip">
-          <div className="cov-strip-main" title={`${km(remaining)} km still to drive · ${totalLinks.toLocaleString()} road links`}>
+          <div
+            className="cov-strip-main"
+            title={`UKM: new road first covered, counted once (as on the UKM page) · the % and bar: ${km(covered)} of ${km(target)} km of the network driven · ${km(remaining)} km still to drive · ${totalLinks.toLocaleString()} road links`}
+          >
             <span className="cov-strip-pct">{donePct.toFixed(1)}<small>%</small></span>
             <div className="cov-strip-col">
               <div className="cov-strip-line">
-                <b>{km(covered)}</b> of {km(target)} km driven{scopeLabel ? <span className="cov-strip-scope"> · {scopeLabel}</span> : null}
+                {ukm != null ? <><b>{km(ukm)} km</b> UKM</> : <><b>{km(covered)}</b> of {km(target)} km driven</>}
+                {scopeLabel ? <span className="cov-strip-scope"> · {scopeLabel}</span> : null}
               </div>
               <div className="cov-meter" role="img" aria-label={`${donePct.toFixed(1)}% of the target network driven`}>
                 <div className="cov-meter-fill" style={{ width: `${Math.min(100, donePct)}%` }} />
               </div>
-              <div className="cov-strip-sub"><b>{km(remaining)} km</b> to drive · {totalLinks.toLocaleString()} links</div>
+              <div className="cov-strip-sub">
+                {ukm != null ? <><b>{km(covered)}</b> of {km(target)} km network covered · </> : null}
+                <b>{km(remaining)} km</b> to drive
+              </div>
             </div>
           </div>
 

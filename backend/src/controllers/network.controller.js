@@ -614,14 +614,28 @@ async function versionSummary(req, res) {
   const projectId = version.projectId?._id || version.projectId;
   const cycleId = await cycleIdFor(projectId);
   const sources = scope.versions && scope.versions.length ? scope.versions : [scope.primary];
-  const [completedCodes, assignedCodes, codesByVersion] = await Promise.all([
+  const [completedCodes, assignedCodes, codesByVersion, ukmRows] = await Promise.all([
     AreaCompletion.distinct('areaCode', { projectId, coverageCycleId: cycleId, status: 'completed' }),
     // By areaCode, so an area held through an older version's row still counts as assigned.
     AreaAssignment.distinct('areaCode', { projectId, releasedAt: null }),
     // Which areas each delivery in view holds — the counts below are of THESE areas, so a filter
     // to New Zealand does not report Australia's sign-offs.
     Promise.all(sources.map((v) => WorkArea.distinct('areaCode', { networkVersionId: v._id }))),
+    // UKM to date for the trips measured against these deliveries — the same figure the UKM
+    // page and the Dashboard show (effectiveUkmMeters, services/ukmBasis.js), summed per delivery.
+    Trip.aggregate([
+      { $match: { assignedNetworkVersionId: { $in: scope.versionIds }, parkedJitter: { $ne: true } } },
+      {
+        $group: {
+          _id: '$assignedNetworkVersionId',
+          meters: { $sum: { $ifNull: ['$effectiveUkmMeters', 0] } },
+          trips: { $sum: 1 },
+        },
+      },
+    ]),
   ]);
+  const ukmByVersion = new Map(ukmRows.map((r) => [String(r._id), r]));
+  const ukmMeters = ukmRows.reduce((sum, r) => sum + r.meters, 0);
   const completedSet = new Set(completedCodes);
   const assignedSet = new Set(assignedCodes);
   const inView = new Set(codesByVersion.flat());
@@ -641,6 +655,7 @@ async function versionSummary(req, res) {
     targetMeters: v.targetMeters || 0,
     coveredMeters: coveredByVersion.get(String(v._id))?.meters || 0,
     coveredLinks: coveredByVersion.get(String(v._id))?.links || 0,
+    ukmMeters: ukmByVersion.get(String(v._id))?.meters || 0,
     completedAreas: countIn(codesByVersion[i], completedSet),
     assignedAreas: countIn(codesByVersion[i], assignedSet),
   }));
@@ -650,6 +665,9 @@ async function versionSummary(req, res) {
     coverage: {
       coveredMeters,
       coveredLinks,
+      // The headline figure: UKM to date in the deliveries in view (see the aggregation above).
+      ukmMeters,
+      ukmTrips: ukmRows.reduce((n, r) => n + r.trips, 0),
       // Project-wide reads sum every delivery in scope, so the denominator is the whole programme
       // rather than whichever delivery happens to be active.
       targetMeters: scope.totals ? scope.totals.targetMeters : version.targetMeters,
