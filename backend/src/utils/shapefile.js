@@ -321,6 +321,11 @@ function readCpg(cpgPath) {
  * consumer breaks out early.
  */
 function* features(bundle) {
+  // Several layers read as one (see combineBundles): each in turn, records numbered per layer.
+  if (bundle.parts) {
+    for (const part of bundle.parts) yield* features(part);
+    return;
+  }
   const encoding = readCpg(bundle.cpg);
   const shp = new ShpReader(bundle.shp);
   const dbf = fs.existsSync(bundle.dbf) ? new DbfReader(bundle.dbf, encoding) : null;
@@ -351,6 +356,20 @@ function forEachFeature(bundle, onFeature, { onProgress = null, progressEvery = 
 
 /** Header-only peek: shape type, extent, attribute columns. Used to build the mapping UI. */
 function inspect(bundle) {
+  if (bundle.parts) {
+    const each = bundle.parts.map((part) => inspect(part));
+    const [first] = each;
+    return {
+      ...first,
+      name: bundle.name,
+      bbox: [
+        Math.min(...each.map((i) => i.bbox[0])), Math.min(...each.map((i) => i.bbox[1])),
+        Math.max(...each.map((i) => i.bbox[2])), Math.max(...each.map((i) => i.bbox[3])),
+      ],
+      recordCount: each.reduce((sum, i) => sum + i.recordCount, 0),
+      layers: each.map((i) => ({ name: i.name, records: i.recordCount })),
+    };
+  }
   const encoding = readCpg(bundle.cpg);
   const shp = new ShpReader(bundle.shp);
   const dbf = fs.existsSync(bundle.dbf) ? new DbfReader(bundle.dbf, encoding) : null;
@@ -374,7 +393,23 @@ function inspect(bundle) {
   }
 }
 
+/**
+ * Several shapefiles read as ONE layer. A customer may send a road network as one file per road
+ * class — Wellington came as FC1-2, FC3, FC4 and FC5 — and every one of them is part of the
+ * delivery. The result is accepted wherever a bundle is: features() runs through each in turn,
+ * inspect() reports the first one's columns and projection over the extent of all of them.
+ */
+function combineBundles(bundles) {
+  if (bundles.length === 1) return bundles[0];
+  return {
+    name: `${bundles[0].name} + ${bundles.length - 1} more`,
+    parts: bundles,
+    bytes: bundles.reduce((sum, b) => sum + b.bytes, 0),
+  };
+}
+
 module.exports = {
+  combineBundles,
   SHAPE_TYPES,
   DbfReader,
   ShpReader,

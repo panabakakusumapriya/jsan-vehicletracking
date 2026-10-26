@@ -3,12 +3,13 @@ const ImportJob = require('../models/ImportJob');
 const NetworkVersion = require('../models/NetworkVersion');
 // Required for their side effect of registering the schemas the commit path writes through — a
 // background worker must not depend on some route having been loaded first to make them resolve.
-require('../models/WorkArea');
+const WorkArea = require('../models/WorkArea');
 require('../models/RoadLink');
 require('../models/Project');
 require('../models/User');
 
 const networkImport = require('./networkImport');
+const workAreaSplit = require('./workAreaSplit');
 
 /**
  * Background worker for customer network deliveries.
@@ -44,6 +45,40 @@ function progressWriter(job) {
 }
 
 /**
+ * Roads that came with no polygons: the area drawn round them is cut into zones of the size the
+ * operator asked for, by the same cut as "Split into zones" on the map. Never fails the import —
+ * when it cannot be cut (too little road for two zones, say) the area stays whole, and the reason
+ * is kept on the job for the panel to show; the map's own Split then works on it as on any area.
+ */
+async function cutDrawnArea(job, version, report, onProgress) {
+  if (!report || !report.drawn || !job.drawZones) return null;
+  const area = await WorkArea.findOne({ networkVersionId: version._id, areaCode: report.drawn.code })
+    .select('_id')
+    .lean();
+  if (!area) return null;
+  onProgress('zones', 0, 0);
+  try {
+    const result = await workAreaSplit.splitCommittedArea({
+      versionId: version._id,
+      areaId: area._id,
+      options: workAreaSplit.optionsFrom(job.drawZones),
+      apply: true,
+      userId: job.requestedBy || null,
+    });
+    return {
+      zones: result.zones.length,
+      km: result.parent.km,
+      unplacedKm: result.unplacedKm,
+      namesFrom: result.namesFrom,
+    };
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    if (!err.status) console.error('[import] drawing zones failed', err);
+    return { error: err.status ? err.message : 'The zones could not be drawn — split the area from the map instead' };
+  }
+}
+
+/**
  * Write the version and make it the one the panel shows.
  *
  * Activation is automatic rather than a second click. The overwhelmingly common case is "load the
@@ -63,6 +98,8 @@ async function finishCommit(job, layers, areas, mapping, report, onProgress) {
   version.activatedBy = job.requestedBy;
   await version.save();
 
+  const drawZonesResult = await cutDrawnArea(job, version, report, onProgress);
+
   await ImportJob.updateOne(
     { _id: job._id },
     {
@@ -71,6 +108,7 @@ async function finishCommit(job, layers, areas, mapping, report, onProgress) {
         report,
         mapping,
         networkVersionId: version._id,
+        drawZonesResult,
         completedAt: new Date(),
         'progress.phase': 'loaded',
         error: null,
@@ -146,16 +184,20 @@ async function runCommit(job) {
 }
 
 /** Claim one job and run whichever phase its status calls for. */
-async function tick() {
+async function tick({ jobId = null, heldBy = null } = {}) {
   // Claimed in ONE update, by token: no other runner takes a job while it is owned — including a
   // job this runner parsed straight into its commit, which sits in 'committing' meanwhile.
+  // `jobId` + `heldBy`: a script running one job it created already holding (claimToken = heldBy),
+  // so that no server's runner can take it first.
   const token = `${process.pid}-${crypto.randomUUID()}`;
   const now = new Date();
   const job = await ImportJob.findOneAndUpdate(
-    {
-      status: { $in: ['queued', 'committing'] },
-      $or: [{ claimToken: null }, { claimedAt: { $lt: new Date(now.getTime() - RUNNER_STALE_MS) } }],
-    },
+    jobId
+      ? { _id: jobId, status: { $in: ['queued', 'committing'] }, claimToken: heldBy }
+      : {
+        status: { $in: ['queued', 'committing'] },
+        $or: [{ claimToken: null }, { claimedAt: { $lt: new Date(now.getTime() - RUNNER_STALE_MS) } }],
+      },
     { $set: { startedAt: now, claimToken: token, claimedAt: now } },
     { sort: { createdAt: 1 }, new: true }
   );

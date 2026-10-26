@@ -101,6 +101,22 @@ const importJobSchema = new mongoose.Schema(
     keepAreaSplits: { type: Boolean, default: true },
 
     /**
+     * The customer sent roads and no work-area polygons. Set: an area is drawn round the roads and,
+     * once committed, cut into zones of this size (services/roadFootprint.js, workAreaSplit.js) —
+     * the same cut as the panel's "Split into zones", so "Join zones back" and a new size work after.
+     * Null: a roads-only upload is added to the active version's existing areas, as before.
+     */
+    drawZones: {
+      type: new mongoose.Schema(
+        { minKm: Number, maxKm: Number, absorbRemainder: { type: Boolean, default: true } },
+        { _id: false }
+      ),
+      default: null,
+    },
+    /** How the cut went: { zones, km, unplacedKm } or { error } when the area stayed whole. */
+    drawZonesResult: { type: mongoose.Schema.Types.Mixed, default: null },
+
+    /**
      * Which runner owns this job right now, and when it last showed signs of life.
      *
      * Every API process runs the import runner, and the old claim (set startedAt, THEN flip the

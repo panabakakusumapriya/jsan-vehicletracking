@@ -528,6 +528,8 @@ export interface ImportReport {
   };
   network: {
     file: string;
+    /** The road files read together, when the network came as several (one per road class). */
+    layers?: { name: string; records: number }[] | null;
     otherLayersInZip: string[];
     shapeTypeName: string;
     recordCount: number;
@@ -563,6 +565,15 @@ export interface ImportReport {
     kept: boolean;
     zones: { code: string; name: string; meters: number; links: number }[];
   }[];
+  /** Set when there was no boundary file and the area was drawn round the roads. */
+  drawn?: {
+    code: string;
+    name: string;
+    pieces: number;
+    cellM: number;
+    km: number;
+    zones: { minKm: number; maxKm: number; absorbRemainder: boolean } | null;
+  } | null;
   errors: ImportIssue[];
   warnings: ImportIssue[];
 }
@@ -599,6 +610,10 @@ export interface ImportJob {
   joinAreaPartsChosenAt?: string | null;
   /** Areas split into zones earlier in this project stay split when the customer re-delivers them. */
   keepAreaSplits?: boolean;
+  /** Roads with no polygons: zones drawn from the roads, of this size (null = roads join the active areas). */
+  drawZones?: { minKm: number; maxKm: number; absorbRemainder?: boolean } | null;
+  /** How the drawn area was cut once loaded — or why it stayed whole. */
+  drawZonesResult?: { zones: number; km: number; unplacedKm: number; namesFrom?: string } | { error: string } | null;
   report: ImportReport | null;
   progress: { phase: string | null; done: number; total: number };
   networkVersionId: string | null;

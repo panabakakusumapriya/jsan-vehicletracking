@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type React from 'react';
 import { Modal } from './Modal';
 import { api, uploadRaw } from '../lib/api';
+import { zipFiles } from '../lib/storeZip';
 import type { ImportJob } from '../lib/types';
 
 type Layer = 'boundary' | 'network';
@@ -70,7 +71,13 @@ export function NewImportModal({
   onStarted: (jobId: string) => void;
 }) {
   const [label, setLabel] = useState(defaultLabel);
-  const [files, setFiles] = useState<Record<Layer, File | null>>({ boundary: null, network: null });
+  /** Roads may be several zips — one per road class (Wellington: FC1-2, FC3, FC4, FC5). */
+  const [files, setFiles] = useState<{ boundary: File | null; network: File[] }>({ boundary: null, network: [] });
+  /**
+   * Roads with no polygons: draw zones from the roads, of this size. On by default — a roads-only
+   * delivery for ground already loaded is the rarer case, and is one untick away.
+   */
+  const [draw, setDraw] = useState({ on: true, minKm: '250', maxKm: '300', absorbRemainder: true });
   const [progress, setProgress] = useState<{ layer: Layer; percent: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,35 +109,53 @@ export function NewImportModal({
   }, []);
   const oneRef = useRef<Record<Layer, HTMLInputElement | null>>({ boundary: null, network: null });
 
-  /** One or two zips from a file dialog, each to the slot its name suggests. */
+  /**
+   * Zips from a file dialog or a drop, each to the slot its name suggests: one work-area archive,
+   * and any number of road archives. A name that says neither fills the work-area slot when that is
+   * empty and nothing else claims it, else joins the roads.
+   */
   const place = (picked: File[]) => {
-    const [a, b] = picked.slice(0, 2);
-    if (!a) return;
+    if (!picked.length) return;
     setFiles((cur) => {
-      if (!b) {
-        const layer = guessLayer(a.name) || (cur.boundary ? 'network' : 'boundary');
-        return { ...cur, [layer]: a };
-      }
-      const ga = guessLayer(a.name);
-      const gb = guessLayer(b.name);
-      // The other way round only when the names say so; two names saying the same thing keep order.
-      const flip = (ga === 'network' && gb !== 'network') || (gb === 'boundary' && ga !== 'boundary');
-      return flip ? { boundary: b, network: a } : { boundary: a, network: b };
+      let boundary = cur.boundary;
+      const network = [...cur.network];
+      const guesses = picked.map((f) => guessLayer(f.name));
+      const claimsAreas = guesses.includes('boundary');
+      picked.forEach((f, i) => {
+        const g = guesses[i];
+        if (g === 'boundary' || (g === null && !boundary && !claimsAreas)) boundary = f;
+        else if (!network.some((n) => n.name === f.name && n.size === f.size)) network.push(f);
+      });
+      return { boundary, network };
     });
   };
 
-  const swap = () => setFiles((f) => ({ boundary: f.network, network: f.boundary }));
+  /** Only for one file each way: which is which. */
+  const swap = () => setFiles((f) => (f.network.length === 1 ? { boundary: f.network[0], network: f.boundary ? [f.boundary] : [] } : f));
+
+  const roadsOnly = !files.boundary && files.network.length > 0;
+  const drawing = roadsOnly && draw.on;
 
   const start = async () => {
-    if (!files.boundary && !files.network) return;
+    if (!files.boundary && !files.network.length) return;
     setBusy(true);
     setError(null);
     let jobId: string | null = null;
     try {
       const created = await api.post<{ job: ImportJob }>('/api/network/imports', { projectId, label: label.trim() || undefined });
       jobId = created.job._id;
+      if (drawing) {
+        await api.patch(`/api/network/imports/${jobId}`, {
+          drawZones: { minKm: Number(draw.minKm), maxKm: Number(draw.maxKm), absorbRemainder: draw.absorbRemainder },
+        });
+      }
+      // Several road zips go up as one zip of zips; the server opens the ones inside.
+      const roads = files.network.length > 1
+        ? await zipFiles(files.network, `${(label.trim() || 'roads').replace(/[^\w .-]+/g, '_')} roads.zip`)
+        : files.network[0] || null;
+      const upload: Record<Layer, File | null> = { boundary: files.boundary, network: roads };
       for (const layer of ['boundary', 'network'] as const) {
-        const file = files[layer];
+        const file = upload[layer];
         if (!file) continue;
         setProgress({ layer, percent: 0 });
         // eslint-disable-next-line no-await-in-loop
@@ -154,13 +179,14 @@ export function NewImportModal({
     }
   };
 
-  const roadsOnly = !files.boundary && Boolean(files.network);
+  const sizeOk = Number(draw.minKm) >= 5 && Number(draw.maxKm) >= 5;
 
   return (
     <Modal title="New import" onClose={busy ? () => {} : onClose}>
       <p className="cov-sub" style={{ marginTop: 0 }}>
-        Pick the customer’s work areas and road network together — one .zip each — and they are
-        loaded as one delivery. You can select both files at once.
+        Pick the customer’s work areas and road network together and they are loaded as one
+        delivery. You can select all the files at once — the roads may be several .zip files, one
+        per road class. No work areas? The zones can be drawn from the roads.
       </p>
 
       <div className="field">
@@ -199,20 +225,22 @@ export function NewImportModal({
           <path d="M12 16V4M7 9l5-5 5 5" strokeLinecap="round" strokeLinejoin="round" />
           <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" strokeLinecap="round" />
         </svg>
-        <b>Drop both .zip files here</b>
+        <b>Drop the .zip files here</b>
         <span>or click to choose — they go to the right slot by name</span>
       </div>
 
       <div className="newimp-slots">
         {(['boundary', 'network'] as const).map((layer) => {
-          const file = files[layer];
+          const chosen = layer === 'boundary' ? (files.boundary ? [files.boundary] : []) : files.network;
           const active = progress?.layer === layer;
           return (
             <div
               key={layer}
-              className={`cov-file${file ? ' has' : ''}${over === layer ? ' over' : ''}`}
+              className={`cov-file${chosen.length ? ' has' : ''}${over === layer ? ' over' : ''}`}
               {...dropTarget(
-                (f) => dropped(f, (zips) => setFiles((cur) => ({ ...cur, [layer]: zips[0] }))),
+                (f) => dropped(f, (zips) => setFiles((cur) => (layer === 'boundary'
+                  ? { ...cur, boundary: zips[0] }
+                  : { ...cur, network: [...cur.network, ...zips.filter((z) => !cur.network.some((n) => n.name === z.name && n.size === z.size))] }))),
                 (o) => setOver(o ? layer : null),
                 busy
               )}
@@ -221,10 +249,26 @@ export function NewImportModal({
                 {LAYER_LABEL[layer]}
                 {layer === 'network' && <span className="newimp-opt"> · optional</span>}
               </div>
-              {file ? (
+              {chosen.length ? (
                 <div className="cov-file-have">
-                  <div style={{ fontWeight: 600, wordBreak: 'break-all' }}>{file.name}</div>
-                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>{mb(file.size)}</div>
+                  {chosen.map((file) => (
+                    <div key={file.name} style={{ display: 'flex', gap: 8, alignItems: 'baseline', justifyContent: 'space-between' }}>
+                      <span style={{ fontWeight: 600, wordBreak: 'break-all' }}>{file.name}</span>
+                      <span style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                        {mb(file.size)}
+                        {layer === 'network' && chosen.length > 1 && !busy && (
+                          <button
+                            type="button"
+                            className="cov-link"
+                            style={{ marginLeft: 8 }}
+                            onClick={() => setFiles((cur) => ({ ...cur, network: cur.network.filter((n) => n !== file) }))}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               ) : (
                 <div style={{ color: 'var(--muted)', fontSize: 13, padding: '4px 0 8px' }}>Not chosen</div>
@@ -237,21 +281,32 @@ export function NewImportModal({
               <input
                 ref={(el) => { oneRef.current[layer] = el; }}
                 type="file"
+                multiple={layer === 'network'}
                 accept=".zip,application/zip"
                 style={{ display: 'none' }}
                 onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) setFiles((cur) => ({ ...cur, [layer]: f }));
+                  const picked = [...(e.target.files || [])];
+                  if (picked.length) {
+                    setFiles((cur) => (layer === 'boundary'
+                      ? { ...cur, boundary: picked[0] }
+                      : { ...cur, network: [...cur.network, ...picked.filter((z) => !cur.network.some((n) => n.name === z.name && n.size === z.size))] }));
+                  }
                   e.target.value = '';
                 }}
               />
               <div style={{ display: 'flex', gap: 8 }}>
                 <button type="button" className="btn-ghost" disabled={busy} onClick={() => oneRef.current[layer]?.click()}>
-                  {active ? `Uploading ${progress!.percent}%` : file ? 'Change' : 'Choose .zip'}
+                  {active
+                    ? `Uploading ${progress!.percent}%`
+                    : layer === 'network' && chosen.length ? 'Add .zip' : chosen.length ? 'Change' : 'Choose .zip'}
                 </button>
-                {file && !busy && (
-                  <button type="button" className="cov-link" onClick={() => setFiles((cur) => ({ ...cur, [layer]: null }))}>
-                    Remove
+                {chosen.length > 0 && !busy && (
+                  <button
+                    type="button"
+                    className="cov-link"
+                    onClick={() => setFiles((cur) => (layer === 'boundary' ? { ...cur, boundary: null } : { ...cur, network: [] }))}
+                  >
+                    {layer === 'network' && chosen.length > 1 ? 'Remove all' : 'Remove'}
                   </button>
                 )}
               </div>
@@ -260,19 +315,69 @@ export function NewImportModal({
         })}
       </div>
 
-      {files.boundary && files.network && !busy && (
+      {files.boundary && files.network.length === 1 && !busy && (
         <button type="button" className="cov-link" style={{ marginTop: 8 }} onClick={swap}>
           ⇄ Swap — the files are the other way round
         </button>
       )}
 
       {roadsOnly && (
-        <div className="cov-issue warn" style={{ marginTop: 12 }}>
-          Roads only: they will be added to the project’s current work areas. To load a new place,
-          choose its work areas too.
+        <div className="newimp-draw">
+          <label className="cov-toggle" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={draw.on}
+              disabled={busy}
+              onChange={(e) => setDraw((d) => ({ ...d, on: e.target.checked }))}
+            />
+            <span>
+              <b>No work areas? Draw zones from the roads.</b> An outline is drawn round the roads
+              and cut into zones of about this much road each — the same as “Split into zones” on
+              the map, so the size can be changed there later.
+            </span>
+          </label>
+          {draw.on ? (
+            <div className="newimp-draw-size">
+              <span>Each zone</span>
+              <input
+                className="input"
+                type="number"
+                min={5}
+                value={draw.minKm}
+                disabled={busy}
+                aria-label="Smallest zone, km"
+                onChange={(e) => setDraw((d) => ({ ...d, minKm: e.target.value }))}
+              />
+              <span>to</span>
+              <input
+                className="input"
+                type="number"
+                min={5}
+                value={draw.maxKm}
+                disabled={busy}
+                aria-label="Largest zone, km"
+                onChange={(e) => setDraw((d) => ({ ...d, maxKm: e.target.value }))}
+              />
+              <span>km of road</span>
+              <label className="newimp-draw-left">
+                <input
+                  type="checkbox"
+                  checked={draw.absorbRemainder}
+                  disabled={busy}
+                  onChange={(e) => setDraw((d) => ({ ...d, absorbRemainder: e.target.checked }))}
+                />
+                Share the leftover out (zones may run a little over)
+              </label>
+            </div>
+          ) : (
+            <div className="cov-issue warn" style={{ marginTop: 8 }}>
+              Roads only: they will be added to the project’s current work areas. To load a new
+              place, choose its work areas too — or tick the box above.
+            </div>
+          )}
         </div>
       )}
-      {!files.network && files.boundary && (
+      {!files.network.length && files.boundary && (
         <div className="cov-sub" style={{ marginTop: 10 }}>
           Without the road network the areas load, but nothing can be measured as driven until roads are added.
         </div>
@@ -282,7 +387,12 @@ export function NewImportModal({
 
       <div className="modal-actions">
         <button className="btn-ghost" disabled={busy} onClick={onClose}>Cancel</button>
-        <button className="btn" disabled={busy || (!files.boundary && !files.network)} onClick={start}>
+        <button
+          className="btn"
+          disabled={busy || (!files.boundary && !files.network.length) || (drawing && !sizeOk)}
+          title={drawing && !sizeOk ? 'Enter the zone size in km — 5 or more' : undefined}
+          onClick={start}
+        >
           {busy ? (progress ? 'Uploading…' : 'Starting…') : 'Upload and import'}
         </button>
       </div>

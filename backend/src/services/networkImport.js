@@ -12,6 +12,7 @@ const { extract } = require('../utils/unzip');
 const fileStore = require('../utils/fileStore');
 const shapefile = require('../utils/shapefile');
 const workAreaSplit = require('./workAreaSplit');
+const { createFootprint } = require('./roadFootprint');
 const {
   lineLength,
   bboxOf,
@@ -263,6 +264,7 @@ async function extractLayer(job, kind, { reuse = false } = {}) {
   if (!already) {
     fs.rmSync(target, { recursive: true, force: true });
     await extract(zipPath, target);
+    await extractInnerZips(target);
   }
 
   const bundles = shapefile.findShapefiles(target);
@@ -275,8 +277,51 @@ async function extractLayer(job, kind, { reuse = false } = {}) {
   }
 
   // Largest wins when a zip carries several layers; the report names every one it saw so a wrong
-  // pick is visible rather than mysterious.
-  return { chosen: bundles[0], all: bundles.map((b) => b.name) };
+  // pick is visible rather than mysterious. Roads are the exception: see roadLayersOf.
+  const chosen = kind === 'network' ? roadLayersOf(bundles) : bundles[0];
+  return { chosen, all: bundles.map((b) => b.name) };
+}
+
+/**
+ * A zip of zips: the panel wraps several road archives chosen together into one, and a folder of
+ * zipped layers compressed as it is arrives the same way. Each inner zip is unpacked beside itself.
+ */
+async function extractInnerZips(dir, depth = 0) {
+  if (depth > 2) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== '__MACOSX') await extractInnerZips(full, depth + 1);
+    } else if (entry.name.toLowerCase().endsWith('.zip') && !entry.name.startsWith('.')) {
+      const into = path.join(dir, entry.name.slice(0, -4));
+      // eslint-disable-next-line no-await-in-loop
+      await extract(full, into);
+      fs.rmSync(full, { force: true });
+      // eslint-disable-next-line no-await-in-loop
+      await extractInnerZips(into, depth + 1);
+    }
+  }
+}
+
+/**
+ * Every road layer in the archive, read as one. A network can come as one file per road class —
+ * Wellington is FC1-2, FC3, FC4 and FC5 — and taking only the largest would quietly drop the rest.
+ * A layer counts when it is lines with the same columns as the largest one; anything else (points,
+ * a polygon layer, a table of something else) is left out and stays listed as another layer.
+ */
+function roadLayersOf(bundles) {
+  const lines = (info) => [3, 13, 23].includes(info.shapeType);
+  const head = shapefile.inspect(bundles[0]);
+  if (!lines(head)) return bundles[0];
+  const columns = (info) => info.fields.map((f) => f.name.toUpperCase()).sort().join('|');
+  const want = columns(head);
+  const roads = bundles.filter((b, i) => {
+    if (i === 0) return true;
+    if (!fs.existsSync(b.dbf) || !fs.existsSync(b.shx)) return false;
+    const info = shapefile.inspect(b);
+    return lines(info) && columns(info) === want;
+  });
+  return shapefile.combineBundles(roads);
 }
 
 /** Unpack both uploaded zips and locate the shapefile bundle inside each. */
@@ -313,6 +358,33 @@ async function extractJob(job) {
   return layers;
 }
 
+/** Roads alone, and zones to be drawn from them (job.drawZones) — see buildReport. */
+function isDrawn(job, layers) {
+  return Boolean(!layers.boundary && layers.network && job.drawZones);
+}
+
+/** The drawn area's code: fixed per road file, so the same file drawn again gets the same code. */
+function drawnAreaCode(job) {
+  const seed = job.files?.network?.sha256 || String(job._id);
+  return `ROADS-${seed.slice(0, 8).toUpperCase()}`;
+}
+
+/**
+ * A name for ground that came with none: what the road files have in common ("Wellington_FC3_Nav",
+ * "Wellington_FC5_Nav" -> "Wellington"), else the import's label.
+ */
+function drawnAreaName(job, bundle) {
+  const names = (bundle.parts || [bundle]).map((b) => b.name);
+  let prefix = names[0];
+  for (const n of names) while (!n.startsWith(prefix)) prefix = prefix.slice(0, -1);
+  const tidy = (prefix.length >= 3 ? prefix : names[0])
+    .replace(/[_\s-]*(fc\d*([_-]\d+)?)?[_\s-]*(nav|roads?|links?|network)?[_\s-]*$/i, '')
+    .replace(/_/g, ' ')
+    .trim();
+  // The files' name first: the import's label is often only the default "<project> network".
+  return tidy || (job.label && job.label.trim()) || 'Road network';
+}
+
 /**
  * Where a roads-only import should land.
  *
@@ -336,7 +408,7 @@ async function resolveRoadsOnlyTarget(job) {
 
   if (!version) {
     throw new Error(
-      'No active network for this project. Upload the work-area archive too, so the roads have areas to belong to.'
+      'No active network for this project. Upload the work-area archive too, so the roads have areas to belong to — or, if the customer sent no polygons, tick "Draw zones from the roads".'
     );
   }
   const areaCount = await WorkArea.countDocuments({ networkVersionId: version._id });
@@ -346,7 +418,7 @@ async function resolveRoadsOnlyTarget(job) {
   const linkCount = await RoadLink.countDocuments({ networkVersionId: version._id });
   if (linkCount > 0) {
     throw new Error(
-      `The active network already has ${linkCount.toLocaleString()} road links. Upload both archives to create a new version instead of replacing them.`
+      `The active network already has ${linkCount.toLocaleString()} road links. Upload both archives to create a new version instead of replacing them — or, if the customer sent no polygons, tick "Draw zones from the roads".`
     );
   }
   return version;
@@ -407,11 +479,13 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
   const errors = [];
   const warnings = [];
 
-  /* ---- boundary: either a fresh shapefile, or the areas already in the active version ---- */
-  const roadsOnly = !layers.boundary;
+  /* ---- boundary: a fresh shapefile, the areas already in the active version, or drawn ---- */
+  // Drawn: roads with no polygons at all, and the operator asked for zones to be drawn from them.
+  const drawn = isDrawn(job, layers);
+  const roadsOnly = !layers.boundary && !drawn;
   const target = roadsOnly ? await resolveRoadsOnlyTarget(job) : null;
 
-  const boundaryInfo = roadsOnly ? null : shapefile.inspect(layers.boundary.chosen);
+  const boundaryInfo = layers.boundary ? shapefile.inspect(layers.boundary.chosen) : null;
   const networkFields = layers.network ? shapefile.inspect(layers.network.chosen).fields : null;
   const remembered = await (deps.rememberedMapping || rememberedMapping)(job, boundaryInfo?.fields, networkFields);
   const mapping = {
@@ -463,7 +537,7 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
   // Reusing the active version's areas: pull them from the database instead of parsing.
   if (roadsOnly) areas.push(...(await areasFromVersion(target._id)));
 
-  if (!roadsOnly) shapefile.forEachFeature(
+  if (layers.boundary) shapefile.forEachFeature(
     layers.boundary.chosen,
     (attrs, parts) => {
       const geometry = polygonToGeoJson(parts);
@@ -603,6 +677,29 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
     errors.push({ code: 'NO_LINK_ID', message: 'No link id column identified — choose one below.' });
   }
 
+  /**
+   * No polygons: one area is drawn round all of the roads (services/roadFootprint.js) and every
+   * link belongs to it. After the commit the import runner cuts it into zones of the size asked
+   * for (job.drawZones), and those are the areas drivers get.
+   */
+  let footprint = null;
+  let drawnInfo = null;
+  if (drawn) {
+    footprint = createFootprint(networkInfo.bbox);
+    areas.push({
+      code: drawnAreaCode(job),
+      name: drawnAreaName(job, layers.network.chosen),
+      parentName: null,
+      priority: 0,
+      areaSqm: null,
+      geometry: null,
+      bbox: networkInfo.bbox,
+      props: { drawnFromRoads: true },
+      targetMeters: 0,
+      targetLinks: 0,
+    });
+  }
+
   const seenLinkIds = new Set();
   const duplicateLinkIds = [];
   let duplicateLinkCount = 0;
@@ -668,14 +765,36 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
     const dir = mapping.dirTravel ? String(attrs[mapping.dirTravel] ?? 'B').trim().toUpperCase() : 'B';
     tally(dirTally, ['B', 'F', 'T'].includes(dir) ? dir : 'B', 1, metres);
     tally(bucketTally, lengthBucket(metres), 1, metres);
+    if (footprint) footprint.addLine(coords);
 
-    const areaIndex = locate(midpointOf(coords));
+    const areaIndex = drawn ? 0 : locate(midpointOf(coords));
     if (areaIndex < 0) {
       orphanLinks++;
       orphanMeters += metres;
     } else {
       areas[areaIndex].targetLinks++;
       areas[areaIndex].targetMeters += metres;
+    }
+  }
+
+  if (footprint) {
+    const out = footprint.finish();
+    if (!out) {
+      errors.push({ code: 'NOTHING_TO_DRAW', message: 'The road file has no usable roads to draw zones from.' });
+      areas.length = 0;
+    } else {
+      const area = areas[0];
+      area.geometry = out.geometry;
+      area.bbox = out.geometry.coordinates.reduce((box, polygon) => bboxUnion(box, bboxOf(polygon[0])), bboxOf(out.geometry.coordinates[0][0]));
+      area.areaSqm = out.areaSqm;
+      drawnInfo = {
+        code: area.code,
+        name: area.name,
+        pieces: out.pieces,
+        cellM: out.cellM,
+        km: area.targetMeters / 1000,
+        zones: job.drawZones ? { minKm: job.drawZones.minKm, maxKm: job.drawZones.maxKm, absorbRemainder: job.drawZones.absorbRemainder !== false } : null,
+      };
     }
   }
 
@@ -691,7 +810,7 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
    * Not for a roads-only import: its areas already exist, zones included.
    */
   let split = [];
-  if (job.keepAreaSplits !== false && layers.network && !roadsOnly && areas.length) {
+  if (job.keepAreaSplits !== false && layers.network && layers.boundary && areas.length) {
     /** The links of the areas concerned, read again: the first pass kept no geometry. */
     const linksOf = async (wanted) => {
       const out = new Map([...wanted].map((index) => [index, []]));
@@ -838,11 +957,11 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
     // What was actually applied — the job's own setting, or the default for this kind of file.
     joinAreaParts,
     boundary: {
-      // Reused from the active version rather than uploaded, for a roads-only import.
-      file: roadsOnly ? '(existing work areas)' : layers.boundary.chosen.name,
-      otherLayersInZip: roadsOnly
-        ? []
-        : layers.boundary.all.filter((n) => n !== layers.boundary.chosen.name),
+      // Reused from the active version rather than uploaded, for a roads-only import; or drawn.
+      file: drawn ? '(drawn from the roads)' : roadsOnly ? '(existing work areas)' : layers.boundary.chosen.name,
+      otherLayersInZip: layers.boundary
+        ? layers.boundary.all.filter((n) => n !== layers.boundary.chosen.name)
+        : [],
       shapeTypeName: boundaryInfo ? boundaryInfo.shapeTypeName : 'Polygon',
       recordCount: areas.length,
       bbox: boundaryInfo ? boundaryInfo.bbox : null,
@@ -850,11 +969,13 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
       // exactly the shape that crashed ReportView when `network` became nullable.
       crs: boundaryCrs || {
         wkt: null,
-        name: 'Reused from the active network',
+        name: drawn ? 'Drawn from the roads' : 'Reused from the active network',
         datum: null,
         projected: false,
         compatible: true,
-        note: 'Work areas were reused from the active network version; no boundary file was uploaded.',
+        note: drawn
+          ? 'No boundary file: the work area was drawn round the roads, to be cut into zones.'
+          : 'Work areas were reused from the active network version; no boundary file was uploaded.',
       },
       fields: boundaryInfo ? boundaryInfo.fields : [],
       sample: boundaryInfo ? boundaryInfo.sample : [],
@@ -864,7 +985,11 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
     // supplied zero roads" are different facts and the UI must be able to tell them apart.
     network: !layers.network ? null : {
       file: layers.network.chosen.name,
-      otherLayersInZip: layers.network.all.filter((n) => n !== layers.network.chosen.name),
+      // The road files read together, when the network came as several (one per road class).
+      layers: networkInfo.layers || null,
+      otherLayersInZip: layers.network.all.filter(
+        (n) => !(layers.network.chosen.parts || [layers.network.chosen]).some((b) => b.name === n)
+      ),
       shapeTypeName: networkInfo.shapeTypeName,
       recordCount: linkCount,
       bbox: networkInfo.bbox,
@@ -901,6 +1026,8 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
     },
     // Areas that were cut into zones, and the zones each became. Empty when none were.
     split,
+    // Set when the area was drawn round the roads (no boundary file): its size, and the zones asked for.
+    drawn: drawnInfo,
     errors,
     warnings,
   };
@@ -918,8 +1045,9 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
  * and insert — no aggregation afterwards, and no dashboard query ever runs the spatial join.
  */
 async function commit(job, layers, areas, mapping, onProgress = () => {}) {
-  const roadsOnly = !layers.boundary;
-  const boundaryInfo = roadsOnly ? null : shapefile.inspect(layers.boundary.chosen);
+  const drawn = isDrawn(job, layers);
+  const roadsOnly = !layers.boundary && !drawn;
+  const boundaryInfo = layers.boundary ? shapefile.inspect(layers.boundary.chosen) : null;
   const networkInfo = layers.network ? shapefile.inspect(layers.network.chosen) : null;
 
   /**
@@ -1051,7 +1179,8 @@ async function commit(job, layers, areas, mapping, onProgress = () => {}) {
       }
       const coords = parts[0];
       const metres = lineLength(coords);
-      const area = locate(midpointOf(coords));
+      // Drawn: one area, round every road — no point testing which one a link is in.
+      const area = drawn ? indexed[0] : locate(midpointOf(coords));
       const dirRaw = mapping.dirTravel
         ? String(attrs[mapping.dirTravel] ?? 'B').trim().toUpperCase()
         : 'B';
@@ -1185,6 +1314,8 @@ async function cleanupArtifacts() {
 }
 
 module.exports = {
+  isDrawn,
+  drawnAreaName,
   IMPORT_DIR,
   jobDir,
   ensureDir,

@@ -389,6 +389,32 @@ async function updateJob(req, res) {
       job.progress = { phase: 'queued', done: 0, total: 0 };
     }
   }
+  /**
+   * No polygons: draw zones from the roads, of this size (null = off). Changes what the delivery
+   * IS — a new version with drawn zones rather than roads added to the active one — so a standing
+   * report is re-checked.
+   */
+  if ('drawZones' in (req.body || {})) {
+    let next = null;
+    if (req.body.drawZones) {
+      try {
+        const opt = workAreaSplit.optionsFrom(req.body.drawZones);
+        next = { minKm: opt.minKm, maxKm: opt.maxKm, absorbRemainder: opt.absorbRemainder };
+      } catch (err) {
+        return res.status(err.status || 400).json({ error: err.message });
+      }
+    }
+    if (JSON.stringify(next) !== JSON.stringify(job.drawZones ? job.drawZones.toObject?.() ?? job.drawZones : null)) {
+      job.drawZones = next;
+      if (job.status !== 'draft' && job.files?.network?.name) {
+        job.status = 'queued';
+        job.claimToken = null;
+        job.report = null;
+        job.error = null;
+        job.progress = { phase: 'queued', done: 0, total: 0 };
+      }
+    }
+  }
   if (req.body.mapping && typeof req.body.mapping === 'object') {
     for (const [key, value] of Object.entries(req.body.mapping)) {
       if (key in job.mapping) job.mapping[key] = value ? String(value) : null;

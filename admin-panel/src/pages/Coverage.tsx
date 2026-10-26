@@ -7,6 +7,7 @@ import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
 import { NameDeliveriesModal } from '../components/NameDeliveriesModal';
 import { NewImportModal, dropTarget, zipsIn } from '../components/NewImportModal';
+import { zipFiles } from '../lib/storeZip';
 import { useProjectScope } from '../components/ProjectSelect';
 import { api, uploadRaw } from '../lib/api';
 import { PIN_RANK, pinAlpha, statusText, whereText, type DriverPin } from '../lib/driverPins';
@@ -2152,9 +2153,12 @@ function ImportDetail({
     return () => clearInterval(t);
   }, [live, refresh, onChanged]);
 
-  const upload = async (layer: 'boundary' | 'network', file: File) => {
+  const upload = async (layer: 'boundary' | 'network', picked: File | File[]) => {
     setUploading({ layer, percent: 0 });
     try {
+      // Several road zips (one per road class) go up as one zip of zips; the server opens them.
+      const list = Array.isArray(picked) ? picked : [picked];
+      const file = list.length > 1 ? await zipFiles(list, `${job?.label || 'roads'} roads.zip`) : list[0];
       // A draft waits for the other archive and an explicit start. A checked job re-checks at once
       // when both archives are in; with only one, the server holds it so the other can be added.
       const hold = job?.status === 'draft' ? '&hold=1' : '';
@@ -2260,8 +2264,8 @@ function ImportDetail({
               className={`cov-file${dragOver === layer ? ' over' : ''}`}
               {...dropTarget(
                 (files) => {
-                  const zip = zipsIn(files)[0];
-                  if (zip) upload(layer, zip);
+                  const zips = zipsIn(files);
+                  if (zips.length) upload(layer, layer === 'network' ? zips : zips[0]);
                   else alert('Drop the .zip archive — a shapefile has to be zipped with its sibling files.');
                 },
                 (o) => setDragOver(o ? layer : null),
@@ -2293,11 +2297,12 @@ function ImportDetail({
                   <input
                     ref={ref}
                     type="file"
+                    multiple={layer === 'network'}
                     accept=".zip,application/zip"
                     style={{ display: 'none' }}
                     onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) upload(layer, f);
+                      const picked = [...(e.target.files || [])];
+                      if (picked.length) upload(layer, layer === 'network' ? picked : picked[0]);
                       e.target.value = '';
                     }}
                   />
@@ -2310,6 +2315,11 @@ function ImportDetail({
           );
         })}
       </div>
+
+      {/* ---- roads with no polygons: zones drawn from them ---- */}
+      {!job.files.boundary.name && job.files.network.name && (
+        <DrawZonesControl job={job} canEdit={canEdit && !live && job.status !== 'ready'} onPatch={patch} />
+      )}
 
       {/* ---- actions ---- */}
       {/* Loading starts by itself once both archives are in. Buttons here exist only for the
@@ -2331,7 +2341,9 @@ function ImportDetail({
                   ? 'Both archives are in.'
                   : job.files.boundary.name
                     ? 'Add the road network first if you have it — otherwise the areas load on their own.'
-                    : 'Roads only will be added to the current work areas — add the work areas first for a new place.'}
+                    : job.drawZones
+                      ? `Roads only: an outline is drawn round them and cut into zones of ${job.drawZones.minKm}–${job.drawZones.maxKm} km.`
+                      : 'Roads only will be added to the current work areas — add the work areas first for a new place.'}
               </span>
             </>
           )}
@@ -2366,6 +2378,109 @@ function ImportDetail({
 
       {report && (job.status === 'awaiting_approval' || report.errors.length > 0 || report.warnings.length > 0) && (
         <ReportView job={job} report={report} canEdit={canEdit && !live} onPatch={patch} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Roads that came without work-area polygons: draw the zones from the roads, and how big. Set
+ * before the import runs (or while it waits for approval — changing it re-checks); once loaded,
+ * says how the cut went. The size can be changed afterwards on the map: "Join zones back", then
+ * "Split into zones" — it is the same cut.
+ */
+function DrawZonesControl({
+  job,
+  canEdit,
+  onPatch,
+}: {
+  job: ImportJob;
+  canEdit: boolean;
+  onPatch: (body: Record<string, unknown>) => void;
+}) {
+  const [minKm, setMinKm] = useState(String(job.drawZones?.minKm ?? 250));
+  const [maxKm, setMaxKm] = useState(String(job.drawZones?.maxKm ?? 300));
+  const [absorb, setAbsorb] = useState(job.drawZones?.absorbRemainder !== false);
+  const result = job.drawZonesResult;
+  const send = (on: boolean, next = { minKm, maxKm, absorb }) => {
+    if (!on) return onPatch({ drawZones: null });
+    const a = Number(next.minKm);
+    const b = Number(next.maxKm);
+    if (!(a >= 5 && b >= 5)) return undefined;
+    return onPatch({ drawZones: { minKm: a, maxKm: b, absorbRemainder: next.absorb } });
+  };
+
+  if (job.status === 'ready') {
+    if (!job.drawZones || !result) return null;
+    return 'error' in result ? (
+      <div className="cov-issue warn" style={{ marginBottom: 14 }}>
+        The roads were loaded as one area ({job.report?.drawn?.name || 'drawn from the roads'}) — it could not be cut into
+        zones: {result.error} Pick it on the map and use “Split into zones” to choose another size.
+      </div>
+    ) : (
+      <div className="cov-issue ok" style={{ marginBottom: 14 }}>
+        <strong>{result.zones} zones drawn from the roads</strong> — {Math.round(result.km).toLocaleString()} km of road at{' '}
+        {job.drawZones.minKm}–{job.drawZones.maxKm} km each
+        {result.unplacedKm > 0.05 ? `; ${result.unplacedKm.toFixed(1)} km on scraps too small for a zone stay outside` : ''}.
+        To change the size: on the map pick a zone, “Join zones back”, then “Split into zones”.
+      </div>
+    );
+  }
+
+  return (
+    <div className="newimp-draw" style={{ marginBottom: 14 }}>
+      <label className="cov-toggle" style={{ margin: 0 }}>
+        <input type="checkbox" disabled={!canEdit} checked={Boolean(job.drawZones)} onChange={(e) => send(e.target.checked)} />
+        <span>
+          <b>No work areas? Draw zones from the roads.</b> An outline is drawn round the roads and cut
+          into zones of about this much road each. Unticked, the roads are added to the project’s
+          current work areas.
+        </span>
+      </label>
+      {job.drawZones && (
+        <div className="newimp-draw-size">
+          <span>Each zone</span>
+          <input
+            className="input"
+            type="number"
+            min={5}
+            value={minKm}
+            disabled={!canEdit}
+            aria-label="Smallest zone, km"
+            onChange={(e) => setMinKm(e.target.value)}
+            onBlur={() => send(true)}
+          />
+          <span>to</span>
+          <input
+            className="input"
+            type="number"
+            min={5}
+            value={maxKm}
+            disabled={!canEdit}
+            aria-label="Largest zone, km"
+            onChange={(e) => setMaxKm(e.target.value)}
+            onBlur={() => send(true)}
+          />
+          <span>km of road</span>
+          <label className="newimp-draw-left">
+            <input
+              type="checkbox"
+              checked={absorb}
+              disabled={!canEdit}
+              onChange={(e) => { setAbsorb(e.target.checked); send(true, { minKm, maxKm, absorb: e.target.checked }); }}
+            />
+            Share the leftover out (zones may run a little over)
+          </label>
+        </div>
+      )}
+      {job.report?.drawn && (
+        <div className="cov-sub" style={{ margin: '8px 0 0 26px' }}>
+          Outline drawn round {Math.round(job.report.drawn.km).toLocaleString()} km of road
+          {job.report.network?.layers && job.report.network.layers.length > 1
+            ? ` from ${job.report.network.layers.length} road files`
+            : ''}
+          , in {job.report.drawn.pieces} piece{job.report.drawn.pieces === 1 ? '' : 's'}.
+        </div>
       )}
     </div>
   );
