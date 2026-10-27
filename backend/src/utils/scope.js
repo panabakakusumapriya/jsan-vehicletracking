@@ -58,4 +58,20 @@ function canManageDriver(requester, driver) {
   return requester._id.toString() === driver._id.toString();
 }
 
-module.exports = { accessibleDriverFilter, canManageDriver, linkedOrOnProjects };
+/**
+ * The drivers a query may ask for, narrowed to what `scope` (accessibleDriverFilter) allows.
+ *
+ * A requested driver has to NARROW the scope, never replace it. Merging the two as objects did one
+ * or the other, both wrong: `{ ...scope, driverId }` let a manager read any driver by id (the
+ * Reports country filter sends every driver in a country), and `{ driverId, ...scope }` threw the
+ * picked driver away, so a manager who picked one driver and a day was shown all of their drivers
+ * that day. Returns the allowed subset of `requested`, in its order.
+ */
+function narrowDrivers(scope, requested) {
+  if (!scope || !scope.driverId) return requested;
+  const allowed = scope.driverId.$in ? scope.driverId.$in : [scope.driverId];
+  const ok = new Set(allowed.map(String));
+  return requested.filter((id) => ok.has(String(id)));
+}
+
+module.exports = { accessibleDriverFilter, canManageDriver, linkedOrOnProjects, narrowDrivers };

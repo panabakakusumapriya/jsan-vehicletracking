@@ -1,5 +1,8 @@
 const asyncHandler = require('../utils/asyncHandler');
-const { accessibleDriverFilter } = require('../utils/scope');
+const mongoose = require('mongoose');
+const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
+
+const toObjectId = (id) => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id);
 const { drivingConditions, isConfigured } = require('../services/weather');
 const { classifyWmo, iconFor } = require('../services/weatherCodes');
 const { scoreSlot } = require('../services/drivingWeather');
@@ -57,7 +60,8 @@ exports.tripHistory = asyncHandler(async (req, res) => {
   // distance and max speed, and a session where the vehicle never moved would contribute hard
   // numbers to it while being no drive at all.
   const filter = { ...scope, status: { $in: ['ended', 'timed_out'] }, parkedJitter: { $ne: true } };
-  if (req.query.driverId) filter.driverId = req.query.driverId;
+  // The picked driver narrows the scope; it must not replace it (utils/scope.js narrowDrivers).
+  if (req.query.driverId) filter.driverId = { $in: narrowDrivers(scope, [toObjectId(req.query.driverId)]) };
   if (req.query.from || req.query.to) {
     filter.startedAt = {};
     if (req.query.from) filter.startedAt.$gte = new Date(req.query.from);

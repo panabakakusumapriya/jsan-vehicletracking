@@ -1,6 +1,10 @@
 const AppActivity = require('../models/AppActivity');
 const User = require('../models/User');
 const asyncHandler = require('../utils/asyncHandler');
+const mongoose = require('mongoose');
+const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
+
+const toObjectId = (id) => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id);
 
 // How long without a heartbeat before the dashboard shows "Offline" (ms).
 // This is DISPLAY ONLY — no sign_out event is logged. The driver may just
@@ -15,8 +19,13 @@ const heartbeatCache = new Map();
 
 // GET /api/app-activity?driverId=&from=&to=
 exports.list = asyncHandler(async (req, res) => {
+  // Managers and team leads see their own drivers only, like every other driver list; this read
+  // used to apply no scope at all, so any manager saw the whole fleet's sign-ins.
+  const scope = await accessibleDriverFilter(req.user);
+  const scoped = scope.driverId ? (scope.driverId.$in || [scope.driverId]) : null;
   const filter = {};
-  if (req.query.driverId) filter.driverId = req.query.driverId;
+  if (req.query.driverId) filter.driverId = { $in: narrowDrivers(scope, [toObjectId(req.query.driverId)]) };
+  else if (scoped) filter.driverId = { $in: scoped };
   if (req.query.from || req.query.to) {
     filter.timestamp = {};
     if (req.query.from) filter.timestamp.$gte = new Date(req.query.from);
@@ -32,7 +41,9 @@ exports.list = asyncHandler(async (req, res) => {
     .populate('driverId', 'name email country project');
 
   // Build a summary: last sign-in / sign-out per driver + online status via heartbeat
-  const drivers = await User.find({ role: 'user', active: true }).select('name email country project').lean();
+  const drivers = await User.find({ role: 'user', active: true, ...(scoped ? { _id: { $in: scoped } } : {}) })
+    .select('name email country project')
+    .lean();
   const summaryList = [];
 
   // Newest sign_in and sign_out for every driver in ONE aggregation. This was two findOne calls

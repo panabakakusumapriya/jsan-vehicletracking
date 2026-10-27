@@ -9,7 +9,7 @@ const fileStore = require('../utils/fileStore');
 const { EXPORT_BUCKET, ORIGIN: EXPORT_ORIGIN, runJob: buildExport } = require('../services/exportRunner');
 const asyncHandler = require('../utils/asyncHandler');
 const { workMsExpr } = require('../utils/workHours');
-const { accessibleDriverFilter } = require('../utils/scope');
+const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
 const { dayRange, isValidTimeZone } = require('../utils/timezone');
 const { timezoneForCountry } = require('../utils/countryTimezone');
 const { buildKml, buildSnappedKml, buildJson, buildMergedKml, buildMergedSnappedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate } = require('../utils/tripExport');
@@ -178,14 +178,15 @@ const parkedJitterFilter = (req) => (includeNoise(req) ? {} : { parkedJitter: { 
 function buildTripFilter(req, scope) {
   const filter = { ...scope, ...parkedJitterFilter(req) };
   if (req.query.status) filter.status = req.query.status;
+  // A requested driver narrows the requester's scope; it never replaces it (utils/scope.js).
   if (req.query.driverId) {
-    filter.driverId = toObjectId(req.query.driverId);
+    filter.driverId = { $in: narrowDrivers(scope, [toObjectId(req.query.driverId)]) };
   } else if (req.query.driverIds !== undefined) {
     // Present-but-possibly-empty means "match exactly this set" — a project/country combo
     // that resolves to zero drivers must return zero trips, not silently fall through to
     // "no filter at all" and show the whole fleet. `{ $in: [] }` correctly matches nothing.
     const ids = String(req.query.driverIds).split(',').map((s) => s.trim()).filter(Boolean);
-    filter.driverId = { $in: ids.map(toObjectId) };
+    filter.driverId = { $in: narrowDrivers(scope, ids.map(toObjectId)) };
   }
   if (req.query.from || req.query.to) {
     // Both ends resolved in ONE timezone - the viewer's when the client sends it, UTC otherwise.
@@ -397,9 +398,11 @@ exports.exportMerged = asyncHandler(async (req, res) => {
   // Parked sessions are excluded like everywhere else: this file is the day's driving record, and
   // it has to agree with the page the user downloaded it from. ?includeNoise=true asks for them.
   const trips = await Trip.find({
-    driverId,
-    startedAt: { $gte: range.from, $lt: range.to },
     ...scope,
+    // The picked driver, if the requester may see them; spreading scope after it used to replace
+    // it, so a manager's single-driver day held every one of their drivers' trips.
+    driverId: { $in: narrowDrivers(scope, [toObjectId(driverId)]) },
+    startedAt: { $gte: range.from, $lt: range.to },
     ...parkedJitterFilter(req),
   })
     .sort({ startedAt: 1 })
@@ -461,9 +464,11 @@ exports.mergedPoints = asyncHandler(async (req, res) => {
   // Same exclusion as the list and the merged file — the day map and its totals are a driving
   // record, and a parked session contributes no driving. ?includeNoise=true asks for them.
   const trips = await Trip.find({
-    driverId,
-    startedAt: { $gte: range.from, $lt: range.to },
     ...scope,
+    // The picked driver, if the requester may see them; spreading scope after it used to replace
+    // it, so a manager's single-driver day held every one of their drivers' trips.
+    driverId: { $in: narrowDrivers(scope, [toObjectId(driverId)]) },
+    startedAt: { $gte: range.from, $lt: range.to },
     ...parkedJitterFilter(req),
   })
     .sort({ startedAt: 1 })
