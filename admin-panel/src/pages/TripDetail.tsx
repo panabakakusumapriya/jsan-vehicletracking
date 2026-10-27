@@ -449,6 +449,13 @@ export function TripDetail() {
 
   const playback = useTripPlayback(points);
 
+  // When the replay pauses or ends, the map turns back to north-up and lies flat again.
+  const wasPlayingRef = useRef(false);
+  useEffect(() => {
+    if (wasPlayingRef.current && !playback.playing) mapRef.current?.resetView();
+    wasPlayingRef.current = playback.playing;
+  }, [playback.playing]);
+
   // A trip with no raw trace has nothing to show in "raw" mode. Opening there meant an imported
   // day presented as an empty map until you found the toggle. Only ever switches the initial
   // view — once the user picks a mode it is theirs.
@@ -493,8 +500,8 @@ export function TripDetail() {
     return trip.outAreaShapes.map((s) => decodeRouteShapes([s])).filter((p) => p.length > 1);
   }, [mode, trip]);
 
-  // The 3D replay: the camera closes in on the vehicle, tilted, and follows it. The map is north-up
-  // (Map3D northUp), so it follows without ever turning. Throttled to ~500ms.
+  // The 3D replay: the camera closes in on the vehicle, tilted, and rides behind it, turning with it.
+  // Pause or the end lays the map back north-up (resetView). Throttled to ~500ms.
   useEffect(() => {
     if (!playback.playing || points.length === 0) return;
     const now = Date.now();

@@ -27,6 +27,9 @@ export interface Map3DHandle {
   /** Keep a moving point on screen without turning, tilting or zooming: the camera only slides
    *  along when the point nears the edge of the view. For north-up replays. */
   follow(center: [number, number]): void;
+  /** Turn back to north-up and lay the map flat (on a north-up map), keeping place and zoom —
+   *  for when a replay pauses or ends. */
+  resetView(): void;
   /** Frame a [west, south, east, north] extent -- used to jump to a work area. */
   fitBounds(
     bbox: [number, number, number, number],
@@ -57,9 +60,9 @@ interface Map3DProps {
   /** 'light' trades the 3D buildings for a flat basemap that costs the GPU a fraction per frame. */
   basemap?: 'full' | 'light';
   /** A north-up map: it opens flat, and turning and tilting are switched off for the person
-   *  (right-drag, two-finger twist, touch tilt, keyboard), so the compass always points north. The
-   *  replay (driveTo) still closes in on the car tilted in 3D, but keeps north at the top; fitting
-   *  the route or flying to a place lays it flat again. Trips and Reports use this. */
+   *  (right-drag, two-finger twist, touch tilt, keyboard), so the compass points north whenever
+   *  the map is being read. Only the replay (driveTo) turns and tilts it, to ride behind the car;
+   *  resetView(), fitting the route or flying to a place lays it back flat and north-up. */
   northUp?: boolean;
 }
 
@@ -223,17 +226,19 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
       driveTo(target, bearing) {
         const map = mapRef.current;
         if (!map) return;
-        // The 3D replay: close in and tilted behind the car. A north-up map keeps north at the top
-        // the whole way (bearing 0) — the camera follows the car but never turns.
-        if (northUpRef.current) {
-          map.easeTo({ center: target, zoom: 17, pitch: 60, bearing: 0, duration: 600, essential: true });
-          return;
-        }
-        map.easeTo({ center: target, zoom: 17.5, pitch: 65, bearing, duration: 600, essential: true });
+        // The 3D replay: close in, tilted, behind the car and turned with it, so the car always
+        // drives away from the viewer — the driver's own view. A north-up map is laid back flat and
+        // north-up by resetView() once the replay stops.
+        map.easeTo({ center: target, zoom: northUpRef.current ? 17 : 17.5, pitch: northUpRef.current ? 60 : 65, bearing, duration: 600, essential: true });
       },
       follow(target) {
         const map = mapRef.current;
         if (map) followPoint(map, target);
+      },
+      resetView() {
+        const map = mapRef.current;
+        if (!map) return;
+        map.easeTo({ bearing: 0, pitch: pitchRef.current, duration: 700, essential: true });
       },
       fitToRoute(coords) {
         const map = mapRef.current;

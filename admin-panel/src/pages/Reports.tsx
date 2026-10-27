@@ -160,6 +160,13 @@ export function Reports() {
 
   const playback = useTripPlayback(allPoints);
 
+  // When the replay pauses or ends, the map turns back to north-up and lies flat again.
+  const wasPlayingRef = useRef(false);
+  useEffect(() => {
+    if (wasPlayingRef.current && !playback.playing) mapRef.current?.resetView();
+    wasPlayingRef.current = playback.playing;
+  }, [playback.playing]);
+
   // One path per trip rather than one path for the day: concatenating them drew a straight line
   // from where each trip ended to where the next began, across road the driver never took.
   const snappedPaths = useMemo(() => {
@@ -172,8 +179,8 @@ export function Reports() {
     [allPoints, playback.currentTimeMs, playback.playing, snappedPaths]
   );
 
-  // The 3D replay: the camera closes in on the car, tilted, and follows it (throttled to ~1s).
-  // The map is north-up (Map3D northUp), so it follows without ever turning.
+  // The 3D replay: the camera closes in on the car, tilted, and rides behind it, turning with it (throttled to ~1s).
+  // Pause or the end of the day lays it back north-up (resetView).
   useEffect(() => {
     if (!playback.playing || allPoints.length === 0) return;
     const now = Date.now();
