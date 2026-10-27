@@ -659,7 +659,6 @@ export interface DeliveryBreakdown {
   targetMeters: number;
   coveredMeters: number;
   coveredLinks: number;
-  ukmMeters?: number;
   completedAreas: number;
   assignedAreas: number;
 }
@@ -677,9 +676,6 @@ export interface CoverageBand {
 export interface CoverageSummary {
   coveredMeters: number;
   coveredLinks: number;
-  /** UKM to date of the trips measured against the deliveries in view — the UKM page's figure. */
-  ukmMeters?: number;
-  ukmTrips?: number;
   targetMeters: number;
   targetLinks: number;
   /** Areas a manager has signed off in the project's current coverage cycle. */
