@@ -172,8 +172,8 @@ export function Reports() {
     [allPoints, playback.currentTimeMs, playback.playing, snappedPaths]
   );
 
-  // Keep the car on screen during playback (throttled to ~1s) — north-up, same zoom: the map only
-  // slides when the car nears the edge, so the day stays framed as it was.
+  // The 3D replay: the camera closes in on the car, tilted, and follows it (throttled to ~1s).
+  // The map is north-up (Map3D northUp), so it follows without ever turning.
   useEffect(() => {
     if (!playback.playing || allPoints.length === 0) return;
     const now = Date.now();
@@ -181,7 +181,7 @@ export function Reports() {
     lastFlyRef.current = now;
     const vehicle = vehicleAtElapsed(allPoints, playback.currentTimeMs);
     if (vehicle) {
-      mapRef.current?.follow([vehicle.lon, vehicle.lat]);
+      mapRef.current?.driveTo([vehicle.lon, vehicle.lat], vehicle.heading);
     }
   }, [playback.currentTimeMs, playback.playing, allPoints]);
 
@@ -503,7 +503,7 @@ export function Reports() {
                     const startMs = playback.currentTimeMs >= playback.durationMs ? 0 : playback.currentTimeMs;
                     const pos = vehicleAtElapsed(allPoints, startMs);
                     if (pos) {
-                      mapRef.current?.follow([pos.lon, pos.lat]);
+                      mapRef.current?.driveTo([pos.lon, pos.lat], pos.heading);
                     }
                   }
                 }}

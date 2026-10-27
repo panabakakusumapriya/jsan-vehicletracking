@@ -56,9 +56,10 @@ interface Map3DProps {
   onMove?: () => void;
   /** 'light' trades the 3D buildings for a flat basemap that costs the GPU a fraction per frame. */
   basemap?: 'full' | 'light';
-  /** A flat, north-up map that stays that way: no tilt, and rotating is switched off (right-drag,
-   *  two-finger twist, keyboard), so the compass always points north. driveTo then only follows,
-   *  like follow(). Trips and Reports want this: a route read as a plan, the same view every time. */
+  /** A north-up map: it opens flat, and turning and tilting are switched off for the person
+   *  (right-drag, two-finger twist, touch tilt, keyboard), so the compass always points north. The
+   *  replay (driveTo) still closes in on the car tilted in 3D, but keeps north at the top; fitting
+   *  the route or flying to a place lays it flat again. Trips and Reports use this. */
   northUp?: boolean;
 }
 
@@ -110,7 +111,9 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
         zoom,
         pitch: pitchRef.current,
         bearing: 0,
-        ...(northUpRef.current ? { maxPitch: 0, dragRotate: false, pitchWithRotate: false } : {}),
+        // No dragRotate: the right-drag that both turns and tilts. The replay camera can still tilt
+        // (driveTo), the person cannot.
+        ...(northUpRef.current ? { dragRotate: false, pitchWithRotate: false } : {}),
       });
       if (northUpRef.current) {
         // Every other way to turn the map: a two-finger twist, a touch tilt, the keyboard.
@@ -220,7 +223,12 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
       driveTo(target, bearing) {
         const map = mapRef.current;
         if (!map) return;
-        if (northUpRef.current) return followPoint(map, target);
+        // The 3D replay: close in and tilted behind the car. A north-up map keeps north at the top
+        // the whole way (bearing 0) — the camera follows the car but never turns.
+        if (northUpRef.current) {
+          map.easeTo({ center: target, zoom: 17, pitch: 60, bearing: 0, duration: 600, essential: true });
+          return;
+        }
         map.easeTo({ center: target, zoom: 17.5, pitch: 65, bearing, duration: 600, essential: true });
       },
       follow(target) {

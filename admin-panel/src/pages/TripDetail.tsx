@@ -493,9 +493,8 @@ export function TripDetail() {
     return trip.outAreaShapes.map((s) => decodeRouteShapes([s])).filter((p) => p.length > 1);
   }, [mode, trip]);
 
-  // Camera keeps the vehicle on screen during playback. The map is north-up (Map3D northUp), so
-  // driveTo only slides it along when the car nears the edge — no turning, tilting or zooming in.
-  // Throttled to ~500ms.
+  // The 3D replay: the camera closes in on the vehicle, tilted, and follows it. The map is north-up
+  // (Map3D northUp), so it follows without ever turning. Throttled to ~500ms.
   useEffect(() => {
     if (!playback.playing || points.length === 0) return;
     const now = Date.now();
