@@ -28,6 +28,8 @@ let running = false;
 
 /** A claim with no heartbeat for this long belongs to a runner that died mid-job. */
 const RUNNER_STALE_MS = 10 * 60 * 1000;
+/** How often a runner holding a job says so, progress or not — well inside RUNNER_STALE_MS. */
+const HEARTBEAT_MS = 60 * 1000;
 
 /** Throttled progress writes — a job document update per 25k features is plenty for a UI. */
 function progressWriter(job) {
@@ -209,6 +211,15 @@ async function tick({ jobId = null, heldBy = null } = {}) {
     job.status = 'parsing';
   }
 
+  // The owner's heartbeat, separate from progress. Only progress writes refreshed claimedAt, and
+  // the steps after the road links (drawing zones, activating the delivery, crediting driving onto
+  // it) report none for minutes on a big network — past RUNNER_STALE_MS another runner took the job
+  // as abandoned and started it over, into a second delivery (QLD-FC345, 27 Oct 2026). Filtered by
+  // token, so a runner that has lost the job never refreshes someone else's claim.
+  const beat = setInterval(() => {
+    ImportJob.updateOne({ _id: job._id, claimToken: token }, { $set: { claimedAt: new Date() } }).catch(() => {});
+  }, HEARTBEAT_MS);
+
   try {
     if (committing) await runCommit(job);
     else await runParse(job);
@@ -225,6 +236,8 @@ async function tick({ jobId = null, heldBy = null } = {}) {
     }
     // eslint-disable-next-line no-console
     console.error(`import-runner: job ${job._id} failed:`, err.message);
+  } finally {
+    clearInterval(beat);
   }
 
   return String(job._id);
