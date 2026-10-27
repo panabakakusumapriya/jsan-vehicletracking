@@ -2104,6 +2104,73 @@ function ImportsTab({
   );
 }
 
+/**
+ * Where a running import is, as a bar: the steps in order with the current one marked, a filling
+ * bar with its % and the time left while road links are written (the long part: ~50k links a
+ * minute), and a moving bar for the steps that report no total. Reads the job's own progress
+ * (importRunner: phase / done / total), polled by ImportDetail every 2 s.
+ */
+const IMPORT_STEPS: Array<{ key: string; label: string; phases: string[] }> = [
+  { key: 'check', label: 'Check files', phases: ['queued', 'parsing', 'boundary', 'network', 'loading'] },
+  { key: 'areas', label: 'Areas', phases: ['areas'] },
+  { key: 'links', label: 'Roads', phases: ['links'] },
+  { key: 'zones', label: 'Zones', phases: ['zones'] },
+  { key: 'done', label: 'Finish', phases: ['loaded'] },
+];
+
+function ImportProgress({ job }: { job: ImportJob }) {
+  const phase = job.progress.phase || job.status;
+  const { done, total } = job.progress;
+  // While checking, "zones" means reading the zone layer; while committing, drawing them.
+  const stepIdx = Math.max(
+    0,
+    job.status !== 'committing' ? 0 : IMPORT_STEPS.findIndex((s) => s.phases.includes(phase)),
+  );
+  const step = IMPORT_STEPS[stepIdx];
+  const exact = total > 0 && done <= total;
+  const pct = exact ? Math.min(100, (done / total) * 100) : null;
+
+  // Time left, from the speed seen since this step began (sampled as the panel polls).
+  const sampleRef = useRef<{ phase: string; t: number; done: number } | null>(null);
+  if (!sampleRef.current || sampleRef.current.phase !== phase || done < sampleRef.current.done) {
+    sampleRef.current = { phase, t: Date.now(), done };
+  }
+  const s = sampleRef.current;
+  const secs = (Date.now() - s.t) / 1000;
+  const rate = secs > 5 ? (done - s.done) / secs : 0; // per second
+  const left = exact && rate > 0 ? (total - done) / rate : null;
+  const leftText = left == null ? null : left < 60 ? 'under a minute left' : `about ${Math.round(left / 60)} min left`;
+
+  const what =
+    step.key === 'check' ? (job.status === 'committing' ? 'Preparing to write' : 'Checking the files')
+      : step.key === 'areas' ? 'Writing work areas'
+        : step.key === 'links' ? 'Writing road links'
+          : step.key === 'zones' ? 'Drawing zones'
+            : 'Finishing';
+
+  return (
+    <div className="imp-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct == null ? undefined : Math.round(pct)} aria-label={what}>
+      <div className="imp-progress-head">
+        <strong>{what}</strong>
+        <span>
+          {exact
+            ? `${done.toLocaleString()} of ${total.toLocaleString()} · ${pct!.toFixed(0)}%`
+            : done > 0 ? `${done.toLocaleString()} so far` : 'working…'}
+          {leftText ? ` · ${leftText}` : ''}
+        </span>
+      </div>
+      <div className={`imp-bar${pct == null ? ' is-indeterminate' : ''}`}>
+        <div style={pct == null ? undefined : { width: `${pct}%` }} />
+      </div>
+      <ol className="imp-steps">
+        {IMPORT_STEPS.map((st, i) => (
+          <li key={st.key} className={i < stepIdx ? 'is-done' : i === stepIdx ? 'is-active' : ''}>{st.label}</li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function StatusBadge({ job }: { job: ImportJob }) {
   const tone =
     job.status === 'ready' ? 'green'
@@ -2234,22 +2301,7 @@ function ImportDetail({
         </div>
       )}
 
-      {live && (
-        <div className="cov-progress-live">
-          <div className="cov-spinner" />
-          <div>
-            <strong>{job.progress.phase || job.status}</strong>
-            {job.progress.total > 0 && (
-              <span style={{ color: 'var(--muted)' }}>
-                {' '}— {job.progress.done.toLocaleString()} / {job.progress.total.toLocaleString()}
-              </span>
-            )}
-            {job.progress.total === 0 && job.progress.done > 0 && (
-              <span style={{ color: 'var(--muted)' }}> — {job.progress.done.toLocaleString()} features</span>
-            )}
-          </div>
-        </div>
-      )}
+      {live && <ImportProgress job={job} />}
 
       {/* ---- files ---- */}
       <div className="cov-split">
