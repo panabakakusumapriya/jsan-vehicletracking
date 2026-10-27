@@ -493,9 +493,9 @@ export function TripDetail() {
     return trip.outAreaShapes.map((s) => decodeRouteShapes([s])).filter((p) => p.length > 1);
   }, [mode, trip]);
 
-  // Camera follows the vehicle during playback — rotates to face the driving
-  // direction so it feels like you're travelling along the route. Throttled to
-  // ~500ms for smooth continuous movement without overwhelming the map.
+  // Camera keeps the vehicle on screen during playback. The map is north-up (Map3D northUp), so
+  // driveTo only slides it along when the car nears the edge — no turning, tilting or zooming in.
+  // Throttled to ~500ms.
   useEffect(() => {
     if (!playback.playing || points.length === 0) return;
     const now = Date.now();
@@ -721,7 +721,7 @@ export function TripDetail() {
       )}
 
       <div className="map-wrap" style={{ height: 'calc(100vh - 340px - var(--topbar-h))', minHeight: 380, position: 'relative' }}>
-        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} />
+        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} northUp />
         {tripMarkers.popup}
         {/* Two colours on a map need saying out loud — without this the muted stretches read as
             a rendering glitch rather than "the driver had been here before". */}

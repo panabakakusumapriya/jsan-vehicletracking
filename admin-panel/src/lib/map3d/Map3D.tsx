@@ -24,6 +24,9 @@ export interface Map3DHandle {
   fitToRoute(coords: [number, number][]): void;
   /** Smooth camera follow that rotates the map to face the driving direction. */
   driveTo(center: [number, number], bearing: number): void;
+  /** Keep a moving point on screen without turning, tilting or zooming: the camera only slides
+   *  along when the point nears the edge of the view. For north-up replays. */
+  follow(center: [number, number]): void;
   /** Frame a [west, south, east, north] extent -- used to jump to a work area. */
   fitBounds(
     bbox: [number, number, number, number],
@@ -53,16 +56,36 @@ interface Map3DProps {
   onMove?: () => void;
   /** 'light' trades the 3D buildings for a flat basemap that costs the GPU a fraction per frame. */
   basemap?: 'full' | 'light';
+  /** A flat, north-up map that stays that way: no tilt, and rotating is switched off (right-drag,
+   *  two-finger twist, keyboard), so the compass always points north. driveTo then only follows,
+   *  like follow(). Trips and Reports want this: a route read as a plan, the same view every time. */
+  northUp?: boolean;
+}
+
+/**
+ * Keep `target` on screen without turning, tilting or zooming. The camera is left alone while the
+ * point is comfortably inside the view, so a route keeps the framing the reader chose; only near
+ * the edge does it slide along, at the same zoom and still north-up.
+ */
+function followPoint(map: MaplibreMap, target: [number, number]) {
+  const { x, y } = map.project(target);
+  const { clientWidth: w, clientHeight: h } = map.getContainer();
+  const mx = w * 0.18;
+  const my = h * 0.18;
+  if (x >= mx && x <= w - mx && y >= my && y <= h - my) return;
+  map.easeTo({ center: target, bearing: 0, pitch: 0, duration: 700, essential: true });
 }
 
 export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
-  { center, zoom = 14, layers, onClick, getTooltip, pitch = DEFAULT_PITCH, onMoveEnd, onMove, basemap = 'full' },
+  { center, zoom = 14, layers, onClick, getTooltip, pitch = DEFAULT_PITCH, onMoveEnd, onMove, basemap = 'full', northUp = false },
   ref
 ) {
   // Read through refs inside the map effect and the imperative handle: both run once, so a
   // captured prop would freeze at its first value.
-  const pitchRef = useRef(pitch);
-  pitchRef.current = pitch;
+  const pitchRef = useRef(northUp ? 0 : pitch);
+  pitchRef.current = northUp ? 0 : pitch;
+  const northUpRef = useRef(northUp);
+  northUpRef.current = northUp;
   const moveEndRef = useRef(onMoveEnd);
   moveEndRef.current = onMoveEnd;
   const moveRef = useRef(onMove);
@@ -86,7 +109,15 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
         center,
         zoom,
         pitch: pitchRef.current,
+        bearing: 0,
+        ...(northUpRef.current ? { maxPitch: 0, dragRotate: false, pitchWithRotate: false } : {}),
       });
+      if (northUpRef.current) {
+        // Every other way to turn the map: a two-finger twist, a touch tilt, the keyboard.
+        map.touchZoomRotate.disableRotation();
+        map.touchPitch.disable();
+        map.keyboard.disableRotation();
+      }
     } catch (err) {
       console.error('Map3D: maplibre-gl failed to initialize', err);
       setSupported(false);
@@ -98,7 +129,8 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
       if (e.error?.name === 'GPUInitializationError') setSupported(false);
     };
     map.on('error', handleError);
-    map.addControl(new NavigationControl({ visualizePitch: true }), 'top-right');
+    // North-up keeps its compass, pointing north for good; a click on it is harmless.
+    map.addControl(new NavigationControl({ visualizePitch: !northUpRef.current }), 'top-right');
 
     // 'moveend' rather than 'move': a viewport-driven fetch on every animation frame of a pan
     // would fire dozens of requests for camera positions nobody stopped at.
@@ -188,7 +220,12 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
       driveTo(target, bearing) {
         const map = mapRef.current;
         if (!map) return;
+        if (northUpRef.current) return followPoint(map, target);
         map.easeTo({ center: target, zoom: 17.5, pitch: 65, bearing, duration: 600, essential: true });
+      },
+      follow(target) {
+        const map = mapRef.current;
+        if (map) followPoint(map, target);
       },
       fitToRoute(coords) {
         const map = mapRef.current;

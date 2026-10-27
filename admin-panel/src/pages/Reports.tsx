@@ -172,7 +172,8 @@ export function Reports() {
     [allPoints, playback.currentTimeMs, playback.playing, snappedPaths]
   );
 
-  // Auto-zoom to where the car is during playback (throttled to ~1s)
+  // Keep the car on screen during playback (throttled to ~1s) — north-up, same zoom: the map only
+  // slides when the car nears the edge, so the day stays framed as it was.
   useEffect(() => {
     if (!playback.playing || allPoints.length === 0) return;
     const now = Date.now();
@@ -180,7 +181,7 @@ export function Reports() {
     lastFlyRef.current = now;
     const vehicle = vehicleAtElapsed(allPoints, playback.currentTimeMs);
     if (vehicle) {
-      mapRef.current?.flyTo([vehicle.lon, vehicle.lat], 16);
+      mapRef.current?.follow([vehicle.lon, vehicle.lat]);
     }
   }, [playback.currentTimeMs, playback.playing, allPoints]);
 
@@ -475,7 +476,7 @@ export function Reports() {
 
           {/* Map */}
           <div className="map-wrap" style={{ height: 'calc(100vh - 480px - var(--topbar-h))', minHeight: 380 }}>
-            <Map3D ref={mapRef} center={center} zoom={14} layers={layers} />
+            <Map3D ref={mapRef} center={center} zoom={14} layers={layers} northUp />
           </div>
 
           {/* Playback controls */}
@@ -498,11 +499,11 @@ export function Reports() {
                   } else {
                     playback.play();
                     lastFlyRef.current = 0;
-                    // Immediately zoom to vehicle position on play start
+                    // Make sure the car is on screen as play starts.
                     const startMs = playback.currentTimeMs >= playback.durationMs ? 0 : playback.currentTimeMs;
                     const pos = vehicleAtElapsed(allPoints, startMs);
                     if (pos) {
-                      mapRef.current?.flyTo([pos.lon, pos.lat], 16);
+                      mapRef.current?.follow([pos.lon, pos.lat]);
                     }
                   }
                 }}

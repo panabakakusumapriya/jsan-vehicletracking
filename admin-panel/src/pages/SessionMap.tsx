@@ -162,7 +162,7 @@ export function SessionMap() {
 
       {/* Map */}
       <div className="map-wrap" style={{ height: 'calc(100vh - 300px - var(--topbar-h))', minHeight: 420, position: 'relative' }}>
-        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} />
+        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} northUp />
         {tripMarkers.popup}
       </div>
 
