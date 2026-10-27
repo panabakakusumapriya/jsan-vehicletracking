@@ -53,9 +53,9 @@ export function createVehicleLayers(idPrefix: string, data: VehicleInstance[]) {
       data,
       getPosition: (d) => [d.lon, d.lat, 0],
       getFillColor: (d) => [...STATUS_COLOR[d.status], 90],
-      getRadius: 6,
+      getRadius: 11,
       radiusUnits: 'meters',
-      radiusMinPixels: 10,
+      radiusMinPixels: 16,
       parameters: ALWAYS_ON_TOP,
     }),
     new SimpleMeshLayer<VehicleInstance>({

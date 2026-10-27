@@ -28,7 +28,7 @@ export const CAR_MODEL_URL = '/models/car/car.obj';
  * exaggeration for its vehicle marker — it's a deliberate legibility choice, not a mistake.
  */
 const SCALE_TO_METERS = 4.5 / 89.112803; // calibrated off the model's own recorded length
-const VISIBILITY_BOOST = 3;
+const VISIBILITY_BOOST = 6; // doubled from 3: at the replay zoom the car read as a speck beside the road
 export const CAR_MODEL_SCALE = SCALE_TO_METERS * VISIBILITY_BOOST;
 
 /**
