@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { ScatterplotLayer } from '@deck.gl/layers';
 import { api } from '../../lib/api';
 import type { TripRouteWeather, TripRouteWeatherSample } from '../../lib/types';
-import { RISK_BADGE, RISK_HEX, RISK_LABEL, compass, glyphFor } from './weatherUi';
+import { RISK_BADGE, RISK_HEX, RISK_LABEL, compass } from './weatherUi';
+import { WeatherIcon } from './WeatherIcon';
 
 /**
  * Estimated weather along a finished trip (GET /api/weather/trip-route/:id): where the vehicle was
@@ -88,7 +89,7 @@ export function WeatherNowChip({ sample }: { sample: TripRouteWeatherSample | nu
       borderRadius: 'var(--radius)', padding: '7px 11px', boxShadow: '0 1px 6px rgba(0,0,0,0.14)',
       fontSize: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
     }}>
-      <span style={{ fontSize: 22, lineHeight: 1 }}>{glyphFor(sample.icon)}</span>
+      <WeatherIcon icon={sample.icon} size={30} title={sample.description} />
       <span>
         <b style={{ fontSize: 13 }}>{sample.tempC ?? '—'}°C</b>{' '}
         <span style={{ color: 'var(--text-2)' }}>{sample.description}</span>
@@ -182,7 +183,7 @@ export function TripWeatherStrip({
             <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 700 }}>
               {new Date(s.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </div>
-            <div style={{ fontSize: 17, lineHeight: 1.25 }}>{glyphFor(s.icon)}</div>
+            <div style={{ margin: '2px 0' }}><WeatherIcon icon={s.icon} size={24} /></div>
             <div style={{ fontSize: 12, fontWeight: 800 }}>{s.tempC ?? '—'}°</div>
             <div style={{ fontSize: 9.5, color: (s.precipMm ?? 0) > 0 ? '#2563eb' : 'var(--muted)', fontWeight: 700 }}>
               {(s.precipMm ?? 0) > 0 ? `${s.precipMm} mm` : 'dry'}

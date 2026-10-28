@@ -4,6 +4,7 @@ import { DomEvent, DomUtil, type Map as LeafletMap } from 'leaflet';
 import { useMap } from 'react-leaflet';
 import { api } from '../../lib/api';
 import type { WeatherGridField } from '../../lib/types';
+import { WeatherIcon } from './WeatherIcon';
 
 /**
  * Animated weather on a Leaflet map — rain, cloud and wind — drawn UNDER everything the map is
@@ -445,7 +446,7 @@ function WeatherPanel(props: {
       <div ref={ref} style={box}>
         <button className="btn-ghost" style={{ padding: '6px 10px', fontSize: 12, fontWeight: 700 }} onClick={() => setOpen(true)}
           title="Show animated rain, cloud and wind on this map">
-          🌦️ Weather
+          <WeatherIcon icon="showers" size={18} /> Weather
         </button>
       </div>
     );
@@ -477,9 +478,9 @@ function WeatherPanel(props: {
         )}
       </div>
       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-        {chip('rain', '🌧 Rain')}
-        {chip('clouds', '☁ Clouds')}
-        {chip('wind', '💨 Wind')}
+        {chip('rain', 'Rain')}
+        {chip('clouds', 'Clouds')}
+        {chip('wind', 'Wind')}
       </div>
 
       {any && field && field.times.length > 1 && (

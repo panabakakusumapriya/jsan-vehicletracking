@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
 import type { WeatherHour } from '../../lib/types';
-import { RISK_HEX, compass, glyphFor } from './weatherUi';
+import { RISK_HEX, compass } from './weatherUi';
+import { WeatherIcon } from './WeatherIcon';
 
 /**
  * One local day, hour by hour: the risk band, the condition, temperature as a line, rain as bars
@@ -50,7 +51,7 @@ export function HourlyChart({ hours }: { hours: WeatherHour[] }) {
             <rect x={i * COL + 1} y={0} width={COL - 2} height={5} rx={2} fill={RISK_HEX[h.risk]} opacity={h.risk === 'clear' ? 0.35 : 0.95} />
             {i % 2 === 0 && <rect x={i * COL} y={8} width={COL} height={TOP + CHART + ROWS - 8} fill="var(--panel-2)" opacity={0.55} />}
             <text x={x(i)} y={21} textAnchor="middle" fontSize={10.5} fontWeight={700} fill="var(--muted)">{h.at}</text>
-            <text x={x(i)} y={45} textAnchor="middle" fontSize={19}>{glyphFor(h.icon)}</text>
+            <WeatherIcon icon={h.icon} x={x(i) - 12} y={26} size={24} />
             {/* chance of rain, then the amount over it */}
             {h.popPct > 0 && (
               <rect x={x(i) - 13} y={TOP + CHART - (h.popPct / 100) * (CHART - 26)} width={26}

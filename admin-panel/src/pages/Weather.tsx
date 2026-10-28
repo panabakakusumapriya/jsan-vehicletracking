@@ -7,7 +7,8 @@ import { api } from '../lib/api';
 import { km } from '../lib/format';
 import { MapAutoResize } from '../lib/MapAutoResize';
 import type { DrivingRisk, DrivingWeather, ParkedDriver, TripRouteWeather, WeatherGroup, WeatherSlot } from '../lib/types';
-import { RISK_BADGE, RISK_COLOR, RISK_DOT, RISK_HEX, RISK_LABEL, dateLabel, glyphFor } from '../components/weather/weatherUi';
+import { RISK_BADGE, RISK_COLOR, RISK_HEX, RISK_LABEL, dateLabel } from '../components/weather/weatherUi';
+import { WeatherIcon } from '../components/weather/WeatherIcon';
 import { HourlyChart } from '../components/weather/HourlyChart';
 import { ConfidenceBar } from '../components/weather/ConfidenceBar';
 import { WeatherLayers } from '../components/weather/WeatherLayers';
@@ -88,6 +89,16 @@ function fleetOutlook(groups: WeatherGroup[], days: number): FleetDay[] {
   return out;
 }
 
+/** One labelled line on a date card. Words, not emoji: system emoji differ per OS and shrink badly. */
+function CardFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+      <span style={{ color: 'var(--muted)' }}>{label}</span>
+      <span style={{ fontWeight: 600 }}>{value}</span>
+    </div>
+  );
+}
+
 /* ── Date cards ── */
 function DateCards({ days, selected, onSelect }: { days: FleetDay[]; selected: number; onSelect: (o: number) => void }) {
   if (!days.length) return null;
@@ -116,15 +127,15 @@ function DateCards({ days, selected, onSelect }: { days: FleetDay[]; selected: n
               <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>{d.date ? dateLabel(d.date, { day: 'numeric', month: 'short' }) : ''}</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 3px' }}>
-              <span style={{ fontSize: 28, lineHeight: 1 }}>{glyphFor(d.icon)}</span>
+              <WeatherIcon icon={d.icon} size={34} title={d.description} />
               <span style={{ fontSize: 14, fontWeight: 800 }}>
                 {d.tempMaxC ?? '—'}°<span style={{ color: 'var(--muted)', fontWeight: 600, fontSize: 12 }}> / {d.tempMinC ?? '—'}°</span>
               </span>
             </div>
             <div style={{ fontSize: 10.5, color: 'var(--text-2)', lineHeight: 1.45 }}>
-              <div>🌧 {d.precipMm > 0 ? `${d.precipMm} mm` : 'dry'}{d.popMaxPct > 0 ? ` · ${d.popMaxPct}%` : ''}</div>
-              <div>💨 gusts {d.gustMaxKmh ?? '—'} km/h</div>
-              <div>👁 {d.visibilityMinKm == null ? '—' : `${d.visibilityMinKm >= 20 ? '20+' : d.visibilityMinKm} km`}</div>
+              <CardFact label="Rain" value={`${d.precipMm > 0 ? `${d.precipMm} mm` : 'dry'}${d.popMaxPct > 0 ? ` · ${d.popMaxPct}%` : ''}`} />
+              <CardFact label="Gusts" value={`${d.gustMaxKmh ?? '—'} km/h`} />
+              <CardFact label="Visibility" value={d.visibilityMinKm == null ? '—' : `${d.visibilityMinKm >= 20 ? '20+' : d.visibilityMinKm} km`} />
             </div>
             <div style={{ display: 'flex', gap: 4, marginTop: 5, flexWrap: 'wrap' }}>
               {(['unsafe', 'caution', 'clear'] as DrivingRisk[]).filter((r) => d.drivers[r] > 0).map((r) => (
@@ -194,7 +205,7 @@ function SlotMini({ slot }: { slot: WeatherSlot }) {
       background: slot.risk === 'clear' ? '#f0fdf4' : slot.risk === 'caution' ? '#fff7ed' : '#fef2f2',
     }}>
       <div style={{ fontWeight: 600, color: '#888' }}>{slot.at}</div>
-      <div style={{ fontSize: 14 }}>{glyphFor(slot.icon)}</div>
+      <WeatherIcon icon={slot.icon} size={18} />
       <div style={{ fontWeight: 800 }}>{slot.tempC != null ? `${slot.tempC}°` : '—'}</div>
       {slot.windKmh != null && <div style={{ color: '#999' }}>{slot.windKmh}km/h</div>}
     </div>
@@ -214,7 +225,7 @@ function Slot({ slot }: { slot: WeatherSlot }) {
       }}
     >
       <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600 }}>{slot.at}</div>
-      <div style={{ fontSize: 18, lineHeight: 1.3 }}>{glyphFor(slot.icon)}</div>
+      <div style={{ margin: '2px 0' }}><WeatherIcon icon={slot.icon} size={22} /></div>
       <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--text)' }}>
         {slot.tempC != null ? `${slot.tempC}°` : '—'}
       </div>
@@ -247,7 +258,8 @@ function LocationCard({ group, day, selected, onSelect }: { group: WeatherGroup;
           <div style={{ flex: 1, minWidth: 180 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--text)' }}>
-                {RISK_DOT[verdict]} {group.place || `${group.lat.toFixed(2)}, ${group.lon.toFixed(2)}`}
+                <span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 5, background: RISK_HEX[verdict], marginRight: 6 }} />
+                {group.place || `${group.lat.toFixed(2)}, ${group.lon.toFixed(2)}`}
                 {group.country ? `, ${group.country}` : ''}
               </span>
               <span className={`badge ${RISK_BADGE[verdict]}`} style={{ fontSize: 10 }}>{RISK_LABEL[verdict]}</span>
@@ -728,7 +740,7 @@ export function Weather() {
                     <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>{m.place}</div>
                     {m.risk && (
                       <div style={{ margin: '5px 0', fontSize: 12, fontWeight: 700, color: m.risk === 'unsafe' ? '#dc2626' : m.risk === 'caution' ? '#f97316' : '#059669' }}>
-                        {RISK_DOT[m.risk]} {RISK_LABEL[m.risk]}
+                        {RISK_LABEL[m.risk]}
                       </div>
                     )}
                     <div style={{ fontSize: 11, color: '#666', marginBottom: 5 }}>{m.headline}</div>
