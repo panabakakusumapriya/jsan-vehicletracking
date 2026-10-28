@@ -23,8 +23,10 @@ export interface StateRow {
   name: string;
   country: string;
   code: string;
-  /** [west, south, east, north] of the state itself, for "show it on the map". */
+  /** [west, south, east, north] of the state itself. */
   bbox: [number, number, number, number];
+  /** [west, south, east, north] of the roads counted in it — what "show it on the map" frames. */
+  roadsBbox: [number, number, number, number];
   links: number;
   meters: number;
   coveredLinks: number;
@@ -212,6 +214,7 @@ export async function stateCoverage(
   const coveredIds = Float64Array.from(coveredNum).sort();
 
   const acc = regions.map(() => ({ links: 0, meters: 0, coveredLinks: 0, coveredMeters: 0 }));
+  const box = regions.map(() => [Infinity, Infinity, -Infinity, -Infinity] as [number, number, number, number]);
   const elsewhere = { links: 0, meters: 0, coveredMeters: 0 };
   let sharedLinks = 0;
   let seenNum = new Float64Array(0); // ids of the deliveries already counted, sorted
@@ -256,6 +259,13 @@ export async function stateCoverage(
         continue;
       }
       const a = acc[r];
+      const b = box[r];
+      const x = net.mid[2 * i];
+      const y = net.mid[2 * i + 1];
+      if (x < b[0]) b[0] = x;
+      if (y < b[1]) b[1] = y;
+      if (x > b[2]) b[2] = x;
+      if (y > b[3]) b[3] = y;
       a.links++;
       a.meters += m;
       if (covered) {
@@ -280,7 +290,7 @@ export async function stateCoverage(
   }
 
   const rows: StateRow[] = regions
-    .map((r, i) => ({ name: r.name, country: r.country, code: r.code, bbox: r.bbox, ...acc[i] }))
+    .map((r, i) => ({ name: r.name, country: r.country, code: r.code, bbox: r.bbox, roadsBbox: box[i], ...acc[i] }))
     .filter((r) => r.links > 0)
     .sort((a, b) => b.meters - a.meters);
   return { rows, elsewhere, sharedLinks };

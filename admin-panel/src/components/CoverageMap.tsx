@@ -603,11 +603,11 @@ export function CoverageMap({
     requestAnimationFrame(() => mapRef.current?.flyTo([focusPoint.lon, focusPoint.lat], zoom));
   }, [focusPoint]);
 
-  // A state picked in the page's table: the whole of it.
+  // A state picked in the page's table: all of its roads, as close in as they allow.
   useEffect(() => {
     if (!focusBox) return;
     framed.current = true;
-    requestAnimationFrame(() => mapRef.current?.fitBounds(focusBox.bbox, 10, 48));
+    requestAnimationFrame(() => mapRef.current?.fitBounds(focusBox.bbox, 13, 48));
   }, [focusBox]);
 
   const handleMoveEnd = useCallback((bbox: [number, number, number, number], zoom: number) => {

@@ -1855,7 +1855,11 @@ function ProgressTab({
                     <tr
                       key={r.code + r.name}
                       className="cov-row-clickable"
-                      onClick={() => setStateFocus({ bbox: r.bbox, nonce: Date.now() })}
+                      onClick={() => {
+                        // Up to the map first, then frame the state's roads there.
+                        mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        setStateFocus({ bbox: r.roadsBbox, nonce: Date.now() });
+                      }}
                       title={`Show ${r.name} on the map · ${r.links.toLocaleString()} road links, ${r.coveredLinks.toLocaleString()} driven`}
                     >
                       <td>
