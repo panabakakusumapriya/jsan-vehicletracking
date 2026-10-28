@@ -239,6 +239,26 @@ function bboxOfAll(geometry) {
   assert(cut.zones.map((z) => z.code).join() === 'TOWN-01,TOWN-02,TOWN-03,TOWN-04,TOWN-05' && cut.zones.every((z) => z.props.zones === 5),
     'the zones of all the pieces are numbered together, down the map');
 
+  /* ================================================================== an outline drawn round the roads */
+  // No customer polygons: the pieces are gaps between roads, not islands, so a piece too small
+  // for a zone joins its nearest piece (QLD-highways-F3C45: 275 zones of 1-496 km before, 103 after).
+  const drawnArea = { ...area, geometry: far.geometry, props: { drawnFromRoads: true } };
+  const drawn = areaSplit.splitArea({ area: drawnArea, links: far.links, places: far.places, options: opt });
+  const drawnHamlet = [...new Set(Array.from(drawn.linkZone.slice(far.marks.hamlet.from, far.marks.hamlet.to)))];
+  console.log(`   drawn outline: ${drawn.zones.map((z) => (z.targetMeters / 1000).toFixed(1)).join(' / ')} km · stranded ${drawn.stats.strandedLinks}`);
+  assert(drawn.zones.length === 4 && drawn.zones.every((z) => z.targetMeters >= 70000),
+    'a drawn outline: the outlying hamlet is no zone of its own — four zones, none of them tiny');
+  assert(drawnHamlet.length === 1 && drawnHamlet[0] >= 0 && drawn.stats.strandedLinks === 0 && Array.from(drawn.linkZone).every((z) => z >= 0),
+    '…the hamlet joins a town zone, and even the islet\'s one road gets a zone: nothing is left out');
+  assert(drawn.zones.reduce((s, z) => s + z.targetLinks, 0) === far.links.length &&
+    far.links.every((l, i) => {
+      const hits = zoneOfPoint(drawn.zones, midpointOf(l.coords));
+      return hits.length === 1 && hits[0] === drawn.linkZone[i];
+    }), '…and every link is still in exactly its own zone\'s polygon');
+  const drawnApart = areaSplit.splitArea({ area: drawnArea, links: far.links, places: far.places, options: { ...opt, absorbRemainder: false } });
+  assert(drawnApart.zones.length === 5,
+    'with "add the leftover to the neighbouring zones" unticked, a drawn outline keeps its pieces apart as before');
+
   /* ================================================================== barriers */
   const rv = town({ riverM: 600 });
   const two = areaSplit.splitArea({

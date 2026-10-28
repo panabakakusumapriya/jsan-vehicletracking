@@ -251,6 +251,7 @@ async function splitCommittedArea({
     if (record.status !== 'applied') record.status = 'preview';
     await record.save();
 
+    await areaSplit.ready; // the triangulation library, on a Node that has to import() it
     const result = areaSplit.splitArea({
       area: {
         code: parent.areaCode,

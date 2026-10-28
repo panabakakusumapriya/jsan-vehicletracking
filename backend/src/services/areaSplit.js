@@ -1,8 +1,21 @@
-const DelaunatorModule = require('delaunator');
+// Delaunator 5: exact orientation tests (robust-predicates). Version 4's floating-point ones broke
+// on long straight runs of road — a highway piece of QLD-highways-F3C45 triangulated with two road
+// points on the hull, a zone's outline came out open and the split crashed. Version 5 is ESM only:
+// require() loads it on Node 20.19+ / 22.12+; older Node gets it through import(), and `ready`
+// says when it is there. Callers that split (workAreaSplit) await `ready` first.
+let Delaunator = null;
+try {
+  const m = require('delaunator');
+  Delaunator = m.default || m;
+} catch (err) {
+  if (!['ERR_REQUIRE_ESM', 'ERR_REQUIRE_ASYNC_MODULE'].includes(err.code)) throw err;
+}
+const ready = Delaunator
+  ? Promise.resolve()
+  : import('delaunator').then((m) => { Delaunator = m.default || m; });
 const polygonClipping = require('polygon-clipping');
 const { bboxOf, bboxUnion, midpointOf, pointInPolygon } = require('../utils/geo');
 
-const Delaunator = DelaunatorModule.default || DelaunatorModule;
 
 /**
  * Splitting a work area that is too big for one driver into zones a driver can finish.
@@ -766,6 +779,7 @@ function splitPiece({ area, links, places, opt }) {
     siteCoords[2 * i] = sx[i];
     siteCoords[2 * i + 1] = sy[i];
   }
+  if (!Delaunator) throw new Error('areaSplit: the triangulation library is still loading — await areaSplit.ready first');
   const delaunay = new Delaunator(siteCoords);
   const { triangles, halfedges } = delaunay;
   const nextEdge = (e) => (e % 3 === 2 ? e - 2 : e + 1);
@@ -1737,13 +1751,89 @@ function splitArea({ area, links, places = [], options = {} }) {
       }
     }
   }
+  const pieceM = (ids) => ids.reduce((sum, i) => sum + (Number(links[i].meters) || 0), 0);
+  /**
+   * An outline drawn round the roads (no customer polygons) breaks wherever its roads are more
+   * than detachedKm apart: QLD-highways-F3C45 came in 208 pieces, gaps between highway corridors
+   * rather than islands. Cut one by one, each small piece became a zone of its own — 275 zones of
+   * 1 to 496 km where 250-300 km was asked for. With "add the leftover to the neighbouring zones"
+   * on, a drawn outline's piece that cannot be cut to that size joins its nearest piece instead
+   * (even one under strandedKm: every road the outline was drawn round gets a zone). Customer polygons
+   * keep their islands and outlying hamlets as zones of their own.
+   */
+  const mergeSmall = Boolean(area.props && area.props.drawnFromRoads) && opt.absorbRemainder;
+  if (mergeSmall && new Set(Array.from(partOf, find)).size > 1) {
+    const CELL = 5000;
+    const grid = new Map(); // "gx:gy" -> [link index]
+    for (let i = 0; i < n; i++) {
+      const key = `${Math.floor(px[i] / CELL)}:${Math.floor(py[i] / CELL)}`;
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key).push(i);
+    }
+    const metersOf = new Map(); // root -> metres of road
+    const membersOf = new Map(); // root -> [link index]
+    for (let i = 0; i < n; i++) {
+      const r = find(partOf[i]);
+      metersOf.set(r, (metersOf.get(r) || 0) + (Number(links[i].meters) || 0));
+      if (!membersOf.has(r)) membersOf.set(r, []);
+      membersOf.get(r).push(i);
+    }
+    /** The nearest road of any other piece to piece `r`: searched ring by ring outwards. */
+    const nearestOther = (r) => {
+      const mine = membersOf.get(r);
+      const step = Math.max(1, Math.floor(mine.length / 400)); // a long piece: every step-th road
+      let best = -1;
+      let bestD = Infinity;
+      for (let k = 0; k < mine.length; k += step) {
+        const i = mine[k];
+        const gx = Math.floor(px[i] / CELL);
+        const gy = Math.floor(py[i] / CELL);
+        for (let ring = 0; ring < 400; ring++) {
+          if ((ring - 1) * CELL > Math.sqrt(bestD)) break; // nothing nearer can be further out
+          for (let dx = -ring; dx <= ring; dx++) {
+            for (let dy = -ring; dy <= ring; dy++) {
+              if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+              const cell = grid.get(`${gx + dx}:${gy + dy}`);
+              if (!cell) continue;
+              for (const j of cell) {
+                if (find(partOf[j]) === r) continue;
+                const d = (px[i] - px[j]) ** 2 + (py[i] - py[j]) ** 2;
+                if (d < bestD) {
+                  bestD = d;
+                  best = j;
+                }
+              }
+            }
+          }
+        }
+      }
+      return best < 0 ? -1 : find(partOf[best]);
+    };
+    for (;;) {
+      // The smallest piece that cannot be cut into zones of the size asked for: under one zone's
+      // worth of road, or over the most for one and under the least for two (300-500 km for
+      // 250-300). Until none is left, or only one piece.
+      const misfit = (m) => m < opt.minKm * 1000 || (m > opt.maxKm * 1000 && m < 2 * opt.minKm * 1000);
+      let small = -1;
+      for (const [r, m] of metersOf) if (misfit(m) && (small < 0 || m < metersOf.get(small))) small = r;
+      if (small < 0 || metersOf.size < 2) break;
+      const into = nearestOther(small);
+      if (into < 0) break;
+      const root = Math.min(small, into);
+      const other = root === small ? into : small;
+      group[other] = root;
+      metersOf.set(root, metersOf.get(small) + metersOf.get(into));
+      metersOf.delete(other);
+      membersOf.set(root, membersOf.get(small).concat(membersOf.get(into)));
+      membersOf.delete(other);
+    }
+  }
   const pieceLinks = new Map(); // piece -> [link index]
   for (let i = 0; i < n; i++) {
     const g = find(partOf[i]);
     if (!pieceLinks.has(g)) pieceLinks.set(g, []);
     pieceLinks.get(g).push(i);
   }
-  const pieceM = (ids) => ids.reduce((sum, i) => sum + (Number(links[i].meters) || 0), 0);
   const pieceIds = [...pieceLinks.keys()].sort((a, b) => a - b);
   let main = pieceIds[0];
   for (const g of pieceIds) if (pieceM(pieceLinks.get(g)) > pieceM(pieceLinks.get(main))) main = g;
@@ -1765,7 +1855,7 @@ function splitArea({ area, links, places = [], options = {} }) {
   for (const g of pieceIds) {
     const ids = pieceLinks.get(g);
     const meters = pieceM(ids);
-    if (g !== main && meters < opt.strandedKm * 1000) {
+    if (g !== main && !mergeSmall && meters < opt.strandedKm * 1000) {
       stats.strandedLinks += ids.length;
       stats.strandedKm += meters / 1000;
       continue;
@@ -1823,6 +1913,7 @@ function splitArea({ area, links, places = [], options = {} }) {
 }
 
 module.exports = {
+  ready,
   DEFAULTS,
   KIND_RANK,
   resolveOptions,
