@@ -200,6 +200,70 @@ function assessDay(slots, offsetSeconds, dayOffset = 0, nowSeconds = Math.floor(
   };
 }
 
+/**
+ * Every hour of one local day, scored, for the hourly view a manager opens from a date card.
+ *
+ * Unlike `assessDay` this keeps the hours already gone: the hourly chart reads as a whole day,
+ * and a morning storm that passed is still worth seeing. The verdict on the card above it is
+ * still `assessDay`'s, which only looks ahead.
+ */
+function hourlyDay(slots, offsetSeconds, dayOffset = 0, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const targetIndex = localDayIndex(nowSeconds, offsetSeconds) + dayOffset;
+  return slots
+    .filter((s) => localDayIndex(s.dt, offsetSeconds) === targetIndex)
+    .map((s) => {
+      const h = scoreSlot(s);
+      return {
+        dt: h.dt,
+        at: localTime(h.dt, offsetSeconds),
+        past: h.dt + 3600 <= nowSeconds,
+        risk: h.risk,
+        reasons: h.reasons,
+        tempC: h.tempC,
+        feelsLikeC: h.feelsLikeC == null ? null : Math.round(h.feelsLikeC),
+        windKmh: h.windKmh,
+        gustKmh: h.gustKmh,
+        windDirDeg: h.windDirDeg ?? null,
+        visibilityKm: h.visibilityKm,
+        popPct: h.popPct,
+        precipMm: Math.round((h.precipMm || 0) * 10) / 10,
+        cloudPct: h.cloudPct ?? null,
+        description: h.description,
+        icon: h.icon,
+      };
+    });
+}
+
+/**
+ * One date card: the whole local day at a glance (min/max temperature, rain, strongest wind,
+ * worst visibility) and the same forward-looking verdict the location cards use.
+ */
+function daySummary(slots, offsetSeconds, dayOffset = 0, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const hours = hourlyDay(slots, offsetSeconds, dayOffset, nowSeconds);
+  const judged = assessDay(slots, offsetSeconds, dayOffset, nowSeconds);
+  if (!hours.length) return { dayOffset, date: null, verdict: null };
+  const nums = (k) => hours.map((h) => h[k]).filter((v) => typeof v === 'number');
+  const temps = nums('tempC');
+  // The icon of the day is the worst hour's when the day has a problem, else the midday hour's.
+  const flagged = hours.filter((h) => h.risk === judged.verdict && judged.verdict !== CLEAR);
+  const face = flagged[0] || hours[Math.floor(hours.length / 2)];
+  return {
+    dayOffset,
+    date: localDate(hours[0].dt, offsetSeconds),
+    verdict: judged.verdict,
+    headline: judged.headline,
+    tempMinC: temps.length ? Math.min(...temps) : null,
+    tempMaxC: temps.length ? Math.max(...temps) : null,
+    precipMm: Math.round(hours.reduce((n, h) => n + (h.precipMm || 0), 0) * 10) / 10,
+    popMaxPct: Math.max(0, ...nums('popPct')),
+    windMaxKmh: nums('windKmh').length ? Math.max(...nums('windKmh')) : null,
+    gustMaxKmh: nums('gustKmh').length ? Math.max(...nums('gustKmh')) : null,
+    visibilityMinKm: nums('visibilityKm').length ? Math.min(...nums('visibilityKm')) : null,
+    icon: face.icon,
+    description: face.description,
+  };
+}
+
 /** Round a position onto the shared-forecast grid, so nearby drivers cost one lookup. */
 function gridKey(lat, lon, degrees = env.WEATHER_GRID_DEGREES) {
   const snap = (v) => Math.round(v / degrees) * degrees;
@@ -207,7 +271,7 @@ function gridKey(lat, lon, degrees = env.WEATHER_GRID_DEGREES) {
 }
 
 module.exports = {
-  scoreSlot, assessDay, gridKey, localDayIndex, localTime, localDate,
+  scoreSlot, assessDay, hourlyDay, daySummary, gridKey, localDayIndex, localTime, localDate,
   summariseReasons, toDisplayBlocks,
   CLEAR, CAUTION, UNSAFE, RANK,
 };

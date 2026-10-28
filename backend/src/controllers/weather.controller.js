@@ -4,6 +4,8 @@ const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
 
 const toObjectId = (id) => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id);
 const { drivingConditions, isConfigured } = require('../services/weather');
+const { weatherGrid } = require('../services/weatherGrid');
+const { tripRouteWeather } = require('../services/tripRouteWeather');
 const { classifyWmo, iconFor } = require('../services/weatherCodes');
 const { scoreSlot } = require('../services/drivingWeather');
 const Trip = require('../models/Trip');
@@ -21,11 +23,11 @@ const ARCHIVE_HOURLY = [
  * GET /api/weather/driving?day=0
  *
  * Driving conditions for every location that has drivers, worst first. `day` is an offset in
- * local days: 0 = today, up to 4 (the forecast covers 5 days). Later days cost no extra API
+ * local days: 0 = today, up to WEATHER_FORECAST_DAYS - 1. Later days cost no extra API
  * calls — the same response already contains them.
  */
 exports.driving = asyncHandler(async (req, res) => {
-  const dayOffset = Math.min(Math.max(parseInt(req.query.day || '0', 10) || 0, 0), 4);
+  const dayOffset = Math.min(Math.max(parseInt(req.query.day || '0', 10) || 0, 0), env.WEATHER_FORECAST_DAYS - 1);
   const scope = await accessibleDriverFilter(req.user);
 
   try {
@@ -37,6 +39,7 @@ exports.driving = asyncHandler(async (req, res) => {
         gustUnsafeKmh: env.WEATHER_GUST_UNSAFE_KMH,
         activeDays: env.WEATHER_ACTIVE_DAYS,
         cacheMinutes: env.WEATHER_CACHE_MINUTES,
+        forecastDays: env.WEATHER_FORECAST_DAYS,
       },
     });
   } catch (err) {
@@ -154,6 +157,43 @@ exports.tripWeather = asyncHandler(async (req, res) => {
   }
 
   res.json({ weather: { slots, verdict } });
+});
+
+/**
+ * GET /api/weather/grid?w=&s=&e=&n=
+ *
+ * The rain / cloud / wind field over a map view, next 24 hours, for the animated map layers
+ * (services/weatherGrid.js). Not driver data, so no scoping beyond the route's role check.
+ */
+exports.grid = asyncHandler(async (req, res) => {
+  const view = ['w', 's', 'e', 'n'].map((k) => parseFloat(req.query[k]));
+  if (view.some((v) => !Number.isFinite(v))) return res.status(400).json({ error: 'w, s, e and n are required' });
+  const [w, s, e, n] = view;
+  if (n <= s) return res.status(400).json({ error: 'n must be north of s' });
+  try {
+    res.set('Cache-Control', 'private, max-age=600');
+    res.json(await weatherGrid({ w, s, e, n }));
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message || 'Could not reach the weather service' });
+  }
+});
+
+/**
+ * GET /api/weather/trip-route/:id
+ *
+ * Estimated weather along a trip's route, time-matched to where the vehicle was
+ * (services/tripRouteWeather.js). Modelled, not observed — the response carries `estimate: true`
+ * and the source line, and the panel shows both.
+ */
+exports.tripRoute = asyncHandler(async (req, res) => {
+  const scope = await accessibleDriverFilter(req.user);
+  const trip = await Trip.findOne({ _id: req.params.id, ...scope }).select('startedAt endedAt startLocation status');
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+  try {
+    res.json({ weather: await tripRouteWeather(trip) });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message || 'Could not reach the weather archive' });
+  }
 });
 
 function tripSummary(trip) {

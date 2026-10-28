@@ -1,7 +1,7 @@
 const env = require('../config/env');
 const Trip = require('../models/Trip');
 const User = require('../models/User');
-const { assessDay, gridKey, localTime } = require('./drivingWeather');
+const { assessDay, daySummary, hourlyDay, gridKey, localTime } = require('./drivingWeather');
 const { classifyWmo, iconFor } = require('./weatherCodes');
 const { reverseGeocodeMany } = require('./geocode');
 
@@ -19,6 +19,8 @@ const HOURLY_FIELDS = [
   'weather_code',
   'wind_speed_10m',
   'wind_gusts_10m',
+  'wind_direction_10m',
+  'cloud_cover',
   'visibility',
   'precipitation',
   'precipitation_probability',
@@ -64,6 +66,8 @@ function normalise(json) {
       feelsLikeC: h.apparent_temperature?.[i] ?? null,
       windKmh: h.wind_speed_10m?.[i] ?? null,
       gustKmh: h.wind_gusts_10m?.[i] ?? null,
+      windDirDeg: h.wind_direction_10m?.[i] ?? null,
+      cloudPct: h.cloud_cover?.[i] ?? null,
       visibilityM: h.visibility?.[i] ?? null,
       popPct: h.precipitation_probability?.[i] ?? 0,
       precipMm: h.precipitation?.[i] ?? 0,
@@ -74,7 +78,7 @@ function normalise(json) {
   });
 }
 
-/** Fetch (or reuse) the hourly 5-day forecast for one grid square. */
+/** Fetch (or reuse) the hourly forecast (WEATHER_FORECAST_DAYS, default 7) for one grid square. */
 async function forecastFor(lat, lon) {
   const key = gridKey(lat, lon);
   const hit = cached(key);
@@ -82,7 +86,7 @@ async function forecastFor(lat, lon) {
 
   const url =
     `${env.WEATHER_API_BASE}/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&hourly=${HOURLY_FIELDS}&forecast_days=5` +
+    `&hourly=${HOURLY_FIELDS}&forecast_days=${env.WEATHER_FORECAST_DAYS}` +
     // unixtime keeps everything in UTC seconds; the offset below does the local-day maths.
     `&timezone=auto&timeformat=unixtime&wind_speed_unit=kmh`;
 
@@ -184,6 +188,13 @@ async function drivingConditions({ scope, dayOffset = 0 }) {
     [...squares.entries()].map(async ([key, square]) => {
       const forecast = await forecastFor(square.lat, square.lon);
       const day = assessDay(forecast.slots, forecast.timezoneOffset, dayOffset);
+      // The date cards and the hourly view come out of the same forecast — no extra calls.
+      const outlook = [];
+      for (let o = 0; o < env.WEATHER_FORECAST_DAYS; o++) {
+        const card = daySummary(forecast.slots, forecast.timezoneOffset, o);
+        if (card.date) outlook.push(card);
+      }
+      const hours = hourlyDay(forecast.slots, forecast.timezoneOffset, dayOffset);
       return {
         key,
         lat: forecast.lat,
@@ -195,6 +206,8 @@ async function drivingConditions({ scope, dayOffset = 0 }) {
         cachedAgeSeconds: forecast.cachedAgeSeconds ?? 0,
         drivers: square.drivers,
         ...day,
+        outlook,
+        hours,
       };
     })
   );

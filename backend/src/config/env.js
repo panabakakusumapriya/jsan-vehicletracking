@@ -74,11 +74,16 @@ module.exports = {
   // Free endpoint. Open-Meteo licence the free tier for NON-COMMERCIAL use and sell a
   // commercial plan on a different host — point this at that host to switch, no code change.
   WEATHER_API_BASE: process.env.WEATHER_API_BASE || 'https://api.open-meteo.com',
+  // Past weather along finished trips (services/tripRouteWeather.js): Open-Meteo's archive of
+  // past forecasts, current to yesterday. Same switch-to-commercial-host story as WEATHER_API_BASE.
+  WEATHER_HISTORY_API_BASE: process.env.WEATHER_HISTORY_API_BASE || 'https://historical-forecast-api.open-meteo.com',
   // Reverse geocoding (OpenStreetMap Nominatim) turns coordinates into place names. Their
   // policy requires a real identifying User-Agent; an anonymous caller gets blocked.
   GEOCODER_USER_AGENT: process.env.GEOCODER_USER_AGENT || 'JSAN-Fleet-Ops/1.0 (fleet ops panel)',
   // A 3-hourly forecast does not change faster than this, and caching is what keeps a
   // 24-driver page load down to a couple of upstream calls.
+  // Days of forecast fetched per location: the date cards on the Weather tab (Open-Meteo gives 16).
+  WEATHER_FORECAST_DAYS: Math.min(Math.max(parseInt(process.env.WEATHER_FORECAST_DAYS || '7', 10) || 7, 1), 16),
   WEATHER_CACHE_MINUTES: parseInt(process.env.WEATHER_CACHE_MINUTES || '30', 10),
   // Drivers whose last trip is older than this have no trustworthy position — a months-old
   // fix could put them in the wrong city entirely, so they are listed separately instead.

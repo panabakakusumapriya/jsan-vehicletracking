@@ -5,7 +5,7 @@ process.env.MONGODB_URI = 'mongodb://unused/weather_test';
 process.env.JWT_SECRET = 'weather_test_secret_key_1234567890';
 
 const {
-  scoreSlot, assessDay, gridKey, localDayIndex, localTime, summariseReasons,
+  scoreSlot, assessDay, hourlyDay, daySummary, gridKey, localDayIndex, localTime, summariseReasons,
 } = require('../src/services/drivingWeather');
 const { classifyWmo } = require('../src/services/weatherCodes');
 
@@ -108,6 +108,18 @@ assert(localTime(instant, sydney) === '06:00', 'local time is rendered at the lo
 const spanning = [hour({ dt: midnight + 22 * 3600 }), hour({ dt: midnight + 25 * 3600, code: 95 })];
 assert(assessDay(spanning, 0, 0, midnight + 21 * 3600).verdict === 'clear', "tomorrow's storm stays out of today");
 assert(assessDay(spanning, 0, 1, midnight + 21 * 3600).verdict === 'unsafe', 'and shows up when tomorrow is asked for');
+
+console.log('\n── date cards and the hourly view ──');
+const hourly = hourlyDay(fullDay({ 6: 95 }), 0, 0, midnight + 12 * 3600);
+assert(hourly.length === 24, 'the hourly view keeps all 24 hours of the day, gone ones included');
+assert(hourly[6].past === true && hourly[6].risk === 'unsafe', 'a passed storm is shown, marked as past');
+assert(hourly[12].past === false, 'the hour in progress is not past');
+const card = daySummary(fullDay({ 15: 95 }), 0, 0, midnight);
+assert(card.verdict === 'unsafe' && card.date, 'a date card carries the day verdict and its date');
+assert(card.description === classifyWmo(95).description, "the card describes the worst hour on a bad day");
+const twoDays = [...fullDay(), ...fullDay({ 9: 95 }).map((h) => ({ ...h, dt: h.dt + DAY }))];
+assert(daySummary(twoDays, 0, 1, midnight).verdict === 'unsafe', "tomorrow's card judges tomorrow");
+assert(daySummary(twoDays, 0, 2, midnight).verdict === null, 'a day past the forecast has no card');
 
 console.log('\n── clustering keeps lookups down ──');
 assert(gridKey(17.4123, 78.4456) === gridKey(17.4500, 78.5000), 'drivers a few km apart share one forecast');
