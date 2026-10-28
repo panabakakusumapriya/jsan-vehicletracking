@@ -13,6 +13,7 @@ import { api, uploadRaw } from '../lib/api';
 import { PIN_RANK, pinAlpha, statusText, whereText, type DriverPin } from '../lib/driverPins';
 import { sessionDt } from '../lib/format';
 import { decodePolyline6 } from '../lib/polyline';
+import type { StateCoverage } from '../lib/stateCoverage';
 import type { ApiError } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { isAdminRole, type AreaAssignment, type AreaCoverageDetail, type ColumnMapping, type CoverageArea, type CoverageSummary, type DeliveryBreakdown, type DriverPosition, type ImportJob, type ImportReport, type NetworkVersion, type Project, type User } from '../lib/types';
@@ -573,6 +574,13 @@ function ProgressTab({
   const [markersOn, setMarkersOnState] = useState(() => { try { return localStorage.getItem('cov-markers') !== '0'; } catch { return true; } });
   const setMarkersOn = (on: boolean) => { setMarkersOnState(on); try { localStorage.setItem('cov-markers', on ? '1' : '0'); } catch { /* not remembered */ } };
   const [markerCount, setMarkerCount] = useState(0);
+  // Coverage by state, worked out by the map from the roads it has loaded (lib/stateCoverage).
+  const [stateCov, setStateCov] = useState<StateCoverage | 'loading' | null>(null);
+  const [stateFocus, setStateFocus] = useState<{ bbox: [number, number, number, number]; nonce: number } | null>(null);
+  const deliveryTargets = useMemo(
+    () => Object.fromEntries((summary?.byDelivery || []).map((d) => [d.versionId, d.targetMeters])),
+    [summary],
+  );
   const [tracksFrom, setTracksFrom] = useState(() => isoDay(-14));
   const [tracksTo, setTracksTo] = useState(() => isoDay(0));
   const [tracksMeta, setTracksMeta] = useState<{
@@ -1750,6 +1758,9 @@ function ProgressTab({
           pinPopup={pinCard}
           pinTrail={pinTrail}
           focusPoint={pinFocus}
+          focusBox={stateFocus}
+          onStateCoverage={setStateCov}
+          deliveryTargets={deliveryTargets}
         />
 
         {selectedIds.length > 1 && (
@@ -1811,6 +1822,67 @@ function ProgressTab({
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {stateCov && (
+        <div className="card cov-breakdown">
+          <h3 className="cov-h3">
+            {stateCov !== 'loading' && stateCov.rows.some((r) => r.country === 'New Zealand') ? 'By state and region' : 'By state'}
+            <span className="cov-h3-tag">all deliveries combined</span>
+          </h3>
+          <p className="cov-sub">
+            Every delivery in view together, each road counted once even where deliveries overlap — so a
+            state can add up to less than the headline. Driven means a trip is recorded on it. Click a
+            state to see it on the map.
+          </p>
+          {stateCov === 'loading' ? (
+            <div className="cov-progress-live"><div className="cov-spinner" /><div>Working out the figures by state from the roads on the map…</div></div>
+          ) : (
+            <>
+              <table>
+                <thead>
+                  <tr>
+                    <th>{stateCov.rows.some((r) => r.country === 'New Zealand') ? 'State / region' : 'State'}</th>
+                    <th>Road network</th>
+                    <th>Driven</th>
+                    <th style={{ width: '30%' }}>Progress</th>
+                    <th>Still to drive</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stateCov.rows.map((r) => (
+                    <tr
+                      key={r.code + r.name}
+                      className="cov-row-clickable"
+                      onClick={() => setStateFocus({ bbox: r.bbox, nonce: Date.now() })}
+                      title={`Show ${r.name} on the map · ${r.links.toLocaleString()} road links, ${r.coveredLinks.toLocaleString()} driven`}
+                    >
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{r.name}</div>
+                        <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{r.country} · {r.links.toLocaleString()} links</div>
+                      </td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{km(r.meters)} km</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{km(r.coveredMeters)} km</td>
+                      <td>
+                        <div className="cov-cell">
+                          <Bar value={r.coveredMeters} total={r.meters} tone="green" />
+                          <span className="cov-pct">{pct(r.coveredMeters, r.meters).toFixed(1)}%</span>
+                        </div>
+                      </td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{km(Math.max(0, r.meters - r.coveredMeters))} km</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {(stateCov.sharedLinks > 0 || stateCov.elsewhere.links > 0) && (
+                <p className="cov-sub" style={{ marginTop: 8, marginBottom: 0 }}>
+                  {stateCov.sharedLinks > 0 && <>{stateCov.sharedLinks.toLocaleString()} links appear in more than one delivery and are counted once. </>}
+                  {stateCov.elsewhere.links > 0 && <>{km(stateCov.elsewhere.meters)} km of road lies outside every state&apos;s boundary and is left out.</>}
+                </p>
+              )}
+            </>
+          )}
         </div>
       )}
 

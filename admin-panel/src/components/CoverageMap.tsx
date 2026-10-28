@@ -15,6 +15,7 @@ import {
   type RoadState,
 } from '../lib/roadNetwork';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
+import { stateCoverage, type StateCoverage } from '../lib/stateCoverage';
 import { MarkerCard, pinUrl, type TripMarker } from './TripMarkers';
 
 /**
@@ -190,6 +191,9 @@ export function CoverageMap({
   pinPopup,
   pinTrail,
   focusPoint,
+  focusBox,
+  onStateCoverage,
+  deliveryTargets,
 }: {
   /** A committed version — shows coverage and lets road links load. */
   versionId?: string;
@@ -297,6 +301,13 @@ export function CoverageMap({
   pinTrail?: { color: [number, number, number]; paths: [number, number][][] } | null;
   /** Move the camera to this point. `nonce` changes per request, so asking twice still moves. */
   focusPoint?: { lon: number; lat: number; nonce: number } | null;
+  /** Frame this [west, south, east, north] — a state picked in the page's By-state table. */
+  focusBox?: { bbox: [number, number, number, number]; nonce: number } | null;
+  /** Coverage by state, every delivery in view combined (lib/stateCoverage), once every road and
+   *  the driven state are in: 'loading' while they arrive, null with no roads drawn. */
+  onStateCoverage?: (c: StateCoverage | 'loading' | null) => void;
+  /** versionId -> the delivery's target metres, so By state counts the roads each delivery counts. */
+  deliveryTargets?: Record<string, number>;
   /** Reports what came back, so the page can show the count and how many are still snapping. */
   onTracksMeta?: (meta: { count: number; pendingSnap: number; truncated: boolean }) => void;
 }) {
@@ -494,6 +505,38 @@ export function CoverageMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [versionId, netKeys, assignedKey]);
 
+  // Coverage by state for the page, from these same roads — only once every delivery is in, so it
+  // is worked out once rather than again for each delivery as it arrives.
+  const stateCbRef = useRef(onStateCoverage);
+  stateCbRef.current = onStateCoverage;
+  const roadsSettled = !netLoading;
+  const targetsRef = useRef(deliveryTargets);
+  targetsRef.current = deliveryTargets;
+  const targetsKey = JSON.stringify(deliveryTargets || {});
+  useEffect(() => {
+    if (!stateCbRef.current) return undefined;
+    if (!nets.length) {
+      stateCbRef.current(roadsSettled ? null : 'loading');
+      return undefined;
+    }
+    if (!roadsSettled || !roadState) {
+      stateCbRef.current('loading');
+      return undefined;
+    }
+    let alive = true;
+    stateCbRef.current('loading');
+    stateCoverage(nets, roadState, () => alive, targetsRef.current || {})
+      .then((c) => { if (alive && c) stateCbRef.current?.(c); })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn('Coverage by state could not be worked out', err);
+        if (alive) stateCbRef.current?.(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [nets, roadState, roadsSettled, targetsKey]);
+
   // The fleet's snapped routes for this project. Nothing is drawn until the matcher has finished
   // with a trip — see versionTracks: raw GPS over a road network reads as coverage that the
   // ledger does not agree with.
@@ -559,6 +602,13 @@ export function CoverageMap({
     const zoom = Math.max(lastZoom.current, 13.5);
     requestAnimationFrame(() => mapRef.current?.flyTo([focusPoint.lon, focusPoint.lat], zoom));
   }, [focusPoint]);
+
+  // A state picked in the page's table: the whole of it.
+  useEffect(() => {
+    if (!focusBox) return;
+    framed.current = true;
+    requestAnimationFrame(() => mapRef.current?.fitBounds(focusBox.bbox, 10, 48));
+  }, [focusBox]);
 
   const handleMoveEnd = useCallback((bbox: [number, number, number, number], zoom: number) => {
     lastView.current = { bbox };

@@ -29,6 +29,10 @@ export interface RoadNet {
   areas: { id: string; code: string; name: string }[];
   /** Link ids in file order — numbers for HERE data, text otherwise. */
   ids: Float64Array | string[];
+  /** Per link: its length in metres, measured as the import measures it (haversine, R = 6371008.8). */
+  lengthM: Float32Array;
+  /** Per link: lon, lat of its middle vertex, in plain degrees — where it is, for "By state". */
+  mid: Float32Array;
 }
 
 export const NO_AREA = 65535;
@@ -80,7 +84,8 @@ function latOffsetFor(lat0: number) {
   };
 }
 
-function decode(buf: ArrayBuffer): RoadNet {
+/** Exported for tests; the page goes through loadRoadNet. */
+export function decode(buf: ArrayBuffer): RoadNet {
   const view = new DataView(buf);
   const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
   if (magic !== 'RDB1') throw new Error('Not a road file');
@@ -101,13 +106,43 @@ function decode(buf: ArrayBuffer): RoadNet {
   const oy = Math.round(origin[1] * scale);
   const latOffset = latOffsetFor(oy / scale);
   const positions = new Float32Array(header.vertexCount * 2);
+  const linkCount = header.linkCount as number;
+  // Length and middle of every link, while the true coordinates are at hand: the positions below
+  // are offsets bent for deck.gl and cannot be measured.
+  const lengthM = new Float32Array(linkCount);
+  const mid = new Float32Array(linkCount * 2);
+  const R = 6371008.8;
   let lon = 0;
   let lat = 0;
-  for (let i = 0; i < positions.length; i += 2) {
-    lon += coords[i];
-    lat += coords[i + 1];
-    positions[i] = (lon - ox) / scale;
-    positions[i + 1] = latOffset(lat / scale);
+  let prevLon = 0;
+  let prevLat = 0;
+  for (let li = 0; li < linkCount; li++) {
+    const from = starts[li];
+    const to = starts[li + 1];
+    const middle = (from + to - 1) >> 1;
+    let length = 0;
+    for (let v = from; v < to; v++) {
+      const i = 2 * v;
+      lon += coords[i];
+      lat += coords[i + 1];
+      const x = lon / scale;
+      const y = lat / scale;
+      positions[i] = (lon - ox) / scale;
+      positions[i + 1] = latOffset(y);
+      if (v > from) {
+        const dLat = (y - prevLat) * RAD;
+        const dLon = (x - prevLon) * RAD;
+        const h = Math.sin(dLat / 2) ** 2 + Math.cos(prevLat * RAD) * Math.cos(y * RAD) * Math.sin(dLon / 2) ** 2;
+        length += 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+      }
+      if (v === middle) {
+        mid[2 * li] = x;
+        mid[2 * li + 1] = y;
+      }
+      prevLon = x;
+      prevLat = y;
+    }
+    lengthM[li] = length;
   }
   return {
     versionId: header.versionId,
@@ -121,6 +156,8 @@ function decode(buf: ArrayBuffer): RoadNet {
     area: new Uint16Array(sec('area', Uint16Array)),
     areas: header.areas,
     ids: header.ids || new Float64Array(sec('ids', Float64Array)),
+    lengthM,
+    mid,
   };
 }
 
