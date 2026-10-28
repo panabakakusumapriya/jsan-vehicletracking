@@ -9,6 +9,7 @@ import { MapAutoResize } from '../lib/MapAutoResize';
 import type { DrivingRisk, DrivingWeather, ParkedDriver, TripRouteWeather, WeatherGroup, WeatherSlot } from '../lib/types';
 import { RISK_BADGE, RISK_COLOR, RISK_DOT, RISK_HEX, RISK_LABEL, dateLabel, glyphFor } from '../components/weather/weatherUi';
 import { HourlyChart } from '../components/weather/HourlyChart';
+import { ConfidenceBar } from '../components/weather/ConfidenceBar';
 import { WeatherLayers } from '../components/weather/WeatherLayers';
 import { TripWeatherStrip } from '../components/weather/TripWeather';
 
@@ -37,6 +38,9 @@ interface FleetDay {
   visibilityMinKm: number | null;
   icon: string | null;
   description: string;
+  /** Driver-weighted average of the locations' scores; reasons from the least certain place. */
+  confidence: number | null;
+  confidenceReasons: string[];
 }
 
 function fleetOutlook(groups: WeatherGroup[], days: number): FleetDay[] {
@@ -45,9 +49,12 @@ function fleetOutlook(groups: WeatherGroup[], days: number): FleetDay[] {
     const day: FleetDay = {
       dayOffset: o, date: null, verdict: null, drivers: { clear: 0, caution: 0, unsafe: 0 },
       tempMinC: null, tempMaxC: null, precipMm: 0, popMaxPct: 0, gustMaxKmh: null, visibilityMinKm: null,
-      icon: null, description: '',
+      icon: null, description: '', confidence: null, confidenceReasons: [],
     };
     let face = -1;
+    let confSum = 0;
+    let confWeight = 0;
+    let leastSure = 101;
     for (const g of groups) {
       const c = g.outlook?.find((x) => x.dayOffset === o);
       if (!c?.date || !c.verdict) continue;
@@ -63,7 +70,19 @@ function fleetOutlook(groups: WeatherGroup[], days: number): FleetDay[] {
       // The card's face is the worst location's day (ties: the one with most drivers).
       const rank = RANK[c.verdict] * 1000 + g.drivers.length;
       if (rank > face) { face = rank; day.icon = c.icon ?? null; day.description = c.description ?? ''; }
+      if (c.confidence) {
+        const w = Math.max(g.drivers.length, 1);
+        confSum += c.confidence.score * w;
+        confWeight += w;
+        if (c.confidence.score < leastSure) {
+          leastSure = c.confidence.score;
+          day.confidenceReasons = groups.length > 1
+            ? c.confidence.reasons.map((r) => `${g.place || 'one location'}: ${r}`)
+            : c.confidence.reasons;
+        }
+      }
     }
+    if (confWeight) day.confidence = Math.round(confSum / confWeight);
     if (day.date) out.push(day);
   }
   return out;
@@ -114,6 +133,9 @@ function DateCards({ days, selected, onSelect }: { days: FleetDay[]; selected: n
                   {d.drivers[r]} {r === 'clear' ? 'good' : r === 'caution' ? 'caution' : 'no-go'}
                 </span>
               ))}
+            </div>
+            <div style={{ marginTop: 7 }}>
+              <ConfidenceBar score={d.confidence} reasons={d.confidenceReasons} compact />
             </div>
           </button>
         );
@@ -205,8 +227,9 @@ function Slot({ slot }: { slot: WeatherSlot }) {
 }
 
 /* ── Location weather card ── */
-function LocationCard({ group, selected, onSelect }: { group: WeatherGroup; selected: boolean; onSelect: () => void }) {
+function LocationCard({ group, day, selected, onSelect }: { group: WeatherGroup; day: number; selected: boolean; onSelect: () => void }) {
   const verdict = group.verdict ?? 'clear';
+  const confidence = group.outlook?.find((c) => c.dayOffset === day)?.confidence ?? null;
   return (
     <div
       className="card"
@@ -231,6 +254,11 @@ function LocationCard({ group, selected, onSelect }: { group: WeatherGroup; sele
               {group.stale && <span className="badge gray" style={{ fontSize: 10 }}>stale</span>}
             </div>
             <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 3 }}>{group.headline}</div>
+            {confidence && (
+              <div style={{ marginTop: 7, maxWidth: 420 }}>
+                <ConfidenceBar score={confidence.score} reasons={confidence.reasons} showReasons />
+              </div>
+            )}
           </div>
           <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'right' }}>
             <div>local {group.localTimeNow}</div>
@@ -742,6 +770,7 @@ export function Weather() {
               <LocationCard
                 key={g.key}
                 group={g}
+                day={day}
                 selected={g.key === selectedGroupKey}
                 onSelect={() => {
                   setFlyTarget([g.lat, g.lon]);

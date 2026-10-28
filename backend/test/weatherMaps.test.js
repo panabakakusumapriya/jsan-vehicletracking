@@ -6,6 +6,7 @@ process.env.JWT_SECRET = 'weather_maps_test_secret_key_1234567890';
 const { pickSamples, weatherAt } = require('../src/services/tripRouteWeather');
 const { snapBox, GRID_MAX_CELLS } = require('../src/services/weatherGrid');
 const { classifyWmo } = require('../src/services/weatherCodes');
+const { dayConfidence } = require('../src/services/forecastConfidence');
 
 let passed = 0;
 function assert(cond, msg) {
@@ -72,6 +73,36 @@ assert(aus.w <= 110 && aus.e >= 179, 'and the whole view is covered, not just it
 const a = snapBox({ w: 152.61, s: -27.79, e: 153.39, n: -27.21 });
 const b = snapBox({ w: 152.63, s: -27.77, e: 153.37, n: -27.23 });
 assert(JSON.stringify(a) === JSON.stringify(b), 'nudging the map lands on the same cached grid');
+
+console.log('\n── forecast confidence: do the models agree? ──');
+const DAY = 86400;
+const day0 = Math.floor(Date.UTC(2026, 9, 27) / 1000 / DAY) * DAY;
+// Three model runs over two local days (UTC offset 0), hour by hour.
+const runs = (fn) => {
+  const time = Array.from({ length: 48 }, (_, i) => day0 + i * 3600);
+  return {
+    time,
+    runs: [0, 1, 2].map((m) => ({
+      model: `m${m}`,
+      temp: time.map((_, i) => fn(m, i).temp),
+      rain: time.map((_, i) => fn(m, i).rain),
+      wind: time.map((_, i) => fn(m, i).wind),
+    })),
+  };
+};
+const agree = runs(() => ({ temp: 20, rain: 0, wind: 10 }));
+let c = dayConfidence(agree, 0, 0, day0);
+assert(c.level === 'high' && c.score >= 90, 'three models saying the same thing is high confidence');
+assert(/agree/.test(c.reasons[0]), 'and it says why');
+const dryVsWet = runs((m) => ({ temp: 20, rain: m === 0 ? 0 : 0.5, wind: 10 }));
+c = dayConfidence(dryVsWet, 0, 0, day0);
+assert(c.score < 75 && c.reasons.some((r) => /whether it rains/.test(r)), 'one model dry, two wet: confidence drops, rain named as the reason');
+const warmCold = runs((m) => ({ temp: 18 + m * 3, rain: 0, wind: 10 }));
+c = dayConfidence(warmCold, 0, 0, day0);
+assert(c.reasons.some((r) => /6\.0°C/.test(r)), 'a 6°C spread between models is reported');
+assert(dayConfidence(agree, 0, 1, day0).score < dayConfidence(agree, 0, 0, day0).score, 'the same agreement a day further out scores a little lower');
+assert(dayConfidence({ time: agree.time, runs: [agree.runs[0]] }, 0, 0, day0) === null, 'one model alone gives no confidence rather than a fake 100');
+assert(dayConfidence(null, 0, 0, day0) === null, 'no model data, no bar');
 
 console.log(`\n🎉 WEATHER MAPS VERIFIED — ${passed} assertions passed`);
 process.exit(process.exitCode || 0);

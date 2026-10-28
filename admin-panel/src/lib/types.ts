@@ -219,6 +219,18 @@ export interface WeatherDayCard {
   visibilityMinKm?: number | null;
   icon?: string | null;
   description?: string;
+  /** How far independent models agree on this day (services/forecastConfidence.js); null = unknown. */
+  confidence?: ForecastConfidence | null;
+}
+
+export interface ForecastConfidence {
+  score: number; // 0–100
+  level: 'high' | 'medium' | 'low';
+  reasons: string[];
+  models: number;
+  tempSpreadC: number;
+  windSpreadKmh: number;
+  rainRangeMm: [number, number];
 }
 
 /** GET /api/weather/grid — a rain / cloud / wind field over a map view (services/weatherGrid.js). */

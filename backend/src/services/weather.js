@@ -3,6 +3,7 @@ const Trip = require('../models/Trip');
 const User = require('../models/User');
 const { assessDay, daySummary, hourlyDay, gridKey, localTime } = require('./drivingWeather');
 const { classifyWmo, iconFor } = require('./weatherCodes');
+const { modelRuns, dayConfidence } = require('./forecastConfidence');
 const { reverseGeocodeMany } = require('./geocode');
 
 /**
@@ -186,13 +187,17 @@ async function drivingConditions({ scope, dayOffset = 0 }) {
 
   const settled = await Promise.allSettled(
     [...squares.entries()].map(async ([key, square]) => {
-      const forecast = await forecastFor(square.lat, square.lon);
+      // The models comparison runs alongside the forecast and never fails it (null = no bar).
+      const [forecast, models] = await Promise.all([
+        forecastFor(square.lat, square.lon),
+        modelRuns(square.lat, square.lon).catch(() => null),
+      ]);
       const day = assessDay(forecast.slots, forecast.timezoneOffset, dayOffset);
       // The date cards and the hourly view come out of the same forecast — no extra calls.
       const outlook = [];
       for (let o = 0; o < env.WEATHER_FORECAST_DAYS; o++) {
         const card = daySummary(forecast.slots, forecast.timezoneOffset, o);
-        if (card.date) outlook.push(card);
+        if (card.date) outlook.push({ ...card, confidence: dayConfidence(models, forecast.timezoneOffset, o) });
       }
       const hours = hourlyDay(forecast.slots, forecast.timezoneOffset, dayOffset);
       return {

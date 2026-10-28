@@ -1,4 +1,4 @@
-import type { DrivingRisk } from '../../lib/types';
+import type { DrivingRisk, ForecastConfidence } from '../../lib/types';
 
 /** Shared look of weather across the Weather tab, the Live Map layers and the trip replay. */
 export const RISK_LABEL: Record<DrivingRisk, string> = {
@@ -20,6 +20,17 @@ const ICONS: Record<string, string> = {
   showers: '🌦️', snow: '🌨️', storm: '⛈️',
 };
 export const glyphFor = (icon: string | null | undefined) => (icon && ICONS[icon]) || '·';
+
+export const CONFIDENCE_LABEL: Record<ForecastConfidence['level'], string> = {
+  high: 'High confidence',
+  medium: 'Medium confidence',
+  low: 'Low confidence',
+};
+export const CONFIDENCE_HEX: Record<ForecastConfidence['level'], string> = {
+  high: '#059669', medium: '#d97706', low: '#dc2626',
+};
+export const confidenceLevel = (score: number): ForecastConfidence['level'] =>
+  score >= 75 ? 'high' : score >= 50 ? 'medium' : 'low';
 
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 /** Meteorological wind direction (where it blows FROM) as a compass word. */

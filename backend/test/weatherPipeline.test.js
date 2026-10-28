@@ -57,6 +57,8 @@ function assert(cond, msg) {
     if (String(url).includes('nominatim')) {
       return { ok: true, status: 200, json: async () => ({ address: { city: 'Testville', country_code: 'in' } }) };
     }
+    // So is the multi-model confidence lookup (services/forecastConfidence.js).
+    if (String(url).includes('models=')) return { ok: true, status: 200, json: async () => ({ hourly: { time: [] } }) };
     calls.push(url);
     const lat = Number(new URL(url).searchParams.get('latitude'));
     const body = lat > 30 ? responses.get('north') : responses.get('south');
