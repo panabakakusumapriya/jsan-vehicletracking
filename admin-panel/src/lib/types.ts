@@ -180,6 +180,92 @@ export interface WeatherGroup {
   stale: boolean;
   cachedAgeSeconds: number;
   drivers: { _id: string; name: string; country?: string | null; project?: string | null; lastSeenAt?: string }[];
+  /** One card per local date, from the same forecast (services/drivingWeather.js daySummary). */
+  outlook?: WeatherDayCard[];
+  /** Every hour of the picked day, gone hours included (`past`). */
+  hours?: WeatherHour[];
+}
+
+export interface WeatherHour {
+  dt: number;
+  at: string;
+  past: boolean;
+  risk: DrivingRisk;
+  reasons: string[];
+  tempC: number | null;
+  feelsLikeC: number | null;
+  windKmh: number | null;
+  gustKmh: number | null;
+  windDirDeg: number | null;
+  visibilityKm: number | null;
+  popPct: number;
+  precipMm: number;
+  cloudPct: number | null;
+  description: string;
+  icon: string | null;
+}
+
+export interface WeatherDayCard {
+  dayOffset: number;
+  date: string | null;
+  verdict: DrivingRisk | null;
+  headline?: string;
+  tempMinC?: number | null;
+  tempMaxC?: number | null;
+  precipMm?: number;
+  popMaxPct?: number;
+  windMaxKmh?: number | null;
+  gustMaxKmh?: number | null;
+  visibilityMinKm?: number | null;
+  icon?: string | null;
+  description?: string;
+}
+
+/** GET /api/weather/grid — a rain / cloud / wind field over a map view (services/weatherGrid.js). */
+export interface WeatherGridField {
+  step: number;
+  w: number; s: number; e: number; n: number;
+  cols: number;
+  rows: number;
+  times: number[];
+  /** [hour][row * cols + col], rows from the north edge. */
+  precipMm: number[][];
+  cloudPct: number[][];
+  windKmh: number[][];
+  windDirDeg: number[][];
+  generatedAt: string;
+  stale?: boolean;
+}
+
+/** GET /api/weather/trip-route/:id — modelled weather along a trip (services/tripRouteWeather.js). */
+export interface TripRouteWeatherSample {
+  at: string;
+  lat: number;
+  lon: number;
+  kmFromStart: number;
+  risk?: DrivingRisk;
+  reasons?: string[];
+  tempC?: number | null;
+  feelsLikeC?: number | null;
+  windKmh?: number | null;
+  gustKmh?: number | null;
+  windDirDeg?: number | null;
+  visibilityKm?: number | null;
+  cloudPct?: number | null;
+  precipMm?: number;
+  description?: string;
+  icon?: string | null;
+}
+
+export interface TripRouteWeather {
+  estimate: true;
+  source: string;
+  verdict: DrivingRisk;
+  samples: TripRouteWeatherSample[];
+  summary: {
+    tempMinC: number | null; tempMaxC: number | null; wetSamples: number; maxPrecipMm: number;
+    gustMaxKmh: number | null; visibilityMinKm: number | null; places: number;
+  };
 }
 
 export interface DrivingWeather {
@@ -194,7 +280,7 @@ export interface DrivingWeather {
     locations?: number; apiCalls?: number;
   };
   thresholds?: {
-    windCautionKmh: number; gustUnsafeKmh: number; activeDays: number; cacheMinutes: number;
+    windCautionKmh: number; gustUnsafeKmh: number; activeDays: number; cacheMinutes: number; forecastDays?: number;
   };
 }
 

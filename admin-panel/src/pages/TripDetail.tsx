@@ -11,6 +11,7 @@ import { useTripPlayback } from '../lib/map3d/useTripPlayback';
 import { cleanedPaths, decodeRouteShapes } from '../lib/polyline';
 import type { Trip } from '../lib/types';
 import { useTripMarkers } from '../components/TripMarkers';
+import { TripWeatherStrip, WeatherNowChip, sampleAt, tripWeatherLayers, useTripRouteWeather } from '../components/weather/TripWeather';
 
 interface PathPoint {
   lat: number;
@@ -448,6 +449,14 @@ export function TripDetail() {
   }, [points, trip]);
 
   const playback = useTripPlayback(points);
+  // Estimated weather along the route, time-matched to the replay (components/weather/TripWeather).
+  // Only for a trip with recorded fixes: without them there is no "where was the vehicle when".
+  const routeWeather = useTripRouteWeather(id, points.length > 0);
+  const replayStartMs = points.length ? new Date(points[0].recordedAt).getTime() : 0;
+  const weatherNow = useMemo(
+    () => sampleAt(routeWeather.weather, replayStartMs + playback.currentTimeMs),
+    [routeWeather.weather, replayStartMs, playback.currentTimeMs]
+  );
 
   // When the replay pauses or ends, the map turns back to north-up and lies flat again.
   const wasPlayingRef = useRef(false);
@@ -516,9 +525,10 @@ export function TripDetail() {
   const layers = useMemo(
     () => [
       ...buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPaths, ukmPaths, outsidePaths),
+      ...tripWeatherLayers(routeWeather.weather, weatherNow),
       ...tripMarkers.layers,
     ],
-    [points, playback.currentTimeMs, playback.playing, snappedPaths, ukmPaths, outsidePaths, tripMarkers.layers]
+    [points, playback.currentTimeMs, playback.playing, snappedPaths, ukmPaths, outsidePaths, tripMarkers.layers, routeWeather.weather, weatherNow]
   );
 
   if (loading) return <div className="muted">Loading trip…</div>;
@@ -729,6 +739,7 @@ export function TripDetail() {
       <div className="map-wrap" style={{ height: 'calc(100vh - 340px - var(--topbar-h))', minHeight: 380, position: 'relative' }}>
         <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} northUp />
         {tripMarkers.popup}
+        <WeatherNowChip sample={weatherNow} />
         {/* Two colours on a map need saying out loud — without this the muted stretches read as
             a rendering glitch rather than "the driver had been here before". */}
         {((ukmPaths && ukmPaths.length > 0) || (outsidePaths && outsidePaths.length > 0)) && (
@@ -828,6 +839,18 @@ export function TripDetail() {
             ))}
           </div>
         </div>
+      )}
+
+      {points.length > 1 && (
+        <TripWeatherStrip
+          weather={routeWeather.weather}
+          loading={routeWeather.loading}
+          error={routeWeather.error}
+          startMs={replayStartMs}
+          durationMs={playback.durationMs}
+          currentMs={playback.currentTimeMs}
+          onSeek={playback.seek}
+        />
       )}
 
       {points.length === 0 && (

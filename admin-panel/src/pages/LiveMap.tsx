@@ -11,6 +11,7 @@ import { useAuth } from '../lib/auth';
 import { km } from '../lib/format';
 import { isInside, type Outline } from '../lib/areaCheck';
 import type { LiveDriver, LocationEvent, ParkedDriver, User } from '../lib/types';
+import { WeatherLayers } from '../components/weather/WeatherLayers';
 
 function Recenter({ focus }: { focus: [number, number] | null }) {
   const map = useMap();
@@ -608,6 +609,8 @@ export function LiveMap() {
             attribution="&copy; OpenStreetMap contributors"
           />
           <MapAutoResize />
+          {/* Rain / cloud / wind under the vehicles and areas; below the areas toggle. */}
+          <WeatherLayers storageKey="livemap" top={52} />
           <Recenter focus={focus} />
           {box && !deepLinkDriver && <FitBox box={box} />}
           {!deepLinkDriver && !box && <FitToScope scopeKey={`${projectFilter}|${countryFilter}`} points={fitPoints} />}

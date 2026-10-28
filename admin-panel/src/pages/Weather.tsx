@@ -6,37 +6,121 @@ import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import { api } from '../lib/api';
 import { km } from '../lib/format';
 import { MapAutoResize } from '../lib/MapAutoResize';
-import type { DrivingRisk, DrivingWeather, ParkedDriver, WeatherGroup, WeatherSlot } from '../lib/types';
+import type { DrivingRisk, DrivingWeather, ParkedDriver, TripRouteWeather, WeatherGroup, WeatherSlot } from '../lib/types';
+import { RISK_BADGE, RISK_COLOR, RISK_DOT, RISK_HEX, RISK_LABEL, dateLabel, glyphFor } from '../components/weather/weatherUi';
+import { HourlyChart } from '../components/weather/HourlyChart';
+import { WeatherLayers } from '../components/weather/WeatherLayers';
+import { TripWeatherStrip } from '../components/weather/TripWeather';
 
-/* ── Risk styling ── */
-const RISK_LABEL: Record<DrivingRisk, string> = {
-  clear: 'Good to drive',
-  caution: 'Drive with caution',
-  unsafe: 'Do not drive',
-};
-const RISK_BADGE: Record<DrivingRisk, string> = { clear: 'green', caution: 'amber', unsafe: 'red' };
-const RISK_DOT: Record<DrivingRisk, string> = { clear: '🟢', caution: '🟠', unsafe: '🔴' };
-const RISK_COLOR: Record<DrivingRisk, string> = {
-  clear: 'var(--green)', caution: 'var(--amber)', unsafe: 'var(--red)',
-};
-
-const ICONS: Record<string, string> = {
-  'sun-d': '☀️', 'sun-n': '🌙', 'partly-d': '⛅', 'partly-n': '☁️',
-  cloud: '☁️', fog: '🌫️', drizzle: '🌦️', rain: '🌧️',
-  showers: '🌦️', snow: '🌨️', storm: '⛈️',
-};
-const glyphFor = (icon: string | null) => (icon && ICONS[icon]) || '·';
-
-function dayOption(offset: number) {
+/** "Today" / "Tomorrow" / "Thursday" for a day offset, as the viewer reads it. */
+function dayName(offset: number) {
+  if (offset === 0) return 'Today';
+  if (offset === 1) return 'Tomorrow';
   const d = new Date();
   d.setDate(d.getDate() + offset);
-  const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  if (offset === 0) return `Today (${dateStr})`;
-  if (offset === 1) return `Tomorrow (${dateStr})`;
-  return `+${offset} days (${dateStr})`;
+  return d.toLocaleDateString(undefined, { weekday: 'long' });
 }
 
-const DAYS = [0, 1, 2, 3, 4];
+const RANK: Record<DrivingRisk, number> = { clear: 0, caution: 1, unsafe: 2 };
+
+/** One date card for the whole (filtered) fleet: every location's card for that day, combined. */
+interface FleetDay {
+  dayOffset: number;
+  date: string | null;
+  verdict: DrivingRisk | null;
+  drivers: Record<DrivingRisk, number>;
+  tempMinC: number | null;
+  tempMaxC: number | null;
+  precipMm: number;
+  popMaxPct: number;
+  gustMaxKmh: number | null;
+  visibilityMinKm: number | null;
+  icon: string | null;
+  description: string;
+}
+
+function fleetOutlook(groups: WeatherGroup[], days: number): FleetDay[] {
+  const out: FleetDay[] = [];
+  for (let o = 0; o < days; o++) {
+    const day: FleetDay = {
+      dayOffset: o, date: null, verdict: null, drivers: { clear: 0, caution: 0, unsafe: 0 },
+      tempMinC: null, tempMaxC: null, precipMm: 0, popMaxPct: 0, gustMaxKmh: null, visibilityMinKm: null,
+      icon: null, description: '',
+    };
+    let face = -1;
+    for (const g of groups) {
+      const c = g.outlook?.find((x) => x.dayOffset === o);
+      if (!c?.date || !c.verdict) continue;
+      day.date ??= c.date;
+      day.drivers[c.verdict] += g.drivers.length;
+      if (day.verdict == null || RANK[c.verdict] > RANK[day.verdict]) day.verdict = c.verdict;
+      if (c.tempMinC != null) day.tempMinC = day.tempMinC == null ? c.tempMinC : Math.min(day.tempMinC, c.tempMinC);
+      if (c.tempMaxC != null) day.tempMaxC = day.tempMaxC == null ? c.tempMaxC : Math.max(day.tempMaxC, c.tempMaxC);
+      day.precipMm = Math.max(day.precipMm, c.precipMm ?? 0);
+      day.popMaxPct = Math.max(day.popMaxPct, c.popMaxPct ?? 0);
+      if (c.gustMaxKmh != null) day.gustMaxKmh = Math.max(day.gustMaxKmh ?? 0, c.gustMaxKmh);
+      if (c.visibilityMinKm != null) day.visibilityMinKm = Math.min(day.visibilityMinKm ?? 99, c.visibilityMinKm);
+      // The card's face is the worst location's day (ties: the one with most drivers).
+      const rank = RANK[c.verdict] * 1000 + g.drivers.length;
+      if (rank > face) { face = rank; day.icon = c.icon ?? null; day.description = c.description ?? ''; }
+    }
+    if (day.date) out.push(day);
+  }
+  return out;
+}
+
+/* ── Date cards ── */
+function DateCards({ days, selected, onSelect }: { days: FleetDay[]; selected: number; onSelect: (o: number) => void }) {
+  if (!days.length) return null;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${days.length}, minmax(122px, 1fr))`, gap: 8, overflowX: 'auto', flexShrink: 0, paddingBottom: 2 }}>
+      {days.map((d) => {
+        const on = d.dayOffset === selected;
+        const v = d.verdict ?? 'clear';
+        return (
+          <button
+            key={d.dayOffset}
+            type="button"
+            onClick={() => onSelect(d.dayOffset)}
+            aria-pressed={on}
+            className="card"
+            style={{
+              textAlign: 'left', cursor: 'pointer', padding: '9px 11px 8px', margin: 0, font: 'inherit', color: 'var(--text)',
+              borderTop: `4px solid ${RISK_HEX[v]}`,
+              outline: on ? '2px solid var(--brand)' : undefined, outlineOffset: -1,
+              background: on ? 'var(--brand-light, var(--panel))' : undefined,
+            }}
+            title={d.description}
+          >
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 4 }}>
+              <b style={{ fontSize: 13 }}>{dayName(d.dayOffset)}</b>
+              <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>{d.date ? dateLabel(d.date, { day: 'numeric', month: 'short' }) : ''}</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 3px' }}>
+              <span style={{ fontSize: 28, lineHeight: 1 }}>{glyphFor(d.icon)}</span>
+              <span style={{ fontSize: 14, fontWeight: 800 }}>
+                {d.tempMaxC ?? '—'}°<span style={{ color: 'var(--muted)', fontWeight: 600, fontSize: 12 }}> / {d.tempMinC ?? '—'}°</span>
+              </span>
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--text-2)', lineHeight: 1.45 }}>
+              <div>🌧 {d.precipMm > 0 ? `${d.precipMm} mm` : 'dry'}{d.popMaxPct > 0 ? ` · ${d.popMaxPct}%` : ''}</div>
+              <div>💨 gusts {d.gustMaxKmh ?? '—'} km/h</div>
+              <div>👁 {d.visibilityMinKm == null ? '—' : `${d.visibilityMinKm >= 20 ? '20+' : d.visibilityMinKm} km`}</div>
+            </div>
+            <div style={{ display: 'flex', gap: 4, marginTop: 5, flexWrap: 'wrap' }}>
+              {(['unsafe', 'caution', 'clear'] as DrivingRisk[]).filter((r) => d.drivers[r] > 0).map((r) => (
+                <span key={r} className={`badge ${RISK_BADGE[r]}`} style={{ fontSize: 9.5, padding: '0 6px' }}
+                  title={`${d.drivers[r]} driver${d.drivers[r] === 1 ? '' : 's'}: ${RISK_LABEL[r]}`}>
+                  {d.drivers[r]} {r === 'clear' ? 'good' : r === 'caution' ? 'caution' : 'no-go'}
+                </span>
+              ))}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 /* ── Map marker icon ── */
 function parkedCarIcon(risk: DrivingRisk | null, selected: boolean) {
@@ -154,7 +238,11 @@ function LocationCard({ group, selected, onSelect }: { group: WeatherGroup; sele
           </div>
         </div>
 
-        {group.slots.length > 0 && (
+        {group.hours && group.hours.length > 0 ? (
+          <div style={{ marginTop: 10 }}>
+            <HourlyChart hours={group.hours} />
+          </div>
+        ) : group.slots.length > 0 && (
           <div style={{ display: 'flex', gap: 4, marginTop: 10, overflowX: 'auto' }}>
             {group.slots.map(s => <Slot key={s.dt} slot={s} />)}
           </div>
@@ -196,17 +284,6 @@ interface DriverInfo {
 }
 
 /* ── History types ── */
-interface HistorySlot {
-  dt: number;
-  at: string;
-  tempC: number | null;
-  windKmh: number | null;
-  gustKmh: number | null;
-  precipMm: number;
-  description: string;
-  icon: string | null;
-  risk: DrivingRisk;
-}
 
 interface TripSummaryRow {
   _id: string;
@@ -223,17 +300,14 @@ interface TripSummaryRow {
   locationName: string | null;
 }
 
-interface TripWeather {
-  slots: HistorySlot[];
-  verdict: DrivingRisk;
-}
 
 /* ── History tab ── */
 function WeatherHistory({ projectFilter, countryFilter }: { projectFilter: string; countryFilter: string }) {
   const [trips, setTrips] = useState<TripSummaryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [weatherCache, setWeatherCache] = useState<Record<string, TripWeather | null>>({});
+  const [weatherCache, setWeatherCache] = useState<Record<string, TripRouteWeather | null>>({});
+  const [weatherError, setWeatherError] = useState<Record<string, string>>({});
   const [weatherLoading, setWeatherLoading] = useState<string | null>(null);
   const [dateFilter, setDateFilter] = useState('');
 
@@ -262,10 +336,12 @@ function WeatherHistory({ projectFilter, countryFilter }: { projectFilter: strin
     if (weatherCache[tripId] !== undefined) return;
     setWeatherLoading(tripId);
     try {
-      const r = await api.get<{ weather: TripWeather | null }>(`/api/weather/trip-weather/${tripId}`);
+      // Weather along the whole route at the vehicle's own times, not just where the trip began.
+      const r = await api.get<{ weather: TripRouteWeather | null }>(`/api/weather/trip-route/${tripId}`);
       setWeatherCache(c => ({ ...c, [tripId]: r.weather }));
-    } catch {
+    } catch (e) {
       setWeatherCache(c => ({ ...c, [tripId]: null }));
+      setWeatherError(c => ({ ...c, [tripId]: e instanceof Error ? e.message : 'Weather unavailable' }));
     } finally {
       setWeatherLoading(null);
     }
@@ -349,33 +425,17 @@ function WeatherHistory({ projectFilter, countryFilter }: { projectFilter: strin
                     {isExpanded && (
                       <tr>
                         <td colSpan={10} style={{ padding: '10px 16px', background: 'var(--panel-2)' }}>
-                          {isLoading ? (
-                            <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 12, padding: 10 }}>
-                              Fetching weather from Open-Meteo archive...
-                            </div>
-                          ) : weather && weather.slots.length > 0 ? (
-                            <div style={{ display: 'flex', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
-                              {weather.slots.map(s => (
-                                <div key={s.dt} title={`${s.at} · ${s.description}`} style={{
-                                  flex: '1 1 0', minWidth: 58, textAlign: 'center',
-                                  padding: '6px 3px 5px', borderRadius: 8,
-                                  background: s.risk === 'clear' ? 'var(--panel)' : s.risk === 'caution' ? 'var(--amber-bg)' : 'var(--red-bg)',
-                                  border: `1px solid ${s.risk === 'clear' ? 'var(--line)' : RISK_COLOR[s.risk]}33`,
-                                }}>
-                                  <div style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 600 }}>{s.at}</div>
-                                  <div style={{ fontSize: 18, lineHeight: 1.3 }}>{glyphFor(s.icon)}</div>
-                                  <div style={{ fontSize: 12, fontWeight: 800 }}>{s.tempC != null ? `${s.tempC}°` : '—'}</div>
-                                  <div style={{ fontSize: 9, color: 'var(--muted)' }}>
-                                    {s.windKmh != null && <div>{s.gustKmh && s.gustKmh > s.windKmh ? `${s.gustKmh}g` : s.windKmh} km/h</div>}
-                                    {s.precipMm > 0 && <div>{s.precipMm}mm</div>}
-                                  </div>
-                                  <div style={{ fontSize: 9, color: 'var(--muted)', marginTop: 1 }}>{s.description}</div>
-                                </div>
-                              ))}
-                            </div>
+                          {isLoading || weather ? (
+                            <TripWeatherStrip
+                              weather={weather ?? null}
+                              loading={isLoading}
+                              error={null}
+                              startMs={new Date(trip.startedAt).getTime()}
+                              durationMs={trip.endedAt ? new Date(trip.endedAt).getTime() - new Date(trip.startedAt).getTime() : 0}
+                            />
                           ) : (
                             <div style={{ textAlign: 'center', color: 'var(--muted)', fontSize: 12, padding: 10 }}>
-                              No weather data available for this trip location.
+                              {weatherError[trip._id] ? `Weather unavailable: ${weatherError[trip._id]}` : 'No GPS recorded for this trip, so there is no route to look the weather up along.'}
                             </div>
                           )}
                         </td>
@@ -552,6 +612,8 @@ export function Weather() {
   const defaultCenter: [number, number] = mapCoords.length > 0 ? mapCoords[0] : [17.42, 78.45];
 
   const t = data?.thresholds;
+  // The cards come with every response (the same forecast), so they stay put while a day loads.
+  const outlook = useMemo(() => fleetOutlook(filteredGroups, t?.forecastDays ?? 7), [filteredGroups, t?.forecastDays]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 80px - var(--topbar-h))' }}>
@@ -588,11 +650,6 @@ export function Weather() {
             <option value="">All drivers</option>
             {driverOptions.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
-          {tab === 'forecast' && (
-            <select className="input" style={{ width: 170 }} value={day} onChange={e => setDay(Number(e.target.value))}>
-              {DAYS.map(offset => <option key={offset} value={offset}>{dayOption(offset)}</option>)}
-            </select>
-          )}
           <button className="btn-ghost" onClick={() => setReloadKey(k => k + 1)} disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}
           </button>
@@ -615,11 +672,15 @@ export function Weather() {
       {error && <div className="error-text">{error}</div>}
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0, overflow: 'auto' }}>
+        {/* Date cards: the fleet's next days at a glance; a click opens that day hour by hour below. */}
+        <DateCards days={outlook} selected={day} onSelect={setDay} />
+
         {/* Map */}
         <div className="map-wrap" style={{ height: 380, minHeight: 300, borderRadius: 'var(--radius-lg)', overflow: 'hidden', border: '1px solid var(--line-2)', flexShrink: 0 }}>
           <MapContainer center={defaultCenter} zoom={5} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             <MapAutoResize />
+            <WeatherLayers storageKey="weather" />
             {mapCoords.length > 0 && !flyTarget && <FitBounds coords={mapCoords} />}
             <FlyToDriver target={flyTarget} />
             {mapMarkers.map((m) => (
