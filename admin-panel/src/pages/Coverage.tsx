@@ -90,15 +90,6 @@ const POSITION_PILL: Record<DriverPosition['state'], { tone: string; label: stri
 /** A pin for someone the palette has not met — cannot normally happen, must not crash if it does. */
 const PIN_FALLBACK: [number, number, number] = [71, 85, 105];
 
-/** HERE functional class, in the customer's terms rather than the number. */
-const FUNC_CLASS_LABEL: Record<string, string> = {
-  '1': 'FC1 · motorway',
-  '2': 'FC2 · highway',
-  '3': 'FC3 · arterial',
-  '4': 'FC4 · collector',
-  '5': 'FC5 · local',
-};
-
 const MAPPING_FIELDS: { key: keyof ColumnMapping; label: string; layer: 'boundary' | 'network'; required?: boolean }[] = [
   { key: 'areaCode', label: 'Area code', layer: 'boundary', required: true },
   { key: 'areaName', label: 'Area name', layer: 'boundary' },
@@ -1889,62 +1880,6 @@ function ProgressTab({
           </table>
         </div>
       )}
-
-      <div className="cov-split">
-        <div className="card">
-          <h3 className="cov-h3">By priority</h3>
-          <p className="cov-sub">
-            The customer&apos;s own bands. Confirm what the ordering means before dispatching against it.
-          </p>
-          <table>
-            <thead>
-              <tr><th>Band</th><th>Areas</th><th>Target</th><th style={{ width: '34%' }}>Progress</th></tr>
-            </thead>
-            <tbody>
-              {(summary?.byPriority || version.byPriority.map((b) => ({ ...b, coveredMeters: 0, coveredLinks: 0 }))).map((band) => (
-                <tr key={band.priority}>
-                  <td style={{ fontWeight: 600 }}>P{band.priority}</td>
-                  <td>{band.areas?.toLocaleString() ?? '—'}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{km(band.meters)} km</td>
-                  <td>
-                    <div className="cov-cell">
-                      <Bar value={band.coveredMeters} total={band.meters} />
-                      <span className="cov-pct">{pct(band.coveredMeters, band.meters).toFixed(1)}%</span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="card">
-          <h3 className="cov-h3">By road class</h3>
-          <p className="cov-sub">
-            Local roads are usually the bulk of the work and the slowest to drive.
-          </p>
-          <table>
-            <thead>
-              <tr><th>Class</th><th>Links</th><th>Target</th><th style={{ width: '34%' }}>Progress</th></tr>
-            </thead>
-            <tbody>
-              {(summary?.byFuncClass || version.byFuncClass.map((b) => ({ ...b, coveredMeters: 0, coveredLinks: 0 }))).map((row) => (
-                <tr key={String(row.funcClass)}>
-                  <td style={{ fontWeight: 600 }}>{FUNC_CLASS_LABEL[String(row.funcClass)] || 'Unclassified'}</td>
-                  <td>{row.links.toLocaleString()}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{km(row.meters)} km</td>
-                  <td>
-                    <div className="cov-cell">
-                      <Bar value={row.coveredMeters} total={row.meters} />
-                      <span className="cov-pct">{pct(row.coveredMeters, row.meters).toFixed(1)}%</span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
 
       <div className="card" style={{ padding: 0 }}>
         <div className="cov-table-head">
