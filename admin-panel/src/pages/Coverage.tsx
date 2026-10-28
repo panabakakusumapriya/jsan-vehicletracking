@@ -1784,47 +1784,6 @@ function ProgressTab({
         )}
       </div>
 
-      {breakdown && (
-        <div className="card cov-breakdown">
-          <h3 className="cov-h3">{breakdown.title}</h3>
-          <p className="cov-sub">{breakdown.hint}</p>
-          <table>
-            <thead>
-              <tr>
-                <th>{breakdown.title === 'By region' ? 'Region' : 'Delivery'}</th>
-                <th>Areas</th>
-                <th>Target</th>
-                <th>Driven</th>
-                <th style={{ width: '26%' }}>Progress</th>
-                <th>Signed off</th>
-                <th>With a driver</th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdown.rows.map((r) => (
-                <tr key={r.key} className="cov-row-clickable" onClick={r.pick} title={`Show only ${r.name}`}>
-                  <td>
-                    <div style={{ fontWeight: 600 }}>{r.name}</div>
-                    <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{r.sub}</div>
-                  </td>
-                  <td>{r.areas.toLocaleString()}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{km(r.targetMeters)} km</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{km(r.coveredMeters)} km</td>
-                  <td>
-                    <div className="cov-cell">
-                      <Bar value={r.coveredMeters} total={r.targetMeters} tone="green" />
-                      <span className="cov-pct">{pct(r.coveredMeters, r.targetMeters).toFixed(1)}%</span>
-                    </div>
-                  </td>
-                  <td>{r.completedAreas.toLocaleString()}</td>
-                  <td>{r.assignedAreas.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
       {stateCov && (
         <div className="card cov-breakdown">
           <h3 className="cov-h3">
@@ -1887,6 +1846,47 @@ function ProgressTab({
               )}
             </>
           )}
+        </div>
+      )}
+
+      {breakdown && (
+        <div className="card cov-breakdown">
+          <h3 className="cov-h3">{breakdown.title}</h3>
+          <p className="cov-sub">{breakdown.hint}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>{breakdown.title === 'By region' ? 'Region' : 'Delivery'}</th>
+                <th>Areas</th>
+                <th>Target</th>
+                <th>Driven</th>
+                <th style={{ width: '26%' }}>Progress</th>
+                <th>Signed off</th>
+                <th>With a driver</th>
+              </tr>
+            </thead>
+            <tbody>
+              {breakdown.rows.map((r) => (
+                <tr key={r.key} className="cov-row-clickable" onClick={r.pick} title={`Show only ${r.name}`}>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{r.name}</div>
+                    <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{r.sub}</div>
+                  </td>
+                  <td>{r.areas.toLocaleString()}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{km(r.targetMeters)} km</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{km(r.coveredMeters)} km</td>
+                  <td>
+                    <div className="cov-cell">
+                      <Bar value={r.coveredMeters} total={r.targetMeters} tone="green" />
+                      <span className="cov-pct">{pct(r.coveredMeters, r.targetMeters).toFixed(1)}%</span>
+                    </div>
+                  </td>
+                  <td>{r.completedAreas.toLocaleString()}</td>
+                  <td>{r.assignedAreas.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
