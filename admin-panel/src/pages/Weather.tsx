@@ -11,7 +11,6 @@ import { RISK_BADGE, RISK_COLOR, RISK_HEX, RISK_LABEL, dateLabel } from '../comp
 import { WeatherIcon } from '../components/weather/WeatherIcon';
 import { HourlyChart } from '../components/weather/HourlyChart';
 import { ConfidenceBar } from '../components/weather/ConfidenceBar';
-import { WeatherLayers } from '../components/weather/WeatherLayers';
 import { TripWeatherStrip } from '../components/weather/TripWeather';
 
 /** "Today" / "Tomorrow" / "Thursday" for a day offset, as the viewer reads it. */
@@ -720,7 +719,6 @@ export function Weather() {
           <MapContainer center={defaultCenter} zoom={5} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             <MapAutoResize />
-            <WeatherLayers storageKey="weather" />
             {mapCoords.length > 0 && !flyTarget && <FitBounds coords={mapCoords} />}
             <FlyToDriver target={flyTarget} />
             {mapMarkers.map((m) => (

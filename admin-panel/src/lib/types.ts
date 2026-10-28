@@ -233,22 +233,6 @@ export interface ForecastConfidence {
   rainRangeMm: [number, number];
 }
 
-/** GET /api/weather/grid — a rain / cloud / wind field over a map view (services/weatherGrid.js). */
-export interface WeatherGridField {
-  step: number;
-  w: number; s: number; e: number; n: number;
-  cols: number;
-  rows: number;
-  times: number[];
-  /** [hour][row * cols + col], rows from the north edge. */
-  precipMm: number[][];
-  cloudPct: number[][];
-  windKmh: number[][];
-  windDirDeg: number[][];
-  generatedAt: string;
-  stale?: boolean;
-}
-
 /** GET /api/weather/trip-route/:id — modelled weather along a trip (services/tripRouteWeather.js). */
 export interface TripRouteWeatherSample {
   at: string;

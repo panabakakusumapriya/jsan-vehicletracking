@@ -4,7 +4,6 @@ const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
 
 const toObjectId = (id) => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id);
 const { drivingConditions, isConfigured } = require('../services/weather');
-const { weatherGrid } = require('../services/weatherGrid');
 const { tripRouteWeather } = require('../services/tripRouteWeather');
 const { classifyWmo, iconFor } = require('../services/weatherCodes');
 const { scoreSlot } = require('../services/drivingWeather');
@@ -157,25 +156,6 @@ exports.tripWeather = asyncHandler(async (req, res) => {
   }
 
   res.json({ weather: { slots, verdict } });
-});
-
-/**
- * GET /api/weather/grid?w=&s=&e=&n=
- *
- * The rain / cloud / wind field over a map view, next 24 hours, for the animated map layers
- * (services/weatherGrid.js). Not driver data, so no scoping beyond the route's role check.
- */
-exports.grid = asyncHandler(async (req, res) => {
-  const view = ['w', 's', 'e', 'n'].map((k) => parseFloat(req.query[k]));
-  if (view.some((v) => !Number.isFinite(v))) return res.status(400).json({ error: 'w, s, e and n are required' });
-  const [w, s, e, n] = view;
-  if (n <= s) return res.status(400).json({ error: 'n must be north of s' });
-  try {
-    res.set('Cache-Control', 'private, max-age=600');
-    res.json(await weatherGrid({ w, s, e, n }));
-  } catch (err) {
-    res.status(err.status || 502).json({ error: err.message || 'Could not reach the weather service' });
-  }
 });
 
 /**

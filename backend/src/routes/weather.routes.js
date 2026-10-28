@@ -7,7 +7,6 @@ const { authenticate, requireRole } = require('../middleware/auth');
 router.use(authenticate, requireRole('admin', 'manager', 'team_lead'));
 
 router.get('/driving', ctrl.driving);
-router.get('/grid', ctrl.grid);
 router.get('/trip-history', ctrl.tripHistory);
 router.get('/trip-weather/:id', ctrl.tripWeather);
 router.get('/trip-route/:id', ctrl.tripRoute);

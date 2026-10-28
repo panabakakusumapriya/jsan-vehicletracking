@@ -1,10 +1,9 @@
-// Weather along a trip + the map weather grid. Pure parts only — no DB, no network.
+// Weather along a trip + forecast confidence. Pure parts only — no DB, no network.
 // run: npm run test:weather:maps
 process.env.MONGODB_URI = 'mongodb://unused/weather_maps_test';
 process.env.JWT_SECRET = 'weather_maps_test_secret_key_1234567890';
 
 const { pickSamples, weatherAt } = require('../src/services/tripRouteWeather');
-const { snapBox, GRID_MAX_CELLS } = require('../src/services/weatherGrid');
 const { classifyWmo } = require('../src/services/weatherCodes');
 const { dayConfidence } = require('../src/services/forecastConfidence');
 
@@ -63,16 +62,6 @@ assert(mid.precipMm === 5, 'rain is the NEXT hour\'s value (Open-Meteo sums the 
 assert(weatherAt(series, T0 + 10 * MIN).description === classifyWmo(0).description &&
   weatherAt(series, T0 + 50 * MIN).description === classifyWmo(63).description, 'the condition comes from the nearer hour');
 assert(weatherAt({ hourly: { time: [] } }, T0) === null, 'an empty series gives no weather rather than zeros');
-
-console.log('\n── map weather grid ──');
-const city = snapBox({ w: 152.9, s: -27.6, e: 153.2, n: -27.35 });
-assert(city.step <= 0.05, 'a city view gets a fine (~5 km) grid');
-const aus = snapBox({ w: 110, s: -47, e: 179, n: -10 });
-assert(aus.cols <= GRID_MAX_CELLS + 1 && aus.rows <= GRID_MAX_CELLS + 1, 'Australia + NZ fits one request');
-assert(aus.w <= 110 && aus.e >= 179, 'and the whole view is covered, not just its middle');
-const a = snapBox({ w: 152.61, s: -27.79, e: 153.39, n: -27.21 });
-const b = snapBox({ w: 152.63, s: -27.77, e: 153.37, n: -27.23 });
-assert(JSON.stringify(a) === JSON.stringify(b), 'nudging the map lands on the same cached grid');
 
 console.log('\n── forecast confidence: do the models agree? ──');
 const DAY = 86400;
