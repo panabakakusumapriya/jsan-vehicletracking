@@ -12,7 +12,7 @@ const { workMsExpr } = require('../utils/workHours');
 const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
 const { dayRange, isValidTimeZone } = require('../utils/timezone');
 const { timezoneForCountry } = require('../utils/countryTimezone');
-const { buildKml, buildSnappedKml, buildJson, buildMergedKml, buildMergedSnappedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate } = require('../utils/tripExport');
+const { buildKml, buildSnappedKml, buildJson, buildMergedKml, buildMergedSnappedKml, buildMergedJson, baseFilename, driverName, vehiclePlate, slug, filenameDate, snappedRouteParts } = require('../utils/tripExport');
 const { decodePolyline6 } = require('../services/roadSegments');
 const { overlapBreakdown } = require('../services/globalUkm');
 const { alreadyDriven: alreadyDrivenFor } = require('../services/alreadyDriven');
@@ -138,7 +138,8 @@ exports.ukmOverlap = asyncHandler(async (req, res) => {
 function snappedPathsFor(trip) {
   if (!trip.cleanedRouteShapes || !trip.cleanedRouteShapes.length) return null;
   return {
-    route: trip.cleanedRouteShapes.flatMap((sh) => decodePolyline6(sh)).map((pt) => [pt.lon, pt.lat]),
+    // The route's pieces, never glued across a gap or between an imported day's roads.
+    route: snappedRouteParts(trip),
     // Prefer the GLOBAL verdict (ukmUniqueShapes) over the per-driver one (ukmNewShapes): an export
     // and the dashboard must not disagree about which stretch of a street was new road. Falls back to
     // the per-driver shapes only for trips the global engine has not reached yet.
@@ -273,7 +274,7 @@ exports.exportOne = asyncHandler(async (req, res) => {
   const filename = `${baseFilename(trip)}${wantSnapped ? '_snapped' : ''}`;
 
   if (wantSnapped && format !== 'json') {
-    const snappedPath = trip.cleanedRouteShapes.flatMap((s) => decodePolyline6(s)).map((p) => [p.lon, p.lat]);
+    const snappedPath = snappedRouteParts(trip);
     // Global verdict first, per-driver as the fallback — same rule as snappedPathsFor above.
     const ukmShapes = trip.ukmUniqueShapes?.length ? trip.ukmUniqueShapes : trip.ukmNewShapes || [];
     const ukmPaths = ukmShapes.map((s) => decodePolyline6(s).map((p) => [p.lon, p.lat]));

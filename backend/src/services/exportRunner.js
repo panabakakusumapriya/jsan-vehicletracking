@@ -11,7 +11,7 @@ const LocationPoint = require('../models/LocationPoint');
 // having been loaded first to make that resolve.
 require('../models/User');
 require('../models/Vehicle');
-const { buildKml, buildSnappedKml, buildJson, baseFilename } = require('../utils/tripExport');
+const { buildKml, buildSnappedKml, buildJson, baseFilename, snappedRouteParts } = require('../utils/tripExport');
 const { decodePolyline6 } = require('./roadSegments');
 
 /**
@@ -73,7 +73,8 @@ async function pointsForTrips(tripIds) {
 function snappedPathsFor(trip) {
   if (!trip.cleanedRouteShapes || !trip.cleanedRouteShapes.length) return null;
   return {
-    route: trip.cleanedRouteShapes.flatMap((sh) => decodePolyline6(sh)).map((pt) => [pt.lon, pt.lat]),
+    // The route's pieces, never glued across a gap or between an imported day's roads.
+    route: snappedRouteParts(trip),
     // Prefer the GLOBAL verdict (ukmUniqueShapes) over the per-driver one (ukmNewShapes): an export
     // and the dashboard must not disagree about which stretch of a street was new road. Falls back to
     // the per-driver shapes only for trips the global engine has not reached yet.

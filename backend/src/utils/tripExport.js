@@ -1,3 +1,44 @@
+const { decodePolyline6 } = require('../services/roadSegments');
+const { haversineMeters } = require('./geo');
+
+/** A gap wider than this between two stored pieces of a route is left open, never bridged. */
+const MAX_JOIN_GAP_M = 100;
+
+/**
+ * A trip's snapped route as the lines to draw, [[lon, lat], …] each — the panel's rule
+ * (admin-panel lib/polyline cleanedPaths), plus a gap check.
+ *
+ * The route is stored as several pieces. Exports used to glue them all into one line, which drew
+ * straight lines from wherever a piece ended to wherever the next began: across a whole region for
+ * an imported day, whose pieces are separate roads in no recorded order, and across any hole in a
+ * matched trip. Now an imported day keeps every road as its own line, and a matched trip's pieces
+ * are joined only where one ends close to where the next starts.
+ */
+function snappedRouteParts(trip) {
+  const shapes = (trip && trip.cleanedRouteShapes) || [];
+  const pieces = shapes
+    .map((sh) => decodePolyline6(sh).map((pt) => [pt.lon, pt.lat]))
+    .filter((p) => p.length > 1);
+  if (trip && trip.importBatchId) return pieces;
+  const parts = [];
+  for (const piece of pieces) {
+    const prev = parts[parts.length - 1];
+    if (prev) {
+      const [lon1, lat1] = prev[prev.length - 1];
+      const [lon2, lat2] = piece[0];
+      if (haversineMeters({ lat: lat1, lon: lon1 }, { lat: lat2, lon: lon2 }) <= MAX_JOIN_GAP_M) {
+        prev.push(...piece.slice(1));
+        continue;
+      }
+    }
+    parts.push(piece.slice());
+  }
+  return parts;
+}
+
+/** A route given either as one line or as several: always as a list of lines. */
+const asParts = (path) => (!path || !path.length ? [] : Array.isArray(path[0][0]) ? path : [path]);
+
 function escapeXml(value) {
   return String(value ?? '').replace(/[<>&'"]/g, (c) => ({
     '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;',
@@ -101,17 +142,25 @@ ${rows}
 const coordList = (path) => path.map(([lon, lat]) => `${lon},${lat},0`).join(' ');
 
 /** A styled, attributed LineString placemark. `path` is [[lon, lat], ...]. */
+/** One feature: a single line, or — given several (a route with gaps) — a MultiGeometry of them. */
 function linePlacemark({ name, styleId, path, fields }) {
-  if (!path || path.length < 2) return '';
+  const parts = asParts(path).filter((p) => p.length > 1);
+  if (!parts.length) return '';
+  const line = (p) => `
+        <LineString>
+          <tessellate>1</tessellate>
+          <altitudeMode>clampToGround</altitudeMode>
+          <coordinates>${coordList(p)}</coordinates>
+        </LineString>`;
+  const geometry = parts.length === 1
+    ? line(parts[0])
+    : `
+      <MultiGeometry>${parts.map(line).join('')}
+      </MultiGeometry>`;
   return `
     <Placemark>
       <name>${escapeXml(name)}</name>
-      <styleUrl>#${styleId}</styleUrl>${extendedData(fields)}
-      <LineString>
-        <tessellate>1</tessellate>
-        <altitudeMode>clampToGround</altitudeMode>
-        <coordinates>${coordList(path)}</coordinates>
-      </LineString>
+      <styleUrl>#${styleId}</styleUrl>${extendedData(fields)}${geometry}
     </Placemark>`;
 }
 
@@ -262,8 +311,11 @@ function buildSnappedKml(trip, snappedPath, ukmPaths = []) {
     </Folder>`
     : '';
 
-  const first = snappedPath && snappedPath.length ? snappedPath[0] : null;
-  const last = snappedPath && snappedPath.length > 1 ? snappedPath[snappedPath.length - 1] : null;
+  const routeParts = asParts(snappedPath);
+  const firstPart = routeParts[0];
+  const lastPart = routeParts[routeParts.length - 1];
+  const first = firstPart && firstPart.length ? firstPart[0] : null;
+  const last = lastPart && (routeParts.length > 1 || lastPart.length > 1) ? lastPart[lastPart.length - 1] : null;
   const startPlacemark = first ? markerPlacemark('Start', 'startPoint', first[0], first[1], { ...shared, segment_type: 'start' }) : '';
   const endPlacemark = last ? markerPlacemark('End', 'endPoint', last[0], last[1], { ...shared, segment_type: 'end' }) : '';
 
@@ -417,7 +469,7 @@ function buildMergedJson(driverNameStr, vehiclePlateStr, date, tripsWithPoints) 
  * labelled "snapped" would quietly misrepresent which parts had been corrected.
  */
 function buildMergedSnappedKml(driverNameStr, vehiclePlateStr, date, tripsWithPaths) {
-  const usable = tripsWithPaths.filter((t) => t.route && t.route.length > 1);
+  const usable = tripsWithPaths.filter((t) => asParts(t.route).some((p) => p.length > 1));
   const totalUkm = usable.reduce((sum, t) => sum + (t.trip.ukmMeters || 0), 0);
   const totalCleaned = usable.reduce((sum, t) => sum + (t.trip.cleanedDistanceMeters || 0), 0);
 
@@ -454,6 +506,7 @@ function buildMergedSnappedKml(driverNameStr, vehiclePlateStr, date, tripsWithPa
 }
 
 module.exports = {
+  snappedRouteParts,
   buildKml,
   buildSnappedKml,
   buildMergedSnappedKml,
