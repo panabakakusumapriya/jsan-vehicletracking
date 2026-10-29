@@ -3,6 +3,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { API_URL } from '../lib/api';
 import { isAdminRole } from '../lib/types';
+import { takeSignedOutReason } from '../lib/session';
 import { StreetCapture, type DriveStats } from '../components/StreetCapture';
 
 const MailSVG = () => (
@@ -195,6 +196,8 @@ export function Login() {
   const [capsLock, setCapsLock] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Why this tab was signed out (idle for 8 hours, the sign-in expired, a changed password) — once.
+  const [signedOutReason] = useState(() => takeSignedOutReason());
   const [focused, setFocused] = useState<string | null>(null);
   const server = useServerState();
   const featureIdx = useRotatingFeature();
@@ -354,6 +357,11 @@ export function Login() {
               {capsLock && <div className="login-caps">Caps Lock is on</div>}
             </div>
 
+            {!error && signedOutReason && (
+              <div className="login-notice" role="status" style={{ marginTop: 16 }}>
+                {signedOutReason}
+              </div>
+            )}
             {error && (
               <div className="error-text" style={{ marginTop: 16 }}>
                 <span>⚠</span> {error}

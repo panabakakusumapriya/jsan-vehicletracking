@@ -1,3 +1,5 @@
+import { EXPIRED_MESSAGE, noteSignedOut } from './session';
+
 // Base URL for the API + Socket.IO.
 //  - dev: '' => same-origin, vite proxies /api and /socket.io to the backend.
 //  - prod (Vercel etc.): no proxy exists, so call the deployed backend directly.
@@ -38,12 +40,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  if (res.status === 401) {
-    tokenStore.clear();
-    if (!path.includes('/auth/login')) window.location.href = '/login';
-  }
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
+  if (res.status === 401) {
+    tokenStore.clear();
+    if (!path.includes('/auth/login')) {
+      // Said on the login page: the server's own reason when it has one (a changed password),
+      // else that the sign-in ran out.
+      noteSignedOut(token ? (data?.message || EXPIRED_MESSAGE) : EXPIRED_MESSAGE);
+      window.location.href = '/login';
+    }
+  }
   if (!res.ok) {
     // The message alone is not always enough: a refusal can carry structure the caller needs to
     // act on — which areas were blocked, and whether this user may override. Attaching the body
@@ -87,6 +94,7 @@ export async function downloadFile(path: string, fallbackFilename = 'download'):
   const res = await fetch(`${API_URL}${path}`, { headers });
   if (res.status === 401) {
     tokenStore.clear();
+    noteSignedOut(EXPIRED_MESSAGE);
     window.location.href = '/login';
     throw new Error('Not authenticated');
   }
@@ -170,6 +178,7 @@ export function uploadRaw<T>(
       }
       if (xhr.status === 401) {
         tokenStore.clear();
+        noteSignedOut(EXPIRED_MESSAGE);
         window.location.href = '/login';
         reject(new Error('Not authenticated'));
         return;

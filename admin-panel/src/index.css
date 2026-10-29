@@ -438,6 +438,13 @@ select.input { cursor: pointer; }
   border-radius: var(--radius); padding: 9px 12px;
   font-size: 13px; margin: 8px 0; font-weight: 500;
 }
+/* Why you were signed out (lib/session.ts): information, not an error. */
+.login-notice {
+  color: #92400e; background: #fffbeb;
+  border: 1px solid rgba(217, 119, 6, 0.28);
+  border-radius: var(--radius); padding: 9px 12px;
+  font-size: 13px; font-weight: 500;
+}
 
 /* ══════════════════════════════════════
    MODAL
