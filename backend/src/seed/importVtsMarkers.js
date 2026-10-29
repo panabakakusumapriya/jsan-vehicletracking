@@ -90,7 +90,7 @@ async function main() {
       (await vts.collection('sessions').find({ _id: { $in: [...new Set(markers.map((m) => String(m.session)))].map((id) => new ObjectId(id)) } }, { projection: { licensePlate: 1 } }).toArray())
         .map((s) => [String(s._id), s])
     );
-    log(`VTS markers by projaustralia drivers: ${markers.length.toLocaleString()}`);
+    log(`VTS markers by drivers of VTS project ${VTS_PROJECT}: ${markers.length.toLocaleString()}`);
 
     const users = await User.find({ role: 'user' }).select('_id name email').lean();
     const userByEmail = new Map(users.map((u) => [String(u.email).toLowerCase(), u]));
