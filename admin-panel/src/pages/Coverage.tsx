@@ -1106,6 +1106,22 @@ function ProgressTab({
   // Completing an area releases its holder, so the two counts do not overlap.
   const openCount = Math.max(0, totalAreas - completedCount - assignedCount);
   const donePct = pct(covered, target);
+  // How far the areas in drivers' hands are driven: their road and what is driven of it, from the
+  // areas table (every area in view, so only while the table is not searched or filtered).
+  const heldDriven = useMemo(() => {
+    if (query.trim() || priority !== '') return null;
+    const held = new Set(assignments.filter((a) => !a.releasedAt && a.areaCode).map((a) => a.areaCode as string));
+    let t = 0;
+    let c = 0;
+    let n = 0;
+    for (const a of areas) {
+      if (!held.has(a.areaCode)) continue;
+      t += a.targetMeters || 0;
+      c += a.coveredMeters || 0;
+      n++;
+    }
+    return n ? { target: t, covered: c, areas: n } : null;
+  }, [areas, assignments, query, priority]);
 
   /**
    * The figures split by where they are. Everything in view and more than one region: a row per
@@ -1459,6 +1475,14 @@ function ProgressTab({
               <span><i className="held" />{assignedCount.toLocaleString()} with a driver</span>
               <span><i className="open" />{openCount.toLocaleString()} waiting</span>
             </div>
+            {heldDriven && (
+              <div
+                className="cov-strip-sub"
+                title={`The ${heldDriven.areas} area${heldDriven.areas === 1 ? '' : 's'} with a driver: ${km(heldDriven.covered)} of their ${km(heldDriven.target)} km of road driven`}
+              >
+                With a driver: <b>{km(heldDriven.covered)}</b> of {km(heldDriven.target)} km driven · <b>{pct(heldDriven.covered, heldDriven.target).toFixed(1)}%</b>
+              </div>
+            )}
           </div>
 
           <div className="cov-strip-facts">
