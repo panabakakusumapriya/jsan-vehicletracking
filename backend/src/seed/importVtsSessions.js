@@ -88,6 +88,7 @@ const PROCESS = args.get('no-process') !== true;
 const SNAP = args.get('snap') === true;
 const CONCURRENCY = Math.max(1, Math.min(8, Number(args.get('concurrency')) || 1));
 const REVERT = args.has('revert') ? String(args.get('revert')) : null;
+const REPAIR_POINTS = args.has('repair-points') ? String(args.get('repair-points')) : null;
 const FROM_DB = args.get('from-db') === true;
 // With --from-db, the open read-only connection to the VTS database (see loadFromVtsDb).
 let vtsDb = null;
@@ -136,9 +137,16 @@ async function rawPoints(dump, token, id) {
   const file = path.join(dir, `${id}.json`);
   let list;
   if (fs.existsSync(file)) list = JSON.parse(fs.readFileSync(file, 'utf8'));
-  else if (vtsDb) {
+  // A list cached before the fix below has no point ids; with the database at hand, fetch it again.
+  if (list && vtsDb && list.length && !list[0]._id) list = null;
+  if (list) {
+    // cached
+  } else if (vtsDb) {
+    // _id kept: it is each point's clientId here ("vts:<id>"). Projected away, every point came out
+    // "vts:undefined" — the unique index then refused all but the first, and the duplicate-tolerant
+    // insert below swallowed it: --from-db imports stored no raw GPS (fixed 2026-10-29).
     list = await vtsDb.collection('locationpoints')
-      .find({ session: new vtsDb.ObjectId(String(id)) }, { projection: { _id: 0, latitude: 1, longitude: 1, speed: 1, accuracy: 1, heading: 1, timestamp: 1 } })
+      .find({ session: new vtsDb.ObjectId(String(id)) }, { projection: { latitude: 1, longitude: 1, speed: 1, accuracy: 1, heading: 1, timestamp: 1 } })
       .sort({ timestamp: 1 })
       .toArray();
     fs.writeFileSync(file, JSON.stringify(list));
@@ -268,6 +276,51 @@ async function revert(batch) {
   log(`Deleted ${trips.deletedCount} trips, ${pts.deletedCount} points. Now rebuild coverage: node src/seed/backfillLinkCoverage.js`);
 }
 
+/**
+ * --repair-points=<batch>[,<batch>] (with --from-db): store the raw GPS an earlier --from-db import
+ * left out (see rawPoints). Only LocationPoints are written — each trip's km, route, UKM and
+ * coverage were worked out from the fixes in memory and are right as they are. A trip that already
+ * holds its points is left alone; the stray "vts:undefined" point is replaced by the real ones.
+ */
+async function repairPoints(batches) {
+  if (!vtsDb) throw new Error('--repair-points needs --from-db');
+  const Trip = require('../models/Trip');
+  const LocationPoint = require('../models/LocationPoint');
+  const dump = String(args.get('dump') || path.join(os.tmpdir(), 'vts-sync-cache'));
+  let fixed = 0; let added = 0; let left = 0;
+  for (const batch of batches) {
+    if (!/^vts-/.test(batch)) throw new Error(`${batch} is not a vts-… batch`);
+    const trips = await Trip.find({ importBatchId: batch }).select('importSourceId driverId vehicleId pointCount').lean();
+    for (const t of trips) {
+      const have = await LocationPoint.countDocuments({ tripId: t._id, clientId: { $ne: 'vts:undefined' } });
+      if (have >= (t.pointCount || 0)) { left++; continue; }
+      const pts = (await rawPoints(dump, null, String(t.importSourceId).replace(/^vts:/, ''))).filter(inAustralia);
+      if (pts.some((p) => !p._id)) throw new Error(`trip ${t._id}: VTS points without ids`);
+      log(`${batch} trip ${t._id}: ${have} of ${t.pointCount} points stored, ${pts.length} in VTS${APPLY ? '' : ' (dry run)'}`);
+      if (!APPLY) continue;
+      await LocationPoint.deleteMany({ tripId: t._id, clientId: 'vts:undefined' });
+      const now = new Date();
+      for (let i = 0; i < pts.length; i += 5000) {
+        const docs = pts.slice(i, i + 5000).map((p) => ({
+          clientId: `vts:${p._id}`, tripId: t._id, driverId: t.driverId, vehicleId: t.vehicleId || null,
+          lat: p.latitude, lon: p.longitude, speedKmh: p.speed > 0 ? p.speed : 0, heading: p.heading ?? null,
+          accuracy: p.accuracy ?? null, altitude: p.altitude ?? null, isMoving: (p.speed || 0) > 2,
+          recordedAt: p.at, receivedAt: now,
+        }));
+        try {
+          await LocationPoint.insertMany(docs, { ordered: false });
+          added += docs.length;
+        } catch (e) {
+          if (e.code !== 11000 && !e.writeErrors?.every((w) => w.code === 11000)) throw e;
+          added += e.insertedDocs?.length ?? 0;
+        }
+      }
+      fixed++;
+    }
+  }
+  log(`Repair: ${fixed} trip(s) given their raw GPS (${added} points)${APPLY ? '' : ' — dry run, add --apply'}, ${left} already complete.`);
+}
+
 async function main() {
   await connectDB();
   if (REVERT) return revert(REVERT);
@@ -278,6 +331,7 @@ async function main() {
   if (!FROM_DB && (!dump || !tokenFile)) throw new Error('--dump=<dir> and --token-file=<file> are required (or --from-db)');
   const token = tokenFile ? fs.readFileSync(tokenFile, 'utf8').trim() : null;
   const fromDb = FROM_DB ? await loadFromVtsDb() : null;
+  if (REPAIR_POINTS) return repairPoints(REPAIR_POINTS.split(','));
 
   const User = require('../models/User');
   const Trip = require('../models/Trip');
@@ -498,6 +552,7 @@ async function main() {
     // the half-written trip again, so a re-run redoes the session instead of skipping it as done.
     partial.set(s._id, trip._id);
     const now = new Date();
+    if (pts.some((p) => !p._id)) throw new Error(`session ${s._id}: a VTS point without an id — refusing to write "vts:undefined"`);
     for (let i = 0; i < pts.length; i += 5000) {
       const docs = pts.slice(i, i + 5000).map((p) => ({
         clientId: `vts:${p._id}`,
