@@ -52,6 +52,11 @@
  *
  * Options: --project="PRJ-025-HE-DRIVE-AUSGNZ"  --vts-project=6a3233e935b68ccdc47a9785
  *          --create-missing-drivers  --no-process  --concurrency=4
+ *          --region=au|sg   where the drive is: the fix filter, the fallback time zone and a created
+ *                           driver's country (au, the default: projaustralia; sg: VTS "Singapore",
+ *                           --vts-project=6a2a9d42fb182e3c95de52e0)
+ *          --sessions-file=<csv>   only the session ids in this file (a VTS export's sessions-index.csv,
+ *                           its "Session id" column)
  */
 const fs = require('fs');
 const os = require('os');
@@ -86,7 +91,15 @@ const REVERT = args.has('revert') ? String(args.get('revert')) : null;
 const FROM_DB = args.get('from-db') === true;
 // With --from-db, the open read-only connection to the VTS database (see loadFromVtsDb).
 let vtsDb = null;
-const DEFAULT_ZONE = 'Australia/Melbourne';
+// Where the project's driving is. A fix outside the region's box is not part of the drive (see below).
+const REGIONS = {
+  au: { label: 'Australia', zone: 'Australia/Melbourne', country: 'Australia', inside: (p) => p.latitude < -9 && p.latitude > -44.5 && p.longitude > 112 && p.longitude < 154.5 },
+  sg: { label: 'Singapore', zone: 'Asia/Singapore', country: 'Singapore', inside: (p) => p.latitude > 1.1 && p.latitude < 1.55 && p.longitude > 103.5 && p.longitude < 104.15 },
+};
+const REGION = REGIONS[String(args.get('region') || 'au').toLowerCase()];
+if (!REGION) throw new Error(`--region must be one of ${Object.keys(REGIONS).join(', ')}`);
+const DEFAULT_ZONE = REGION.zone;
+const SESSIONS_FILE = args.has('sessions-file') ? String(args.get('sessions-file')) : null;
 // Test logins on VTS — never real driving.
 const TEST_EMAILS = new Set(['autest@vts.com', 'projaus@gmail.com']);
 // A fix this inaccurate, or a step this fast, is not counted toward distance (it still goes in).
@@ -94,9 +107,9 @@ const MAX_ACCURACY_M = 50;
 const MAX_STEP_KMH = 250;
 // Some VTS sessions carry fixes from a second phone in Hyderabad recording under the same session
 // (a whole session, or a few hundred fixes mid-drive). Snapped together with the real drive they
-// made a 28,000 km "route" and claimed roads in India. This is an Australian project: a fix outside
-// Australia is not part of the drive and is dropped; a session with nothing left is skipped.
-const inAustralia = (p) => p.latitude < -9 && p.latitude > -44.5 && p.longitude > 112 && p.longitude < 154.5;
+// made a 28,000 km "route" and claimed roads in India. A fix outside the --region (Australia by
+// default) is not part of the drive and is dropped; a session with nothing left is skipped.
+const inAustralia = (p) => REGION.inside(p);
 
 const log = (...a) => console.log(...a);
 const read = (dir, f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
@@ -239,7 +252,7 @@ async function loadFromVtsDb() {
       lastHeartbeat: d.lastHeartbeat ? new Date(d.lastHeartbeat).toISOString() : null,
     };
   });
-  log(`VTS database: ${drivers.length} users, ${sessions.length} projaustralia sessions`);
+  log(`VTS database: ${drivers.length} users, ${sessions.length} sessions of VTS project ${VTS_PROJECT} (${REGION.label})`);
   return { drivers, sessions };
 }
 
@@ -276,15 +289,25 @@ async function main() {
   if (!project) throw new Error(`No project named ${PROJECT_NAME}`);
 
   const vtsDrivers = new Map((fromDb ? fromDb.drivers : read(dump, 'drivers.json')).map((d) => [d._id, d]));
+  // --sessions-file: just the sessions a VTS export lists (its "Session id" column).
+  let listed = null;
+  if (SESSIONS_FILE) {
+    const rows = fs.readFileSync(SESSIONS_FILE, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
+    const col = rows[0].split(',').findIndex((h) => /^session id$/i.test(h.trim()));
+    if (col < 0) throw new Error(`${SESSIONS_FILE} has no "Session id" column`);
+    listed = new Set(rows.slice(1).map((r) => r.split(',')[col].trim()).filter((id) => /^[0-9a-f]{24}$/i.test(id)));
+    log(`${listed.size} sessions listed in ${path.basename(SESSIONS_FILE)}`);
+  }
   const sessions = (fromDb ? fromDb.sessions : read(dump, 'sessions_all.json'))
     .filter((s) => s.driver && vtsDrivers.get(s.driver._id)?.project?._id === VTS_PROJECT)
     .filter((s) => !ONLY || s._id === ONLY)
+    .filter((s) => !listed || listed.has(s._id))
     .sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
 
   const users = await User.find({ role: 'user' }).select('name email timezone managerId projectIds').lean();
   const byEmail = new Map(users.map((u) => [String(u.email).toLowerCase(), u]));
 
-  // Each driver's zone: their own, else that of their latest trip here, else Melbourne.
+  // Each driver's zone: their own, else that of their latest trip here, else the region's.
   const zoneCache = new Map();
   const zoneOf = async (u) => {
     if (!u) return DEFAULT_ZONE;
@@ -356,7 +379,7 @@ async function main() {
     for (const m of missing.values()) {
       if (!todo.some((p) => p.email === m.email)) continue;
       const u = new User({
-        name: m.name, email: m.email, role: 'user', projectIds: [project._id], country: 'AU',
+        name: m.name, email: m.email, role: 'user', projectIds: [project._id], country: REGION.country,
         passwordHash: await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10),
       });
       await u.save();
@@ -543,7 +566,7 @@ async function main() {
   for (const d of touchedDrivers) {
     try { await recomputeDriverUkm(d); } catch (e) { console.error(`driver UKM failed for ${d}: ${e.message}`); }
   }
-  log(`\nDone: ${trips} trips (${routeOnlyCount} on VTS's route alone, no raw GPS left on VTS), ${points} points, ${skipped} skipped (under 2 fixes in Australia), ${abroad} fixes outside Australia dropped. Batch ${batch}.`);
+  log(`\nDone: ${trips} trips (${routeOnlyCount} on VTS's route alone, no raw GPS left on VTS), ${points} points, ${skipped} skipped (under 2 fixes in ${REGION.label}), ${abroad} fixes outside ${REGION.label} dropped. Batch ${batch}.`);
   log(PROCESS
     ? `Processed: ${JSON.stringify(outcomes)} (byWorker = the worker claimed it first; it finishes it the same way).`
     : 'Left pending: the map-match worker picks them up — route, km, UKM and coverage follow on their own.');
