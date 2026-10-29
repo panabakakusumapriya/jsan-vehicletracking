@@ -433,7 +433,7 @@ async function main() {
     for (const m of missing.values()) {
       if (!todo.some((p) => p.email === m.email)) continue;
       const u = new User({
-        name: m.name, email: m.email, role: 'user', projectIds: [project._id], country: REGION.country,
+        name: m.name, email: m.email, role: 'user', projectIds: [project._id], project: project.name, country: REGION.country,
         passwordHash: await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10),
       });
       await u.save();
