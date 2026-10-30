@@ -567,6 +567,7 @@ function ProgressTab({
   const [markerCount, setMarkerCount] = useState(0);
   // Coverage by state, worked out by the map from the roads it has loaded (lib/stateCoverage).
   const [stateCov, setStateCov] = useState<StateCoverage | 'loading' | null>(null);
+  const [drivenOpen, setDrivenOpen] = useState(false);
   const [stateFocus, setStateFocus] = useState<{ bbox: [number, number, number, number]; nonce: number } | null>(null);
   const deliveryTargets = useMemo(
     () => Object.fromEntries((summary?.byDelivery || []).map((d) => [d.versionId, d.targetMeters])),
@@ -1450,7 +1451,14 @@ function ProgressTab({
         <div className="card cov-strip">
           {/* Driven only: each road counted once across the deliveries in view. No "of <total>" and no
               percentage — the total double-counted shared roads and the % invited comparing unlike things. */}
-          <div className="cov-strip-main" title="Customer road driven — Atlas trips and the migrated VTS data — each road counted once, whatever its priority or delivery">
+          <div
+            className="cov-strip-main cov-strip-click"
+            role="button"
+            tabIndex={0}
+            onClick={() => setDrivenOpen(true)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDrivenOpen(true); } }}
+            title="Customer road driven — Atlas trips and the migrated VTS data — each road counted once. Click for inside / outside the work areas."
+          >
             <div className="cov-strip-col">
               <div className="cov-strip-line">
                 <b>{km(covered)} km</b> driven{scopeLabel ? <span className="cov-strip-scope"> · {scopeLabel}</span> : null}
@@ -1794,6 +1802,46 @@ function ProgressTab({
           </div>
         )}
       </div>
+
+      {drivenOpen && summary && (
+        <Modal title={`Road driven${scopeLabel ? ` · ${scopeLabel}` : ''}`} onClose={() => setDrivenOpen(false)}>
+          <p className="cov-sub" style={{ marginTop: 0 }}>
+            Customer road driven — Atlas trips and the migrated VTS data — each road counted once. Inside
+            means within the customer&apos;s work areas; outside means on roads of the delivery that lie in no
+            work area.
+          </p>
+          <table className="cov-mini">
+            <thead>
+              <tr><th>{(summary.byDelivery || []).length > 1 ? 'Delivery' : ''}</th><th>Inside areas</th><th>Outside areas</th><th>Total</th></tr>
+            </thead>
+            <tbody>
+              {(summary.byDelivery || []).length > 1 && (summary.byDelivery || []).map((d) => {
+                const v = deliveries.find((x) => x._id === d.versionId);
+                return (
+                  <tr key={d.versionId}>
+                    <td>{v ? nameOf(v) : d.label}</td>
+                    <td>{km(d.coveredInAreaMeters || 0)} km</td>
+                    <td>{km(d.coveredOutAreaMeters || 0)} km</td>
+                    <td>{km(d.coveredMeters)} km</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ fontWeight: 700 }}>
+                <td>{(summary.byDelivery || []).length > 1 ? 'Total — each road once' : 'Total'}</td>
+                <td>{km(summary.combined?.coveredInAreaMeters ?? 0)} km</td>
+                <td>{km(summary.combined?.coveredOutAreaMeters ?? 0)} km</td>
+                <td>{km(covered)} km</td>
+              </tr>
+            </tbody>
+          </table>
+          {(summary.byDelivery || []).length > 1 && (
+            <p className="cov-sub" style={{ marginTop: 10, marginBottom: 0 }}>
+              A road in two deliveries is in both of their rows but once in the total, so the rows add up to
+              more than the total.
+            </p>
+          )}
+        </Modal>
+      )}
 
       {stateCov && (
         <div className="card cov-breakdown">

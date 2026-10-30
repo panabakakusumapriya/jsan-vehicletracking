@@ -1915,6 +1915,8 @@ select.input { cursor: pointer; }
   padding: 9px 16px; margin: 0;
 }
 .cov-strip-main { display: flex; align-items: center; gap: 12px; flex: 1 1 240px; min-width: 0; }
+.cov-strip-click { cursor: pointer; border-radius: 8px; padding: 4px 6px; margin: -4px -6px; }
+.cov-strip-click:hover, .cov-strip-click:focus-visible { background: var(--brand-light); outline: none; }
 .cov-strip-pct {
   font-size: 26px; font-weight: 800; letter-spacing: -.8px; line-height: 1;
   color: var(--brand); font-variant-numeric: tabular-nums; white-space: nowrap;

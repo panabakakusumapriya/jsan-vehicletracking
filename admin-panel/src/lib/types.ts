@@ -741,6 +741,8 @@ export interface DeliveryBreakdown {
   targetMeters: number;
   coveredMeters: number;
   coveredLinks: number;
+  coveredInAreaMeters?: number;
+  coveredOutAreaMeters?: number;
   completedAreas: number;
   assignedAreas: number;
 }
@@ -760,7 +762,15 @@ export interface CoverageSummary {
   coveredLinks: number;
   /** The headline's figures: every delivery in view, each road counted once (Atlas trips and the
    *  migrated VTS data alike). See network.controller combinedCoverage. */
-  combined?: { coveredMeters: number; coveredLinks: number; targetMeters: number; targetLinks: number };
+  combined?: {
+    coveredMeters: number;
+    coveredLinks: number;
+    /** Driven inside the customer's work areas / on links outside every area. */
+    coveredInAreaMeters?: number;
+    coveredOutAreaMeters?: number;
+    targetMeters: number;
+    targetLinks: number;
+  };
   targetMeters: number;
   targetLinks: number;
   /** Areas a manager has signed off in the project's current coverage cycle. */

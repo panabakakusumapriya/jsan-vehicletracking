@@ -617,15 +617,30 @@ async function combinedCoverage(versionIds) {
   const hit = combinedCoveredCache.get(cKey);
   let covered = hit && Date.now() - hit.at < 60 * 1000 ? hit.value : null;
   if (!covered) {
-    const [row] = await LinkCoverage.aggregate([
+    // Each road once; in a work area if it is in one in any delivery that holds it.
+    const rows = await LinkCoverage.aggregate([
       { $match: { networkVersionId: { $in: ids } } },
-      { $group: { _id: '$linkId', m: { $max: '$lengthMeters' } } },
-      { $group: { _id: null, meters: { $sum: '$m' }, links: { $sum: 1 } } },
+      { $group: { _id: '$linkId', m: { $max: '$lengthMeters' }, inArea: { $max: { $cond: [{ $ne: [{ $ifNull: ['$areaId', null] }, null] }, 1, 0] } } } },
+      { $group: { _id: '$inArea', meters: { $sum: '$m' }, links: { $sum: 1 } } },
     ]).allowDiskUse(true);
-    covered = { meters: row?.meters || 0, links: row?.links || 0 };
+    const part = (k) => rows.find((r) => r._id === k) || { meters: 0, links: 0 };
+    covered = {
+      meters: part(1).meters + part(0).meters,
+      links: part(1).links + part(0).links,
+      inAreaMeters: part(1).meters,
+      outAreaMeters: part(0).meters,
+    };
     combinedCoveredCache.set(cKey, { at: Date.now(), value: covered });
   }
-  return { coveredMeters: covered.meters, coveredLinks: covered.links, targetMeters: target.meters, targetLinks: target.links };
+  return {
+    coveredMeters: covered.meters,
+    coveredLinks: covered.links,
+    // Driven inside the customer's work areas, and on links outside every area.
+    coveredInAreaMeters: covered.inAreaMeters,
+    coveredOutAreaMeters: covered.outAreaMeters,
+    targetMeters: target.meters,
+    targetLinks: target.links,
+  };
 }
 
 async function versionSummary(req, res) {
@@ -686,6 +701,13 @@ async function versionSummary(req, res) {
   const completedAreas = countIn([...inView], completedSet);
   const assignedAreaCodes = [...inView].filter((c) => assignedSet.has(c));
 
+  // Driven inside / outside the work areas, per delivery (each road once within its delivery).
+  const areaSplit = await LinkCoverage.aggregate([
+    { $match: { networkVersionId: { $in: scope.versionIds } } },
+    { $group: { _id: { v: '$networkVersionId', inArea: { $ne: [{ $ifNull: ['$areaId', null] }, null] } }, meters: { $sum: '$lengthMeters' } } },
+  ]);
+  const splitOf = (v, inArea) => areaSplit.find((r) => String(r._id.v) === String(v) && r._id.inArea === inArea)?.meters || 0;
+
   /** One row per delivery in view, for the page's By-region and By-delivery tables. */
   const byDelivery = sources.map((v, i) => ({
     versionId: String(v._id),
@@ -698,6 +720,8 @@ async function versionSummary(req, res) {
     targetMeters: v.targetMeters || 0,
     coveredMeters: coveredByVersion.get(String(v._id))?.meters || 0,
     coveredLinks: coveredByVersion.get(String(v._id))?.links || 0,
+    coveredInAreaMeters: splitOf(v._id, true),
+    coveredOutAreaMeters: splitOf(v._id, false),
     completedAreas: countIn(codesByVersion[i], completedSet),
     assignedAreas: countIn(codesByVersion[i], assignedSet),
   }));
