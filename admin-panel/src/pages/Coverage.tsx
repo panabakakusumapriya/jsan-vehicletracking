@@ -1096,11 +1096,13 @@ function ProgressTab({
    * Denominators come from the SUMMARY, which is project-wide. `version` is only the newest
    * delivery, and mixing the two printed "335 assigned" beside "134 work areas".
    */
-  const covered = summary?.coveredMeters || 0;
-  const target = summary?.targetMeters || version.targetMeters;
+  // Each road once, driven by trips (summary.combined); the per-delivery sums double-counted roads
+  // two deliveries share, and counted the VTS coverage floor, which no trip here drove.
+  const covered = summary?.combined ? summary.combined.coveredMeters : summary?.coveredMeters || 0;
+  const target = summary?.combined?.targetMeters || summary?.targetMeters || version.targetMeters;
   const remaining = Math.max(0, target - covered);
   const totalAreas = summary?.totalAreas ?? version.counts.areas;
-  const totalLinks = summary?.targetLinks ?? version.counts.links;
+  const totalLinks = summary?.combined?.targetLinks ?? summary?.targetLinks ?? version.counts.links;
   const completedCount = summary?.completedAreas ?? 0;
   const assignedCount = summary?.assignedAreas ?? 0;
   // Completing an area releases its holder, so the two counts do not overlap.
@@ -1450,7 +1452,7 @@ function ProgressTab({
       <div ref={headRef} className="cov-head-row">
         {filterBar}
         <div className="card cov-strip">
-          <div className="cov-strip-main" title={`${km(remaining)} km still to drive · ${totalLinks.toLocaleString()} road links`}>
+          <div className="cov-strip-main" title={`Customer road driven by trips recorded in Atlas, each road counted once even where deliveries overlap · ${km(remaining)} km still to drive · ${totalLinks.toLocaleString()} road links`}>
             <span className="cov-strip-pct">{donePct.toFixed(1)}<small>%</small></span>
             <div className="cov-strip-col">
               <div className="cov-strip-line">

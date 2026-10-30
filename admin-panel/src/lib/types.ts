@@ -758,6 +758,9 @@ export interface CoverageBand {
 export interface CoverageSummary {
   coveredMeters: number;
   coveredLinks: number;
+  /** The headline's figures: every delivery in view, each road once, driven by trips only (no VTS
+   *  coverage-floor claims). See network.controller combinedCoverage. */
+  combined?: { coveredMeters: number; coveredLinks: number; targetMeters: number; targetLinks: number };
   targetMeters: number;
   targetLinks: number;
   /** Areas a manager has signed off in the project's current coverage cycle. */

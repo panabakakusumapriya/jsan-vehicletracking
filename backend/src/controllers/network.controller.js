@@ -571,6 +571,63 @@ async function updateVersion(req, res) {
  * the coverage side groups on an index that already holds lengthMeters, so neither has to touch
  * the 654k links.
  */
+/**
+ * The headline's figures for the deliveries in view, each road ONCE and driven by trips only.
+ *
+ * Summed per delivery, a road in two deliveries (QLD-P1 with its P2 top-up and the highways
+ * delivery; VIC-P1 and VIC-P2) counted twice, on both sides of the fraction — Australia read
+ * "93,469.5 of 327,932.3 km" where its customer road is 241,774 km and 69,472 km of it driven.
+ * And claims from the VTS coverage floor (importVtsCoverageFloor.js, batches "vtsfloor-…") hang off
+ * 0 km placeholder trips: VTS's picture, not a drive recorded here. Both are left out here; the
+ * per-delivery tables keep their own figures.
+ *
+ * The road side is a $group over every link of the deliveries (2.1 M for Australia, ~5 s), and only
+ * changes with an import, a split or a clean-up — so it is kept per set of deliveries, keyed by
+ * their link counts and targets. The driven side changes with every trip and is ~2 s; kept 60 s.
+ */
+const combinedTargetCache = new Map();
+const combinedCoveredCache = new Map();
+async function combinedCoverage(versionIds) {
+  const versions = await NetworkVersion.find({ _id: { $in: versionIds } })
+    .select('_id targetMeters orphanMeters byFuncClass counts')
+    .lean();
+  const ids = versions.map((v) => v._id);
+  // A delivery's links outside every area count only where its target counts them (QLD-P1 yes).
+  const orphansIn = versions
+    .filter((v) => {
+      const all = (v.byFuncClass || []).reduce((sum, b) => sum + (b.meters || 0), 0);
+      return !(Math.abs((v.targetMeters || 0) - (all - (v.orphanMeters || 0))) < 1);
+    })
+    .map((v) => v._id);
+  const orphansOut = ids.filter((id) => !orphansIn.some((o) => String(o) === String(id)));
+
+  const tKey = versions.map((v) => `${v._id}:${v.counts?.links || 0}:${Math.round(v.targetMeters || 0)}`).sort().join('|');
+  let target = combinedTargetCache.get(tKey);
+  if (!target) {
+    const [row] = await RoadLink.aggregate([
+      { $match: { $or: [{ networkVersionId: { $in: orphansIn } }, { networkVersionId: { $in: orphansOut }, areaId: { $ne: null } }] } },
+      { $group: { _id: '$linkId', m: { $max: '$lengthMeters' } } },
+      { $group: { _id: null, meters: { $sum: '$m' }, links: { $sum: 1 } } },
+    ]).allowDiskUse(true);
+    target = { meters: row?.meters || 0, links: row?.links || 0 };
+    combinedTargetCache.set(tKey, target);
+  }
+
+  const cKey = ids.map(String).sort().join('|');
+  const hit = combinedCoveredCache.get(cKey);
+  let covered = hit && Date.now() - hit.at < 60 * 1000 ? hit.value : null;
+  if (!covered) {
+    const [row] = await LinkCoverage.aggregate([
+      { $match: { networkVersionId: { $in: ids }, importBatchId: { $not: /^vtsfloor-/ } } },
+      { $group: { _id: '$linkId', m: { $max: '$lengthMeters' } } },
+      { $group: { _id: null, meters: { $sum: '$m' }, links: { $sum: 1 } } },
+    ]).allowDiskUse(true);
+    covered = { meters: row?.meters || 0, links: row?.links || 0 };
+    combinedCoveredCache.set(cKey, { at: Date.now(), value: covered });
+  }
+  return { coveredMeters: covered.meters, coveredLinks: covered.links, targetMeters: target.meters, targetLinks: target.links };
+}
+
 async function versionSummary(req, res) {
   const scope = await resolveNetworkScope(req);
   if (!scope) return res.status(404).json({ error: 'Network version not found' });
@@ -645,11 +702,15 @@ async function versionSummary(req, res) {
     assignedAreas: countIn(codesByVersion[i], assignedSet),
   }));
 
+  const combined = await combinedCoverage(scope.versionIds);
+
   return res.json({
     version,
     coverage: {
       coveredMeters,
       coveredLinks,
+      // The headline: each road once, driven by trips (see combinedCoverage).
+      combined,
       // Project-wide reads sum every delivery in scope, so the denominator is the whole programme
       // rather than whichever delivery happens to be active.
       targetMeters: scope.totals ? scope.totals.targetMeters : version.targetMeters,
