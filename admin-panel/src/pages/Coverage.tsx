@@ -1099,15 +1099,11 @@ function ProgressTab({
   // Each road once across the deliveries in view (summary.combined); the per-delivery sums
   // double-counted the roads two deliveries share.
   const covered = summary?.combined ? summary.combined.coveredMeters : summary?.coveredMeters || 0;
-  const target = summary?.combined?.targetMeters || summary?.targetMeters || version.targetMeters;
-  const remaining = Math.max(0, target - covered);
   const totalAreas = summary?.totalAreas ?? version.counts.areas;
-  const totalLinks = summary?.combined?.targetLinks ?? summary?.targetLinks ?? version.counts.links;
   const completedCount = summary?.completedAreas ?? 0;
   const assignedCount = summary?.assignedAreas ?? 0;
   // Completing an area releases its holder, so the two counts do not overlap.
   const openCount = Math.max(0, totalAreas - completedCount - assignedCount);
-  const donePct = pct(covered, target);
   // How far the areas in drivers' hands are driven: their road and what is driven of it, from the
   // areas table (every area in view, so only while the table is not searched or filtered).
   const heldDriven = useMemo(() => {
@@ -1452,16 +1448,14 @@ function ProgressTab({
       <div ref={headRef} className="cov-head-row">
         {filterBar}
         <div className="card cov-strip">
-          <div className="cov-strip-main" title={`Customer road driven — Atlas trips and the migrated VTS data — each road counted once even where deliveries overlap · ${km(remaining)} km still to drive · ${totalLinks.toLocaleString()} road links`}>
-            <span className="cov-strip-pct">{donePct.toFixed(1)}<small>%</small></span>
+          {/* Driven only: each road counted once across the deliveries in view. No "of <total>" and no
+              percentage — the total double-counted shared roads and the % invited comparing unlike things. */}
+          <div className="cov-strip-main" title="Customer road driven — Atlas trips and the migrated VTS data — each road counted once, whatever its priority or delivery">
             <div className="cov-strip-col">
               <div className="cov-strip-line">
-                <b>{km(covered)}</b> of {km(target)} km driven{scopeLabel ? <span className="cov-strip-scope"> · {scopeLabel}</span> : null}
+                <b>{km(covered)} km</b> driven{scopeLabel ? <span className="cov-strip-scope"> · {scopeLabel}</span> : null}
               </div>
-              <div className="cov-meter" role="img" aria-label={`${donePct.toFixed(1)}% of the target network driven`}>
-                <div className="cov-meter-fill" style={{ width: `${Math.min(100, donePct)}%` }} />
-              </div>
-              <div className="cov-strip-sub"><b>{km(remaining)} km</b> to drive · {totalLinks.toLocaleString()} links</div>
+              <div className="cov-strip-sub">each road counted once{summary?.combined ? ` · ${summary.combined.coveredLinks.toLocaleString()} roads` : ''}</div>
             </div>
           </div>
 
@@ -1480,9 +1474,9 @@ function ProgressTab({
             {heldDriven && (
               <div
                 className="cov-strip-sub"
-                title={`The ${heldDriven.areas} area${heldDriven.areas === 1 ? '' : 's'} with a driver: ${km(heldDriven.covered)} of their ${km(heldDriven.target)} km of road driven`}
+                title={`Road driven in the ${heldDriven.areas} area${heldDriven.areas === 1 ? '' : 's'} with a driver, each road counted once`}
               >
-                With a driver: <b>{km(heldDriven.covered)}</b> of {km(heldDriven.target)} km driven · <b>{pct(heldDriven.covered, heldDriven.target).toFixed(1)}%</b>
+                With a driver: <b>{km(heldDriven.covered)} km</b> driven
               </div>
             )}
           </div>
