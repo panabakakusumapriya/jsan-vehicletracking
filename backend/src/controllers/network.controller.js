@@ -572,14 +572,14 @@ async function updateVersion(req, res) {
  * the 654k links.
  */
 /**
- * The headline's figures for the deliveries in view, each road ONCE and driven by trips only.
+ * The headline's figures for the deliveries in view, each road ONCE.
  *
  * Summed per delivery, a road in two deliveries (QLD-P1 with its P2 top-up and the highways
  * delivery; VIC-P1 and VIC-P2) counted twice, on both sides of the fraction — Australia read
- * "93,469.5 of 327,932.3 km" where its customer road is 241,774 km and 69,472 km of it driven.
- * And claims from the VTS coverage floor (importVtsCoverageFloor.js, batches "vtsfloor-…") hang off
- * 0 km placeholder trips: VTS's picture, not a drive recorded here. Both are left out here; the
- * per-delivery tables keep their own figures.
+ * "93,469.5 of 327,932.3 km" where its customer road is 241,774 km. Driven counts every claim:
+ * trips recorded here, VTS sessions imported as trips, and the VTS coverage floor (vtsfloor-…) —
+ * VTS driving whose GPS VTS no longer holds, migrated with the old system. The per-delivery
+ * tables keep their own figures.
  *
  * The road side is a $group over every link of the deliveries (2.1 M for Australia, ~5 s), and only
  * changes with an import, a split or a clean-up — so it is kept per set of deliveries, keyed by
@@ -618,7 +618,7 @@ async function combinedCoverage(versionIds) {
   let covered = hit && Date.now() - hit.at < 60 * 1000 ? hit.value : null;
   if (!covered) {
     const [row] = await LinkCoverage.aggregate([
-      { $match: { networkVersionId: { $in: ids }, importBatchId: { $not: /^vtsfloor-/ } } },
+      { $match: { networkVersionId: { $in: ids } } },
       { $group: { _id: '$linkId', m: { $max: '$lengthMeters' } } },
       { $group: { _id: null, meters: { $sum: '$m' }, links: { $sum: 1 } } },
     ]).allowDiskUse(true);
@@ -709,7 +709,7 @@ async function versionSummary(req, res) {
     coverage: {
       coveredMeters,
       coveredLinks,
-      // The headline: each road once, driven by trips (see combinedCoverage).
+      // The headline: each road counted once across the deliveries in view (see combinedCoverage).
       combined,
       // Project-wide reads sum every delivery in scope, so the denominator is the whole programme
       // rather than whichever delivery happens to be active.
