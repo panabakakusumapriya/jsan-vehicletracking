@@ -101,6 +101,8 @@ const REGION = REGIONS[String(args.get('region') || 'au').toLowerCase()];
 if (!REGION) throw new Error(`--region must be one of ${Object.keys(REGIONS).join(', ')}`);
 const DEFAULT_ZONE = REGION.zone;
 const SESSIONS_FILE = args.has('sessions-file') ? String(args.get('sessions-file')) : null;
+// --exclude=<email,…>: drivers left out of this run (e.g. one whose phone trips sit on another login).
+const EXCLUDE = new Set(String(args.get('exclude') || '').toLowerCase().split(',').filter(Boolean));
 // Test logins on VTS — never real driving.
 const TEST_EMAILS = new Set(['autest@vts.com', 'projaus@gmail.com']);
 // A fix this inaccurate, or a step this fast, is not counted toward distance (it still goes in).
@@ -398,6 +400,7 @@ async function main() {
     // path could see them, and 21,000 km went missing. A session with a cached VTS route is kept.
     if (!s.totalLocations && !(s.cleanedDistance > 0) && !(s.cleanedRouteCount >= 2) && !hasCachedRoute(dump, s._id)) { stats.noPoints++; continue; }
     if (TEST_EMAILS.has(email)) { stats.testAccount++; continue; }
+    if (EXCLUDE.has(email)) { stats.excluded = (stats.excluded || 0) + 1; continue; }
     if (already.has(`vts:${s._id}`)) { stats.alreadyImported++; continue; }
     const u = byEmail.get(email);
     if (!u) {
