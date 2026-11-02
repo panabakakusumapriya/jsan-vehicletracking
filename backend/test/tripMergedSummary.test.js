@@ -89,6 +89,14 @@ function assert(cond, msg) {
   const page2 = await asAdmin(request(app).get('/api/trips/merged-summary?limit=2&page=2'));
   assert(page2.body.summaries.length === 1, 'second page carries the remaining group');
 
+  console.log('\n── totals cover EVERY page, not just the one on screen ──');
+  const everyRow = await asAdmin(request(app).get('/api/trips/merged-summary?limit=200'));
+  const rowsSum = (k) => everyRow.body.summaries.reduce((n, s) => n + (s[k] || 0), 0);
+  assert(page1.body.totals.trips === 5 && page2.body.totals.trips === 5,
+    'trips total is all 5 trips on page 1 AND page 2 (the stat chips follow the date filter, not the page)');
+  assert(page1.body.totals.distance === rowsSum('totalDistance'), 'distance total equals the sum of every day-row');
+  assert(page1.body.totals.days === page1.body.total, 'the totals count the same day-groups as `total`');
+
 
   console.log('\n── expanding a day-row returns the trips that row counted (the timezone bug) ──');
   {

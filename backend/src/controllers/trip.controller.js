@@ -544,8 +544,8 @@ exports.mergedSummary = asyncHandler(async (req, res) => {
   const filter = buildTripFilter(req, scope);
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 200);
   const page = Math.max(parseInt(req.query.page || '1', 10), 1);
-  const { summaries, total } = await daySummaries(filter, { skip: (page - 1) * limit, limit });
-  res.json({ summaries, total, page, limit });
+  const { summaries, total, totals } = await daySummaries(filter, { skip: (page - 1) * limit, limit });
+  res.json({ summaries, total, totals, page, limit });
 });
 
 /**
@@ -657,14 +657,48 @@ async function daySummaries(filter, { skip = 0, limit = 50 } = {}) {
     {
       $facet: {
         rows: [{ $skip: skip }, { $limit: limit }],
-        totalCount: [{ $count: 'count' }],
+        // The figures for EVERY matching driver-day, not just this page: the Trips page's stat
+        // chips must answer for the whole date range picked (a month), wherever the reader has
+        // paged to. Summed from the same day-groups as the rows, so the two cannot disagree.
+        totals: [
+          {
+            $group: {
+              _id: null,
+              days: { $sum: 1 },
+              trips: { $sum: '$totalTrips' },
+              activeDays: { $sum: '$anyActive' },
+              distance: { $sum: '$totalDistance' },
+              distanceCleaned: { $sum: '$totalDistanceCleaned' },
+              ukm: { $sum: '$totalUkm' },
+              assignedUkm: { $sum: '$assignedUkm' },
+              outsideUkm: { $sum: '$outsideUkm' },
+              workMs: { $sum: '$workMs' },
+              maxSpeed: { $max: '$maxSpeed' },
+              drivers: { $addToSet: '$_id.driverId' },
+            },
+          },
+        ],
       },
     },
   ];
 
   const [facetResult] = await Trip.aggregate(pipeline);
   const results = facetResult?.rows || [];
-  const total = facetResult?.totalCount?.[0]?.count || 0;
+  const t = facetResult?.totals?.[0];
+  const total = t?.days || 0;
+  const totals = {
+    days: total,
+    trips: t?.trips || 0,
+    activeDays: t?.activeDays || 0,
+    drivers: t?.drivers?.length || 0,
+    distance: t?.distance || 0,
+    distanceCleaned: t?.distanceCleaned || 0,
+    ukm: t?.ukm || 0,
+    assignedUkm: t?.assignedUkm || 0,
+    outsideUkm: t?.outsideUkm || 0,
+    workMs: t?.workMs || 0,
+    maxSpeed: t?.maxSpeed || 0,
+  };
 
   const summaries = results.map((r) => ({
     driverId: r._id.driverId,
@@ -714,7 +748,7 @@ async function daySummaries(filter, { skip = 0, limit = 50 } = {}) {
     }
   }
 
-  return { summaries, total };
+  return { summaries, total, totals };
 }
 
 /**

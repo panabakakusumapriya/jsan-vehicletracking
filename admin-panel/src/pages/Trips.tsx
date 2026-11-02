@@ -15,6 +15,21 @@ import type { Project, Trip, User } from '../lib/types';
 
 const plate = (v: Trip['vehicleId']) => (typeof v === 'object' && v ? v.plateNumber : '—');
 
+/** The whole filtered set's figures — /api/trips/merged-summary `totals`, every page at once. */
+interface TripTotals {
+  days: number;
+  trips: number;
+  activeDays: number;
+  drivers: number;
+  distance: number;
+  distanceCleaned: number;
+  ukm: number;
+  assignedUkm: number;
+  outsideUkm: number;
+  workMs: number;
+  maxSpeed: number;
+}
+
 /** One row per driver+calendar-day — /api/trips/merged-summary. */
 interface DaySummary {
   driverId: string;
@@ -140,6 +155,7 @@ const isoDay = (offsetDays: number) => {
 export function Trips() {
   const [summaries, setSummaries] = useState<DaySummary[]>([]);
   const [total, setTotal] = useState(0);
+  const [totals, setTotals] = useState<TripTotals | null>(null);
   const [drivers, setDrivers] = useState<User[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -242,10 +258,11 @@ export function Trips() {
   const load = useCallback((pageToLoad: number) => {
     setLoading(true);
     const params = buildParams(pageToLoad);
-    api.get<{ summaries: DaySummary[]; total: number; page: number; limit: number }>(`/api/trips/merged-summary?${params}`)
+    api.get<{ summaries: DaySummary[]; total: number; totals?: TripTotals; page: number; limit: number }>(`/api/trips/merged-summary?${params}`)
       .then(r => {
         setSummaries(r.summaries);
         setTotal(r.total);
+        setTotals(r.totals ?? null);
       })
       .finally(() => setLoading(false));
   }, [buildParams]);
@@ -357,17 +374,20 @@ export function Trips() {
     drivers.filter(d => !project || d.project === project).map(d => d.country).filter(Boolean)
   )).sort() as string[];
 
-  // These reflect only the current page of driver-days — `total` (below) is the one number
-  // here that's always exact for the whole filtered set regardless of which page is showing.
-  const tripsOnPage  = summaries.reduce((acc, s) => acc + s.totalTrips, 0);
-  const activeDays   = summaries.filter(s => s.anyActive).length;
-  const totalKm      = summaries.reduce((acc, s) => acc + (s.totalDistance ?? 0), 0);
-  const assignedUkm  = summaries.reduce((acc, s) => acc + (s.assignedUkm ?? 0), 0);
-  const outsideUkm   = summaries.reduce((acc, s) => acc + (s.outsideUkm ?? 0), 0);
-  const workMs       = summaries.reduce((acc, s) => acc + (s.workMs ?? 0), 0);
+  // The chips answer for EVERY driver-day the filters match (a whole month, say), not just the
+  // page on screen — the server sums them in the same pass as the rows. The page sums are only
+  // a fallback for a server that predates `totals`.
+  const sum = (k: 'totalDistance' | 'assignedUkm' | 'outsideUkm' | 'workMs') =>
+    summaries.reduce((acc, s) => acc + (s[k] ?? 0), 0);
+  const tripsOnPage  = totals?.trips ?? summaries.reduce((acc, s) => acc + s.totalTrips, 0);
+  const activeDays   = totals?.activeDays ?? summaries.filter(s => s.anyActive).length;
+  const totalKm      = totals?.distance ?? sum('totalDistance');
+  const assignedUkm  = totals?.assignedUkm ?? sum('assignedUkm');
+  const outsideUkm   = totals?.outsideUkm ?? sum('outsideUkm');
+  const workMs       = totals?.workMs ?? sum('workMs');
   /** The trip row under the pointer, for the "already driven before" panel. */
   const [hover, setHover] = useState<{ tripId: string; x: number; y: number } | null>(null);
-  const topSpeed     = summaries.reduce((acc, s) => Math.max(acc, s.maxSpeed ?? 0), 0);
+  const topSpeed     = totals?.maxSpeed ?? summaries.reduce((acc, s) => Math.max(acc, s.maxSpeed ?? 0), 0);
 
   return (
     <div className="list-page">
@@ -418,7 +438,7 @@ export function Trips() {
           <span className="dr-stat static" title="Driver-days matching the filters (all pages)">
             <b>{total}</b> Driver-days
           </span>
-          <span className="dr-stat static" title="Trips in the driver-days on this page">
+          <span className="dr-stat static" title="Trips in every driver-day matching the filters (all pages)">
             <b>{tripsOnPage}</b> Trips
           </span>
           <button
@@ -430,19 +450,19 @@ export function Trips() {
             <b>{activeDays}</b> Active
           </button>
           <span className="dr-sep" aria-hidden="true" />
-          <span className="dr-stat static" title="Working hours of the driver-days on this page: every trip's start to end, added up">
+          <span className="dr-stat static" title="Working hours of every driver-day matching the filters: each trip's start to end, added up">
             <b>{hm(workMs)}</b> Working hours
           </span>
-          <span className="dr-stat static" title="Distance of the driver-days on this page">
+          <span className="dr-stat static" title="Distance of every driver-day matching the filters (all pages)">
             <b>{km(totalKm)}</b> Distance
           </span>
-          <span className="dr-stat static blue" title="New customer road driven inside the areas the drivers held — the driver-days on this page">
+          <span className="dr-stat static blue" title="New customer road driven inside the areas the drivers held — every driver-day matching the filters">
             <b>{km(assignedUkm)}</b> Assigned UKM
           </span>
-          <span className="dr-stat static amber" title="New customer road driven outside the drivers' assigned areas — the driver-days on this page">
+          <span className="dr-stat static amber" title="New customer road driven outside the drivers' assigned areas — every driver-day matching the filters">
             <b>{km(outsideUkm)}</b> Outside UKM
           </span>
-          <span className="dr-stat static" title="Fastest recorded speed on this page">
+          <span className="dr-stat static" title="Fastest recorded speed across the filtered dates">
             <b>{Math.round(topSpeed)}</b> km/h top
           </span>
         </div>
