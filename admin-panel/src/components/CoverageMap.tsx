@@ -1029,7 +1029,8 @@ export function CoverageMap({
           getPosition: (m) => [m.lon, m.lat],
           getIcon: (m) => ({ url: pinUrl(m.category?.color), width: 48, height: 64, anchorY: 62 }),
           // Pixels: this map is read at the scale of a region, where a pin sized in metres vanishes.
-          getSize: 30,
+          // Small (18 px): thousands of pins sit over the roads, and at 30 px they buried them.
+          getSize: 18,
           sizeUnits: 'pixels',
           parameters: ALWAYS_ON_TOP,
           onClick: (info: PickingInfo) => {
