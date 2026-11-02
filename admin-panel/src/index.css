@@ -2013,3 +2013,47 @@ select.input { cursor: pointer; }
   .dr-tools { margin-left: 0; width: 100%; flex-wrap: wrap; }
   .dr-tools .input.dr-search { flex: 1; width: auto; min-width: 0; }
 }
+
+/* ── Trips: one driver-day at once (components/DayDrawer.tsx) ── */
+.dd-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(15, 23, 42, 0.32); display: flex; justify-content: flex-end; animation: dd-fade .15s ease-out; }
+.dd-panel { width: min(1240px, 96vw); height: 100%; background: var(--bg, #f6f8fb); box-shadow: -12px 0 40px rgba(15, 23, 42, 0.18); display: flex; flex-direction: column; animation: dd-slide .22s cubic-bezier(.2, .8, .2, 1); }
+@keyframes dd-slide { from { transform: translateX(40px); opacity: .6; } to { transform: none; opacity: 1; } }
+@keyframes dd-fade { from { opacity: 0; } to { opacity: 1; } }
+.dd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px 10px; background: var(--panel); border-bottom: 1px solid var(--line-2); }
+.dd-title { font-size: 18px; font-weight: 800; color: var(--text); }
+.dd-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.dd-close { border: 0; background: var(--panel-2); width: 32px; height: 32px; border-radius: 8px; font-size: 20px; line-height: 1; color: var(--text-2); cursor: pointer; }
+.dd-close:hover { background: var(--brand-light); color: var(--brand); }
+.dd-stats { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 1px; background: var(--line-2); border-bottom: 1px solid var(--line-2); }
+.dd-stats > div { background: var(--panel); padding: 9px 12px; display: flex; flex-direction: column; min-width: 0; }
+.dd-stats b { font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dd-stats span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.dd-stats .blue b, .dd-facts .blue { color: var(--brand); }
+.dd-stats .amber b, .dd-facts .amber { color: #d97706; }
+.dd-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 400px 1fr; }
+.dd-list { overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; border-right: 1px solid var(--line-2); }
+.dd-all { align-self: flex-start; border: 1px solid var(--line-2); background: var(--panel); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600; color: var(--brand); cursor: pointer; }
+.dd-card { background: var(--panel); border: 1px solid var(--line-2); border-left: 4px solid var(--brand); border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: box-shadow .12s, opacity .12s; }
+.dd-card:hover { box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08); }
+.dd-card.on { box-shadow: 0 0 0 2px var(--brand-2, #93c5fd); }
+.dd-card.dim { opacity: .62; }
+.dd-card-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.dd-num { width: 22px; height: 22px; border-radius: 50%; color: #fff; font-size: 11.5px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.dd-time { font-weight: 700; font-size: 13px; margin-right: auto; }
+.dd-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 14px; margin: 9px 0 6px; }
+.dd-facts > div { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; border-bottom: 1px dashed var(--line-2); padding-bottom: 3px; }
+.dd-facts dt { color: var(--muted); }
+.dd-facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.dd-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
+.dd-route-kind { color: var(--muted); }
+.dd-card-foot a { font-weight: 700; color: var(--brand); white-space: nowrap; }
+.dd-map { position: relative; min-height: 0; }
+.dd-map > div:last-child { height: 100%; }
+.dd-map-note { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 2; background: var(--panel); border: 1px solid var(--line-2); border-radius: 999px; padding: 5px 14px; font-size: 12.5px; color: var(--muted); box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08); }
+.dd-map-note.error { color: var(--red); }
+@media (max-width: 900px) {
+  .dd-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .dd-body { grid-template-columns: 1fr; grid-template-rows: 42vh 1fr; }
+  .dd-map { order: -1; }
+  .dd-list { border-right: 0; }
+}

@@ -6,6 +6,7 @@ import { DateField } from '../components/DateField';
 import { AlreadyDrivenTip } from '../components/AlreadyDrivenTip';
 import { pinUrl, type TripMarker } from '../components/TripMarkers';
 import { ExportButtons } from '../components/ExportButtons';
+import { DayDrawer } from '../components/DayDrawer';
 import { api, downloadFile, viewerTimeZone } from '../lib/api';
 import { normalizeCountry } from '../lib/country';
 import { runExportJob, describeJob } from '../lib/exportJobs';
@@ -155,6 +156,8 @@ export function Trips() {
   const from = searchParams.get('from') ?? '';
   const to = searchParams.get('to') ?? '';
   const page = Math.max(1, Number(searchParams.get('page')) || 1);
+  // The driver-day open in the side drawer (Details on a trip), and which of its sessions was clicked.
+  const [drawer, setDrawer] = useState<{ key: string; tripId: string } | null>(null);
   const expanded = useMemo(
     () => new Set((searchParams.get('exp') ?? '').split(',').filter(Boolean)),
     [searchParams]
@@ -780,19 +783,19 @@ export function Trips() {
                                           ● Live
                                         </Link>
                                       )}
-                                      <Link
-                                        to={t.status === 'active' ? `/trips/${t._id}/map` : `/trips/${t._id}`}
-                                        state={{ tripsSearch: searchParams.toString() }}
-                                        onClick={() => rememberTrip(t._id)}
+                                      {/* The whole day at once: every session and one map of them all. */}
+                                      <button
+                                        type="button"
+                                        onClick={() => { rememberTrip(t._id); setDrawer({ key, tripId: t._id }); }}
                                         style={{
-                                          display: 'inline-flex', alignItems: 'center', gap: 4,
+                                          display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer',
                                           fontSize: 12.5, fontWeight: 600, color: 'var(--brand)',
                                           background: 'var(--brand-light)', border: '1px solid rgba(0,80,169,0.2)',
                                           borderRadius: 7, padding: '4px 10px',
                                         }}
                                       >
-                                        {t.status === 'active' ? 'Map →' : 'Details →'}
-                                      </Link>
+                                        Details →
+                                      </button>
                                     </div>
                                   </td>
                                 </tr>
@@ -937,6 +940,21 @@ export function Trips() {
           </button>
         </div>
       )}
+
+      {drawer && (() => {
+        const day = summaries.find((x) => dayKey(x) === drawer.key);
+        if (!day) return null;
+        return (
+          <DayDrawer
+            day={day}
+            trips={dayTrips[drawer.key] ?? []}
+            markers={dayMarkers[drawer.key] ?? []}
+            focusTripId={drawer.tripId}
+            onClose={() => setDrawer(null)}
+            backSearch={searchParams.toString()}
+          />
+        );
+      })()}
     </div>
   );
 }
