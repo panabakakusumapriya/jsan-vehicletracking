@@ -2047,6 +2047,8 @@ select.input { cursor: pointer; }
 .dd-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
 .dd-route-kind { color: var(--muted); }
 .dd-card-foot a { font-weight: 700; color: var(--brand); white-space: nowrap; }
+.dd-zoom { margin-left: auto; border: 1px solid var(--line-2); background: var(--panel); border-radius: 6px; padding: 2px 8px; font-size: 11.5px; font-weight: 600; color: var(--text-2); cursor: pointer; }
+.dd-zoom:hover { color: var(--brand); border-color: var(--brand-2, #93c5fd); }
 .dd-map { position: relative; min-height: 0; }
 .dd-map > div:last-child { height: 100%; }
 .dd-map-note { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 2; background: var(--panel); border: 1px solid var(--line-2); border-radius: 999px; padding: 5px 14px; font-size: 12.5px; color: var(--muted); box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08); }

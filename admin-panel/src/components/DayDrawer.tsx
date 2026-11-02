@@ -113,13 +113,19 @@ export function DayDrawer({
 
   const allCoords = useMemo(() => [...paths.values()].flatMap((p) => p.lines.flat()), [paths]);
 
-  // Frame the whole day once the routes are in, or the picked session when there is one.
-  useEffect(() => {
-    if (!allCoords.length) return;
-    const pick = selected && paths.get(selected);
-    const coords = pick ? pick.lines.flat() : allCoords;
-    requestAnimationFrame(() => mapRef.current?.fitToRoute(coords));
-  }, [allCoords, selected, paths]);
+  // The map always frames the whole day: picking a session (a card or its route) highlights it and
+  // leaves the view alone. Only "Zoom to" on a card moves in, and "Show the whole day" moves back.
+  const frameDay = () => { if (allCoords.length) requestAnimationFrame(() => mapRef.current?.fitToRoute(allCoords)); };
+  useEffect(frameDay, [allCoords]); // eslint-disable-line react-hooks/exhaustive-deps
+  const zoomTo = (tripId: string) => {
+    const p = paths.get(tripId);
+    if (p) requestAnimationFrame(() => mapRef.current?.fitToRoute(p.lines.flat()));
+  };
+  /** Pick from the map: highlight, and bring its card into view in the list. */
+  const pickFromMap = (tripId: string) => {
+    setSelected(tripId);
+    requestAnimationFrame(() => listRef.current?.querySelector(`[data-trip="${tripId}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+  };
 
   const layers = useMemo<Layer[]>(() => {
     const data = [...paths.entries()].flatMap(([tripId, p]) => p.lines.map((path) => ({ tripId, path })));
@@ -141,7 +147,7 @@ export function DayDrawer({
         capRounded: true,
         jointRounded: true,
         pickable: true,
-        onClick: (info: PickingInfo) => { const o = info.object as { tripId: string } | undefined; if (o) setSelected(o.tripId); },
+        onClick: (info: PickingInfo) => { const o = info.object as { tripId: string } | undefined; if (o) pickFromMap(o.tripId); },
         updateTriggers: { getColor: [selected], getWidth: [selected] },
       }),
       new ScatterplotLayer({
@@ -200,7 +206,7 @@ export function DayDrawer({
         <div className="dd-body">
           <div className="dd-list" ref={listRef}>
             {selected && (
-              <button type="button" className="dd-all" onClick={() => setSelected(null)}>Show the whole day</button>
+              <button type="button" className="dd-all" onClick={() => { setSelected(null); frameDay(); }}>Show the whole day</button>
             )}
             {ordered.map((t, i) => {
               const c = colorOf.get(t._id) || PALETTE[0];
@@ -240,6 +246,11 @@ export function DayDrawer({
                       {!segments ? 'loading route…' : !p ? 'no route recorded' : p.snapped ? 'snapped route' : 'raw GPS line (not snapped yet)'}
                       {tripMarkers ? ` · ${tripMarkers} marker${tripMarkers === 1 ? '' : 's'}` : ''}
                     </span>
+                    {p && (
+                      <button type="button" className="dd-zoom" onClick={(e) => { e.stopPropagation(); setSelected(t._id); zoomTo(t._id); }}>
+                        Zoom to
+                      </button>
+                    )}
                     <Link
                       to={t.status === 'active' ? `/trips/${t._id}/map` : `/trips/${t._id}`}
                       state={{ tripsSearch: backSearch }}
