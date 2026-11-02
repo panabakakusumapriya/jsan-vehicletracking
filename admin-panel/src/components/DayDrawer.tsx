@@ -65,7 +65,8 @@ export function DayDrawer({
   day: DaySummaryLite;
   trips: Trip[];
   markers: TripMarker[];
-  /** The session whose Details was clicked: selected when the drawer opens. */
+  /** The session whose Details was clicked: its card is scrolled into view. The map opens on the
+   *  whole day; a session is highlighted only when one is clicked. */
   focusTripId: string | null;
   onClose: () => void;
   /** The Trips page's query string, so "Open trip" comes back to the same view. */
@@ -73,7 +74,12 @@ export function DayDrawer({
 }) {
   const [segments, setSegments] = useState<Segment[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(focusTripId);
+  const [selected, setSelected] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focusTripId) return;
+    requestAnimationFrame(() => listRef.current?.querySelector(`[data-trip="${focusTripId}"]`)?.scrollIntoView({ block: 'nearest' }));
+  }, [focusTripId]);
   const mapRef = useRef<Map3DHandle>(null);
   const ordered = useMemo(() => [...trips].sort((a, b) => +new Date(a.startedAt) - +new Date(b.startedAt)), [trips]);
   const colorOf = useMemo(() => new Map(ordered.map((t, i) => [t._id, PALETTE[i % PALETTE.length]])), [ordered]);
@@ -192,7 +198,7 @@ export function DayDrawer({
         </div>
 
         <div className="dd-body">
-          <div className="dd-list">
+          <div className="dd-list" ref={listRef}>
             {selected && (
               <button type="button" className="dd-all" onClick={() => setSelected(null)}>Show the whole day</button>
             )}
@@ -205,6 +211,7 @@ export function DayDrawer({
               return (
                 <div
                   key={t._id}
+                  data-trip={t._id}
                   className={`dd-card${on ? ' on' : ''}${selected && !on ? ' dim' : ''}`}
                   style={{ borderLeftColor: rgb(c) }}
                   onClick={() => setSelected(on ? null : t._id)}
