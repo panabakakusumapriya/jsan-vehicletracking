@@ -7,8 +7,8 @@
  * count twice in distance and working hours (coverage counts each road once regardless).
  *
  * For each driver it groups trips whose times overlap by more than 2 minutes and that come from
- * both sources (phone, and a vts-… import). In each group the side with more kilometres is kept —
- * the phone on a tie — and the other side's trips are archived exactly as replaceDaysWithVts.js
+ * both sources (phone, and a vts-… import). In each group the phone's trips are kept unless VTS has
+ * clearly more kilometres (over 5 % and 1 km) — and the other side's trips are archived exactly as replaceDaysWithVts.js
  * archives a day (archivedtrips / archivedlocationpoints, claims released), so its tools apply:
  *   node src/seed/replaceDaysWithVts.js --settle=<batch> --apply   re-claim and refresh UKM around them
  *   node src/seed/replaceDaysWithVts.js --undo=<batch> --apply     put the archived trips back
@@ -68,8 +68,11 @@ async function main() {
       if (!phone.length || !vts.length) { if (g.length > 1) reported++; continue; }
       const pKm = phone.reduce((s, t) => s + t.distanceMeters, 0) / 1000;
       const vKm = vts.reduce((s, t) => s + t.distanceMeters, 0) / 1000;
-      const lose = vKm > pKm ? phone : vts;
-      plan.push({ d, day: formatDateInZone(g[0].startedAt, g[0].timezone || 'Australia/Melbourne'), pKm, vKm, keep: vKm > pKm ? 'VTS' : 'phone', lose });
+      // The phone's own recording is kept unless VTS is clearly fuller: markers hang off phone trips,
+      // and two recordings of one drive differ by a few hundred metres (Samson: 578.4 vs 579.3 km).
+      const vtsWins = vKm > pKm * 1.05 && vKm - pKm > 1;
+      const lose = vtsWins ? phone : vts;
+      plan.push({ d, day: formatDateInZone(g[0].startedAt, g[0].timezone || 'Australia/Melbourne'), pKm, vKm, keep: vtsWins ? 'VTS' : 'phone', lose });
     }
   }
   log(`Trips recorded twice (phone + VTS at the same time): ${plan.length} groups`);
