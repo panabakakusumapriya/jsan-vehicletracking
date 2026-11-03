@@ -535,6 +535,8 @@ function bboxOfAll(geometry) {
   const heldWide = await resolveAssignedAreas([await NetworkVersion.findById(version2._id).lean()], [{ areaCode: 'WIDE', areaId: wide._id }], '_id name');
   assert(heldWide.map((a) => a.areaCode).sort().join() === 'WIDE-01,WIDE-02',
     'an assignment of the area made before the cut still covers its ground: both zones (assigned UKM is not lost on a re-figure)');
+  const heldTown = await resolveAssignedAreas([await NetworkVersion.findById(version._id).lean()], [{ areaCode: 'TOWN', areaId: parent._id }], '_id name');
+  assert(heldTown.length === 0, 'an area a manager split by size keeps its old behaviour: its zones are not handed to an old assignment');
   const unCut = await workAreaSplit.joinSplitArea({ versionId: version2._id, areaCode: 'WIDE-01' });
   assert(unCut.joined && JSON.stringify(await WorkArea.findById(wide._id).lean()) === JSON.stringify(wideBefore) &&
     (await RoadLink.countDocuments({ areaId: wide._id })) === wideLinks.length &&

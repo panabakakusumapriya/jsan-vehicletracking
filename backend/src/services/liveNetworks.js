@@ -68,26 +68,38 @@ async function liveNetworkVersions(projectIds) {
  * for rows predating the code snapshot. When a code exists in several live deliveries, the copy in
  * the highest-ranked one (see liveNetworkVersions) is the one returned.
  *
- * An area later split or cut into zones is still the ground the assignment was for: its zones
- * ("<code>-01", "<code>-02", and zones of zones, each carrying props.splitFrom) come back with it.
- * Without them a trip re-figured after a cut would find its driver held nothing there, and the
- * work it did would move from assigned UKM to outside UKM.
+ * An area later CUT along decided ground (workAreaSplit.cutCommittedArea, props.splitFrom.cut) is
+ * still the ground the assignment was for: its two zones come back with it, and theirs if one was
+ * cut again. Without them a trip re-figured after a cut would find its driver held nothing there,
+ * and the work it did would move from assigned UKM to outside UKM. Only cuts: an area a manager
+ * split into zones by size keeps the behaviour it always had.
  */
 async function resolveAssignedAreas(versions, assignments, select) {
   if (!versions.length || !assignments.length) return [];
   const codes = [...new Set(assignments.map((a) => a.areaCode).filter(Boolean))];
   const legacyIds = assignments.filter((a) => !a.areaCode).map((a) => a.areaId);
-  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const zonesOf = codes.length
-    ? [{ areaCode: { $regex: `^(${codes.map(escape).join('|')})-` }, 'props.splitFrom': { $exists: true } }]
-    : [];
+  const versionIds = versions.map((v) => v._id);
 
   const rows = await WorkArea.find({
-    networkVersionId: { $in: versions.map((v) => v._id) },
-    $or: [{ areaCode: { $in: codes } }, { _id: { $in: legacyIds } }, ...zonesOf],
+    networkVersionId: { $in: versionIds },
+    $or: [{ areaCode: { $in: codes } }, { _id: { $in: legacyIds } }],
   })
     .select(`${select} areaCode networkVersionId`)
     .lean();
+  // The cut zones of those codes, a generation at a time.
+  let frontier = codes;
+  for (let depth = 0; frontier.length && depth < 8; depth++) {
+    // eslint-disable-next-line no-await-in-loop
+    const zones = await WorkArea.find({
+      networkVersionId: { $in: versionIds },
+      'props.splitFrom.code': { $in: frontier },
+      'props.splitFrom.cut': true,
+    })
+      .select(`${select} areaCode networkVersionId`)
+      .lean();
+    rows.push(...zones);
+    frontier = [...new Set(zones.map((z) => z.areaCode))];
+  }
 
   const rank = new Map(versions.map((v, i) => [String(v._id), i]));
   const best = new Map();
