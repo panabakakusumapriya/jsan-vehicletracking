@@ -251,6 +251,170 @@ function countVertices(geometry) {
   return n;
 }
 
+/* ------------------------------------------------------------------ outlines MongoDB will index */
+
+/**
+ * WorkArea.geometry has a 2dsphere index (which area is this driver in), and MongoDB refuses to
+ * store an outline its S2 engine finds invalid — the whole insert fails, and with it the import.
+ * The 2026-11 VIC suburbs had two of 2,655: Tamleugh North, a flat 2 km sliver whose edges cross
+ * only on the sphere (an S2 edge is a great circle, which bows ~6 cm off the straight line drawn
+ * in the shapefile), and Kimbolton, one 9-point crumb of a few m² that really crosses itself.
+ *
+ * So every outline from a boundary file is checked by MongoDB itself before anything is measured
+ * against it: a $geoIntersects with an invalid shape fails exactly as the insert would (checked on
+ * all 2,655 VIC areas: same two, no disagreement). Only a rejected area is repaired, piece by piece.
+ */
+const GEO_CHECK_BATCH_VERTICES = 200000;
+const DENSIFY_DEG = 0.0005; // ~50 m: a great circle that short bows < 0.1 mm off the straight line
+const DROP_PIECE_MAX_SQM = 10000;
+
+const isInvalidGeometryError = (err) =>
+  Boolean(err) && (err.code === 2 || err.code === 16755 || /Loop is not valid|Edges \d+ and \d+ cross|Duplicate vertices|Can't extract geo keys|malformed|invalid/i.test(err.message || ''));
+
+/** Does MongoDB accept every one of these shapes? Throws only for a non-geometry failure. */
+async function mongoAcceptsAll(geometries) {
+  try {
+    await WorkArea.collection.findOne(
+      { _id: null, $or: geometries.map((g) => ({ geometry: { $geoIntersects: { $geometry: g } } })) },
+      { projection: { _id: 1 } }
+    );
+    return true;
+  } catch (err) {
+    if (isInvalidGeometryError(err)) return false;
+    throw err;
+  }
+}
+
+/** The indices MongoDB rejects, found in batches and narrowed down by halving a failing batch. */
+async function rejectedIndices(geometries, acceptsAll) {
+  const bad = [];
+  const probe = async (indices) => {
+    if (!indices.length || (await acceptsAll(indices.map((i) => geometries[i])))) return;
+    if (indices.length === 1) {
+      bad.push(indices[0]);
+      return;
+    }
+    const mid = Math.ceil(indices.length / 2);
+    await probe(indices.slice(0, mid));
+    await probe(indices.slice(mid));
+  };
+  let batch = [];
+  let vertices = 0;
+  for (let i = 0; i < geometries.length; i++) {
+    batch.push(i);
+    vertices += countVertices(geometries[i]);
+    if (vertices >= GEO_CHECK_BATCH_VERTICES) {
+      // eslint-disable-next-line no-await-in-loop
+      await probe(batch);
+      batch = [];
+      vertices = 0;
+    }
+  }
+  await probe(batch);
+  return bad.sort((a, b) => a - b);
+}
+
+function densifyRing(ring, maxDeg = DENSIFY_DEG) {
+  const out = [ring[0]];
+  for (let i = 1; i < ring.length; i++) {
+    const [a, b] = [ring[i - 1], ring[i]];
+    const steps = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / maxDeg);
+    for (let k = 1; k < steps; k++) out.push([a[0] + ((b[0] - a[0]) * k) / steps, a[1] + ((b[1] - a[1]) * k) / steps]);
+    out.push(b);
+  }
+  return out;
+}
+
+/** Convex hull (monotone chain) of a ring, closed. Always a valid loop. */
+function convexHullRing(ring) {
+  const pts = [...new Map(ring.map((p) => [`${p[0]},${p[1]}`, p])).values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (pts.length < 3) return null;
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (const p of [...pts].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)];
+  return hull.length >= 3 ? [...hull, hull[0]] : null;
+}
+
+/** Rough m² of one polygon (outer minus holes) — only to tell a crumb from a real piece. */
+function pieceSqm(polygon) {
+  const ringArea = (r) => Math.abs(signedArea(r));
+  const lat = polygon[0][0][1];
+  const deg2 = ringArea(polygon[0]) - polygon.slice(1).reduce((s, r) => s + ringArea(r), 0);
+  return deg2 * 111320 * 111320 * Math.cos((lat * Math.PI) / 180);
+}
+
+/**
+ * Make every area's outline one MongoDB will index, changing as little as possible. For each
+ * rejected piece of a rejected area, in order:
+ *   1. the same piece with extra points every ~50 m — the shape is unchanged, and the sphere's
+ *      curved edges now follow the flat ones (Tamleugh North);
+ *   2. dropped, when it is a crumb: under 1% of the area and under 1 ha (Kimbolton);
+ *   3. its convex hull — a little more ground than drawn, but kept.
+ * An area still rejected after that is reported as a blocking error by name, rather than failing
+ * the commit halfway through.
+ */
+async function repairAreaGeometries(areas, acceptsAll = mongoAcceptsAll) {
+  const result = { densified: [], dropped: [], hulled: [], broken: [] };
+  const bad = await rejectedIndices(areas.map((a) => a.geometry), acceptsAll);
+  for (const index of bad) {
+    const area = areas[index];
+    const pieces = area.geometry.type === 'Polygon' ? [area.geometry.coordinates] : area.geometry.coordinates;
+    const total = pieces.reduce((s, p) => s + pieceSqm(p), 0);
+    const kept = [];
+    const how = new Set();
+    const asPolygon = (coordinates) => ({ type: 'Polygon', coordinates });
+    // The pieces are found the same way as the areas: Kimbolton is ~640 crumbs, one of them bad.
+    // eslint-disable-next-line no-await-in-loop
+    const badPieces = new Set(await rejectedIndices(pieces.map(asPolygon), acceptsAll));
+    for (const [i, piece] of pieces.entries()) {
+      if (!badPieces.has(i)) {
+        kept.push(piece);
+        continue;
+      }
+      const dense = piece.map((ring) => densifyRing(ring));
+      // eslint-disable-next-line no-await-in-loop
+      if (await acceptsAll([asPolygon(dense)])) {
+        kept.push(dense);
+        how.add('densified');
+        continue;
+      }
+      // Measured by its hull: a self-crossing ring's own signed area can cancel out to ~0.
+      const hull = convexHullRing(piece[0]);
+      const sqm = pieceSqm([hull || piece[0]]);
+      if (sqm < DROP_PIECE_MAX_SQM && sqm < total * 0.01) {
+        how.add('dropped');
+        continue;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      if (hull && (await acceptsAll([asPolygon([hull])]))) {
+        kept.push([hull]);
+        how.add('hulled');
+        continue;
+      }
+      how.add('broken');
+    }
+    const geometry = kept.length === 1 ? { type: 'Polygon', coordinates: kept[0] } : { type: 'MultiPolygon', coordinates: kept };
+    // eslint-disable-next-line no-await-in-loop
+    if (how.has('broken') || !kept.length || !(await acceptsAll([geometry]))) {
+      result.broken.push(area.name || area.code);
+      continue;
+    }
+    area.geometry = geometry;
+    area.bbox = kept.reduce((box, p) => bboxUnion(box, bboxOf(p[0])), bboxOf(kept[0][0]));
+    for (const key of ['densified', 'dropped', 'hulled']) if (how.has(key)) result[key].push(area.name || area.code);
+  }
+  return result;
+}
+
 function polygonToGeoJson(parts) {
   const polygons = [];
   for (const ring of parts) {
@@ -711,6 +875,40 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
       code: 'EMPTY_AREA_GEOMETRY',
       message: `${emptyAreaGeometry} boundary feature(s) had no usable geometry and were skipped.`,
     });
+  }
+
+  /* ---- every outline from the file must be one MongoDB will store (repairAreaGeometries) ---- */
+  // Before the join, so the roads are measured against exactly the outlines that get written.
+  // Without a database connection (a unit test with no Mongo) there is nothing to ask; skipped.
+  const geoAcceptsAll =
+    deps.geoAcceptsAll || (require('mongoose').connection.readyState === 1 ? mongoAcceptsAll : null);
+  if (layers.boundary && areas.length && geoAcceptsAll) {
+    const fixed = await repairAreaGeometries(areas, geoAcceptsAll);
+    const list = (names) => `${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''}`;
+    if (fixed.densified.length) {
+      warnings.push({
+        code: 'AREA_OUTLINE_DENSIFIED',
+        message: `${fixed.densified.length} work area(s) had long straight edges that cross on the globe (${list(fixed.densified)}). Points were added along them; the shape is unchanged.`,
+      });
+    }
+    if (fixed.dropped.length) {
+      warnings.push({
+        code: 'AREA_OUTLINE_CRUMB_DROPPED',
+        message: `${fixed.dropped.length} work area(s) had a tiny self-crossing piece (under 1 ha) that cannot be stored, so it was left out: ${list(fixed.dropped)}.`,
+      });
+    }
+    if (fixed.hulled.length) {
+      warnings.push({
+        code: 'AREA_OUTLINE_HULLED',
+        message: `${fixed.hulled.length} work area(s) had a self-crossing piece that was replaced by its outer boundary (slightly more ground than drawn): ${list(fixed.hulled)}.`,
+      });
+    }
+    if (fixed.broken.length) {
+      errors.push({
+        code: 'AREA_OUTLINE_INVALID',
+        message: `${fixed.broken.length} work area(s) have an outline that cannot be stored or repaired: ${list(fixed.broken)}. Fix them in GIS and re-deliver.`,
+      });
+    }
   }
 
   /* ---- boundary index for the join ---- */
@@ -1406,6 +1604,10 @@ module.exports = {
   linksOfFeature,
   linkIdFromShape,
   areaCodeFromShape,
+  repairAreaGeometries,
+  mongoAcceptsAll,
+  convexHullRing,
+  densifyRing,
   rememberedMapping,
   joinPartsFor,
   polygonToGeoJson,

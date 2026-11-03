@@ -106,6 +106,28 @@ function assert(cond, msg) {
   assert(code !== ni.areaCodeFromShape({ type: 'MultiPolygon', coordinates: [square.coordinates, [[[2, 2], [2, 3], [3, 3], [2, 2]]]] }),
     '…and a different outline a different code');
 
+  /* ── outlines MongoDB refuses to index (the VIC commit failed on "Can't extract geo keys") ── */
+  await require('../src/models/WorkArea').init();
+  // Tamleugh North's rejected piece, verbatim: flat on the map, self-crossing on the sphere.
+  const tamleugh = [[[145.61473, -36.5634], [145.6146922071419, -36.56333750917761], [145.5925176304242, -36.56329471264572], [145.59254, -36.5633], [145.59266, -36.56342], [145.60015, -36.56333], [145.60035, -36.56331], [145.60058, -36.56333], [145.60952, -36.56343], [145.61473, -36.5634]]];
+  const box = (x, y, d) => [[[x, y], [x + d, y], [x + d, y + d], [x, y + d], [x, y]]];
+  const bowtie = (x, y, d) => [[[x, y], [x + d, y + d], [x + d, y], [x, y + d], [x, y]]];
+  assert(!(await ni.mongoAcceptsAll([{ type: 'Polygon', coordinates: tamleugh }])), 'MongoDB rejects the Tamleugh North piece as delivered');
+  const outlineAreas = [
+    { name: 'Fine', geometry: { type: 'Polygon', coordinates: box(145, -37, 0.01) } },
+    { name: 'Tamleugh North', geometry: { type: 'MultiPolygon', coordinates: [tamleugh, box(145.59, -36.57, 0.001)] } },
+    { name: 'Kimbolton', geometry: { type: 'MultiPolygon', coordinates: [box(144.5, -36.9, 0.01), bowtie(144.52, -36.88, 0.0001)] } },
+    { name: 'Big bowtie', geometry: { type: 'Polygon', coordinates: bowtie(146, -37, 0.01) } },
+  ];
+  const untouched = outlineAreas[0].geometry;
+  const outcome = await ni.repairAreaGeometries(outlineAreas);
+  assert(outlineAreas[0].geometry === untouched, 'a valid outline is not touched');
+  assert(outcome.densified.join() === 'Tamleugh North' && outlineAreas[1].geometry.coordinates.length === 2,
+    'a sphere-only crossing is fixed by adding points along the edges — no piece lost');
+  assert(outcome.dropped.join() === 'Kimbolton' && outlineAreas[2].geometry.type === 'Polygon', 'a self-crossing crumb of a few m² is left out');
+  assert(outcome.hulled.join() === 'Big bowtie', 'a large self-crossing piece is replaced by its hull, not lost');
+  assert(outcome.broken.length === 0 && (await ni.mongoAcceptsAll(outlineAreas.map((a) => a.geometry))), 'every repaired outline is one MongoDB accepts');
+
   console.log(`\n${passed} assertions passed`);
   await mongoose.disconnect();
   await mongod.stop();
