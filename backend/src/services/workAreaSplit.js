@@ -509,6 +509,136 @@ async function joinSplitArea({ versionId, areaId = null, areaCode = null, userId
   };
 }
 
+/**
+ * Cut an area in two along ground that is already decided: the road links in `linkIds` (by RoadLink
+ * _id) become one zone, every other road of the area the second. Built for the areas VTS closed
+ * inside a much bigger Atlas polygon (seed/exactVtsClosedAreas.js) — the closed part can then be
+ * signed off without signing off the rest.
+ *
+ * The roads decide, not the outline: each link goes where it is told, so the totals are exact even
+ * where the polygons cannot be intersected cleanly. The zones' outlines are the parent clipped to
+ * `cutGeometry` and the parent minus it; if the polygons refuse to clip (self-crossing edges), the
+ * cut zone takes `cutGeometry` and the rest keeps the parent's outline.
+ *
+ * Recorded like a split (AreaSplit, props.splitFrom), so joinSplitArea puts the area back exactly.
+ * Refused while the area is held by a driver or signed off.
+ *
+ * @param names  { cut, rest } zone names; codes are the parent's + "-01" (cut) and "-02" (rest)
+ * @param tag    stored on the AreaSplit record (placesSource) so a script can find its own cuts
+ */
+async function cutCommittedArea({ versionId, areaId, linkIds, cutGeometry, names = {}, tag = null, userId = null, apply = false }) {
+  const pc = require('polygon-clipping');
+  const version = await NetworkVersion.findById(versionId);
+  if (!version) throw Object.assign(new Error('Network version not found'), { status: 404 });
+  const parent = await WorkArea.findOne({ _id: areaId, networkVersionId: versionId }).lean();
+  if (!parent) throw Object.assign(new Error('Work area not found in this network version'), { status: 404 });
+  await assertFree([parent], 'cutting it');
+
+  const linkDocs = await RoadLink.find({ networkVersionId: versionId, areaId: parent._id }).select('_id lengthMeters').lean();
+  const wanted = new Set(linkIds.map(String));
+  const cutIds = [];
+  const restIds = [];
+  let cutMeters = 0;
+  let restMeters = 0;
+  for (const l of linkDocs) {
+    if (wanted.has(String(l._id))) { cutIds.push(l._id); cutMeters += l.lengthMeters; } else { restIds.push(l._id); restMeters += l.lengthMeters; }
+  }
+  if (!cutIds.length || !restIds.length) {
+    throw refuse(`${parent.name}: nothing to cut — ${cutIds.length ? 'every' : 'none'} of its roads are in the part asked for`);
+  }
+
+  const P = polygonsOf(parent.geometry);
+  const C = polygonsOf(cutGeometry);
+  let cutPolys = null;
+  let restPolys = null;
+  try {
+    cutPolys = pc.intersection(P, C);
+    restPolys = pc.difference(P, C);
+  } catch (err) {
+    cutPolys = null;
+  }
+  if (!cutPolys || !cutPolys.length) cutPolys = C;
+  if (!restPolys || !restPolys.length) restPolys = P;
+  const asGeometry = (polys) => (polys.length === 1 ? { type: 'Polygon', coordinates: polys[0] } : { type: 'MultiPolygon', coordinates: polys });
+  const box = (polys) => {
+    let b = [180, 90, -180, -90];
+    for (const poly of polys) for (const [x, y] of poly[0]) b = [Math.min(b[0], x), Math.min(b[1], y), Math.max(b[2], x), Math.max(b[3], y)];
+    return b;
+  };
+  const splitFrom = { code: parent.areaCode, name: parent.name, cut: true };
+  const plan = [
+    { code: `${parent.areaCode}-01`, name: names.cut || `${parent.name} (cut)`, polys: cutPolys, ids: cutIds, meters: cutMeters },
+    { code: `${parent.areaCode}-02`, name: names.rest || `${parent.name} (rest)`, polys: restPolys, ids: restIds, meters: restMeters },
+  ];
+  const summary = {
+    parent: { _id: parent._id, code: parent.areaCode, name: parent.name, km: (cutMeters + restMeters) / 1000, links: linkDocs.length },
+    zones: plan.map((z) => ({ code: z.code, name: z.name, km: z.meters / 1000, links: z.ids.length })),
+    applied: false,
+  };
+  if (!apply) return summary;
+
+  /* ---- 0. keep the area as it was, for the way back ---- */
+  let record = await AreaSplit.findOne({ networkVersionId: versionId, areaCode: parent.areaCode });
+  if (!record) record = new AreaSplit({ projectId: parent.projectId, networkVersionId: versionId, areaCode: parent.areaCode });
+  record.areaName = parent.name;
+  record.parent = parent;
+  record.status = 'applied';
+  record.places = [];
+  record.placesSource = tag;
+  record.splitBy = userId;
+  record.splitAt = new Date();
+  record.zoneCodes = plan.map((z) => z.code);
+  record.strandedLinkIds = [];
+  record.markModified('parent');
+  await record.save();
+
+  /* ---- 1. the two zones ---- */
+  let zoneDocs;
+  try {
+    zoneDocs = (await WorkArea.insertMany(plan.map((z) => {
+      const geometry = asGeometry(z.polys);
+      return {
+        projectId: parent.projectId,
+        networkVersionId: versionId,
+        areaCode: z.code,
+        name: z.name,
+        parentName: parent.name,
+        priority: parent.priority,
+        geometry,
+        outline: simplifyGeometry(geometry, OUTLINE_TOLERANCE_M),
+        bbox: box(z.polys),
+        areaSqm: Math.round(areaSplit.geometryAreaSqm(geometry)),
+        targetMeters: z.meters,
+        targetLinks: z.ids.length,
+        props: { ...(parent.props || {}), splitFrom },
+      };
+    }), { ordered: true })).map((d) => d.toObject());
+  } catch (err) {
+    await WorkArea.deleteMany({ networkVersionId: versionId, 'props.splitFrom.code': parent.areaCode });
+    throw err;
+  }
+
+  /* ---- 2. the road links, then the coverage on them ---- */
+  for (let z = 0; z < plan.length; z++) {
+    for (let at = 0; at < plan[z].ids.length; at += UPDATE_CHUNK) {
+      // eslint-disable-next-line no-await-in-loop
+      await RoadLink.updateMany(
+        { _id: { $in: plan[z].ids.slice(at, at + UPDATE_CHUNK) } },
+        { $set: { areaId: zoneDocs[z]._id, areaCode: zoneDocs[z].areaCode } }
+      );
+    }
+  }
+  await repointCoverage(versionId, [parent._id]);
+
+  /* ---- 3. the parent goes, and the version's counts follow ---- */
+  await WorkArea.deleteOne({ _id: parent._id });
+  await refreshVersionCounts(version, [parent.priority]);
+
+  summary.applied = true;
+  summary.zones = zoneDocs.map((d, z) => ({ _id: d._id, code: d.areaCode, name: d.name, km: plan[z].meters / 1000, links: plan[z].ids.length }));
+  return summary;
+}
+
 /** Zones an earlier delivery of this project already cut this area into (newest version wins). */
 async function findExistingZones(projectId, parentCode) {
   if (!projectId) return [];
@@ -620,6 +750,7 @@ module.exports = {
   zoneLocator,
   findExistingZones,
   splitCommittedArea,
+  cutCommittedArea,
   joinSplitArea,
   carrySplitsForward,
 };

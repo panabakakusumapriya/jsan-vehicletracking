@@ -502,6 +502,40 @@ function bboxOfAll(geometry) {
   assert(String((await LinkCoverage.findOne({ networkVersionId: version2._id, linkId: isletLink }).lean()).areaId) === String(wide._id) &&
     JSON.stringify(await WorkArea.findById(wide._id).lean()) === JSON.stringify(wideBefore), '…with its coverage, and the area byte for byte');
 
+  /* ================================================================== a cut along decided ground */
+  // The VTS-closed case: one part of an area is done, the rest is not. The roads decide.
+  const { midpointOf: cutMid } = require('../src/utils/geo');
+  const wideLinks = await RoadLink.find({ networkVersionId: version2._id, areaId: wide._id }).select('_id linkId lengthMeters geometry').lean();
+  const westEdge = far.bbox[0] + (far.bbox[2] - far.bbox[0]) * 0.4;
+  const cutLinks = wideLinks.filter((l) => cutMid(l.geometry.coordinates)[0] < westEdge);
+  const cutBox = { type: 'Polygon', coordinates: [[[far.bbox[0] - 0.01, far.bbox[1] - 0.01], [westEdge, far.bbox[1] - 0.01], [westEdge, far.bbox[3] + 0.01], [far.bbox[0] - 0.01, far.bbox[3] + 0.01], [far.bbox[0] - 0.01, far.bbox[1] - 0.01]]] };
+  const cutPreview = await workAreaSplit.cutCommittedArea({ versionId: version2._id, areaId: wide._id, linkIds: cutLinks.map((l) => l._id), cutGeometry: cutBox, names: { cut: 'Wide Town — closed', rest: 'Wide Town — rest' } });
+  assert(!cutPreview.applied && (await WorkArea.countDocuments({ networkVersionId: version2._id })) === 1, 'a cut preview writes nothing');
+  const cutKm = cutLinks.reduce((s, l) => s + l.lengthMeters, 0) / 1000;
+  assert(Math.abs(cutPreview.zones[0].km - cutKm) < 1e-6 && cutPreview.zones[0].links === cutLinks.length &&
+    cutPreview.zones[1].links === wideLinks.length - cutLinks.length, 'the cut zone holds exactly the roads asked for, the rest the others');
+  await AreaCompletion.collection.insertOne({ projectId: project._id, coverageCycleId: '', areaCode: 'WIDE', areaName: 'Wide Town', status: 'completed' });
+  let cutRefused = null;
+  try { await workAreaSplit.cutCommittedArea({ versionId: version2._id, areaId: wide._id, linkIds: cutLinks.map((l) => l._id), cutGeometry: cutBox, apply: true }); } catch (err) { cutRefused = err; }
+  assert(cutRefused && cutRefused.status === 409 && /completed/.test(cutRefused.message), 'a signed-off area is not cut');
+  await AreaCompletion.deleteMany({ areaCode: 'WIDE' });
+  const isletRow = wideLinks.find((l) => l.linkId === isletLink);
+  const cutDone = await workAreaSplit.cutCommittedArea({ versionId: version2._id, areaId: wide._id, linkIds: cutLinks.map((l) => l._id), cutGeometry: cutBox, names: { cut: 'Wide Town — closed', rest: 'Wide Town — rest' }, tag: 'test-cut', apply: true });
+  const cutZones = await WorkArea.find({ networkVersionId: version2._id }).sort({ areaCode: 1 }).lean();
+  assert(cutDone.applied && cutZones.length === 2 && cutZones[0].areaCode === 'WIDE-01' && cutZones[1].areaCode === 'WIDE-02' &&
+    cutZones.every((z) => z.props.splitFrom.code === 'WIDE') && !(await WorkArea.exists({ _id: wide._id })), 'two zones, WIDE-01 (cut) and WIDE-02 (rest); the area itself is gone');
+  assert((await RoadLink.countDocuments({ areaId: cutZones[0]._id, areaCode: 'WIDE-01' })) === cutLinks.length &&
+    (await RoadLink.countDocuments({ areaId: cutZones[1]._id })) === wideLinks.length - cutLinks.length &&
+    Math.abs(cutZones[0].targetMeters / 1000 - cutKm) < 1e-6, 'every road is on the zone it was put in, totals exact');
+  const isletCutZone = cutLinks.some((l) => String(l._id) === String(isletRow._id)) ? cutZones[0] : cutZones[1];
+  assert(String((await LinkCoverage.findOne({ networkVersionId: version2._id, linkId: isletLink }).lean()).areaId) === String(isletCutZone._id), 'coverage follows its road onto the zone');
+  assert((await NetworkVersion.findById(version2._id).lean()).counts.areas === 2 &&
+    (await AreaSplit.findOne({ networkVersionId: version2._id, areaCode: 'WIDE' }).lean()).placesSource === 'test-cut', 'the version counts two areas; the record carries the tag');
+  const unCut = await workAreaSplit.joinSplitArea({ versionId: version2._id, areaCode: 'WIDE-01' });
+  assert(unCut.joined && JSON.stringify(await WorkArea.findById(wide._id).lean()) === JSON.stringify(wideBefore) &&
+    (await RoadLink.countDocuments({ areaId: wide._id })) === wideLinks.length &&
+    String((await LinkCoverage.findOne({ networkVersionId: version2._id, linkId: isletLink }).lean()).areaId) === String(wide._id), 'joining undoes a cut exactly');
+
   /* ================================================================== the next delivery */
   const delivered = () => [
     { code: 'TOWN', name: 'Grid Town', priority: 2, geometry: t.geometry, bbox: t.bbox, props: {}, targetMeters: t.totalKm * 1000, targetLinks: t.links.length },
