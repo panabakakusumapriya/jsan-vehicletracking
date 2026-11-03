@@ -12,6 +12,7 @@ router.delete('/categories/:id', requireRole('admin'), ctrl.deleteCategory);
 
 // Markers: drivers drop and see their own; staff review across the drivers they can see.
 router.post('/', requireRole('user'), ctrl.create);
+router.post('/batch', requireRole('user'), ctrl.createBatch);
 router.get('/mine', requireRole('user'), ctrl.mine);
 router.get('/', requireRole('admin', 'manager', 'team_lead'), ctrl.list);
 router.delete('/:id', requireRole('admin'), ctrl.remove);

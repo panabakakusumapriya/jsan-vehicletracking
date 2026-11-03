@@ -178,23 +178,24 @@ exports.deleteCategory = asyncHandler(async (req, res) => {
 
 // POST /api/markers  (driver)
 // Body: { lat, lon, categoryId, clientId?, recordedAt?, note? }
-exports.create = asyncHandler(async (req, res) => {
-  const { lat, lon, categoryId, clientId, recordedAt, note } = req.body || {};
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-    return res.status(400).json({ error: 'lat and lon are required numbers' });
-  }
-  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-    return res.status(400).json({ error: 'lat/lon out of range' });
-  }
+/**
+ * One drop, as the phone sent it. Returns { marker } (status 201, or 200 for a duplicate) or
+ * { error, status }. Shared by POST /api/markers and POST /api/markers/batch, so a marker uploaded
+ * in a batch is stamped exactly as one sent alone.
+ */
+async function createOne(user, body) {
+  const { lat, lon, categoryId, clientId, recordedAt, note } = body || {};
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return { status: 400, error: 'lat and lon are required numbers' };
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return { status: 400, error: 'lat/lon out of range' };
 
   // Offline-retry safety: the same clientId is the same press, never a second marker.
   if (clientId) {
     const dup = await Marker.findOne({ clientId }).populate('categoryId', 'name color');
-    if (dup) return res.json({ marker: toJSON(dup), duplicate: true });
+    if (dup) return { status: 200, marker: toJSON(dup), duplicate: true };
   }
 
   const cat = await MarkerCategory.findById(categoryId);
-  if (!cat || !cat.active) return res.status(400).json({ error: 'Unknown or inactive marker category' });
+  if (!cat || !cat.active) return { status: 400, error: 'Unknown or inactive marker category' };
 
   // Stamp who/what NOW — a marker is fixed history (same rule Trip applies to its timezone).
   let tripId = null;
@@ -210,32 +211,64 @@ exports.create = asyncHandler(async (req, res) => {
     return at < s0 ? s0 - at : at > e0 ? at - e0 : 0;
   };
   const near = await Trip.find({
-    driverId: req.user._id,
+    driverId: user._id,
     startedAt: { $lte: new Date(at.getTime() + TRIP_GRACE_MS) },
     $or: [{ endedAt: null }, { endedAt: { $gte: new Date(at.getTime() - TRIP_GRACE_MS) } }],
   }).select('startedAt endedAt vehicleId');
   const trip = near.sort((a, b) => gap(a) - gap(b) || b.startedAt - a.startedAt)[0] || null;
   if (trip) tripId = trip._id;
-  const vehicleId = (trip && trip.vehicleId) || req.user.vehicleId || null;
+  const vehicleId = (trip && trip.vehicleId) || user.vehicleId || null;
   if (vehicleId) {
     const v = await Vehicle.findById(vehicleId).select('plateNumber');
     if (v) vehiclePlate = v.plateNumber;
   }
 
   const marker = await Marker.create({
-    driverId: req.user._id,
+    driverId: user._id,
     tripId,
     categoryId: cat._id,
     lat,
     lon,
     note: note ? String(note).slice(0, 500) : null,
-    driverName: req.user.name || null,
+    driverName: user.name || null,
     vehiclePlate,
     clientId: clientId || undefined,
     recordedAt: at,
   });
   marker.categoryId = cat; // for toJSON without a re-query
-  res.status(201).json({ marker: toJSON(marker) });
+  return { status: 201, marker: toJSON(marker) };
+}
+
+exports.create = asyncHandler(async (req, res) => {
+  const r = await createOne(req.user, req.body);
+  if (r.error) return res.status(r.status).json({ error: r.error });
+  return res.status(r.status).json(r.duplicate ? { marker: r.marker, duplicate: true } : { marker: r.marker });
+});
+
+/**
+ * POST /api/markers/batch  { markers: [{ lat, lon, categoryId, clientId, recordedAt, note? }, …] }
+ *
+ * The phone saves a drop on itself first and uploads its outbox in the background, several at a
+ * time — so the driver never waits on the network to see a drop land. Each entry is handled as
+ * POST /api/markers handles one (a clientId already in is answered, not doubled); one bad entry
+ * does not fail the rest. Answers { results: [{ clientId, marker } | { clientId, error, permanent }] }.
+ */
+const MAX_BATCH = 100;
+exports.createBatch = asyncHandler(async (req, res) => {
+  const list = Array.isArray(req.body && req.body.markers) ? req.body.markers.slice(0, MAX_BATCH) : null;
+  if (!list) return res.status(400).json({ error: 'markers must be an array' });
+  const results = [];
+  for (const m of list) {
+    try {
+      const r = await createOne(req.user, m);
+      results.push(r.error
+        ? { clientId: m && m.clientId, error: r.error, permanent: r.status === 400 }
+        : { clientId: m && m.clientId, marker: r.marker });
+    } catch (e) {
+      results.push({ clientId: m && m.clientId, error: e.message, permanent: false });
+    }
+  }
+  res.json({ results });
 });
 
 // GET /api/markers/mine  (driver)
