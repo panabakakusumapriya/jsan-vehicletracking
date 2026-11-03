@@ -111,7 +111,7 @@ interface LinkRow {
   areaCode: string | null;
   coordinates: [number, number][];
   covered: boolean;
-  /** Its area is signed off as completed — drawn as done whether or not a trip recorded it. */
+  /** Its area is signed off as completed. Only the polygon shows it; the road stays as driven. */
   signedOff?: boolean;
 }
 
@@ -623,6 +623,12 @@ export function CoverageMap({
   netsRef.current = nets;
   const roadStateRef = useRef(roadState);
   roadStateRef.current = roadState;
+  // Area code -> who holds it now, for the road tooltip.
+  const holdersRef = useRef(new Map<string, string[]>());
+  holdersRef.current = useMemo(
+    () => new Map((areas?.features || []).map((f) => [f.properties.areaCode, f.properties.assignedTo || []])),
+    [areas]
+  );
 
   const selected = useMemo(() => new Set(selectedIds || []), [selectedIds]);
   // A primitive deck.gl can compare — a Set never differs by identity in a useMemo dep.
@@ -637,9 +643,9 @@ export function CoverageMap({
   /**
    * Colours and visibility per road, per delivery, worked out on the CPU once per change of state
    * or setting and handed to the GPU as typed arrays (one value per vertex, as deck.gl's binary
-   * paths need). RED still to drive, BLUE driven — or signed off, which counts as done on this
-   * map. A driven road takes its driver's colour when tinting is on, and fades when the page is
-   * focused on other drivers.
+   * paths need). RED still to drive, BLUE driven by a trip — and nothing else: signing an area
+   * off paints its POLYGON green, never its undriven roads blue. A driven road takes its driver's
+   * colour when tinting is on, and fades when the page is focused on other drivers.
    */
   const roadPaint = useMemo(() => {
     if (roadScope === 'off') return [];
@@ -681,10 +687,6 @@ export function CoverageMap({
           const who = d < drivers.length ? drivers[d].driverId : null;
           c = (colorRoadsByDriver && who && driverColorById?.[who]) || BLUE;
           if (driverSet.size > 0 && !(who && driverSet.has(who))) a = 45;
-        } else if (f & 2) {
-          c = BLUE;
-          bucket = 2;
-          if (driverSet.size > 0) a = 45;
         }
         bucketOf[i] = bucket;
         colorOf[i] = (c[0] | (c[1] << 8) | (c[2] << 16) | (a << 24)) >>> 0;
@@ -829,6 +831,9 @@ export function CoverageMap({
           getFillColor: (f: { properties: AreaProps }) => {
             const id = f.properties.areaId || '';
             if (selected.has(id)) return [0, 80, 169, 190]; // selected reads first, before hue
+            // Signed off: a green wash says "done" while the roads inside keep the truth — blue
+            // where a trip drove, red where nobody did.
+            if (f.properties.completed) return [16, 185, 129, isFaded(f.properties) ? 25 : 80];
             /**
              * An assigned area keeps NO fill while its roads are on the map.
              *
@@ -1093,13 +1098,16 @@ export function CoverageMap({
       const area = ai === NO_AREA ? null : net.areas[ai];
       const signed = Boolean(area && st?.signedOffCodes.has(area.code));
       const who = d >= 0 && st && d < st.drivers.length ? st.drivers[d].name : null;
+      // Reassigned areas keep what the earlier driver drove; say so, so nobody re-drives it.
+      const holders = (area && holdersRef.current.get(area.code)) || [];
+      const byOther = who && holders.length > 0 && !holders.includes(who);
       const fc = net.fc[li];
       return {
         html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${
-          d >= 0 ? '✓ driven' : signed ? '✓ area signed off' : 'not driven yet'
+          d >= 0 ? (byOther ? '✓ driven by another driver' : '✓ driven') : 'not driven yet'
         }</b>${who ? `<div>by ${escapeHtml(who)}</div>` : ''}${
-          d < 0 && signed ? '<div style="opacity:.7">no trip recorded on it</div>' : ''
-        }<div style="opacity:.7">${fc ? `FC${fc}` : 'FC ?'}${area ? ` · ${escapeHtml(area.name)}` : ' · outside every area'}</div><div style="opacity:.55;font-family:monospace;font-size:11px">${escapeHtml(
+          byOther ? `<div style="opacity:.7">area now with ${escapeHtml(holders.join(', '))}</div>` : ''
+        }${signed ? '<div style="opacity:.7">area signed off as completed</div>' : ''}<div style="opacity:.7">${fc ? `FC${fc}` : 'FC ?'}${area ? ` · ${escapeHtml(area.name)}` : ' · outside every area'}</div><div style="opacity:.55;font-family:monospace;font-size:11px">${escapeHtml(
           linkIdAt(net, li)
         )}</div></div>`,
       };
@@ -1330,7 +1338,10 @@ export function CoverageMap({
                 style={{ background: 'none', borderTop: '2px dashed rgb(22,163,74)', height: 0 }}
               />
               <span>unassigned</span>
-              <span className="cov-line" style={{ background: 'rgb(6,95,70)', height: 4 }} />
+              <span
+                className="cov-swatch"
+                style={{ background: 'rgba(16,185,129,0.45)', border: '2px solid rgb(6,95,70)' }}
+              />
               <span>completed</span>
             </div>
             <div className="cov-legend-row">
