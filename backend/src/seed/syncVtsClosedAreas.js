@@ -104,10 +104,28 @@ async function main() {
   const seen = new Set();
   const todo = plan.filter((p) => { if (seen.has(p.a.areaCode)) return false; seen.add(p.a.areaCode); return true; });
   const already = todo.filter((p) => done.has(p.a.areaCode));
-  const fresh = todo.filter((p) => !done.has(p.a.areaCode));
+  // Never over a newer decision made in Atlas: an area reopened here, or (re)assigned here, after
+  // VTS closed it stays as Atlas has it.
+  const reopened = new Map((await db.collection('areacompletions').find({ projectId: project._id, coverageCycleId: cycleId, status: { $ne: 'completed' } }).project({ areaCode: 1, reopenedAt: 1, updatedAt: 1 }).toArray()).map((c) => [c.areaCode, c.reopenedAt || c.updatedAt]));
+  const lastAssigned = new Map();
+  for (const r of await db.collection('areaassignments').find({ projectId: project._id, releasedAt: null }).project({ areaCode: 1, assignedAt: 1, createdAt: 1 }).toArray()) {
+    const t = r.assignedAt || r.createdAt;
+    if (!lastAssigned.has(r.areaCode) || t > lastAssigned.get(r.areaCode)) lastAssigned.set(r.areaCode, t);
+  }
+  const newer = [];
+  const fresh = todo.filter((p) => {
+    if (done.has(p.a.areaCode)) return false;
+    const closedAt = p.g.forceCompletedAt || new Date(0);
+    const reo = reopened.get(p.a.areaCode);
+    const asg = lastAssigned.get(p.a.areaCode);
+    if (reo && reo > closedAt) { newer.push(`${p.a.name} [${p.a.areaCode}]: reopened in Atlas ${reo.toISOString().slice(0, 10)}`); return false; }
+    if (asg && asg > closedAt) { newer.push(`${p.a.name} [${p.a.areaCode}]: assigned in Atlas ${asg.toISOString().slice(0, 10)}, after VTS closed it ${closedAt.toISOString().slice(0, 10)}`); return false; }
+    return true;
+  });
   const held = await db.collection('areaassignments').countDocuments({ projectId: project._id, areaCode: { $in: fresh.map((p) => p.a.areaCode) }, releasedAt: null });
   log(`VTS closed areas matched: ${todo.length} Atlas areas (${todo.filter((p) => p.label === 'Singapore').length} Singapore) | already signed off: ${already.length} | to close now: ${fresh.length} | assignments to release: ${held}`);
   log(`Not in any live Atlas delivery (${notFound.length}): ${notFound.join('; ')}`);
+  log(`Left as Atlas has it — newer decision here (${newer.length})${newer.length ? ':\n  ' + newer.join('\n  ') : ''}`);
   if (!APPLY) { await v.close(); return log('\nDry run — nothing written. Add --apply.'); }
 
   const batch = `vtsclosed-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(3).toString('hex')}`;

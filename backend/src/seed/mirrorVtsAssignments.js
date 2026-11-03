@@ -16,12 +16,21 @@
  * Assigned areas get the usual follow-up: the drivers' earlier driving inside them becomes their
  * assigned UKM (linkCoverage.recomputeForAssignment).
  *
+ * --exact makes VTS the truth instead of a top-up (2026-11-03: VTS still had 86 open areas in
+ * drivers' bundles, Atlas 180, 25 of them on a different driver):
+ *   - an area VTS gives a driver that another driver holds here MOVES to the VTS driver;
+ *   - an Atlas assignment of an Australian area that no VTS bundle holds open is RELEASED — but only
+ *     when its driver has a VTS account. A driver who exists only in Atlas has no VTS truth to
+ *     follow, so theirs are kept and listed. NZ / Singapore deliveries are never touched.
+ * Areas VTS has closed are skipped (syncVtsClosedAreas.js signs those off).
+ *
  * Read-only on VTS (VTS_MONGODB_URI, queries only). DRY RUN unless --apply. Every row written
- * carries note "vts-assign:<batch>"; --revert=<batch> releases exactly those.
+ * carries note "vts-assign:<batch>", every release releaseBatchId "vts-assign:<batch>";
+ * --revert=<batch> releases the first and restores the second.
  *
  * Usage
- *   VTS_MONGODB_URI=… node src/seed/mirrorVtsAssignments.js [--apply]
- *   node src/seed/mirrorVtsAssignments.js --revert=<vts-assign-…> --apply
+ *   VTS_MONGODB_URI=… node src/seed/mirrorVtsAssignments.js [--exact] [--apply]
+ *   node src/seed/mirrorVtsAssignments.js --revert=<batch> --apply
  */
 const crypto = require('crypto');
 const { connectDB } = require('../config/db');
@@ -35,6 +44,7 @@ const args = new Map(
 const PROJECT_NAME = String(args.get('project') || 'PRJ-025-HE-DRIVE-AUSGNZ');
 const VTS_PROJECT = String(args.get('vts-project') || '6a3233e935b68ccdc47a9785'); // "projaustralia"
 const APPLY = args.get('apply') === true;
+const EXACT = args.get('exact') === true;
 const REVERT = args.has('revert') ? String(args.get('revert')) : null;
 const TEST_EMAILS = new Set(['autest@vts.com', 'projaus@gmail.com']);
 const log = (...a) => console.log(...a);
@@ -45,11 +55,14 @@ async function main() {
   const mongoose = require('mongoose');
   const AreaAssignment = require('../models/AreaAssignment');
   if (REVERT) {
+    const col = mongoose.connection.db.collection('areaassignments');
     const n = await AreaAssignment.countDocuments({ note: `vts-assign:${REVERT}`, releasedAt: null });
-    log(`Batch ${REVERT}: ${n} live assignments`);
-    if (!APPLY) return log('Dry run — add --apply to release them.');
+    const back = await col.countDocuments({ releaseBatchId: `vts-assign:${REVERT}` });
+    log(`Batch ${REVERT}: ${n} live assignments it made, ${back} it released`);
+    if (!APPLY) return log('Dry run — add --apply to undo.');
     const r = await AreaAssignment.updateMany({ note: `vts-assign:${REVERT}`, releasedAt: null }, { $set: { releasedAt: new Date() } });
-    return log(`Released ${r.modifiedCount}.`);
+    const b = await col.updateMany({ releaseBatchId: `vts-assign:${REVERT}` }, { $set: { releasedAt: null, releasedBy: null }, $unset: { releaseBatchId: '', releaseReason: '' } });
+    return log(`Released ${r.modifiedCount}, restored ${b.modifiedCount}.`);
   }
   if (!process.env.VTS_MONGODB_URI) throw new Error('VTS_MONGODB_URI is required (read-only VTS database)');
 
@@ -78,14 +91,19 @@ async function main() {
   await client.connect();
   const vts = client.db();
   const wants = []; // { email, driverName, vtsArea, centre }
+  const vtsEmails = new Set(); // everyone with a VTS account on the project, bundle or not
+  let closedSkipped = 0;
   try {
     const users = await vts.collection('users').find({ project: new ObjectId(VTS_PROJECT) }, { projection: { name: 1, email: 1, assignedGeofence: 1 } }).toArray();
     for (const u of users) {
+      vtsEmails.add(String(u.email).toLowerCase());
       if (!u.assignedGeofence || TEST_EMAILS.has(String(u.email).toLowerCase())) continue;
       const g = await vts.collection('geofences').findOne({ _id: new ObjectId(String(u.assignedGeofence)) }, { projection: { 'metadata.sourceGeofenceIds': 1 } });
       const ids = (g && g.metadata && g.metadata.sourceGeofenceIds) || [];
-      const src = await vts.collection('geofences').find({ _id: { $in: ids.map((x) => new ObjectId(String(x))) } }, { projection: { name: 1, polygon: 1, bounds: 1 } }).toArray();
+      const src = await vts.collection('geofences').find({ _id: { $in: ids.map((x) => new ObjectId(String(x))) } }, { projection: { name: 1, polygon: 1, bounds: 1, forceCompleted: 1 } }).toArray();
       for (const s of src) {
+        // VTS leaves a closed area in the driver's bundle; it is done, not held.
+        if (s.forceCompleted) { closedSkipped++; continue; }
         const pts = Array.isArray(s.polygon) ? s.polygon : [];
         let lat = 0, lon = 0;
         for (const p of pts) { lat += p.lat; lon += p.lng; }
@@ -96,7 +114,7 @@ async function main() {
   } finally {
     await client.close();
   }
-  log(`VTS: ${new Set(wants.map((w) => w.email)).size} drivers hold ${wants.length} area assignments`);
+  log(`VTS: ${new Set(wants.map((w) => w.email)).size} drivers hold ${wants.length} open areas (${closedSkipped} closed ones in their bundles skipped)`);
 
   // --- match, then apply the panel's rules ----------------------------------------------------
   const drivers = await User.find({ role: 'user', projectIds: project._id }).select('_id name email').lean();
@@ -128,6 +146,7 @@ async function main() {
   const twoInVts = [];
   const heldByOther = [];
   const signedOff = [];
+  const moves = [];
   for (const [areaId, list] of claims) {
     const { area } = list[0];
     const label = `${area.name} [${area.areaCode}]`;
@@ -135,26 +154,76 @@ async function main() {
     const { driver } = list[0];
     const holder = heldBy.get(areaId);
     if (holder && String(holder.driverId) === String(driver._id)) { already.push(label); continue; }
-    if (holder) { heldByOther.push(`${label}: held by ${holder.driverName} here, ${driver.name} on VTS`); continue; }
     if (completed.has(area.areaCode)) { signedOff.push(`${label} (${driver.name})`); continue; }
+    if (holder && !EXACT) { heldByOther.push(`${label}: held by ${holder.driverName} here, ${driver.name} on VTS`); continue; }
+    if (holder) moves.push(`${label}: ${holder.driverName} -> ${driver.name}`);
     plan.push({ area, driver });
+  }
+
+  // --exact: Australian assignments no open VTS bundle backs, held by drivers VTS knows.
+  const releases = []; // assignment rows to release
+  const keptAtlasOnly = [];
+  if (EXACT) {
+    const NetworkVersion = require('../models/NetworkVersion');
+    const au = new Set((await NetworkVersion.find({ _id: { $in: live.map((v) => v._id) }, region: 'Australia' }).select('_id').lean()).map((v) => String(v._id)));
+    const auAreas = areas.filter((a) => au.has(String(a.networkVersionId)));
+    const auCodes = new Set(auAreas.map((a) => a.areaCode));
+    // What VTS wants, by area code and driver: an area claimed by two VTS drivers keeps whichever
+    // of them holds it here.
+    const wanted = new Map();
+    for (const list of claims.values()) for (const c of list) {
+      if (!wanted.has(c.area.areaCode)) wanted.set(c.area.areaCode, new Set());
+      wanted.get(c.area.areaCode).add(String(c.driver._id));
+    }
+    const movingTo = new Map(plan.map((p) => [p.area.areaCode, String(p.driver._id)]));
+    const emailById = new Map((await User.find({ role: 'user' }).select('_id email').lean()).map((u) => [String(u._id), String(u.email || '').toLowerCase()]));
+    const rows = await AreaAssignment.find({ projectId: project._id, releasedAt: null, areaCode: { $in: [...auCodes] } }).select('areaId areaCode areaName driverId driverName').lean();
+    for (const r of rows) {
+      const want = wanted.get(r.areaCode);
+      const mover = movingTo.get(r.areaCode);
+      const keep = mover ? mover === String(r.driverId) : Boolean(want && want.has(String(r.driverId)));
+      if (keep) continue;
+      if (!mover && !vtsEmails.has(emailById.get(String(r.driverId)))) {
+        keptAtlasOnly.push(`${r.areaName} [${r.areaCode}] — ${r.driverName}`);
+        continue;
+      }
+      releases.push(r);
+    }
   }
 
   const perDriver = {};
   for (const p of plan) perDriver[p.driver.name] = (perDriver[p.driver.name] || 0) + 1;
   log(`\nTo assign: ${plan.length} areas`);
   for (const [n, c] of Object.entries(perDriver).sort((a, b) => b[1] - a[1])) log(`  ${String(c).padStart(3)}  ${n}`);
+  for (const p of plan) log(`      ${p.area.areaCode}  ${p.area.name} -> ${p.driver.name}`);
   log(`Already assigned to the same driver here: ${already.length}`);
   if (twoInVts.length) { log(`\nNot assigned — VTS gives one area to two drivers (${twoInVts.length}):`); twoInVts.forEach((x) => log(`  ${x}`)); }
   if (heldByOther.length) { log(`\nNot assigned — another driver holds it here (${heldByOther.length}):`); heldByOther.forEach((x) => log(`  ${x}`)); }
   if (signedOff.length) { log(`\nNot assigned — area signed off as completed (${signedOff.length}):`); signedOff.forEach((x) => log(`  ${x}`)); }
   if (unmatched.length) { log(`\nNo matching area in the live deliveries (${unmatched.length}):`); log(`  ${unmatched.join(' | ')}`); }
   if (noDriver.size) { log('\nVTS drivers with no account on the project:'); for (const [n, c] of noDriver) log(`  ${n}: ${c} areas`); }
+  if (EXACT) {
+    log(`\nMoved to the VTS driver (${moves.length}):`); moves.forEach((x) => log(`  ${x}`));
+    const relBy = {};
+    for (const r of releases) relBy[r.driverName] = (relBy[r.driverName] || 0) + 1;
+    log(`\nReleased — not held open on VTS (${releases.length} rows):`);
+    for (const [n, c] of Object.entries(relBy).sort((a, b) => b[1] - a[1])) log(`  ${String(c).padStart(3)}  ${n}`);
+    if (keptAtlasOnly.length) { log(`\nKept — driver has no VTS account (${keptAtlasOnly.length}):`); keptAtlasOnly.forEach((x) => log(`  ${x}`)); }
+  }
   if (!APPLY) return log('\nDry run — nothing written. Add --apply.');
-  if (!plan.length) return log('Nothing to assign.');
+  if (!plan.length && !releases.length) return log('Nothing to change.');
 
   const batch = `${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(3).toString('hex')}`;
   const now = new Date();
+  if (releases.length) {
+    // Raw collection: the batch tag is not in the schema, and the undo needs it.
+    await mongoose.connection.db.collection('areaassignments').updateMany(
+      { _id: { $in: releases.map((r) => r._id) }, releasedAt: null },
+      { $set: { releasedAt: now, releasedBy: null, releaseBatchId: `vts-assign:${batch}`, releaseReason: 'not held on VTS' } }
+    );
+    log(`Released ${releases.length} assignments.`);
+  }
+  if (!plan.length) return log(`Done. Undo: node src/seed/mirrorVtsAssignments.js --revert=${batch} --apply`);
   await AreaAssignment.insertMany(plan.map(({ area, driver }) => ({
     projectId: project._id, networkVersionId: area.networkVersionId, areaId: area._id,
     driverId: driver._id, areaName: area.name, areaCode: area.areaCode, driverName: driver.name,
