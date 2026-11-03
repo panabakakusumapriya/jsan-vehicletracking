@@ -2,7 +2,7 @@
   "expo": {
     "name": "JSAN-AUTO-TRACKING",
     "slug": "jsanvtsauto",
-    "version": "1.0.26",
+    "version": "1.0.27",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "jsanautotracking",
@@ -50,11 +50,12 @@
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "imageWidth": 260,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
+          "backgroundColor": "#FFFFFF",
           "dark": {
-            "backgroundColor": "#000000"
+            "image": "./assets/images/splash-icon-dark.png",
+            "backgroundColor": "#0B1B2B"
           }
         }
       ],

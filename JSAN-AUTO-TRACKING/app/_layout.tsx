@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState as RNAppState,
+  Image,
   Linking,
   Platform,
   ScrollView,
@@ -92,14 +93,21 @@ type RecheckFn = () => Promise<void>;
 
 // ── Shared screens (no router needed) ────────────────────────────────────────
 
+// Same look as the native splash (assets/images/splash-icon*.png), so the hand-over is seamless.
+const SPLASH_LOGO = require('../assets/images/jsan-logo-wide.png');
+const SPLASH_LOGO_DARK = require('../assets/images/jsan-logo-wide-dark.png');
+const SPLASH_LOGO_W = 196;
+const SPLASH_LOGO_H = Math.round((SPLASH_LOGO_W * 166) / 565);
+
 function LoadingScreen({ message }: { message: string }) {
+  const dark = useColorScheme() === 'dark';
   return (
-    <View style={s.center}>
-      <View style={s.card}>
-        <Text style={s.emoji}>🚛</Text>
-        <Text style={s.loadTitle}>JSAN Fleet</Text>
-        <Text style={s.loadSub}>{message}</Text>
-        <ActivityIndicator color={C.brand} size="large" style={{ marginTop: 16 }} />
+    <View style={[s.splash, dark && s.splashDark]}>
+      <Image source={dark ? SPLASH_LOGO_DARK : SPLASH_LOGO} style={s.splashLogo} resizeMode="contain" />
+      <Text style={[s.splashName, dark && s.splashNameDark]}>ATLAS OPS</Text>
+      <View style={s.splashFoot}>
+        <ActivityIndicator color={dark ? '#CBD5E1' : '#014E85'} size="small" />
+        <Text style={[s.splashMsg, dark && s.splashMsgDark]}>{message}</Text>
       </View>
     </View>
   );
@@ -598,8 +606,14 @@ const s = StyleSheet.create({
     marginBottom: 16, borderWidth: 1.5, borderColor: 'rgba(124,58,237,0.15)',
   },
   emoji: { fontSize: 40, marginBottom: 8 },
-  loadTitle: { fontSize: 20, fontWeight: '800', color: C.text, marginBottom: 4 },
-  loadSub: { fontSize: 14, color: C.muted },
+  splash: { flex: 1, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+  splashDark: { backgroundColor: '#0B1B2B' },
+  splashLogo: { width: SPLASH_LOGO_W, height: SPLASH_LOGO_H },
+  splashName: { marginTop: 18, fontSize: 15, fontWeight: '600', letterSpacing: 5, color: '#334155' },
+  splashNameDark: { color: '#CBD5E1' },
+  splashFoot: { position: 'absolute', bottom: 64, alignItems: 'center', gap: 10 },
+  splashMsg: { fontSize: 13, color: '#64748B' },
+  splashMsgDark: { color: '#94A3B8' },
   updateTitle: { fontSize: 22, fontWeight: '800', color: C.text, marginBottom: 10, textAlign: 'center' },
   updateBody: { fontSize: 14, color: C.muted, textAlign: 'center', lineHeight: 21, marginBottom: 20 },
   versionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 20 },
