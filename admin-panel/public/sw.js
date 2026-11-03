@@ -18,7 +18,9 @@
  * worker JS with no imports.
  */
 
-const CACHE = 'jsan-panel-v1';
+// v2: v1 could hold an HTML page stored under a stylesheet's URL (see the asset handler), which
+// left the panel unstyled until the cache was cleared by hand. Bumping drops every v1 cache.
+const CACHE = 'jsan-panel-v2';
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/badge-96.png'];
 const NAV_TIMEOUT_MS = 3500;
 
@@ -103,7 +105,11 @@ self.addEventListener('fetch', (event) => {
       (hit) =>
         hit ||
         fetch(req).then((res) => {
-          if (res && res.status === 200 && res.type === 'basic') {
+          // Never keep an HTML page under an asset's URL: a hashed file the server does not have
+          // (mid-deploy) used to come back as index.html with a 200, and cached cache-first it
+          // was served as the stylesheet forever.
+          const type = (res && res.headers.get('content-type')) || '';
+          if (res && res.status === 200 && res.type === 'basic' && type.indexOf('text/html') === -1) {
             const copy = res.clone();
             caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
           }
