@@ -509,6 +509,58 @@ async function joinSplitArea({ versionId, areaId = null, areaCode = null, userId
   };
 }
 
+/** Snap to ~1 cm, drop consecutive repeats and rings under a square metre; an outer ring that goes takes its holes. */
+function tidyPolygons(polys) {
+  const q = (v) => Math.round(v * 1e7) / 1e7;
+  const out = [];
+  for (const poly of polys) {
+    const rings = [];
+    for (let r = 0; r < poly.length; r++) {
+      const pts = [];
+      for (const [x, y] of poly[r]) {
+        const p = [q(x), q(y)];
+        const last = pts[pts.length - 1];
+        if (!last || last[0] !== p[0] || last[1] !== p[1]) pts.push(p);
+      }
+      if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop();
+      const ring = pts.length >= 3 ? [...pts, pts[0]] : null;
+      const ok = ring && new Set(pts.map((p) => `${p[0]},${p[1]}`)).size >= 3 &&
+        Math.abs(areaSplit.geometryAreaSqm({ type: 'Polygon', coordinates: [ring] })) >= 1;
+      if (!ok) {
+        if (r === 0) break; // no outer ring, no polygon
+        continue;
+      }
+      rings.push(ring);
+    }
+    if (rings.length) out.push(rings);
+  }
+  return out;
+}
+
+/** Convex hull (monotone chain) of [lon, lat] points, as a closed ring. */
+function convexHull(points) {
+  const pts = [...new Map(points.map((p) => [`${p[0]},${p[1]}`, p])).values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (pts.length < 3) {
+    const [x, y] = pts[0] || [0, 0];
+    const d = 0.00005; // ~5 m square round a lone road
+    return [[x - d, y - d], [x + d, y - d], [x + d, y + d], [x - d, y + d], [x - d, y - d]];
+  }
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const p of pts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+  const upper = [];
+  for (const p of pts.slice().reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  if (hull.length < 3) { // every point on one line: a thin box round it
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    const d = 0.00005;
+    const [w, s0, e, n] = [Math.min(...xs) - d, Math.min(...ys) - d, Math.max(...xs) + d, Math.max(...ys) + d];
+    return [[w, s0], [e, s0], [e, n], [w, n], [w, s0]];
+  }
+  return [...hull, hull[0]];
+}
+
 /**
  * Cut an area in two along ground that is already decided: the road links in `linkIds` (by RoadLink
  * _id) become one zone, every other road of the area the second. Built for the areas VTS closed
@@ -559,6 +611,12 @@ async function cutCommittedArea({ versionId, areaId, linkIds, cutGeometry, names
   }
   if (!cutPolys || !cutPolys.length) cutPolys = C;
   if (!restPolys || !restPolys.length) restPolys = P;
+  // Clipping leaves hairline slivers and near-duplicate vertices that the 2dsphere index refuses
+  // ("Can't extract geo keys"). Snap to ~1 cm, drop repeats and anything under a square metre.
+  cutPolys = tidyPolygons(cutPolys);
+  restPolys = tidyPolygons(restPolys);
+  if (!cutPolys.length) cutPolys = tidyPolygons(C);
+  if (!restPolys.length) restPolys = P;
   const asGeometry = (polys) => (polys.length === 1 ? { type: 'Polygon', coordinates: polys[0] } : { type: 'MultiPolygon', coordinates: polys });
   const box = (polys) => {
     let b = [180, 90, -180, -90];
@@ -579,6 +637,7 @@ async function cutCommittedArea({ versionId, areaId, linkIds, cutGeometry, names
 
   /* ---- 0. keep the area as it was, for the way back ---- */
   let record = await AreaSplit.findOne({ networkVersionId: versionId, areaCode: parent.areaCode });
+  const recordIsOurs = !record;
   if (!record) record = new AreaSplit({ projectId: parent.projectId, networkVersionId: versionId, areaCode: parent.areaCode });
   record.areaName = parent.name;
   record.parent = parent;
@@ -594,8 +653,7 @@ async function cutCommittedArea({ versionId, areaId, linkIds, cutGeometry, names
 
   /* ---- 1. the two zones ---- */
   let zoneDocs;
-  try {
-    zoneDocs = (await WorkArea.insertMany(plan.map((z) => {
+  const insertZones = async () => (await WorkArea.insertMany(plan.map((z) => {
       const geometry = asGeometry(z.polys);
       return {
         projectId: parent.projectId,
@@ -613,9 +671,29 @@ async function cutCommittedArea({ versionId, areaId, linkIds, cutGeometry, names
         props: { ...(parent.props || {}), splitFrom },
       };
     }), { ordered: true })).map((d) => d.toObject());
+  const dropZones = () => WorkArea.deleteMany({ networkVersionId: versionId, 'props.splitFrom.code': parent.areaCode });
+  try {
+    zoneDocs = await insertZones();
   } catch (err) {
-    await WorkArea.deleteMany({ networkVersionId: versionId, 'props.splitFrom.code': parent.areaCode });
-    throw err;
+    await dropZones();
+    try {
+      if (!/geo keys/i.test(err.message)) throw err;
+      // The index still refuses a clipped outline: draw each zone round its own roads instead
+      // (a convex hull is always a valid polygon). Which roads are in which zone is unchanged.
+      for (const z of plan) {
+        // eslint-disable-next-line no-await-in-loop
+        const pts = (await RoadLink.find({ _id: { $in: z.ids } }).select('geometry.coordinates -_id').lean())
+          .flatMap((l) => l.geometry.coordinates);
+        z.polys = [[convexHull(pts)]];
+      }
+      zoneDocs = await insertZones();
+      summary.outlineFromRoads = true;
+    } catch (again) {
+      await dropZones();
+      // Nothing moved yet: the area is as it was, and no record of a cut is left behind.
+      if (recordIsOurs) await AreaSplit.deleteOne({ _id: record._id });
+      throw again;
+    }
   }
 
   /* ---- 2. the road links, then the coverage on them ---- */
