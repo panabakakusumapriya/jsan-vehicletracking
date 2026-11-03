@@ -65,7 +65,11 @@ async function main() {
   const listed = args.has('ids')
     ? fs.readFileSync(String(args.get('ids')), 'utf8').split(/\s+/).filter(Boolean).map((id) => new mongoose.Types.ObjectId(id))
     : [];
-  const tripIds = [...new Map([...first, ...named, ...listed].filter(Boolean).map((id) => [String(id), id])).values()];
+  const candidates = [...new Map([...first, ...named, ...listed].filter(Boolean).map((id) => [String(id), id])).values()];
+  // VTS floor placeholders carry VTS's coverage with no route: re-figuring one would null it out.
+  const floor = new Set((await db.collection('trips').find({ _id: { $in: candidates }, importBatchId: /^vtsfloor/ }).project({ _id: 1 }).toArray()).map((t) => String(t._id)));
+  const tripIds = candidates.filter((id) => !floor.has(String(id)));
+  if (floor.size) log(`Left alone: ${floor.size} VTS floor placeholder trips`);
   if (listed.length) log(`Also listed: ${listed.length} trips`);
   log(`Cut areas: ${recs.length} (${zoneIds.length} zones). Trips to re-figure: ${tripIds.length} (${first.length} first on a road in a zone, ${named.length} assigned a cut area)`);
   if (!APPLY) return log('Dry run — nothing changed. Add --apply.');

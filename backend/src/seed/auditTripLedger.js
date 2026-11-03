@@ -24,7 +24,9 @@ async function main() {
   ], { allowDiskUse: true });
   for await (const r of cur) ledger.set(`${r._id.t}|${r._id.v}`, r.m);
 
-  const trips = await db.collection('trips').find({ linkCoverageStatus: 'computed' })
+  // 'review' trips claim their road too (env UKM_REVIEW_CLAIMS_COVERAGE, default true). VTS floor
+  // placeholders hold VTS's coverage with no route of their own — by design outside this check.
+  const trips = await db.collection('trips').find({ linkCoverageStatus: { $in: ['computed', 'review'] }, importBatchId: { $not: /^vtsfloor/ } })
     .project({ assignedNetworkVersionId: 1, linkUkmNetworkMeters: 1, driverId: 1, startedAt: 1 }).toArray();
   const bad = [];
   let ok = 0;
@@ -35,7 +37,7 @@ async function main() {
     else ok++;
   }
   const up = bad.filter((b) => b.want > b.have);
-  log(`Computed trips: ${trips.length} | agree with the ledger: ${ok} | disagree: ${bad.length}`);
+  log(`Computed / review trips (VTS floor placeholders excluded): ${trips.length} | agree with the ledger: ${ok} | disagree: ${bad.length}`);
   log(`  ledger names them for MORE than their figures say: ${up.length} trips, ${(up.reduce((s, b) => s + b.want - b.have, 0) / 1000).toFixed(1)} km`);
   log(`  ledger names them for LESS (their figures are stale-high): ${bad.length - up.length} trips, ${(bad.filter((b) => b.want < b.have).reduce((s, b) => s + b.have - b.want, 0) / 1000).toFixed(1)} km`);
   if (args.has('ids')) fs.writeFileSync(String(args.get('ids')), bad.map((b) => String(b.id)).join('\n'));
