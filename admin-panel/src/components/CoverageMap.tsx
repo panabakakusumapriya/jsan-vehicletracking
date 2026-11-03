@@ -179,6 +179,7 @@ export function CoverageMap({
   driverColorById,
   driverFilter,
   highlightAreaIds,
+  highlightUnassigned = false,
   onTracksMeta,
   areaPopupId,
   markersOn,
@@ -279,6 +280,8 @@ export function CoverageMap({
   driverFilter?: string[];
   /** Areas held by the filtered drivers; everything else is faded. Null = no filter. */
   highlightAreaIds?: Set<string> | null;
+  /** Areas nobody holds (and nobody signed off) in amber — open ground at a glance. */
+  highlightUnassigned?: boolean;
   /**
    * A card pinned beside one area — the click-a-polygon panel. It sits off the area's right edge
    * (left edge when there is no room) and follows the polygon as the camera moves, so the numbers
@@ -834,6 +837,10 @@ export function CoverageMap({
             // Signed off: a green wash says "done" while the roads inside keep the truth — blue
             // where a trip drove, red where nobody did.
             if (f.properties.completed) return [16, 185, 129, isFaded(f.properties) ? 25 : 80];
+            // Open ground, when asked for: amber, so the areas nobody holds jump out.
+            if (highlightUnassigned && !isAssigned(f.properties)) {
+              return [245, 158, 11, isFaded(f.properties) ? 30 : 120];
+            }
             /**
              * An assigned area keeps NO fill while its roads are on the map.
              *
@@ -859,6 +866,7 @@ export function CoverageMap({
             // completion and percentage are independent facts, and a manager needs to read both
             // at once — "done" and "done at 44%" is a real combination.
             if (f.properties.completed) return [6, 95, 70, 255]; // deep green, drawn thickest
+            if (highlightUnassigned && !isAssigned(f.properties)) return [217, 119, 6, 255];
             if (mode === 'assignment') {
               // Both green: an area is an area. Solid means someone holds it, dashed means it is
               // still waiting — the same language the delivered design used.
@@ -878,7 +886,9 @@ export function CoverageMap({
                 ? 3
                 : isAssigned(f.properties)
                   ? 2
-                  : 1,
+                  : highlightUnassigned
+                    ? 2.5
+                    : 1,
           lineWidthUnits: 'pixels',
           lineWidthMinPixels: 1.2,
           /**
@@ -893,6 +903,7 @@ export function CoverageMap({
             extensions: [DASHED_OUTLINE],
             getDashArray: (f: { properties: AreaProps }) =>
               mode === 'assignment' &&
+              !highlightUnassigned &&
               !isAssigned(f.properties) &&
               !f.properties.completed &&
               !selected.has(f.properties.areaId || '')
@@ -902,11 +913,12 @@ export function CoverageMap({
           updateTriggers: {
             // deck.gl caches accessor results; without naming every input here a selection would
             // change state but not repaint.
-            getFillColor: [mode, selectionKey, driverColorByArea, roadScope, highlightAreaIds],
-            getLineColor: [mode, selectionKey, driverColorByArea, highlightAreaIds],
+            getFillColor: [mode, selectionKey, driverColorByArea, roadScope, highlightAreaIds, highlightUnassigned],
+            getLineColor: [mode, selectionKey, driverColorByArea, highlightAreaIds, highlightUnassigned],
             // Width now depends on whether an area is assigned, so the colour map belongs here too
             // — without it, assigning an area would recolour its outline but not thicken it.
-            getLineWidth: [selectionKey, driverColorByArea],
+            getLineWidth: [selectionKey, driverColorByArea, highlightUnassigned],
+            getDashArray: [mode, selectionKey, driverColorByArea, highlightUnassigned],
           },
           onClick: (info: PickingInfo, event?: { srcEvent?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } }) => {
             const props = (info.object as AreaFeature | undefined)?.properties;
@@ -1065,6 +1077,7 @@ export function CoverageMap({
     driverSet,
     filterKey,
     highlightAreaIds,
+    highlightUnassigned,
     roadScope,
     showAreas,
     mode,
@@ -1350,6 +1363,15 @@ export function CoverageMap({
               <span className="cov-swatch" style={{ background: 'rgb(5,150,105)' }} />
               <span>fill: 0% → 100% driven</span>
             </div>
+            {highlightUnassigned && (
+              <div className="cov-legend-row">
+                <span
+                  className="cov-swatch"
+                  style={{ background: 'rgba(245,158,11,0.5)', border: '2px solid rgb(217,119,6)' }}
+                />
+                <span>unassigned — nobody holds it yet</span>
+              </div>
+            )}
             {(driverLegend || []).length > 0 && (
               <div className="cov-legend-drivers">
                 {(driverLegend || []).slice(0, 10).map((d) => (

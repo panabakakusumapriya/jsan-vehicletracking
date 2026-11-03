@@ -238,23 +238,28 @@ function Bar({ value, total, tone = 'brand' }: { value: number; total: number; t
   );
 }
 
-/** A labelled on/off switch — the map's layer list reads as a column of these. */
-function Switch({
-  checked,
+/** One row of the map's layer card: switch, label, optional count. The row is tinted while on. */
+function LayerRow({
+  on,
   onChange,
-  children,
+  label,
+  note,
+  strong,
   title,
 }: {
-  checked: boolean;
+  on: boolean;
   onChange: (next: boolean) => void;
-  children: ReactNode;
+  label: string;
+  note?: ReactNode;
+  strong?: boolean;
   title?: string;
 }) {
   return (
-    <label className="cov-switch" title={title}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    <label className={`cov-layer-row${on ? ' on' : ''}`} title={title}>
+      <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked)} />
       <span className="cov-switch-track" aria-hidden="true"><span className="cov-switch-thumb" /></span>
-      <span className="cov-switch-label">{children}</span>
+      <span className="cov-layer-label">{strong ? <b>{label}</b> : label}</span>
+      {note != null && <span className="cov-layer-note">{note}</span>}
     </label>
   );
 }
@@ -1062,21 +1067,19 @@ function ProgressTab({
     else mapRef.current?.requestFullscreen?.().catch(() => {});
   };
 
-  const [layersOpen, setLayersOpen] = useState(false);
-  const layersRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!layersOpen) return undefined;
-    const onDown = (e: MouseEvent) => {
-      if (layersRef.current && !layersRef.current.contains(e.target as Node)) setLayersOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLayersOpen(false); };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [layersOpen]);
+  // The layer card stays on the map; folding it away is remembered for the next visit.
+  const [layersCollapsed, setLayersCollapsedState] = useState(() => {
+    try { return localStorage.getItem('cov-layers-collapsed') === '1'; } catch { return false; }
+  });
+  const setLayersCollapsed = (v: boolean) => {
+    setLayersCollapsedState(v);
+    try { localStorage.setItem('cov-layers-collapsed', v ? '1' : '0'); } catch { /* not remembered */ }
+  };
+  /** Areas nobody holds yet (and nobody signed off) painted amber, so open ground stands out. */
+  const [highlightUnassigned, setHighlightUnassigned] = useState(false);
+  /** The road layers are one choice shown as switches: turning one on turns the others off. */
+  const roadSwitch = (scope: 'assigned' | 'covered' | 'all') => (on: boolean) =>
+    setRoadScope(on ? scope : roadScope === scope ? 'off' : roadScope);
   const [crewOpen, setCrewOpen] = useState(true);
 
   /** A tracks window ending today, N days long — the three windows people actually ask about. */
@@ -1513,162 +1516,145 @@ function ProgressTab({
         style={{ padding: 0, marginBottom: 16, overflow: 'hidden', position: 'relative' }}
       >
         <div className="cov-map-toolbar">
-          <AreaSearch scopeId={scopeId} onPick={pickAreaFromSearch} />
-
-          <div ref={layersRef} style={{ position: 'relative' }}>
+          <div className="cov-map-toolbar-row">
+            <AreaSearch scopeId={scopeId} onPick={pickAreaFromSearch} />
             <button
               type="button"
-              className={`cov-map-btn${layersOpen ? ' active' : ''}`}
-              onClick={() => setLayersOpen((o) => !o)}
-              aria-expanded={layersOpen}
+              className="cov-map-btn icon"
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                {isFullscreen
+                  ? <path d="M6 1v5H1M10 1v5h5M6 15v-5H1M10 15v-5h5" />
+                  : <path d="M1 6V1h5M15 6V1h-5M1 10v5h5M15 10v5h-5" />}
+              </svg>
+            </button>
+          </div>
+
+          {/* Every layer as a switch, always in reach under the search — no pop-up to open first. */}
+          <div className="cov-layers">
+            <button
+              type="button"
+              className="cov-layers-head"
+              onClick={() => setLayersCollapsed(!layersCollapsed)}
+              aria-expanded={!layersCollapsed}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
                 <path d="M8 1.5 1.5 5 8 8.5 14.5 5 8 1.5Z" />
                 <path d="M1.5 8 8 11.5 14.5 8" />
                 <path d="M1.5 11 8 14.5 14.5 11" />
               </svg>
-              Layers
-              <span className="cov-badge">{layersOn}</span>
+              <span>Map layers</span>
+              {layersCollapsed && <span className="cov-badge">{layersOn}</span>}
+              <span className={`cov-layers-caret${layersCollapsed ? '' : ' open'}`} aria-hidden="true">▾</span>
             </button>
 
-            {layersOpen && (
-              <div className="cov-layers-pop">
-                <section>
-                  <header>
-                    <span>Work areas</span>
-                    <Switch checked={showAreasLayer} onChange={setShowAreasLayer} title="Draw the work-area polygons">
-                      <span className="sr-only">Show work areas</span>
-                    </Switch>
-                  </header>
-                  <div className="cov-pop-row">
-                    <span>Shade by</span>
-                    <div className="cov-seg">
-                      <button className={mapMode === 'assignment' ? 'active' : ''} onClick={() => setMapMode('assignment')}>
-                        Progress
-                      </button>
-                      <button className={mapMode === 'priority' ? 'active' : ''} onClick={() => setMapMode('priority')}>
-                        Priority
-                      </button>
+            {!layersCollapsed && (
+              <div className="cov-layers-body">
+                <LayerRow on={showAreasLayer} onChange={setShowAreasLayer} label="Areas (polygons)" />
+                <LayerRow
+                  on={roadScope === 'assigned'}
+                  onChange={roadSwitch('assigned')}
+                  label="Assigned routes"
+                  title="Every road in an area a driver holds — red to drive, blue driven"
+                />
+                <LayerRow
+                  on={roadScope === 'covered'}
+                  onChange={roadSwitch('covered')}
+                  label="Road coverage"
+                  title="Every road driven, project-wide"
+                />
+                <LayerRow
+                  on={roadScope === 'all'}
+                  onChange={roadSwitch('all')}
+                  label="All uploaded roads"
+                  title="The whole network, every road at full detail"
+                />
+                <LayerRow
+                  on={showTracks}
+                  onChange={setShowTracks}
+                  label="Driven tracks"
+                  title="Snapped routes the fleet actually drove"
+                />
+                {showTracks && (
+                  <div className="cov-layer-sub">
+                    <div className="cov-presets">
+                      {[7, 14, 30].map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          className={activePreset === d ? 'on' : ''}
+                          onClick={() => tracksPreset(d)}
+                        >
+                          {d} days
+                        </button>
+                      ))}
+                    </div>
+                    <div className="cov-dates">
+                      <input
+                        type="date"
+                        aria-label="Tracks from"
+                        value={tracksFrom}
+                        max={tracksTo}
+                        onChange={(e) => setTracksFrom(e.target.value)}
+                      />
+                      <span>to</span>
+                      <input
+                        type="date"
+                        aria-label="Tracks to"
+                        value={tracksTo}
+                        min={tracksFrom}
+                        onChange={(e) => setTracksTo(e.target.value)}
+                      />
                     </div>
                   </div>
-                </section>
+                )}
+                <LayerRow
+                  on={showPositions}
+                  onChange={setShowPositions}
+                  label="Driver positions"
+                  title="A pin where each driver's last drive ended, or where they are now. Refreshes every minute."
+                />
+                <LayerRow
+                  on={markersOn}
+                  onChange={setMarkersOn}
+                  label="Markers"
+                  note={markersOn && markerCount > 0 ? markerCount.toLocaleString() : undefined}
+                  title="Markers drivers dropped on this ground in the last year, from the app and VTS"
+                />
 
-                <section>
-                  <header><span>Roads</span></header>
-                  {/* One question asked at three scales, so one choice rather than three switches. */}
-                  <div className="cov-radio-list" role="radiogroup" aria-label="Which roads to draw">
-                    {([
-                      ['off', 'None', 'Just the areas and basemap'],
-                      ['assigned', 'In assigned areas', 'Every road a crew holds — red to drive'],
-                      ['covered', 'Everything driven', 'All driven road, project-wide'],
-                      ['all', 'All roads', 'The whole network, every road at full detail'],
-                    ] as const).map(([value, label, hint]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        role="radio"
-                        aria-checked={roadScope === value}
-                        className={roadScope === value ? 'on' : ''}
-                        onClick={() => setRoadScope(value)}
-                      >
-                        <span className="dot" />
-                        <span>
-                          <b>{label}</b>
-                          <small>{hint}</small>
-                        </span>
-                      </button>
-                    ))}
+                <div className="cov-layers-sep" />
+
+                <LayerRow
+                  on={highlightUnassigned}
+                  onChange={(on) => {
+                    setHighlightUnassigned(on);
+                    if (on) setShowAreasLayer(true);
+                  }}
+                  label="Highlight unassigned"
+                  note={openCount.toLocaleString()}
+                  strong
+                  title="Areas nobody holds and nobody has signed off, in amber"
+                />
+                {roadScope !== 'off' && (
+                  <LayerRow on={colorRoadsByDriver} onChange={setColorRoadsByDriver} label="Tint roads by driver" />
+                )}
+                <div className="cov-layer-row static">
+                  <span className="cov-layer-label">Shade areas by</span>
+                  <div className="cov-seg">
+                    <button className={mapMode === 'assignment' ? 'active' : ''} onClick={() => setMapMode('assignment')}>
+                      Progress
+                    </button>
+                    <button className={mapMode === 'priority' ? 'active' : ''} onClick={() => setMapMode('priority')}>
+                      Priority
+                    </button>
                   </div>
-                  {roadScope !== 'off' && (
-                    <div className="cov-pop-row">
-                      <span>Tint driven roads by driver</span>
-                      <Switch checked={colorRoadsByDriver} onChange={setColorRoadsByDriver}>
-                        <span className="sr-only">Tint driven roads by driver</span>
-                      </Switch>
-                    </div>
-                  )}
-                </section>
-
-                <section>
-                  <header>
-                    <span>Driven tracks</span>
-                    <Switch checked={showTracks} onChange={setShowTracks} title="Snapped routes the fleet actually drove">
-                      <span className="sr-only">Show driven tracks</span>
-                    </Switch>
-                  </header>
-                  <div className="cov-presets">
-                    {[7, 14, 30].map((d) => (
-                      <button
-                        key={d}
-                        type="button"
-                        className={showTracks && activePreset === d ? 'on' : ''}
-                        onClick={() => tracksPreset(d)}
-                      >
-                        Last {d} days
-                      </button>
-                    ))}
-                  </div>
-                  <div className="cov-dates">
-                    <input
-                      type="date"
-                      aria-label="Tracks from"
-                      value={tracksFrom}
-                      max={tracksTo}
-                      onChange={(e) => { setTracksFrom(e.target.value); setShowTracks(true); }}
-                    />
-                    <span>to</span>
-                    <input
-                      type="date"
-                      aria-label="Tracks to"
-                      value={tracksTo}
-                      min={tracksFrom}
-                      onChange={(e) => { setTracksTo(e.target.value); setShowTracks(true); }}
-                    />
-                  </div>
-                </section>
-
-                <section>
-                  <header>
-                    <span>Drivers</span>
-                    <Switch checked={showPositions} onChange={setShowPositions} title="Where each driver left off">
-                      <span className="sr-only">Show where drivers left off</span>
-                    </Switch>
-                  </header>
-                  <p className="cov-layer-hint">
-                    A pin where each driver’s last drive ended — or where they are now, if they are
-                    still out. Refreshes every minute.
-                  </p>
-                </section>
-
-                <section>
-                  <header>
-                    <span>Driver markers</span>
-                    <Switch checked={markersOn} onChange={setMarkersOn} title="Markers drivers dropped on this ground">
-                      <span className="sr-only">Show driver markers</span>
-                    </Switch>
-                  </header>
-                  <p className="cov-layer-hint">
-                    {markerCount.toLocaleString()} marker{markerCount === 1 ? '' : 's'} dropped on this ground in the
-                    last year, from the app and VTS. Click one on the map for details.
-                  </p>
-                </section>
+                </div>
               </div>
             )}
           </div>
-
-          <button
-            type="button"
-            className="cov-map-btn icon"
-            onClick={toggleFullscreen}
-            title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}
-            aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              {isFullscreen
-                ? <path d="M6 1v5H1M10 1v5h5M6 15v-5H1M10 15v-5h5" />
-                : <path d="M1 6V1h5M15 6V1h-5M1 10v5h5M15 10v5h-5" />}
-            </svg>
-          </button>
         </div>
 
         {/* The crew, on the map they are working. Ranked by road driven; the bar is relative to
@@ -1768,6 +1754,7 @@ function ProgressTab({
           driverColorById={driverViz.byDriver}
           driverFilter={driverFilter}
           highlightAreaIds={highlightAreaIds}
+          highlightUnassigned={highlightUnassigned}
           onTracksMeta={onTracksMeta}
           areaPopupId={singleAreaId}
           areaPopup={areaCard}
