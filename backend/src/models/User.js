@@ -41,6 +41,9 @@ const userSchema = new mongoose.Schema(
     },
     active: { type: Boolean, default: true },
     lastLoginAt: { type: Date, default: null },
+    /** The driver app's version, from its X-App-Version header (middleware/auth noteAppVersion). */
+    appVersion: { type: String, default: null },
+    appVersionAt: { type: Date, default: null },
     activeSessionId: { type: String, default: null },
     sessionLastSeenAt: { type: Date, default: null },
     /**
