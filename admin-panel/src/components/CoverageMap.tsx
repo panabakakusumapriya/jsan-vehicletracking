@@ -126,15 +126,17 @@ const PRIORITY_COLOR: Record<number, [number, number, number]> = {
 
 const priorityColor = (p: number): [number, number, number] => PRIORITY_COLOR[p] || [107, 114, 128];
 
-/** Slate at 0% to green at 100%, so an area's state reads without consulting a legend. */
-function coverageColor(pct: number): [number, number, number] {
-  const t = Math.max(0, Math.min(1, (pct || 0) / 100));
-  return [
-    Math.round(148 + (5 - 148) * t),
-    Math.round(163 + (150 - 163) * t),
-    Math.round(184 + (105 - 184) * t),
-  ];
-}
+/**
+ * What an area IS, in one colour: completed, held by a driver, or waiting for one. The same palette
+ * paints the polygons, the map legend, the layer card and the summary bar above the map. Never
+ * blue or red — on this map those belong to the roads (driven / to drive).
+ */
+export type AreaStatus = 'done' | 'held' | 'open';
+export const AREA_STATUS: Record<AreaStatus, { label: string; fill: [number, number, number]; line: [number, number, number]; css: string }> = {
+  done: { label: 'Completed', fill: [21, 128, 61], line: [20, 83, 45], css: '#15803D' },
+  held: { label: 'Assigned', fill: [124, 58, 237], line: [109, 40, 217], css: '#7C3AED' },
+  open: { label: 'Unassigned', fill: [249, 115, 22], line: [194, 65, 12], css: '#F97316' },
+};
 
 /** The pinned area card's width — also the room the camera leaves for it when framing an area. */
 const POPUP_WIDTH = 320;
@@ -796,8 +798,7 @@ export function CoverageMap({
 
   const layers = useMemo<Layer[]>(() => {
     // The fill is always a quantity: how much of the area is driven, or which band it sits in.
-    const shadeOf = (p: AreaProps): [number, number, number] =>
-      mode === 'assignment' ? coverageColor(p.pct || 0) : priorityColor(p.priority);
+    const shadeOf = (p: AreaProps): [number, number, number] => priorityColor(p.priority);
 
     /**
      * Held by somebody right now. The polygon's own `assignedTo` is the truth; the colour map is
@@ -814,8 +815,9 @@ export function CoverageMap({
      * "this belongs to someone", and the driver legend below carries who.
      */
     const OUTLINE_ONLY: [number, number, number, number] = [0, 0, 0, 0];
-    // Green outlines, so an area boundary never reads as a road: blue on this map means driven.
-    const AREA_GREEN: [number, number, number, number] = [22, 163, 74, 255];
+    const statusOf = (p: AreaProps): AreaStatus => (p.completed ? 'done' : isAssigned(p) ? 'held' : 'open');
+    /** "Highlight unassigned" pushes every other area back so the open ground stands out. */
+    const dimmed = (p: AreaProps) => isFaded(p) || (highlightUnassigned && statusOf(p) !== 'open');
 
     /** Outside the driver filter: kept on the map for context, but pushed well back. */
     const isFaded = (p: AreaProps) =>
@@ -834,13 +836,7 @@ export function CoverageMap({
           getFillColor: (f: { properties: AreaProps }) => {
             const id = f.properties.areaId || '';
             if (selected.has(id)) return [0, 80, 169, 190]; // selected reads first, before hue
-            // Signed off: a green wash says "done" while the roads inside keep the truth — blue
-            // where a trip drove, red where nobody did.
-            if (f.properties.completed) return [16, 185, 129, isFaded(f.properties) ? 25 : 80];
-            // Open ground, when asked for: amber, so the areas nobody holds jump out.
-            if (highlightUnassigned && !isAssigned(f.properties)) {
-              return [245, 158, 11, isFaded(f.properties) ? 30 : 120];
-            }
+            const st = statusOf(f.properties);
             /**
              * An assigned area keeps NO fill while its roads are on the map.
              *
@@ -849,28 +845,29 @@ export function CoverageMap({
              * the assigned-routes layer off and the fill comes back, because then the polygon is
              * the only thing left carrying it.
              */
-            if (mode === 'assignment' && roadScope !== 'off' && isAssigned(f.properties)) {
+            if (mode === 'assignment' && roadScope !== 'off' && st === 'held') {
               return OUTLINE_ONLY;
             }
+            // Status colours (and a completed area always reads as completed, in either view).
+            // Translucent so the streets stay readable underneath; signing off paints the
+            // polygon, never its undriven roads blue.
+            if (mode === 'assignment' || st === 'done') {
+              const c = AREA_STATUS[st].fill;
+              if (dimmed(f.properties)) return [c[0], c[1], c[2], 18];
+              return [c[0], c[1], c[2], st === 'open' && highlightUnassigned ? 150 : st === 'held' ? 60 : 90];
+            }
             const c = shadeOf(f.properties);
-            // Translucent so the basemap's streets stay readable underneath — the fill is a
-            // summary, not a mask.
             return [c[0], c[1], c[2], isFaded(f.properties) ? 25 : 110];
           },
           // The outline answers "whose is this", independently of the fill's percentage.
           getLineColor: (f: { properties: AreaProps }) => {
             const id = f.properties.areaId || '';
-            if (selected.has(id)) return [91, 33, 182, 255];
+            if (selected.has(id)) return [15, 23, 42, 255];
             if (isFaded(f.properties)) return [100, 116, 139, 70];
-            // A signed-off area gets an emerald border. Deliberately the OUTLINE and not the fill:
-            // completion and percentage are independent facts, and a manager needs to read both
-            // at once — "done" and "done at 44%" is a real combination.
-            if (f.properties.completed) return [6, 95, 70, 255]; // deep green, drawn thickest
-            if (highlightUnassigned && !isAssigned(f.properties)) return [217, 119, 6, 255];
-            if (mode === 'assignment') {
-              // Both green: an area is an area. Solid means someone holds it, dashed means it is
-              // still waiting — the same language the delivered design used.
-              return isAssigned(f.properties) ? AREA_GREEN : [22, 163, 74, 200];
+            const st = statusOf(f.properties);
+            if (mode === 'assignment' || st === 'done') {
+              const c = AREA_STATUS[st].line;
+              return [c[0], c[1], c[2], dimmed(f.properties) ? 90 : 255];
             }
             const c = shadeOf(f.properties);
             return [c[0], c[1], c[2], 235];
@@ -888,7 +885,7 @@ export function CoverageMap({
                   ? 2
                   : highlightUnassigned
                     ? 2.5
-                    : 1,
+                    : 1.5,
           lineWidthUnits: 'pixels',
           lineWidthMinPixels: 1.2,
           /**
@@ -1342,36 +1339,21 @@ export function CoverageMap({
         <>
         {mode === 'assignment' ? (
           <>
-            {/* Outline first, because it is the fact people look for: whose is this. */}
+            {/* What each area is — the same three colours as the layer card and the summary bar. */}
             <div className="cov-legend-row">
-              <span className="cov-line" style={{ background: 'rgb(22,163,74)' }} />
-              <span>assigned</span>
-              <span
-                className="cov-line"
-                style={{ background: 'none', borderTop: '2px dashed rgb(22,163,74)', height: 0 }}
-              />
-              <span>unassigned</span>
-              <span
-                className="cov-swatch"
-                style={{ background: 'rgba(16,185,129,0.45)', border: '2px solid rgb(6,95,70)' }}
-              />
-              <span>completed</span>
+              {(['done', 'held', 'open'] as const).map((st) => (
+                <span key={st} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                  <span
+                    className="cov-swatch"
+                    style={{
+                      background: `rgba(${AREA_STATUS[st].fill.join(',')},0.45)`,
+                      border: `2px ${st === 'open' ? 'dashed' : 'solid'} rgb(${AREA_STATUS[st].line.join(',')})`,
+                    }}
+                  />
+                  {AREA_STATUS[st].label.toLowerCase()}
+                </span>
+              ))}
             </div>
-            <div className="cov-legend-row">
-              <span className="cov-swatch" style={{ background: 'rgb(148,163,184)' }} />
-              <span className="cov-swatch" style={{ background: 'rgb(76,156,144)' }} />
-              <span className="cov-swatch" style={{ background: 'rgb(5,150,105)' }} />
-              <span>fill: 0% → 100% driven</span>
-            </div>
-            {highlightUnassigned && (
-              <div className="cov-legend-row">
-                <span
-                  className="cov-swatch"
-                  style={{ background: 'rgba(245,158,11,0.5)', border: '2px solid rgb(217,119,6)' }}
-                />
-                <span>unassigned — nobody holds it yet</span>
-              </div>
-            )}
             {(driverLegend || []).length > 0 && (
               <div className="cov-legend-drivers">
                 {(driverLegend || []).slice(0, 10).map((d) => (

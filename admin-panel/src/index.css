@@ -1469,9 +1469,10 @@ select.input { cursor: pointer; }
   border-radius: 5px; overflow: hidden; background: var(--line);
 }
 .cov-stack span { min-width: 0; transition: flex-grow .4s ease; }
-.cov-stack .done, .cov-stack-key i.done { background: var(--green); }
-.cov-stack .held, .cov-stack-key i.held { background: #4f7fe8; }
-.cov-stack .open, .cov-stack-key i.open { background: #cbd3df; }
+/* Same colours as the polygons on the map (CoverageMap AREA_STATUS). */
+.cov-stack .done, .cov-stack-key i.done { background: #15803D; }
+.cov-stack .held, .cov-stack-key i.held { background: #7C3AED; }
+.cov-stack .open, .cov-stack-key i.open { background: #F97316; }
 .cov-stack-key { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--text-2); }
 .cov-stack-key span { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
 .cov-stack-key i { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
@@ -1514,19 +1515,26 @@ select.input { cursor: pointer; }
 /* Map layers card: always on the map, under the search. One switch per layer; a row is tinted
    while its layer is on, so the card reads at a glance like the map's own legend. */
 .cov-layers {
-  width: 236px;
+  width: 252px;
   background: rgba(255,255,255,0.97); backdrop-filter: blur(6px);
   border: 1px solid var(--line-2); border-radius: 12px;
   box-shadow: 0 10px 30px -12px rgba(17,24,39,0.35);
   overflow: hidden;
 }
-.cov-layers-head {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  background: none; border: none; padding: 10px 12px 9px; cursor: pointer;
+.cov-layers-head { display: flex; align-items: center; padding-right: 8px; }
+.cov-layers-fold {
+  display: flex; align-items: center; gap: 8px; flex: 1;
+  background: none; border: none; padding: 10px 6px 9px 12px; cursor: pointer;
   font: inherit; font-size: 13px; font-weight: 700; color: var(--text);
 }
-.cov-layers-head svg { color: var(--brand); }
-.cov-layers-head > span:nth-of-type(1) { flex: 1; text-align: left; }
+.cov-layers-fold svg { color: var(--brand); }
+.cov-layers-fold > span:nth-of-type(1) { flex: 1; text-align: left; }
+.cov-layers-info {
+  width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+  border: 1.5px solid var(--line-2); background: var(--panel); color: var(--muted);
+  font: italic 700 11px/1 Georgia, serif; cursor: pointer;
+}
+.cov-layers-info.on { background: var(--brand); border-color: var(--brand); color: #fff; }
 .cov-layers-caret { font-size: 11px; color: var(--muted); transform: rotate(-90deg); transition: transform .15s; }
 .cov-layers-caret.open { transform: none; }
 .cov-layers-body {
@@ -1546,8 +1554,15 @@ select.input { cursor: pointer; }
 .cov-layer-row input:checked + .cov-switch-track { background: var(--brand); }
 .cov-layer-row input:checked + .cov-switch-track .cov-switch-thumb { transform: translateX(13px); }
 .cov-layer-row input:focus-visible + .cov-switch-track { box-shadow: 0 0 0 3px var(--brand-glow); }
-.cov-layer-label { flex: 1; }
+.cov-layer-label { flex: 1; min-width: 0; }
 .cov-layer-label b { font-weight: 700; }
+.cov-layer-label small { display: block; font-size: 11px; line-height: 1.35; color: var(--muted); margin-top: 1px; }
+/* The three area colours, under the Areas switch (same palette as the polygons). */
+.cov-status-key { display: flex; flex-direction: column; gap: 4px; padding: 2px 8px 6px 48px; }
+.cov-status-key span { display: grid; grid-template-columns: 12px auto; column-gap: 7px; align-items: center; font-size: 12px; }
+.cov-status-key i { width: 12px; height: 12px; border-radius: 3px; }
+.cov-status-key b { font-weight: 600; color: var(--text); }
+.cov-status-key small { grid-column: 2; font-size: 11px; color: var(--muted); }
 .cov-layer-note {
   font-size: 11px; font-weight: 700; color: var(--muted);
   background: var(--panel-2); border-radius: 99px; padding: 1px 7px;

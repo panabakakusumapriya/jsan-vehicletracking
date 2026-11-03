@@ -1,7 +1,7 @@
 import { PageIcon } from '../components/AppIcon';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { CoverageMap } from '../components/CoverageMap';
+import { AREA_STATUS, CoverageMap } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
@@ -238,27 +238,35 @@ function Bar({ value, total, tone = 'brand' }: { value: number; total: number; t
   );
 }
 
-/** One row of the map's layer card: switch, label, optional count. The row is tinted while on. */
+/**
+ * One row of the map's layer card: switch, label, optional count, and — while "explain" is on —
+ * what the layer means in a line under the label. The row is tinted while on.
+ */
 function LayerRow({
   on,
   onChange,
   label,
   note,
   strong,
-  title,
+  hint,
+  explain,
 }: {
   on: boolean;
   onChange: (next: boolean) => void;
   label: string;
   note?: ReactNode;
   strong?: boolean;
-  title?: string;
+  hint: ReactNode;
+  explain: boolean;
 }) {
   return (
-    <label className={`cov-layer-row${on ? ' on' : ''}`} title={title}>
+    <label className={`cov-layer-row${on ? ' on' : ''}`} title={typeof hint === 'string' && !explain ? hint : undefined}>
       <input type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked)} />
       <span className="cov-switch-track" aria-hidden="true"><span className="cov-switch-thumb" /></span>
-      <span className="cov-layer-label">{strong ? <b>{label}</b> : label}</span>
+      <span className="cov-layer-label">
+        {strong ? <b>{label}</b> : label}
+        {explain && <small>{hint}</small>}
+      </span>
       {note != null && <span className="cov-layer-note">{note}</span>}
     </label>
   );
@@ -1075,7 +1083,15 @@ function ProgressTab({
     setLayersCollapsedState(v);
     try { localStorage.setItem('cov-layers-collapsed', v ? '1' : '0'); } catch { /* not remembered */ }
   };
-  /** Areas nobody holds yet (and nobody signed off) painted amber, so open ground stands out. */
+  /** A line under each layer saying what it shows. On until someone hides it; remembered. */
+  const [layersExplain, setLayersExplainState] = useState(() => {
+    try { return localStorage.getItem('cov-layers-explain') !== '0'; } catch { return true; }
+  });
+  const setLayersExplain = (v: boolean) => {
+    setLayersExplainState(v);
+    try { localStorage.setItem('cov-layers-explain', v ? '1' : '0'); } catch { /* not remembered */ }
+  };
+  /** Areas nobody holds yet (and nobody signed off) stand out; every other area is pushed back. */
   const [highlightUnassigned, setHighlightUnassigned] = useState(false);
   /** The road layers are one choice shown as switches: turning one on turns the others off. */
   const roadSwitch = (scope: 'assigned' | 'covered' | 'all') => (on: boolean) =>
@@ -1478,9 +1494,9 @@ function ProgressTab({
               <span className="open" style={{ flexGrow: openCount }} />
             </div>
             <div className="cov-stack-key">
-              <span><i className="done" />{completedCount.toLocaleString()} signed off</span>
-              <span><i className="held" />{assignedCount.toLocaleString()} with a driver</span>
-              <span><i className="open" />{openCount.toLocaleString()} waiting</span>
+              <span><i className="done" />{completedCount.toLocaleString()} completed</span>
+              <span><i className="held" />{assignedCount.toLocaleString()} assigned</span>
+              <span><i className="open" />{openCount.toLocaleString()} unassigned</span>
             </div>
             {heldDriven && (
               <div
@@ -1535,48 +1551,90 @@ function ProgressTab({
 
           {/* Every layer as a switch, always in reach under the search — no pop-up to open first. */}
           <div className="cov-layers">
-            <button
-              type="button"
-              className="cov-layers-head"
-              onClick={() => setLayersCollapsed(!layersCollapsed)}
-              aria-expanded={!layersCollapsed}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-                <path d="M8 1.5 1.5 5 8 8.5 14.5 5 8 1.5Z" />
-                <path d="M1.5 8 8 11.5 14.5 8" />
-                <path d="M1.5 11 8 14.5 14.5 11" />
-              </svg>
-              <span>Map layers</span>
-              {layersCollapsed && <span className="cov-badge">{layersOn}</span>}
-              <span className={`cov-layers-caret${layersCollapsed ? '' : ' open'}`} aria-hidden="true">▾</span>
-            </button>
+            <div className="cov-layers-head">
+              <button
+                type="button"
+                className="cov-layers-fold"
+                onClick={() => setLayersCollapsed(!layersCollapsed)}
+                aria-expanded={!layersCollapsed}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                  <path d="M8 1.5 1.5 5 8 8.5 14.5 5 8 1.5Z" />
+                  <path d="M1.5 8 8 11.5 14.5 8" />
+                  <path d="M1.5 11 8 14.5 14.5 11" />
+                </svg>
+                <span>Map layers</span>
+                {layersCollapsed && <span className="cov-badge">{layersOn}</span>}
+                <span className={`cov-layers-caret${layersCollapsed ? '' : ' open'}`} aria-hidden="true">▾</span>
+              </button>
+              {!layersCollapsed && (
+                <button
+                  type="button"
+                  className={`cov-layers-info${layersExplain ? ' on' : ''}`}
+                  onClick={() => setLayersExplain(!layersExplain)}
+                  title={layersExplain ? 'Hide what each layer means' : 'Show what each layer means'}
+                  aria-pressed={layersExplain}
+                >
+                  i
+                </button>
+              )}
+            </div>
 
             {!layersCollapsed && (
               <div className="cov-layers-body">
-                <LayerRow on={showAreasLayer} onChange={setShowAreasLayer} label="Areas (polygons)" />
+                <LayerRow
+                  on={showAreasLayer}
+                  onChange={setShowAreasLayer}
+                  label="Areas (polygons)"
+                  explain={layersExplain}
+                  hint="The work areas, coloured by what they are:"
+                />
+                {showAreasLayer && mapMode === 'assignment' && (
+                  <div className="cov-status-key">
+                    {(['done', 'held', 'open'] as const).map((st) => (
+                      <span key={st}>
+                        <i style={{ background: AREA_STATUS[st].css }} />
+                        <b>{AREA_STATUS[st].label}</b>
+                        {layersExplain && (
+                          <small>
+                            {st === 'done'
+                              ? 'signed off by a manager'
+                              : st === 'held'
+                                ? 'a driver holds it now'
+                                : 'nobody holds it yet'}
+                          </small>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <LayerRow
                   on={roadScope === 'assigned'}
                   onChange={roadSwitch('assigned')}
                   label="Assigned routes"
-                  title="Every road in an area a driver holds — red to drive, blue driven"
+                  explain={layersExplain}
+                  hint="Every road inside areas a driver holds. Red = still to drive, blue = driven."
                 />
                 <LayerRow
                   on={roadScope === 'covered'}
                   onChange={roadSwitch('covered')}
                   label="Road coverage"
-                  title="Every road driven, project-wide"
+                  explain={layersExplain}
+                  hint="Only the roads already driven, across the whole project, each counted once."
                 />
                 <LayerRow
                   on={roadScope === 'all'}
                   onChange={roadSwitch('all')}
                   label="All uploaded roads"
-                  title="The whole network, every road at full detail"
+                  explain={layersExplain}
+                  hint="The customer's whole road network, red and blue, in every area."
                 />
                 <LayerRow
                   on={showTracks}
                   onChange={setShowTracks}
                   label="Driven tracks"
-                  title="Snapped routes the fleet actually drove"
+                  explain={layersExplain}
+                  hint="The routes drivers actually drove (cleaned GPS) in the dates below."
                 />
                 {showTracks && (
                   <div className="cov-layer-sub">
@@ -1615,14 +1673,16 @@ function ProgressTab({
                   on={showPositions}
                   onChange={setShowPositions}
                   label="Driver positions"
-                  title="A pin where each driver's last drive ended, or where they are now. Refreshes every minute."
+                  explain={layersExplain}
+                  hint="A pin where each driver is now, or where their last drive ended. Updates every minute."
                 />
                 <LayerRow
                   on={markersOn}
                   onChange={setMarkersOn}
                   label="Markers"
                   note={markersOn && markerCount > 0 ? markerCount.toLocaleString() : undefined}
-                  title="Markers drivers dropped on this ground in the last year, from the app and VTS"
+                  explain={layersExplain}
+                  hint="Points drivers dropped in the app (and VTS) in the last year. Click one for details."
                 />
 
                 <div className="cov-layers-sep" />
@@ -1631,21 +1691,34 @@ function ProgressTab({
                   on={highlightUnassigned}
                   onChange={(on) => {
                     setHighlightUnassigned(on);
-                    if (on) setShowAreasLayer(true);
+                    if (on) {
+                      setShowAreasLayer(true);
+                      setMapMode('assignment');
+                    }
                   }}
                   label="Highlight unassigned"
                   note={openCount.toLocaleString()}
                   strong
-                  title="Areas nobody holds and nobody has signed off, in amber"
+                  explain={layersExplain}
+                  hint="Makes the orange areas stand out and fades the rest, to find ground to hand out."
                 />
                 {roadScope !== 'off' && (
-                  <LayerRow on={colorRoadsByDriver} onChange={setColorRoadsByDriver} label="Tint roads by driver" />
+                  <LayerRow
+                    on={colorRoadsByDriver}
+                    onChange={setColorRoadsByDriver}
+                    label="Tint roads by driver"
+                    explain={layersExplain}
+                    hint="Driven roads take the colour of the driver who drove them first."
+                  />
                 )}
                 <div className="cov-layer-row static">
-                  <span className="cov-layer-label">Shade areas by</span>
+                  <span className="cov-layer-label">
+                    Colour areas by
+                    {layersExplain && <small>Status (above) or the customer's priority band.</small>}
+                  </span>
                   <div className="cov-seg">
                     <button className={mapMode === 'assignment' ? 'active' : ''} onClick={() => setMapMode('assignment')}>
-                      Progress
+                      Status
                     </button>
                     <button className={mapMode === 'priority' ? 'active' : ''} onClick={() => setMapMode('priority')}>
                       Priority
