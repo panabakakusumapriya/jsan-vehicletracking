@@ -102,7 +102,10 @@ function sniffBoundaryMapping(fields) {
   return {
     // SA2 before SA3/SA4: the most specific level present is the unit of work. Then HERE Admin's
     // AREA_ID (see isHereAdmin), then anything that looks like a code or an id.
-    areaCode: pick(fields, [/^SA2.*CODE$/i, /^SA1.*CODE$/i, /^AREA_?ID$/i, /CODE$/i, /^ID$/i]),
+    // POLYGON_ID only where there is no AREA_ID: HERE's Admin layer exported one row per place
+    // (the 2026-11 VIC suburbs: POLYGON_ID + POLYGON_NM and nothing else, each row already a
+    // MultiPolygon). With no column at all the code is made from the shape — see areaCodeFromShape.
+    areaCode: pick(fields, [/^SA2.*CODE$/i, /^SA1.*CODE$/i, /^AREA_?ID$/i, /CODE$/i, /^POLYGON_?ID$/i, /_ID$/i, /^ID$/i]),
     areaName: pick(fields, [/^SA2.*NAME$/i, /^SA1.*NAME$/i, /^NAME$/i, /^POLYGON_?NM$/i, /NAME$/i, /_NM$/i]),
     areaParent: pick(fields, [/^SA3.*NAME$/i, /^SA4.*NAME$/i, /^GCC.*NAME$/i, /REGION/i]),
     priority: pick(fields, [/^PRIORITY$/i, /PRIOR/i, /^RANK$/i, /^P$/i]),
@@ -118,6 +121,55 @@ function sniffNetworkMapping(fields) {
     dirTravel: pick(fields, [/^DIR_?TRAVEL$/i, /^DIR$/i, /ONEWAY/i, /DIRECT/i]),
     autoAccess: pick(fields, [/^AR_?AUTO$/i, /AUTO/i, /^CAR$/i]),
   };
+}
+
+/**
+ * An id made from a road's shape, for a road file that has no id column.
+ *
+ * The 2026-11 VIC delivery (VIC_FC345_NAV) came with ST_NAME, FUNC_CLASS, DIR_TRAVEL and friends
+ * but no LINK_ID at all, and every one of its 410,558 links stopped the import as "blank id". The
+ * link id is only the ledger's key, so any id works as long as it is (a) unique within the version
+ * and (b) the same for the same road next time. A hash of the rounded coordinates is both: an
+ * unchanged road in the next delivery gets the same id, so coverage still carries forward by id,
+ * and two rows with exactly the same geometry ARE the same road and collapse like a repeated id.
+ * 7 decimals is ~1 cm — well inside the precision a re-export keeps.
+ */
+function linkIdFromShape(coords) {
+  const hash = crypto.createHash('sha1');
+  for (const [x, y] of coords) hash.update(`${Number(x).toFixed(7)},${Number(y).toFixed(7)};`);
+  return `s${hash.digest('hex').slice(0, 20)}`;
+}
+
+/** The same idea for a work-area file with no code column: the code is the outline's hash. */
+function areaCodeFromShape(geometry) {
+  const polygons = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+  const hash = crypto.createHash('sha1');
+  for (const ring of polygons.map((p) => p[0])) {
+    for (const [x, y] of ring) hash.update(`${Number(x).toFixed(7)},${Number(y).toFixed(7)};`);
+    hash.update('|');
+  }
+  return `A${hash.digest('hex').slice(0, 12).toUpperCase()}`;
+}
+
+/**
+ * The links one road feature becomes. Every pass that reads the road file (preflight, the zone
+ * re-read, the commit) goes through this, so what is measured is exactly what is written.
+ *
+ * - The id is the mapped column's value; blank, or no column mapped, and it is made from the shape.
+ * - A multi-part feature is one link per part. Keeping only the first part used to block the
+ *   import (it would understate the target); now nothing is lost: part 1 keeps the id, so it still
+ *   matches the same road in an earlier version, and parts 2.. are `<id>~2`, `<id>~3`.
+ *   A part with fewer than 2 points has no length and is dropped.
+ */
+function linksOfFeature(attrs, parts, mapping) {
+  const raw = mapping.linkId ? String(attrs[mapping.linkId] ?? '').trim() : '';
+  return parts
+    .filter((coords) => coords.length >= 2)
+    .map((coords, i) => ({
+      coords,
+      id: raw ? (i === 0 ? raw : `${raw}~${i + 1}`) : linkIdFromShape(coords),
+      fromShape: !raw,
+    }));
 }
 
 /**
@@ -509,9 +561,9 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
       message: `Boundary layer is ${boundaryInfo.shapeTypeName}; work areas must be polygons.`,
     });
   }
-  if (boundaryInfo && !mapping.areaCode) {
-    errors.push({ code: 'NO_AREA_CODE', message: 'No area code column identified — choose one below.' });
-  }
+  // No code column is no longer a stop: each area's code is made from its outline instead
+  // (areaCodeFromShape), and the operator is told so — they can still pick a column below.
+  let areaCodesFromShape = 0;
 
   const areas = [];
   const priorityTally = new Map();
@@ -545,7 +597,11 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
         emptyAreaGeometry++;
         return;
       }
-      const code = mapping.areaCode ? String(attrs[mapping.areaCode] ?? '').trim() : '';
+      let code = mapping.areaCode ? String(attrs[mapping.areaCode] ?? '').trim() : '';
+      if (!code) {
+        code = areaCodeFromShape(geometry);
+        areaCodesFromShape++;
+      }
       const priority = mapping.priority ? Number(attrs[mapping.priority] ?? 0) || 0 : 0;
       const areaSqm = mapping.areaSqm ? Number(attrs[mapping.areaSqm] ?? 0) || null : null;
 
@@ -641,6 +697,15 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
         `against the source if the band or area matters.`,
     });
   }
+  if (areaCodesFromShape) {
+    warnings.push({
+      code: 'AREA_CODES_FROM_SHAPE',
+      message: mapping.areaCode
+        ? `${areaCodesFromShape} work area(s) have a blank "${mapping.areaCode}", so their code was made from their outline.`
+        : `The work-area file has no code column, so each area's code was made from its outline ` +
+          `(the same outline gets the same code in a later delivery). Pick a column below if it has one.`,
+    });
+  }
   if (emptyAreaGeometry) {
     warnings.push({
       code: 'EMPTY_AREA_GEOMETRY',
@@ -672,9 +737,6 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
       code: 'NETWORK_NOT_POLYLINE',
       message: `Network layer is ${networkInfo.shapeTypeName}; road links must be polylines.`,
     });
-  }
-  if (networkInfo && !mapping.linkId) {
-    errors.push({ code: 'NO_LINK_ID', message: 'No link id column identified — choose one below.' });
   }
 
   /**
@@ -714,7 +776,10 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
   let unnamedLinks = 0;
   let orphanLinks = 0;
   let orphanMeters = 0;
-  let missingLinkId = 0;
+  /** Links whose id was made from their shape (no column, or a blank value in it). */
+  let shapeIdLinks = 0;
+  /** Of the repeats above, the ones that were exact copies of another road's geometry. */
+  let duplicateShapes = 0;
 
   let scanned = 0;
   // Skipped entirely when no road layer was supplied — the areas above are already a complete
@@ -732,48 +797,49 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
       await new Promise((resolve) => setImmediate(resolve));
     }
 
-    if (!parts.length || parts[0].length < 2) {
+    const links = linksOfFeature(attrs, parts, mapping);
+    if (!links.length) {
       zeroLengthLinks++;
       continue;
     }
-    if (parts.length > 1) multiPartLinks++;
-
-    const coords = parts[0];
-    const metres = lineLength(coords);
-    linkCount++;
-    totalMeters += metres;
-    if (metres === 0) zeroLengthLinks++;
-
-    const id = mapping.linkId ? String(attrs[mapping.linkId] ?? '').trim() : '';
-    if (!id) missingLinkId++;
-    else if (seenLinkIds.has(id)) {
-      duplicateLinkCount++;
-      if (duplicateLinkIds.length < 20) duplicateLinkIds.push(id);
-      // Undo the counting done above: a repeated id is one road, and adding its length twice is
-      // precisely the double-counted denominator this rule exists to prevent. The commit pass
-      // skips it as well, so what is measured here is what gets written.
-      linkCount--;
-      totalMeters -= metres;
-      continue;
-    } else seenLinkIds.add(id);
+    if (links.length > 1) multiPartLinks++;
 
     const name = mapping.linkName ? String(attrs[mapping.linkName] ?? '').trim() : '';
-    if (!name) unnamedLinks++;
-
     const fc = mapping.funcClass ? Number(attrs[mapping.funcClass] ?? 0) || null : null;
-    tally(funcClassTally, fc, 1, metres);
     const dir = mapping.dirTravel ? String(attrs[mapping.dirTravel] ?? 'B').trim().toUpperCase() : 'B';
-    tally(dirTally, ['B', 'F', 'T'].includes(dir) ? dir : 'B', 1, metres);
-    tally(bucketTally, lengthBucket(metres), 1, metres);
-    if (footprint) footprint.addLine(coords);
 
-    const areaIndex = drawn ? 0 : locate(midpointOf(coords));
-    if (areaIndex < 0) {
-      orphanLinks++;
-      orphanMeters += metres;
-    } else {
-      areas[areaIndex].targetLinks++;
-      areas[areaIndex].targetMeters += metres;
+    for (const { id, coords, fromShape } of links) {
+      const metres = lineLength(coords);
+      if (seenLinkIds.has(id)) {
+        // A repeated id is one road: counting its length twice is precisely the double-counted
+        // denominator this rule exists to prevent. The commit pass skips it as well, so what is
+        // measured here is what gets written.
+        duplicateLinkCount++;
+        if (fromShape) duplicateShapes++;
+        else if (duplicateLinkIds.length < 20) duplicateLinkIds.push(id);
+        continue;
+      }
+      seenLinkIds.add(id);
+      if (fromShape) shapeIdLinks++;
+
+      linkCount++;
+      totalMeters += metres;
+      if (metres === 0) zeroLengthLinks++;
+      if (!name) unnamedLinks++;
+
+      tally(funcClassTally, fc, 1, metres);
+      tally(dirTally, ['B', 'F', 'T'].includes(dir) ? dir : 'B', 1, metres);
+      tally(bucketTally, lengthBucket(metres), 1, metres);
+      if (footprint) footprint.addLine(coords);
+
+      const areaIndex = drawn ? 0 : locate(midpointOf(coords));
+      if (areaIndex < 0) {
+        orphanLinks++;
+        orphanMeters += metres;
+      } else {
+        areas[areaIndex].targetLinks++;
+        areas[areaIndex].targetMeters += metres;
+      }
     }
   }
 
@@ -824,14 +890,12 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
           await new Promise((resolve) => setImmediate(resolve));
         }
         // The same links the pass above counted: no empty geometry, no second copy of an id.
-        if (!parts.length || parts[0].length < 2) continue;
-        const id = mapping.linkId ? String(attrs[mapping.linkId] ?? '').trim() : '';
-        if (id) {
+        for (const { id, coords } of linksOfFeature(attrs, parts, mapping)) {
           if (seen.has(id)) continue;
           seen.add(id);
+          const index = locate(midpointOf(coords));
+          if (wanted.has(index)) out.get(index).push({ coords, meters: lineLength(coords) });
         }
-        const index = locate(midpointOf(parts[0]));
-        if (wanted.has(index)) out.get(index).push({ coords: parts[0], meters: lineLength(parts[0]) });
       }
       return out;
     };
@@ -864,25 +928,36 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
   }
 
   if (multiPartLinks) {
-    errors.push({
+    warnings.push({
       code: 'MULTIPART_LINKS',
-      message: `${multiPartLinks} link(s) have multi-part geometry. Only the first part would be imported, which would silently understate the target — split them upstream and re-deliver.`,
+      message: `${multiPartLinks} link(s) arrived in several pieces. Each piece is imported as its own link, so the full length counts.`,
     });
   }
-  if (duplicateLinkCount) {
+  const repeatedIds = duplicateLinkCount - duplicateShapes;
+  if (repeatedIds) {
     warnings.push({
       code: 'DUPLICATE_LINK_ID',
       message:
-        `${duplicateLinkCount} repeated link id(s) were skipped, e.g. ` +
+        `${repeatedIds} repeated link id(s) were skipped, e.g. ` +
         `${duplicateLinkIds.slice(0, 3).join(', ')}. A link id is the ledger's key, so the first ` +
         `occurrence was kept and its length counted once. Where the repeats are different ` +
         `geometry — a road split in two upstream — only the first piece is in the target.`,
     });
   }
-  if (missingLinkId) {
-    errors.push({
-      code: 'MISSING_LINK_ID',
-      message: `${missingLinkId} link(s) have a blank id in "${mapping.linkId}".`,
+  if (duplicateShapes) {
+    warnings.push({
+      code: 'DUPLICATE_LINK_SHAPE',
+      message: `${duplicateShapes} road(s) were exact copies of another road's line and were counted once.`,
+    });
+  }
+  if (shapeIdLinks) {
+    warnings.push({
+      code: 'LINK_IDS_FROM_SHAPE',
+      message: mapping.linkId
+        ? `${shapeIdLinks} link(s) have a blank id in "${mapping.linkId}", so their id was made from their shape.`
+        : `The road file has no link id column, so each link's id was made from its shape. The same ` +
+          `road in a later delivery gets the same id as long as its line is unchanged. A customer ` +
+          `list keyed by LINK_ID cannot be matched against this delivery.`,
     });
   }
   if (orphanLinks && totalMeters > 0) {
@@ -1171,44 +1246,44 @@ async function commit(job, layers, areas, mapping, onProgress = () => {}) {
     const writtenLinkIds = new Set();
 
     for (const { attrs, parts } of layers.network ? shapefile.features(layers.network.chosen) : []) {
-      if (!parts.length || parts[0].length < 2) continue;
-      const linkId = String(attrs[mapping.linkId] ?? '').trim();
-      if (linkId) {
-        if (writtenLinkIds.has(linkId)) continue;
-        writtenLinkIds.add(linkId);
-      }
-      const coords = parts[0];
-      const metres = lineLength(coords);
-      // Drawn: one area, round every road — no point testing which one a link is in.
-      const area = drawn ? indexed[0] : locate(midpointOf(coords));
       const dirRaw = mapping.dirTravel
         ? String(attrs[mapping.dirTravel] ?? 'B').trim().toUpperCase()
         : 'B';
       const funcClass = mapping.funcClass ? Number(attrs[mapping.funcClass] ?? 0) || null : null;
+      const name = (mapping.linkName ? String(attrs[mapping.linkName] ?? '').trim() : '') || null;
+      const autoAccess = mapping.autoAccess
+        ? !/^N/i.test(String(attrs[mapping.autoAccess] ?? 'Y').trim())
+        : true;
 
-      totalMeters += metres;
-      tally(funcClassTally, funcClass, 1, metres);
-      if (!area) {
-        orphanLinks++;
-        orphanMeters += metres;
+      for (const { id: linkId, coords } of linksOfFeature(attrs, parts, mapping)) {
+        if (writtenLinkIds.has(linkId)) continue;
+        writtenLinkIds.add(linkId);
+        const metres = lineLength(coords);
+        // Drawn: one area, round every road — no point testing which one a link is in.
+        const area = drawn ? indexed[0] : locate(midpointOf(coords));
+
+        totalMeters += metres;
+        tally(funcClassTally, funcClass, 1, metres);
+        if (!area) {
+          orphanLinks++;
+          orphanMeters += metres;
+        }
+
+        batch.push({
+          projectId: job.projectId,
+          networkVersionId: version._id,
+          linkId,
+          name,
+          funcClass,
+          dirTravel: ['B', 'F', 'T'].includes(dirRaw) ? dirRaw : 'B',
+          autoAccess,
+          areaId: area?._id || null,
+          areaCode: area?.areaCode || null,
+          priority: area ? area.priority : null,
+          geometry: { type: 'LineString', coordinates: coords },
+          lengthMeters: metres,
+        });
       }
-
-      batch.push({
-        projectId: job.projectId,
-        networkVersionId: version._id,
-        linkId,
-        name: (mapping.linkName ? String(attrs[mapping.linkName] ?? '').trim() : '') || null,
-        funcClass,
-        dirTravel: ['B', 'F', 'T'].includes(dirRaw) ? dirRaw : 'B',
-        autoAccess: mapping.autoAccess
-          ? !/^N/i.test(String(attrs[mapping.autoAccess] ?? 'Y').trim())
-          : true,
-        areaId: area?._id || null,
-        areaCode: area?.areaCode || null,
-        priority: area ? area.priority : null,
-        geometry: { type: 'LineString', coordinates: coords },
-        lengthMeters: metres,
-      });
 
       if (batch.length >= INSERT_BATCH) {
         // eslint-disable-next-line no-await-in-loop
@@ -1328,6 +1403,9 @@ module.exports = {
   cleanupArtifacts,
   sniffBoundaryMapping,
   sniffNetworkMapping,
+  linksOfFeature,
+  linkIdFromShape,
+  areaCodeFromShape,
   rememberedMapping,
   joinPartsFor,
   polygonToGeoJson,

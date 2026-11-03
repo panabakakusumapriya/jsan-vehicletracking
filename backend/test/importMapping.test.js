@@ -75,6 +75,37 @@ function assert(cond, msg) {
   assert(ni.joinPartsFor({ joinAreaParts: false, joinAreaPartsChosenAt: new Date() }, ADMIN4, here) === false, 'an operator who unticked it is obeyed');
   assert(ni.joinPartsFor({ joinAreaParts: true, joinAreaPartsChosenAt: null }, ABS, abs) === true, 'and one who ticked it, whatever the file');
 
+  /* ── files with no code / id column (the 2026-11 VIC delivery) ── */
+  // Suburbs: POLYGON_ID + POLYGON_NM only. Roads: no id column at all.
+  const VIC_AREAS = fields('POLYGON_ID', 'POLYGON_NM');
+  const VIC_ROADS = fields('ST_NAME', 'FUNC_CLASS', 'DIR_TRAVEL', 'AR_AUTO', 'PAVED', 'PRIVATE', 'FERRY_TYPE', 'PUB_ACCESS');
+  const vicAreas = ni.sniffBoundaryMapping(VIC_AREAS);
+  assert(vicAreas.areaCode === 'POLYGON_ID' && vicAreas.areaName === 'POLYGON_NM', 'with no AREA_ID, POLYGON_ID is the area code');
+  assert(ni.sniffBoundaryMapping(ADMIN4).areaCode === 'AREA_ID', '…and AREA_ID still wins where both exist');
+  const vicRoads = ni.sniffNetworkMapping(VIC_ROADS);
+  assert(vicRoads.linkId === null && vicRoads.linkName === 'ST_NAME', 'a road file with no id column maps no link id');
+
+  const lineA = [[144.9631, -37.8136], [144.9641, -37.8146]];
+  const lineB = [[144.9700, -37.8200], [144.9710, -37.8210], [144.9720, -37.8220]];
+  const [byShape] = ni.linksOfFeature({ ST_NAME: 'Bourke St' }, [lineA], vicRoads);
+  assert(byShape.fromShape && /^s[0-9a-f]{20}$/.test(byShape.id), 'no id column: the id is made from the shape');
+  assert(ni.linksOfFeature({}, [lineA.map((p) => [...p])], vicRoads)[0].id === byShape.id, '…the same line gets the same id next time');
+  assert(ni.linksOfFeature({}, [lineB], vicRoads)[0].id !== byShape.id, '…and a different line a different one');
+  const blank = ni.linksOfFeature({ LINK_ID: '  ' }, [lineA], { linkId: 'LINK_ID' });
+  assert(blank[0].id === byShape.id && blank[0].fromShape, 'a blank value in a chosen id column falls back to the shape');
+  const multi = ni.linksOfFeature({ LINK_ID: '123' }, [lineA, [[1, 1]], lineB], { linkId: 'LINK_ID' });
+  assert(multi.length === 2 && multi[0].id === '123' && multi[1].id === '123~2' && multi[1].coords === lineB,
+    'a multi-part link is one link per part: part 1 keeps the id, later parts are id~2.., a 1-point part is dropped');
+  const multiShape = ni.linksOfFeature({}, [lineA, lineB], vicRoads);
+  assert(multiShape.length === 2 && multiShape[0].id !== multiShape[1].id, '…and by shape, each part its own id');
+
+  const square = { type: 'Polygon', coordinates: [[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]] };
+  const code = ni.areaCodeFromShape(square);
+  assert(/^A[0-9A-F]{12}$/.test(code) && code === ni.areaCodeFromShape(JSON.parse(JSON.stringify(square))),
+    'an area with no code column gets a stable code from its outline');
+  assert(code !== ni.areaCodeFromShape({ type: 'MultiPolygon', coordinates: [square.coordinates, [[[2, 2], [2, 3], [3, 3], [2, 2]]]] }),
+    '…and a different outline a different code');
+
   console.log(`\n${passed} assertions passed`);
   await mongoose.disconnect();
   await mongod.stop();

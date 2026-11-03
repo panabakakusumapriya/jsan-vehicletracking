@@ -91,12 +91,14 @@ const POSITION_PILL: Record<DriverPosition['state'], { tone: string; label: stri
 const PIN_FALLBACK: [number, number, number] = [71, 85, 105];
 
 const MAPPING_FIELDS: { key: keyof ColumnMapping; label: string; layer: 'boundary' | 'network'; required?: boolean }[] = [
-  { key: 'areaCode', label: 'Area code', layer: 'boundary', required: true },
+  // Neither code column is required: a file without one gets codes made from each shape (the
+  // 2026-11 VIC delivery had no LINK_ID at all) — see linksOfFeature in services/networkImport.js.
+  { key: 'areaCode', label: 'Area code', layer: 'boundary' },
   { key: 'areaName', label: 'Area name', layer: 'boundary' },
   { key: 'areaParent', label: 'Parent region', layer: 'boundary' },
   { key: 'priority', label: 'Priority', layer: 'boundary' },
   { key: 'areaSqm', label: 'Area (m²)', layer: 'boundary' },
-  { key: 'linkId', label: 'Link id', layer: 'network', required: true },
+  { key: 'linkId', label: 'Link id', layer: 'network' },
   { key: 'linkName', label: 'Street name', layer: 'network' },
   { key: 'funcClass', label: 'Functional class', layer: 'network' },
   { key: 'dirTravel', label: 'Direction of travel', layer: 'network' },
@@ -2781,7 +2783,7 @@ function ReportView({
         <summary>
           Column mapping
           <span className="cov-details-hint">
-            {report.mapping.areaCode || '—'} · {report.mapping.linkId || '—'} · {report.mapping.priority || 'no priority'}
+            {report.mapping.areaCode || 'codes from shape'} · {report.mapping.linkId || (hasNetwork ? 'ids from shape' : '—')} · {report.mapping.priority || 'no priority'}
           </span>
         </summary>
         <p className="cov-sub" style={{ marginTop: 10 }}>
@@ -2803,7 +2805,7 @@ function ReportView({
                 value={job.mapping[key] || ''}
                 onChange={(e) => onPatch({ mapping: { [key]: e.target.value || null } })}
               >
-                <option value="">— none —</option>
+                <option value="">{key === 'areaCode' || key === 'linkId' ? '— none (made from each shape) —' : '— none —'}</option>
                 {fieldsFor[layer].map((f) => (
                   <option key={f.name} value={f.name}>{f.name} ({f.type}{f.length})</option>
                 ))}
