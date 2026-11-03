@@ -1,5 +1,5 @@
 import { Directory, File, Paths } from 'expo-file-system';
-import { apiDropMarker, type MapMarker } from './api';
+import { apiDropMarker, apiDropMarkers, type MapMarker } from './api';
 
 /**
  * Offline outbox for dropped markers.
@@ -80,9 +80,46 @@ export function pendingMarkers(): PendingMarker[] {
  * forever cannot succeed) and drops the entry; anything else — offline, 5xx — keeps it for the
  * next flush.
  */
-export async function flushMarkerQueue(token: string): Promise<{ sent: MapMarker[]; pending: number }> {
+let flushing: Promise<{ sent: MapMarker[]; pending: number }> | null = null;
+
+/**
+ * Deliver the outbox: in batches of up to 50 (POST /api/markers/batch), one request instead of one
+ * per drop. A server without the batch route (older backend) gets them one at a time. Only one
+ * flush runs at once — a drop made while one is in flight waits in the outbox for the next.
+ */
+export function flushMarkerQueue(token: string): Promise<{ sent: MapMarker[]; pending: number }> {
+  if (!flushing) flushing = flushOnce(token).finally(() => { flushing = null; });
+  return flushing;
+}
+
+async function flushOnce(token: string): Promise<{ sent: MapMarker[]; pending: number }> {
   const list = readOutbox();
   if (list.length === 0) return { sent: [], pending: 0 };
+  const sent: MapMarker[] = [];
+  const done = new Set<string>();
+  let batchWorks = true;
+  for (let i = 0; i < list.length && batchWorks; i += 50) {
+    const chunk = list.slice(i, i + 50);
+    try {
+      const r = await apiDropMarkers(token, chunk);
+      for (const x of r.results || []) {
+        if (x.marker) { sent.push(x.marker); done.add(x.clientId); } else if (x.permanent) done.add(x.clientId);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      if (/404|not found/i.test(msg)) batchWorks = false; // older server: one at a time below
+      else break; // offline or 5xx: everything left stays queued for the next flush
+    }
+  }
+  if (batchWorks) {
+    // Re-read: drops made during the upload were appended meanwhile and must stay queued.
+    writeOutbox(readOutbox().filter((p) => !done.has(p.clientId)));
+    return { sent, pending: readOutbox().length };
+  }
+  return flushOneByOne(token, list);
+}
+
+async function flushOneByOne(token: string, list: PendingMarker[]): Promise<{ sent: MapMarker[]; pending: number }> {
   const sent: MapMarker[] = [];
   const keep: PendingMarker[] = [];
   for (const p of list) {
@@ -96,6 +133,8 @@ export async function flushMarkerQueue(token: string): Promise<{ sent: MapMarker
       keep.push(p);
     }
   }
-  writeOutbox(keep);
-  return { sent, pending: keep.length };
+  const handled = new Set(list.map((p) => p.clientId));
+  const added = readOutbox().filter((p) => !handled.has(p.clientId));
+  writeOutbox([...keep, ...added]);
+  return { sent, pending: keep.length + added.length };
 }

@@ -1,4 +1,8 @@
+import Constants from 'expo-constants';
 import { API_BASE_URL } from './config';
+
+/** Sent on every request, so the office can see which build each phone runs. */
+const APP_VERSION = String(Constants.expoConfig?.version ?? '');
 
 /**
  * Set by AuthProvider so a 401 anywhere can end the session exactly once.
@@ -62,6 +66,7 @@ async function request(path: string, options: RequestInit = {}, token?: string |
     ...(options.headers as Record<string, string> | undefined),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (APP_VERSION) headers['X-App-Version'] = APP_VERSION;
 
   const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers });
   const text = await res.text();
@@ -338,4 +343,12 @@ export function apiDropMarker(
   m: { lat: number; lon: number; categoryId: string; clientId: string; recordedAt: string }
 ): Promise<{ marker: MapMarker }> {
   return request('/api/markers', { method: 'POST', body: JSON.stringify(m) }, token);
+}
+
+/** Several queued drops in one request (POST /api/markers/batch); each entry answered on its own. */
+export function apiDropMarkers(
+  token: string,
+  markers: { lat: number; lon: number; categoryId: string; clientId: string; recordedAt: string }[]
+): Promise<{ results: { clientId: string; marker?: MapMarker; error?: string; permanent?: boolean }[] }> {
+  return request('/api/markers/batch', { method: 'POST', body: JSON.stringify({ markers }) }, token);
 }

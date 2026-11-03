@@ -27,7 +27,7 @@ import { type MapGLHandle, type MapGLHistory, type MapGLMarkers, type MapGLTrace
 import { DriverMap } from '@/src/components/DriverMap';
 import { BottomSheet, type BottomSheetHandle } from '@/src/components/BottomSheet';
 import {
-  apiDropMarker, apiMarkerCategories, apiMyAreas, apiMyMarkers, apiMyRoadsVersion, apiMyTripsSettled,
+  apiMarkerCategories, apiMyAreas, apiMyMarkers, apiMyRoadsVersion, apiMyTripsSettled,
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
 } from '@/src/lib/api';
 import { enqueueMarker, flushMarkerQueue, newClientId, pendingMarkerCount, pendingMarkers } from '@/src/lib/markerQueue';
@@ -1074,6 +1074,9 @@ export default function MapScreen() {
     return () => clearTimeout(t);
   }, [markerNote]);
 
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (flushTimerRef.current) clearTimeout(flushTimerRef.current); }, []);
+
   /** The actual drop, at an explicit position — placement decides WHERE, this only delivers. */
   const dropAt = useCallback(async (cat: MarkerCategory, pos: [number, number]) => {
     const pending = {
@@ -1089,15 +1092,15 @@ export default function MapScreen() {
       { id: pending.clientId, lat: pending.lat, lon: pending.lon, category: cat,
         driverName: user?.name ?? null, vehiclePlate: null, recordedAt: pending.recordedAt },
     ]);
-    try {
-      if (!token) throw new Error('no session');
-      await apiDropMarker(token, pending);
-      setMarkerNote(`Marker dropped: ${cat.name}`);
-    } catch {
-      enqueueMarker(pending);
-      setMarkerNote('No signal — marker saved on this phone, it uploads automatically later.');
-    }
-  }, [token, user]);
+    // Saved on the phone first, every time, and confirmed at once: the driver never waits on the
+    // network. The outbox uploads in the background — a few seconds after the last drop (so a run of
+    // drops goes up as one batch), every minute while anything is queued, and on returning to the
+    // app. Waiting on the request here was the lag drivers felt on a weak signal.
+    enqueueMarker(pending);
+    setMarkerNote(`Marker saved: ${cat.name}`);
+    if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = setTimeout(() => { flushTimerRef.current = null; flushMarkers(); }, 4000);
+  }, [user, flushMarkers]);
 
   /** Colour chosen — now the driver positions the pin: the map centre IS the marker. */
   const beginPlacing = useCallback((cat: MarkerCategory) => {
