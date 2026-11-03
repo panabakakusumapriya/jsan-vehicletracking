@@ -36,6 +36,7 @@ const APPLY = args.get('apply') === true;
 const PROJECT_NAME = String(args.get('project') || 'PRJ-025-HE-DRIVE-AUSGNZ');
 const VTS_PROJECT = '6a3233e935b68ccdc47a9785'; // projaustralia
 const NAME_BATCH = /^vtsclosed-/; // completions written by syncVtsClosedAreas.js
+const VTS_BATCH = /^vts(closed|exact)-/; // …or by this script
 const COMPLETE_SHARE = 0.9;
 const CUT_V_SHARE = 0.5;
 const CUT_MIN_KM = 0.5;
@@ -126,67 +127,66 @@ async function main() {
     if (++n % 100 === 0) log(`  ${n}/${vPolys.length} VTS areas scanned`);
   }
 
-  // 3. Decide per Atlas area.
+  // 3. Decide per Atlas area — no tolerance. Counted in road links, not km: "all" means every road.
   const areas = await db.collection('workareas').find({ networkVersionId: { $in: versionIds } })
     .project({ name: 1, areaCode: 1, targetMeters: 1, networkVersionId: 1, 'props.splitFrom': 1 }).toArray();
+  const linkCount = new Map((await db.collection('roadlinks').aggregate([
+    { $match: { networkVersionId: { $in: versionIds }, areaId: { $ne: null } } },
+    { $group: { _id: '$areaId', n: { $sum: 1 } } },
+  ]).toArray()).map((r) => [String(r._id), r.n]));
   const comps = new Map((await db.collection('areacompletions').find({ projectId: project._id, coverageCycleId: cycleId }).toArray()).map((c) => [c.areaCode, c]));
   const heldCodes = new Set(await db.collection('areaassignments').distinct('areaCode', { projectId: project._id, releasedAt: null }));
   const vById = new Map(vPolys.map((p) => [p.id, p]));
 
-  const plan = { complete: [], cut: [], reopen: [], partialByName: [], alreadyRight: 0, blockedHeld: [], blockedManager: [] };
+  const plan = { complete: [], cut: [], reopen: [], alreadyRight: 0, blockedHeld: [], blockedManager: [] };
   for (const a of areas) {
     const id = String(a._id);
     const total = a.targetMeters || 0;
     const onClosed = areaClosedM.get(id) || 0;
-    const share = total > 0 ? onClosed / total : 0;
+    const roads = linkCount.get(id) || 0;
+    const closedRoads = (areaClosedLinks.get(id) || new Set()).size;
     const comp = comps.get(a.areaCode);
     const isDone = comp && comp.status === 'completed';
-    const byName = isDone && NAME_BATCH.test(comp.importBatchId || '');
-    const tag = `${a.name} [${a.areaCode}] ${label.get(String(a.networkVersionId))} — ${(onClosed / 1000).toFixed(1)} of ${(total / 1000).toFixed(1)} km on VTS-closed ground (${(share * 100).toFixed(0)}%)`;
-    // Which VTS-closed areas sit substantially inside this one (not just a border sliver)?
+    // Completed by one of these VTS scripts (ours to correct), not by a person.
+    const byVts = isDone && VTS_BATCH.test(comp.importBatchId || '');
+    const reopenedByManager = comp && comp.status !== 'completed' && (comp.reopenedBy || !VTS_BATCH.test(comp.importBatchId || ''));
+    const tag = `${a.name} [${a.areaCode}] ${label.get(String(a.networkVersionId))} — ${closedRoads} of ${roads} roads (${(onClosed / 1000).toFixed(2)} of ${(total / 1000).toFixed(2)} km) on VTS-closed ground`;
+    if (!roads) { plan.alreadyRight++; continue; } // nothing to drive: a 0 km area follows no road
+
+    if (closedRoads === roads) { // every road closed on VTS
+      if (isDone) { plan.alreadyRight++; continue; }
+      if (reopenedByManager) { plan.blockedManager.push(`${tag} — reopened by a manager, left open`); continue; }
+      if (heldCodes.has(a.areaCode)) { plan.blockedHeld.push(`${tag} — held by a driver in Atlas, not closed`); continue; }
+      plan.complete.push({ a, tag });
+      continue;
+    }
+    if (closedRoads === 0) { // no road closed on VTS
+      if (byVts) plan.reopen.push({ a, tag, comp });
+      else plan.alreadyRight++;
+      continue;
+    }
+    // Some roads closed, some not: cut, whatever the share.
+    if (heldCodes.has(a.areaCode)) { plan.blockedHeld.push(`${tag} — held by a driver in Atlas, not cut`); continue; }
+    if (isDone && !byVts) { plan.blockedManager.push(`${tag} — signed off by a manager in Atlas, not cut`); continue; }
+    if (reopenedByManager) { plan.blockedManager.push(`${tag} — reopened by a manager, not cut`); continue; }
     const inside = [];
-    let dominant = 0; // the most of this area's road any ONE VTS area covers
     for (const [k, m] of pair) {
       const [vid, aid] = k.split('|');
-      if (aid !== id) continue;
-      if (total > 0) dominant = Math.max(dominant, m / total);
-      const vt = vTotal.get(`${vid}|${a.networkVersionId}`) || 0;
-      if (vt > 0 && m / vt >= CUT_V_SHARE && m >= CUT_MIN_KM * 1000) inside.push({ v: vById.get(vid), m });
+      if (aid === id) inside.push({ v: vById.get(vid), m });
     }
-    // Whole, when one VTS area IS this area (what is left is the two systems' boundaries
-    // disagreeing), or what is left is a sliver. Several closed suburbs filling most of a big zone
-    // leave real open road behind: that is a cut, not a completion.
-    const leftover = total - onClosed;
-    const whole = share >= COMPLETE_SHARE && (dominant >= COMPLETE_SHARE || leftover <= Math.max(1000, 0.01 * total) || !inside.length);
-    if (whole) {
-      if (isDone) { plan.alreadyRight++; continue; }
-      if (comp && comp.status !== 'completed' && !NAME_BATCH.test(comp.importBatchId || '')) { plan.blockedManager.push(`${tag} — reopened by a manager, left open`); continue; }
-      if (comp && comp.status !== 'completed' && comp.reopenedBy) { plan.blockedManager.push(`${tag} — reopened by a manager, left open`); continue; }
-      if (heldCodes.has(a.areaCode)) { plan.blockedHeld.push(`${tag} — held by a driver in Atlas, not closed`); continue; }
-      plan.complete.push({ a, share, tag });
-      continue;
-    }
-    if (inside.length) {
-      if (isDone) { plan.alreadyRight++; continue; } // a person (or the name batch) signed the whole of it off; see report
-      if (heldCodes.has(a.areaCode)) { plan.blockedHeld.push(`${tag} — held by a driver, not cut`); continue; }
-      plan.cut.push({ a, share, tag, inside });
-      continue;
-    }
-    if (byName && share < RELEASE_SHARE) plan.reopen.push({ a, share, tag, comp });
-    else if (byName) plan.partialByName.push(tag);
+    plan.cut.push({ a, tag, inside, comp: isDone ? comp : null });
   }
 
+  const km = (xs) => (xs.reduce((t, x) => t + (x.a.targetMeters || 0), 0) / 1000).toFixed(1);
   log(`\nAlready right: ${plan.alreadyRight}`);
-  log(`\nComplete (whole area on VTS-closed ground): ${plan.complete.length}`);
+  log(`\nComplete — every road on VTS-closed ground (${plan.complete.length}, ${km(plan.complete)} km):`);
   plan.complete.forEach((x) => log(`  ${x.tag}`));
-  log(`\nCut (VTS-closed suburbs inside a bigger Atlas area): ${plan.cut.length}`);
-  plan.cut.forEach((x) => log(`  ${x.tag}\n      closed inside it: ${x.inside.map((i) => `${i.v.name} ${(i.m / 1000).toFixed(1)} km`).join(', ')}`));
-  log(`\nReopen (closed by the name match, but its ground is not closed on VTS): ${plan.reopen.length}`);
+  log(`\nCut — some roads closed on VTS, some not (${plan.cut.length}, ${km(plan.cut)} km; ${plan.cut.filter((x) => x.comp).length} of them completed now, by a VTS sync):`);
+  plan.cut.forEach((x) => log(`  ${x.tag}${x.comp ? ' [completed now]' : ''}`));
+  log(`\nReopen — completed by a VTS sync, but no road of it is closed on VTS (${plan.reopen.length}):`);
   plan.reopen.forEach((x) => log(`  ${x.tag}`));
-  log(`\nClosed by the name match, only partly on VTS-closed ground — to review (${plan.partialByName.length}):`);
-  plan.partialByName.forEach((x) => log(`  ${x}`));
-  if (plan.blockedHeld.length) { log(`\nNot cut — a driver holds it (${plan.blockedHeld.length}):`); plan.blockedHeld.forEach((x) => log(`  ${x}`)); }
-  if (plan.blockedManager.length) { log(`\nLeft as a manager set it (${plan.blockedManager.length}):`); plan.blockedManager.forEach((x) => log(`  ${x}`)); }
+  if (plan.blockedHeld.length) { log(`\nLeft — a driver holds it (${plan.blockedHeld.length}):`); plan.blockedHeld.forEach((x) => log(`  ${x}`)); }
+  if (plan.blockedManager.length) { log(`\nLeft — as a manager set it (${plan.blockedManager.length}):`); plan.blockedManager.forEach((x) => log(`  ${x}`)); }
   if (!APPLY) return log('\nDry run — nothing written. Add --apply.');
   return applyPlan(db, project, cycleId, plan, areaClosedLinks);
 }
@@ -231,13 +231,16 @@ async function applyPlan(db, project, cycleId, plan, areaClosedLinks) {
   log(`  completed ${plan.complete.length} areas`);
 
   let cuts = 0;
-  for (const { a, inside } of plan.cut) {
+  for (const { a, inside, comp } of plan.cut) {
     // The closed part's outline: the VTS polygons inside it, one polygon per ring.
     const cutGeometry = { type: 'MultiPolygon', coordinates: inside.flatMap(({ v }) => v.rings.map((r) => {
       const ring = r.slice();
       if (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1]) ring.push(ring[0]);
       return [ring];
     })) };
+    // Completed whole by a VTS sync, but some of its roads are open on VTS: that completion is set
+    // aside ('cut') so the area can be cut; --undo puts it back.
+    if (comp) await db.collection('areacompletions').updateOne({ _id: comp._id }, { $set: { status: 'cut', cutBatchId: batch, updatedAt: now } });
     try {
       const res = await workAreaSplit.cutCommittedArea({
         versionId: a.networkVersionId, areaId: a._id, linkIds: [...areaClosedLinks.get(String(a._id))], cutGeometry,
@@ -248,6 +251,7 @@ async function applyPlan(db, project, cycleId, plan, areaClosedLinks) {
       cuts++;
       log(`  cut ${a.name}: ${res.zones[0].km.toFixed(1)} km closed / ${res.zones[1].km.toFixed(1)} km open`);
     } catch (err) {
+      if (comp) await db.collection('areacompletions').updateOne({ _id: comp._id }, { $set: { status: 'completed' }, $unset: { cutBatchId: '' } });
       log(`  NOT cut ${a.name} [${a.areaCode}]: ${err.message}`);
     }
   }
@@ -288,6 +292,8 @@ async function undo(db, batch) {
   for (const r of cuts) {
     await workAreaSplit.joinSplitArea({ versionId: r.networkVersionId, areaCode: r.areaCode });
   }
+  // The completions set aside to cut whole-completed areas come back once the areas are whole.
+  await db.collection('areacompletions').updateMany({ cutBatchId: batch }, { $set: { status: 'completed' }, $unset: { cutBatchId: '' } });
   log('Undone.');
 }
 

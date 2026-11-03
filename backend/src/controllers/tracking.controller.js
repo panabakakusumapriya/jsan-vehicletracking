@@ -538,7 +538,10 @@ exports.liveAreas = asyncHandler(async (req, res) => {
     // eslint-disable-next-line no-await-in-loop
     const found = await resolveAssignedAreas(versions, rows, '_id name parentName outline bbox');
     for (const area of found) {
-      const holders = rows.filter((r) => (r.areaCode ? r.areaCode === area.areaCode : String(r.areaId) === String(area._id)));
+      // A zone cut from a held area ("<code>-01") is that holder's ground too (resolveAssignedAreas).
+      const holders = rows.filter((r) => (r.areaCode
+        ? r.areaCode === area.areaCode || String(area.areaCode).startsWith(`${r.areaCode}-`)
+        : String(r.areaId) === String(area._id)));
       let outline = area.outline && area.outline.coordinates ? area.outline : null;
       if (!outline && Array.isArray(area.bbox) && area.bbox.length === 4) {
         const [w, s, e, n] = area.bbox;
@@ -1075,7 +1078,10 @@ exports.myAreas = asyncHandler(async (req, res) => {
   const assignedAtByArea = new Map(
     areas.map((a) => [
       String(a._id),
-      assignedAtByCode.get(a.areaCode) || assignedAtById.get(String(a._id)) || null,
+      assignedAtByCode.get(a.areaCode) ||
+        // a zone cut from a held area carries its parent's stamp
+        [...assignedAtByCode].find(([code]) => String(a.areaCode).startsWith(`${code}-`))?.[1] ||
+        assignedAtById.get(String(a._id)) || null,
     ])
   );
 

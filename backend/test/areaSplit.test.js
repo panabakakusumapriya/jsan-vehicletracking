@@ -531,6 +531,10 @@ function bboxOfAll(geometry) {
   assert(String((await LinkCoverage.findOne({ networkVersionId: version2._id, linkId: isletLink }).lean()).areaId) === String(isletCutZone._id), 'coverage follows its road onto the zone');
   assert((await NetworkVersion.findById(version2._id).lean()).counts.areas === 2 &&
     (await AreaSplit.findOne({ networkVersionId: version2._id, areaCode: 'WIDE' }).lean()).placesSource === 'test-cut', 'the version counts two areas; the record carries the tag');
+  const { resolveAssignedAreas } = require('../src/services/liveNetworks');
+  const heldWide = await resolveAssignedAreas([await NetworkVersion.findById(version2._id).lean()], [{ areaCode: 'WIDE', areaId: wide._id }], '_id name');
+  assert(heldWide.map((a) => a.areaCode).sort().join() === 'WIDE-01,WIDE-02',
+    'an assignment of the area made before the cut still covers its ground: both zones (assigned UKM is not lost on a re-figure)');
   const unCut = await workAreaSplit.joinSplitArea({ versionId: version2._id, areaCode: 'WIDE-01' });
   assert(unCut.joined && JSON.stringify(await WorkArea.findById(wide._id).lean()) === JSON.stringify(wideBefore) &&
     (await RoadLink.countDocuments({ areaId: wide._id })) === wideLinks.length &&

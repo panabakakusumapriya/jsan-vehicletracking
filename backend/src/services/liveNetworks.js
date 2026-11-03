@@ -67,15 +67,24 @@ async function liveNetworkVersions(projectIds) {
  * Matched by areaCode — the customer's stable id, which survives re-imports — with the raw id kept
  * for rows predating the code snapshot. When a code exists in several live deliveries, the copy in
  * the highest-ranked one (see liveNetworkVersions) is the one returned.
+ *
+ * An area later split or cut into zones is still the ground the assignment was for: its zones
+ * ("<code>-01", "<code>-02", and zones of zones, each carrying props.splitFrom) come back with it.
+ * Without them a trip re-figured after a cut would find its driver held nothing there, and the
+ * work it did would move from assigned UKM to outside UKM.
  */
 async function resolveAssignedAreas(versions, assignments, select) {
   if (!versions.length || !assignments.length) return [];
   const codes = [...new Set(assignments.map((a) => a.areaCode).filter(Boolean))];
   const legacyIds = assignments.filter((a) => !a.areaCode).map((a) => a.areaId);
+  const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const zonesOf = codes.length
+    ? [{ areaCode: { $regex: `^(${codes.map(escape).join('|')})-` }, 'props.splitFrom': { $exists: true } }]
+    : [];
 
   const rows = await WorkArea.find({
     networkVersionId: { $in: versions.map((v) => v._id) },
-    $or: [{ areaCode: { $in: codes } }, { _id: { $in: legacyIds } }],
+    $or: [{ areaCode: { $in: codes } }, { _id: { $in: legacyIds } }, ...zonesOf],
   })
     .select(`${select} areaCode networkVersionId`)
     .lean();

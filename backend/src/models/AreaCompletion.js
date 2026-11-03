@@ -32,7 +32,9 @@ const areaCompletionSchema = new mongoose.Schema(
     // The customer's stable area identity (SA2 code in delivery 1) — NOT our per-version _id.
     areaCode: { type: String, required: true },
 
-    status: { type: String, enum: ['completed', 'reopened'], default: 'completed', index: true },
+    // 'cut': the area was completed whole, then cut into a closed and an open zone
+    // (seed/exactVtsClosedAreas.js); the row is kept so an undo can restore it.
+    status: { type: String, enum: ['completed', 'reopened', 'cut'], default: 'completed', index: true },
 
     // Snapshots of what the ledger said when the manager signed it off. Kept rather than
     // recomputed so the decision stays auditable after later driving moves the numbers.
