@@ -5,9 +5,9 @@ const mongoose = require('mongoose');
  * vehicle change-over before the first one. Working hours are each trip's start-to-end added up
  * (utils/workHours.js), so without this a 30-minute storm stop simply vanished from the day.
  *
- * The driver reports it from the app; it counts toward working hours only once a manager has
- * approved it (status 'approved'). Pending entries are shown, not counted. Rules for when an entry
- * may be made live in services/downtime.js.
+ * The driver reports it from the app and it counts toward working hours straight away (status
+ * 'approved' = counted; 'pending' / 'rejected' only exist on entries from before approval was
+ * dropped). Rules for when an entry may be made live in services/downtime.js.
  */
 const REASONS = ['weather', 'vehicle_changeover', 'vehicle_issue', 'road_closed', 'waiting_instructions', 'fuel', 'other'];
 

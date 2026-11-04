@@ -35,7 +35,7 @@ export interface DaySummaryLite {
   outsideUkm?: number;
   splitTrips?: number;
   workMs?: number;
-  /** Of workMs: approved downtime; pending is not in workMs. */
+  /** Of workMs: the downtime the driver reported. */
   downtimeMs?: number;
   pendingDowntimeMs?: number;
   importedTrips?: number;
@@ -202,8 +202,8 @@ export function DayDrawer({
           <div className="blue"><b>{measured ? km(day.assignedUkm ?? 0) : '—'}</b><span>assigned UKM</span></div>
           <div className="amber"><b>{measured ? km(day.outsideUkm ?? 0) : '—'}</b><span>outside UKM</span></div>
           <div
-            title={day.downtimeMs || day.pendingDowntimeMs
-              ? `Includes ${hm(day.downtimeMs ?? 0)} approved downtime${day.pendingDowntimeMs ? `; ${hm(day.pendingDowntimeMs)} more waiting for approval` : ''}`
+            title={day.downtimeMs
+              ? `Includes ${hm(day.downtimeMs)} of downtime the driver reported`
               : 'Every trip’s start to end, added up'}
           >
             <b>{(day.importedTrips ?? 0) >= day.totalTrips ? '—' : hm(day.workMs)}</b>

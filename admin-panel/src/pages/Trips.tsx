@@ -7,7 +7,7 @@ import { AlreadyDrivenTip } from '../components/AlreadyDrivenTip';
 import { pinUrl, type TripMarker } from '../components/TripMarkers';
 import { ExportButtons } from '../components/ExportButtons';
 import { DayDrawer } from '../components/DayDrawer';
-import { DowntimeReview, DOWNTIME_REASON, type DowntimeRow } from '../components/DowntimeReview';
+import { DOWNTIME_REASON, type DowntimeRow } from '../lib/downtime';
 import { api, downloadFile, viewerTimeZone } from '../lib/api';
 import { normalizeCountry } from '../lib/country';
 import { runExportJob, describeJob } from '../lib/exportJobs';
@@ -183,15 +183,6 @@ export function Trips() {
   const page = Math.max(1, Number(searchParams.get('page')) || 1);
   // The driver-day open in the side drawer (Details on a trip), and which of its sessions was clicked.
   const [drawer, setDrawer] = useState<{ key: string; tripId: string } | null>(null);
-  // Downtime drivers reported (weather stop, change-over), waiting for a manager.
-  const [pendingDowntime, setPendingDowntime] = useState(0);
-  const [downtimeOpen, setDowntimeOpen] = useState(false);
-  const loadPendingDowntime = useCallback(() => {
-    api.get<{ pending: number }>('/api/downtime?status=pending')
-      .then((r) => setPendingDowntime(r.pending || 0))
-      .catch(() => setPendingDowntime(0)); // an older server, or a role that cannot review
-  }, []);
-  useEffect(() => { loadPendingDowntime(); }, [loadPendingDowntime]);
   const expanded = useMemo(
     () => new Set((searchParams.get('exp') ?? '').split(',').filter(Boolean)),
     [searchParams]
@@ -314,25 +305,6 @@ export function Trips() {
       .then((r) => setDayDowntime((prev) => ({ ...prev, [key]: r.downtime })))
       .catch(() => setDayDowntime((prev) => ({ ...prev, [key]: [] }))); // an older server
   }, []);
-  /** Approve / not approve straight from the day's rows; the row, its totals and the count follow. */
-  const decideDowntime = useCallback(async (d: DowntimeRow, s: DaySummary, status: 'approved' | 'rejected') => {
-    let reviewNote: string | undefined;
-    if (status === 'rejected') {
-      const note = window.prompt('Reason the driver will see (optional)', '');
-      if (note === null) return;
-      reviewNote = note;
-    }
-    try {
-      await api.patch(`/api/downtime/${d.id}`, { status, reviewNote });
-    } catch (e) {
-      window.alert(e instanceof Error ? e.message : 'Could not save');
-      return;
-    }
-    fetchDayDowntime(s);
-    loadPendingDowntime();
-    load(page);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchDayDowntime, loadPendingDowntime, page]);
 
   const fetchDayTrips = useCallback((s: DaySummary) => {
     const key = dayKey(s);
@@ -446,9 +418,6 @@ export function Trips() {
         .day-total-row td { font-weight: 700; color: var(--text); border-top: 1px solid var(--line-2); background: var(--panel-2); }
         .day-row { cursor: pointer; }
         .downtime-row td { background: #fffbeb; }
-        .dt-act { border: 1px solid var(--line-2); background: var(--panel); border-radius: 7px; padding: 4px 10px; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
-        .dt-act.ok { color: #047857; border-color: #a7f3d0; background: #ecfdf5; }
-        .dt-act.no { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
         .trip-marker-dots { display: inline-flex; gap: 8px; font-weight: 700; font-size: 12.5px; }
         .trip-marker-dots > span { display: inline-flex; align-items: center; gap: 4px; }
         .trip-marker-dots i { width: 9px; height: 9px; border-radius: 99px; display: inline-block; box-shadow: 0 0 0 1.5px #fff, 0 0 0 2.5px rgba(15,23,42,0.15); }
@@ -506,18 +475,10 @@ export function Trips() {
           <span className="dr-sep" aria-hidden="true" />
           <span
             className="dr-stat static"
-            title={`Working hours of every driver-day matching the filters: each trip's start to end, added up, plus approved downtime${totals?.downtimeMs ? ` (${hm(totals.downtimeMs)} of it)` : ''}`}
+            title={`Working hours of every driver-day matching the filters: each trip's start to end, added up, plus the downtime drivers reported${totals?.downtimeMs ? ` (${hm(totals.downtimeMs)} of it)` : ''}`}
           >
             <b>{hm(workMs)}</b> Working hours
           </span>
-          <button
-            type="button"
-            className={`dr-stat${pendingDowntime ? ' amber' : ''}`}
-            onClick={() => setDowntimeOpen(true)}
-            title="Time drivers were stopped for a reason (weather, change-over). It counts toward working hours once approved."
-          >
-            <b>{pendingDowntime}</b> Downtime to approve
-          </button>
           <span className="dr-stat static" title="Distance of every driver-day matching the filters (all pages)">
             <b>{km(totalKm)}</b> Distance
           </span>
@@ -698,23 +659,12 @@ export function Trips() {
                       style={{ fontWeight: 700 }}
                       title={(s.importedTrips ?? 0) > 0
                         ? `Recorded trips only — ${s.importedTrips} imported trip${s.importedTrips === 1 ? ' has' : 's have'} no real start and end times`
-                        : s.downtimeMs || s.pendingDowntimeMs
-                          ? `Trips ${hm(s.tripWorkMs ?? s.workMs)}${s.downtimeMs ? ` + approved downtime ${hm(s.downtimeMs)}` : ''}${s.pendingDowntimeMs ? ` · ${hm(s.pendingDowntimeMs)} downtime waiting for approval (not counted)` : ''}`
+                        : s.downtimeMs
+                          ? `Trips ${hm(s.tripWorkMs ?? s.workMs)} + downtime ${hm(s.downtimeMs)}`
                           : 'Every trip’s start to end, added up'}
                     >
                       {(s.importedTrips ?? 0) >= s.totalTrips ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>—</span> : hm(s.workMs)}
                       {s.downtimeMs ? <div style={{ fontSize: 11.5, fontWeight: 500, color: 'var(--muted)' }}>incl. {hm(s.downtimeMs)} downtime</div> : null}
-                      {s.pendingDowntimeMs ? (
-                        <div
-                          role="button"
-                          tabIndex={0}
-                          onClick={(e) => { e.stopPropagation(); setDowntimeOpen(true); }}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setDowntimeOpen(true); } }}
-                          style={{ fontSize: 11.5, fontWeight: 600, color: '#b45309', cursor: 'pointer' }}
-                        >
-                          +{hm(s.pendingDowntimeMs)} to approve
-                        </div>
-                      ) : null}
                     </td>
                     <td title={s.markerCount ? `${s.markerCount} marker${s.markerCount === 1 ? '' : 's'} dropped that day — open the day to see them` : 'No markers that day'}>
                       {s.markerCount ? (
@@ -760,36 +710,26 @@ export function Trips() {
                                     <span className="badge gray" title="Time the driver was stopped for a reason, reported from the app">⏸ Downtime</span>
                                   </td>
                                   <td>
-                                    <span className={`badge ${d.status === 'approved' ? 'green' : d.status === 'rejected' ? 'red' : 'amber'}`}>
-                                      {d.status === 'approved' ? 'approved' : d.status === 'rejected' ? 'not approved' : 'waiting'}
+                                    {/* Counted as soon as the driver saves it; only entries from
+                                        before approval was dropped can be otherwise. */}
+                                    <span className={`badge ${d.status === 'approved' ? 'green' : 'gray'}`}>
+                                      {d.status === 'approved' ? 'counted' : 'not counted'}
                                     </span>
                                   </td>
                                   <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(d.startAt)}</td>
                                   <td style={{ color: 'var(--muted)', fontSize: 13 }}>{sessionDt(d.endAt)}</td>
                                   <td
-                                    style={{ fontWeight: 600, textDecoration: d.status === 'rejected' ? 'line-through' : undefined, color: d.status === 'approved' ? undefined : 'var(--muted)' }}
+                                    style={{ fontWeight: 600, textDecoration: d.status === 'approved' ? undefined : 'line-through', color: d.status === 'approved' ? undefined : 'var(--muted)' }}
                                     title={d.status === 'approved' ? 'Counts toward working hours' : 'Not counted in working hours'}
                                   >
-                                    {hm(d.durationMs)}{d.status === 'pending' && <span style={UNIT}>not counted yet</span>}
+                                    {hm(d.durationMs)}
                                   </td>
                                   <td colSpan={6} style={{ fontSize: 13 }}>
                                     <b>{DOWNTIME_REASON[d.reason] || d.reason}</b>
                                     {d.note && <span style={{ color: 'var(--text-2)', fontStyle: 'italic' }}> — “{d.note}”</span>}
-                                    {d.status !== 'pending' && (
-                                      <span style={{ color: 'var(--muted)', fontSize: 12 }}>
-                                        {' · '}{d.status === 'approved' ? 'approved' : 'not approved'}{d.reviewedByName ? ` by ${d.reviewedByName}` : ''}{d.reviewNote ? `: ${d.reviewNote}` : ''}
-                                      </span>
-                                    )}
                                   </td>
                                   <td />
-                                  <td onClick={(e) => e.stopPropagation()}>
-                                    {d.status === 'pending' && (
-                                      <div style={{ display: 'flex', gap: 6 }}>
-                                        <button type="button" className="dt-act ok" onClick={() => decideDowntime(d, s, 'approved')}>Approve</button>
-                                        <button type="button" className="dt-act no" onClick={() => decideDowntime(d, s, 'rejected')}>Not approve</button>
-                                      </div>
-                                    )}
-                                  </td>
+                                  <td />
                                 </tr>
                               ) : ((t: Trip) => (
                                 <tr
@@ -946,7 +886,6 @@ export function Trips() {
                               const timed = list.filter(t => !t.importBatchId);
                               const dayDt = dayDowntime[key] ?? [];
                               const approvedDt = dayDt.filter((d) => d.status === 'approved').reduce((a, d) => a + d.durationMs, 0);
-                              const pendingDt = dayDt.filter((d) => d.status === 'pending').reduce((a, d) => a + d.durationMs, 0);
                               const driving = timed.reduce((a, t) => a + tripMs(t), 0);
                               const work = driving + approvedDt;
                               const measured = list.filter(t => t.linkUkmNetworkMeters != null);
@@ -961,14 +900,11 @@ export function Trips() {
                                       Day total · {list.length} trip{list.length === 1 ? '' : 's'}
                                       {dayDt.length > 0 && ` · ${dayDt.length} downtime`}
                                     </td>
-                                    <td title="Total working hours: every trip's start to end, plus downtime a manager approved. Downtime waiting for approval is not counted.">
+                                    <td title="Total working hours: every trip's start to end, plus the downtime the driver reported">
                                       {timed.length ? hm(work) : '—'}
                                       {timed.length > 0 && <span style={UNIT}>working</span>}
                                       {approvedDt > 0 && (
                                         <div style={{ fontSize: 11.5, fontWeight: 500, color: 'var(--muted)' }}>{hm(driving)} driving + {hm(approvedDt)} downtime</div>
-                                      )}
-                                      {pendingDt > 0 && (
-                                        <div style={{ fontSize: 11.5, fontWeight: 600, color: '#b45309' }}>+{hm(pendingDt)} waiting for approval</div>
                                       )}
                                     </td>
                                     <td>{km(dist)}</td>
@@ -1093,17 +1029,6 @@ export function Trips() {
         </div>
       )}
 
-      {downtimeOpen && (
-        <DowntimeReview
-          onClose={() => setDowntimeOpen(false)}
-          onChanged={() => {
-            loadPendingDowntime();
-            load(page);
-            // Days open below show their downtime rows: bring those up to date too.
-            summaries.filter((x) => expanded.has(dayKey(x))).forEach(fetchDayDowntime);
-          }}
-        />
-      )}
       {drawer && (() => {
         const day = summaries.find((x) => dayKey(x) === drawer.key);
         if (!day) return null;

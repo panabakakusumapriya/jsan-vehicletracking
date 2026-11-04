@@ -1,10 +1,11 @@
 /**
  * A demo driving day for trying downtime end to end: trips with real GPS points and stops between
- * them, today, for one driver (a test account), plus downtime in each state.
+ * them, today, for one driver (a test account), with downtime on three of the stops (counted as
+ * soon as it is saved: there is no approval step).
  *
- *   06:40–08:35 drive · 08:35–09:05 stop (weather, APPROVED)
- *   09:05–10:30 drive · 10:30–10:50 stop (vehicle change-over, WAITING for a manager)
- *   10:50–11:45 drive · 11:45–12:20 stop (fuel, NOT APPROVED, with a note)
+ *   06:40–08:35 drive · 08:35–09:05 stop (weather)
+ *   09:05–10:30 drive · 10:30–10:50 stop (vehicle change-over)
+ *   10:50–11:45 drive · 11:45–12:20 stop (fuel)
  *   12:20–13:00 drive
  * The half hour before 06:40 is left free so "Add downtime" can be tried from the app.
  * Times are the driver's local zone; the day must already be past 13:00 there.
@@ -93,13 +94,13 @@ async function main() {
 
   const plan = [['06:40', '08:35'], ['09:05', '10:30'], ['10:50', '11:45'], ['12:20', '13:00']];
   const stops = [
-    { from: '08:35', to: '09:05', reason: 'weather', note: 'Heavy rain — waited for it to ease', status: 'approved' },
-    { from: '10:30', to: '10:50', reason: 'vehicle_changeover', note: 'Swapped to the spare car', status: 'pending' },
-    { from: '11:45', to: '12:20', reason: 'fuel', note: null, status: 'rejected', reviewNote: 'Refuelling is part of the break time' },
+    { from: '08:35', to: '09:05', reason: 'weather', note: 'Heavy rain — waited for it to ease', },
+    { from: '10:30', to: '10:50', reason: 'vehicle_changeover', note: 'Swapped to the spare car', },
+    { from: '11:45', to: '12:20', reason: 'fuel', note: null },
   ];
   log(`${driver.name} (${email}) · ${date} in ${tz}`);
   plan.forEach(([a, b]) => log(`  drive ${a}–${b}`));
-  stops.forEach((s) => log(`  stop  ${s.from}–${s.to} ${s.reason} → ${s.status}`));
+  stops.forEach((s) => log(`  stop  ${s.from}–${s.to} ${s.reason}`));
   if (!APPLY) return log('\nDry run — nothing written. Add --apply.');
 
   const batch = `demo-${date}-${crypto.randomBytes(3).toString('hex')}`;
@@ -131,9 +132,8 @@ async function main() {
   for (const s of stops) {
     await db.collection('downtimes').insertOne({
       driverId: driver._id, driverName: driver.name, startAt: at(date, s.from, tz), endAt: at(date, s.to, tz),
-      reason: s.reason, note: s.note, timezone: tz, date, status: s.status,
-      reviewedBy: null, reviewedByName: s.status === 'pending' ? null : 'Demo manager', reviewedAt: s.status === 'pending' ? null : new Date(),
-      reviewNote: s.reviewNote || null, clientId: `demo:${batch}:${++n}`, createdAt: new Date(), updatedAt: new Date(),
+      reason: s.reason, note: s.note, timezone: tz, date, status: 'approved',
+      reviewedBy: null, reviewedByName: null, reviewedAt: null, reviewNote: null, clientId: `demo:${batch}:${++n}`, createdAt: new Date(), updatedAt: new Date(),
     });
   }
   log(`\nDone — batch ${batch}. Remove: node src/seed/demoDowntimeDay.js --undo=${batch} --apply`);

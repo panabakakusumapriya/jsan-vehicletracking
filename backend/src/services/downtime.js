@@ -11,8 +11,9 @@ const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezo
  *   - never over a trip (that time is counted already) or over another live entry;
  *   - in a gap between trips, or up to 3 hours before the first trip / after the last one (not
  *     after the last while a trip is still running — the day is not over);
- *   - at most 6 hours of live (pending or approved) downtime in a day.
- * It counts toward working hours only once approved.
+ *   - at most 6 hours of downtime in a day.
+ * It counts toward working hours as soon as it is saved — there is no approval step (status
+ * 'approved' means counted; 'pending' / 'rejected' are only on entries made before that changed).
  */
 const MIN = 60 * 1000;
 const RULES = {
@@ -97,7 +98,7 @@ async function report(driver, input = {}) {
   try {
     return (await Downtime.create({
       driverId: driver._id, driverName: driver.name || null, startAt, endAt, reason: input.reason,
-      note: note || null, timezone: tz, date, clientId,
+      note: note || null, timezone: tz, date, clientId, status: 'approved',
     })).toObject();
   } catch (err) {
     if (err && err.code === 11000 && clientId) return Downtime.findOne({ driverId: driver._id, clientId }).lean();

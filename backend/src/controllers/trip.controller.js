@@ -828,8 +828,7 @@ exports.exportTable = asyncHandler(async (req, res) => {
       'Last end': local(s.lastEnd, s.timezone),
       'Working hours': hours(s.workMs),
       'Trip hours': hours(s.tripWorkMs ?? s.workMs),
-      'Approved downtime (h)': hours(s.downtimeMs || 0),
-      'Downtime awaiting approval (h)': hours(s.pendingDowntimeMs || 0),
+      'Downtime (h)': hours(s.downtimeMs || 0),
       Markers: s.markerCount || 0,
       'Still driving': s.anyActive ? 'yes' : '',
     }))]);
@@ -847,7 +846,7 @@ exports.exportTable = asyncHandler(async (req, res) => {
       weather: 'Weather', vehicle_changeover: 'Vehicle change-over', vehicle_issue: 'Vehicle issue', road_closed: 'Road closed',
       waiting_instructions: 'Waiting for instructions', fuel: 'Fuel', other: 'Other',
     };
-    const DOWNTIME_STATUS = { approved: 'approved', pending: 'waiting for approval', rejected: 'not approved' };
+    const DOWNTIME_STATUS = { approved: 'counted', pending: 'not counted', rejected: 'not counted' };
     // Every row carries every column, in one order, so trips and downtime line up in the sheet.
     const tripRows = trips.map((t) => {
       const tz = timezoneForCountry(t.driverId?.country);
@@ -955,7 +954,7 @@ exports.exportTable = asyncHandler(async (req, res) => {
     ['Status', q.status ? String(q.status) : 'all'],
     ['Drivers', q.driverId ? 'one driver' : q.driverIds ? `${String(q.driverIds).split(',').length} drivers` : 'all you can see'],
     ['Times', "each driver's local time"],
-    ['Working hours', 'each trip start to end, plus downtime a manager approved. Downtime drivers reported is listed in the Trips sheet (Type = Downtime); only rows with "Counts in working hours" = yes are in the total'],
+    ['Working hours', 'each trip start to end, plus the downtime drivers reported (listed in the Trips sheet, Type = Downtime)'],
     ['Distances', 'km; UKM = new road driven first (Assigned: inside the driver\'s areas; Outside: elsewhere on the network)'],
     ...(truncated ? [['Note', `Capped at ${EXPORT_MAX_ROWS.toLocaleString()} rows per sheet — narrow the dates for the rest`]] : []),
   ];

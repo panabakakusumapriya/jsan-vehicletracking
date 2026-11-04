@@ -25,16 +25,16 @@ import { deviceTimezone } from '@/src/lib/timezone';
 
 /**
  * "Today's work". On the Home screen it is one compact card — the day's working hours, trips and
- * km, and what still needs the driver (downtime waiting for approval, stops with no reason yet) —
+ * km, and what still needs the driver (stops between trips with no reason yet) —
  * so the screen stays short. Tapping it opens a bottom sheet (ModalSheet) with the whole day: each
  * trip start – end and how long it ran, the downtime between them, the total as the last row, and
  * ‹ › to step back through earlier days. Adding downtime is a page of the same sheet.
  *
- * Working hours are every trip's start to end added up, plus DOWNTIME a manager has approved: time
- * the driver was stopped for a reason (a weather stop, a vehicle change-over). Each gap between
- * trips is shown with "Add downtime"; so is the time just before the first trip and after the last.
- * The server checks every entry (services/downtime.js) and says why when it cannot be saved;
- * pending downtime is shown, not counted, until approved. The same figure as the admin panel's
+ * Working hours are every trip's start to end added up, plus DOWNTIME: time the driver was stopped
+ * for a reason (a weather stop, a vehicle change-over), counted as soon as it is saved — no approval
+ * step. Each gap between trips is shown with "Add downtime"; so is the time just before the first
+ * trip and after the last. The server checks every entry (services/downtime.js) and says why when it
+ * cannot be saved; the driver can remove their own. The same figure as the admin panel's
  * Trips page for that driver-day. A trip still running keeps counting on screen.
  */
 
@@ -160,7 +160,6 @@ export function DayWork({ token, refreshKey }: { token: string | null; refreshKe
   const downtime = useMemo(() => shown?.downtime ?? [], [shown]);
   const tripMs = shown ? shown.trips.reduce((a, t) => a + durationOf(t), 0) : 0;
   const approvedMs = downtime.filter((d) => d.status === 'approved').reduce((a, d) => a + d.durationMs, 0);
-  const pendingMs = downtime.filter((d) => d.status === 'pending').reduce((a, d) => a + d.durationMs, 0);
   const workMs = tripMs + approvedMs;
 
   /** Trips, downtime and the free time around them, in time order. */
@@ -204,13 +203,13 @@ export function DayWork({ token, refreshKey }: { token: string | null; refreshKe
 
   const withdraw = (d: MyDowntime) => {
     if (!token) return;
-    Alert.alert('Take back this downtime?', `${reasonLabel(d.reason)} ${clock(d.startAt)}–${clock(d.endAt)}`, [
+    Alert.alert('Remove this downtime?', `${reasonLabel(d.reason)} ${clock(d.startAt)}–${clock(d.endAt)} — it comes off your working hours.`, [
       { text: 'Keep it', style: 'cancel' },
       {
-        text: 'Take back',
+        text: 'Remove',
         style: 'destructive',
         onPress: async () => {
-          try { await apiWithdrawDowntime(token, d.id); } catch (e) { Alert.alert('Could not take it back', e instanceof Error ? e.message : 'Try again'); }
+          try { await apiWithdrawDowntime(token, d.id); } catch (e) { Alert.alert('Could not remove it', e instanceof Error ? e.message : 'Try again'); }
           load();
         },
       },
@@ -241,10 +240,9 @@ export function DayWork({ token, refreshKey }: { token: string | null; refreshKe
                 {approvedMs > 0 ? ` · incl. ${hm(approvedMs)} downtime` : ''}
               </Text>
             </View>
-            {(pendingMs > 0 || gaps > 0) && (
+            {gaps > 0 && (
               <View style={s.summaryChips}>
-                {pendingMs > 0 && <Text style={[s.badge, s.badgeWait]}>{hm(pendingMs)} waiting for approval</Text>}
-                {gaps > 0 && <Text style={[s.badge, s.badgeGap]}>{gaps} stop{gaps === 1 ? '' : 's'} — add a reason</Text>}
+                {gaps > 0 &&<Text style={[s.badge, s.badgeGap]}>{gaps} stop{gaps === 1 ? '' : 's'} — add a reason</Text>}
               </View>
             )}
           </>
@@ -313,27 +311,25 @@ export function DayWork({ token, refreshKey }: { token: string | null; refreshKe
             }
             if (r.type === 'downtime') {
               const d = r.d;
-              const badge = d.status === 'approved' ? [s.badgeOk, 'Approved'] : d.status === 'rejected' ? [s.badgeNo, 'Not approved'] : [s.badgeWait, 'Waiting for approval'];
+              // Counted as soon as saved; only entries from before approval was dropped can be otherwise.
+              const counted = d.status === 'approved';
               return (
                 <View key={`d-${d.id}`} style={[s.row, s.dtRow]}>
                   <View style={{ flex: 1 }}>
                     <View style={s.dtTop}>
-                      <Text style={[s.cTime, d.status === 'rejected' && s.struck]}>
+                      <Text style={[s.cTime, !counted && s.struck]}>
                         {clock(d.startAt)} – {clock(d.endAt)}
                       </Text>
-                      <Text style={[s.cDur, d.status === 'rejected' && s.struck]}>{hm(d.durationMs)}</Text>
+                      <Text style={[s.cDur, !counted && s.struck]}>{hm(d.durationMs)}</Text>
                       <View style={s.cKm} />
                     </View>
                     <View style={s.dtMeta}>
                       <Text style={s.dtReason}>⏸ {reasonLabel(d.reason)}{d.note ? ` · ${d.note}` : ''}</Text>
-                      <Text style={[s.badge, badge[0] as object]}>{badge[1] as string}</Text>
-                      {d.status === 'pending' && (
-                        <TouchableOpacity onPress={() => withdraw(d)} hitSlop={8}>
-                          <Text style={s.link}>Take back</Text>
-                        </TouchableOpacity>
-                      )}
+                      {!counted && <Text style={[s.badge, s.badgeNo]}>Not counted</Text>}
+                      <TouchableOpacity onPress={() => withdraw(d)} hitSlop={8}>
+                        <Text style={s.link}>Remove</Text>
+                      </TouchableOpacity>
                     </View>
-                    {d.status === 'rejected' && d.reviewNote ? <Text style={s.reviewNote}>Manager: {d.reviewNote}</Text> : null}
                   </View>
                 </View>
               );
@@ -359,11 +355,8 @@ export function DayWork({ token, refreshKey }: { token: string | null; refreshKe
             <Text style={[s.cDur, s.totalText, { color: C.brand }]}>{hm(workMs)}</Text>
             <Text style={[s.cKm, s.totalText]}>{km(shown.totals.distanceMeters)}</Text>
           </View>
-          {(approvedMs > 0 || pendingMs > 0) && (
-            <Text style={s.totalNote}>
-              {hm(tripMs)} driving{approvedMs > 0 ? ` + ${hm(approvedMs)} approved downtime` : ''}
-              {pendingMs > 0 ? ` · ${hm(pendingMs)} waiting for approval (not counted yet)` : ''}
-            </Text>
+          {approvedMs > 0 && (
+            <Text style={s.totalNote}>{hm(tripMs)} driving + {hm(approvedMs)} downtime</Text>
           )}
           {error && <Text style={[s.muted, { marginTop: 6 }]}>Showing the last loaded figures — {error}</Text>}
         </>
@@ -435,7 +428,7 @@ function DowntimeForm({ slot, token, onClose, onSaved }: { slot: Slot; token: st
           </TouchableOpacity>
           <Text style={s.sheetTitle}>Add downtime</Text>
           <Text style={s.sheetSub}>
-            Time you were working but stopped. It counts toward your working hours once your manager approves it.
+            Time you were working but stopped. It is added to your working hours as soon as you save it.
           </Text>
 
           <Text style={s.fieldLabel}>Why were you stopped?</Text>
@@ -468,7 +461,7 @@ function DowntimeForm({ slot, token, onClose, onSaved }: { slot: Slot; token: st
               <Text style={s.btnGhostText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[s.btn, !canSave && { opacity: 0.45 }]} onPress={save} disabled={!canSave}>
-              {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Send for approval</Text>}
+              {busy ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Save downtime</Text>}
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -503,11 +496,8 @@ const s = StyleSheet.create({
   dtReason: { fontSize: 12.5, color: C.text2 },
   struck: { textDecorationLine: 'line-through', color: C.muted },
   badge: { fontSize: 11, fontWeight: '700', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 99, overflow: 'hidden' },
-  badgeWait: { backgroundColor: C.amberBg, color: C.amber },
-  badgeOk: { backgroundColor: C.greenBg, color: C.green },
   badgeNo: { backgroundColor: C.redBg, color: C.red },
   link: { fontSize: 12, fontWeight: '700', color: C.brand },
-  reviewNote: { fontSize: 12, color: C.red, marginTop: 3 },
 
   slot: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

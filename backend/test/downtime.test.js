@@ -54,7 +54,7 @@ const MIN = 60 * 1000;
 
   console.log('\n── reporting: the rules ──');
   const gap = await add('14:20', '14:50', 'weather', { clientId: 'c-1' });
-  assert(gap.status === 201 && gap.body.downtime.status === 'pending' && gap.body.downtime.durationMs === 30 * MIN, 'a 30-minute weather stop between two trips is saved, pending');
+  assert(gap.status === 201 && gap.body.downtime.status === 'approved' && gap.body.downtime.durationMs === 30 * MIN, 'a 30-minute weather stop between two trips is saved and counted — no approval step');
   const resend = await add('14:20', '14:50', 'weather', { clientId: 'c-1' });
   assert(resend.status === 201 && resend.body.downtime.id === gap.body.downtime.id && (await Downtime.countDocuments()) === 1, 'a resend with the same clientId is the same entry, not a second one');
   const overTrip = await add('14:00', '14:20');
@@ -75,35 +75,24 @@ const MIN = 60 * 1000;
   assert((await drv.post('/api/tracking/my-downtime', { startAt: new Date(Date.now() + 60 * MIN), endAt: new Date(Date.now() + 90 * MIN), reason: 'weather' })).status === 400, 'the future is refused');
   assert((await add('14:12', '14:12')).status === 400, 'under a minute is refused');
 
-  console.log('\n── not counted until approved ──');
-  let day = await drv.get('/api/tracking/my-day?date=2026-10-01&tz=Asia/Kolkata');
-  assert(day.body.downtime.length === 4 && day.body.totals.tripWorkMs === 134 * MIN && day.body.totals.workMs === 134 * MIN,
-    'my-day lists the four entries and still counts only the trips: 2 h 14 min');
-  assert(day.body.totals.pendingDowntimeMs === (30 + 178 + 140 + 8) * MIN && day.body.totals.downtimeMs === 0, '…with 5 h 56 min waiting for approval');
+  console.log('\n── counted straight away ──');
+  const day = await drv.get('/api/tracking/my-day?date=2026-10-01&tz=Asia/Kolkata');
+  assert(day.body.downtime.length === 4 && day.body.totals.tripWorkMs === 134 * MIN && day.body.totals.downtimeMs === 356 * MIN,
+    'my-day lists the four entries: 2 h 14 min of trips + 5 h 56 min downtime');
+  assert(day.body.totals.workMs === 490 * MIN && day.body.totals.pendingDowntimeMs === 0, '…working hours 8 h 10 min, nothing waiting on anyone');
 
-  console.log('\n── a manager decides ──');
-  assert((await drv.get('/api/downtime')).status === 403, 'drivers cannot open the review list');
-  const list = await admin.get('/api/downtime?status=pending');
-  assert(list.status === 200 && list.body.downtime.length === 4 && list.body.pending === 4 && list.body.downtime[0].driverName === 'drv', 'the review list shows all four, with the driver');
-  assert((await loneManager.patch(`/api/downtime/${gap.body.downtime.id}`, { status: 'approved' })).status === 404, 'a manager without this driver cannot decide it');
-  const ok1 = await admin.patch(`/api/downtime/${gap.body.downtime.id}`, { status: 'approved' });
-  assert(ok1.status === 200 && ok1.body.downtime.status === 'approved' && ok1.body.downtime.reviewedByName === 'admin', 'approved, with who approved it');
-  await admin.patch(`/api/downtime/${before.body.downtime.id}`, { status: 'approved' });
-  const no = await admin.patch(`/api/downtime/${after.body.downtime.id}`, { status: 'rejected', reviewNote: 'fuel stop is not work time' });
-  assert(no.body.downtime.status === 'rejected' && no.body.downtime.reviewNote === 'fuel stop is not work time', 'rejected, with the reason the driver will see');
-  assert((await admin.patch(`/api/downtime/${gap.body.downtime.id}`, { status: 'maybe' })).status === 400, 'only approved or rejected');
-
-  day = await drv.get('/api/tracking/my-day?date=2026-10-01&tz=Asia/Kolkata');
-  assert(day.body.totals.downtimeMs === (30 + 178) * MIN && day.body.totals.workMs === (134 + 30 + 178) * MIN,
-    'approved downtime joins working hours: 134 + 30 + 178 min');
-  assert(day.body.totals.pendingDowntimeMs === 8 * MIN && day.body.downtime.find((d) => d.status === 'rejected').reviewNote === 'fuel stop is not work time',
-    'the one left pending is shown apart; the rejected one carries the manager\'s note');
+  console.log('\n── the panel ──');
+  assert((await drv.get('/api/downtime')).status === 403, 'drivers cannot open the staff list');
+  const list = await admin.get('/api/downtime');
+  assert(list.status === 200 && list.body.downtime.length === 4 && list.body.downtime[0].driverName === 'drv', 'staff see all four, with the driver');
+  assert((await loneManager.get('/api/downtime')).body.downtime.length === 0, 'a manager without this driver sees none of it');
+  assert((await admin.patch(`/api/downtime/${gap.body.downtime.id}`, { status: 'rejected' })).status === 404, 'there is no approve / reject any more');
 
   const sum = await admin.get('/api/trips/merged-summary');
   const row = sum.body.summaries.find((s) => s.date === '2026-10-01');
-  assert(row.workMs === day.body.totals.workMs && row.tripWorkMs === 134 * MIN && row.downtimeMs === 208 * MIN && row.pendingDowntimeMs === 8 * MIN,
-    'the Trips page row says exactly what the phone says: trips, approved downtime, pending');
-  assert(sum.body.totals.workMs === row.workMs && sum.body.totals.downtimeMs === 208 * MIN, '…and so do the page totals');
+  assert(row.workMs === day.body.totals.workMs && row.tripWorkMs === 134 * MIN && row.downtimeMs === 356 * MIN,
+    'the Trips page row says exactly what the phone says: trips + downtime');
+  assert(sum.body.totals.workMs === row.workMs && sum.body.totals.downtimeMs === 356 * MIN, '…and so do the page totals');
 
   console.log('\n── the export ──');
   const csvRows = (text) => {
@@ -117,23 +106,21 @@ const MIN = 60 * 1000;
   assert(!('UKM (km)' in tripsSheet[0]) && 'Assigned UKM (km)' in tripsSheet[0] && 'Outside UKM (km)' in tripsSheet[0],
     'no plain "UKM" column — only Assigned and Outside UKM, as on the Trips page');
   const weather = dts.find((r) => r['Downtime reason'] === 'Weather');
-  assert(weather.Status === 'approved' && weather['Counts in working hours'] === 'yes' && weather['Duration (h)'] === '0.5',
-    'the approved weather stop: 0.5 h, counts in working hours');
-  const fuel = dts.find((r) => r['Downtime reason'] === 'Fuel');
-  assert(fuel.Status === 'not approved' && fuel['Counts in working hours'] === 'no' && /Manager: fuel stop is not work time/.test(fuel.Note),
-    'the rejected one says not approved, does not count, and carries the manager\'s note');
+  assert(weather.Status === 'counted' && weather['Counts in working hours'] === 'yes' && weather['Duration (h)'] === '0.5',
+    'the weather stop: 0.5 h, counted in working hours');
+  assert(dts.every((r) => r.Status === 'counted' && r['Counts in working hours'] === 'yes'), 'every downtime row is counted');
   const starts = tripsSheet.map((r) => r.Started);
   assert(starts.every((x, i) => i === 0 || x <= starts[i - 1]), 'trips and downtime are in one time order, newest first');
   const daysSheet = csvRows((await admin.get('/api/trips/export-table?format=csv&level=days')).text);
   const dRow = daysSheet.find((r) => r.Date === '2026-10-01');
-  assert(dRow['Working hours'] === String(Math.round((342 / 60) * 100) / 100) && dRow['Approved downtime (h)'] === String(Math.round((208 / 60) * 100) / 100),
-    'the Days sheet: working hours 5.7 h, of which 3.47 h approved downtime');
+  assert(dRow['Working hours'] === String(Math.round((490 / 60) * 100) / 100) && dRow['Downtime (h)'] === String(Math.round((356 / 60) * 100) / 100),
+    'the Days sheet: working hours 8.17 h, of which 5.93 h downtime');
 
   console.log('\n── taking one back ──');
-  assert((await drv.del(`/api/tracking/my-downtime/${gap.body.downtime.id}`)).status === 409, 'an approved entry cannot be withdrawn by the driver');
-  const pendingId = day.body.downtime.find((d) => d.status === 'pending').id;
-  assert((await drv.del(`/api/tracking/my-downtime/${pendingId}`)).status === 200 && (await Downtime.countDocuments()) === 3, 'a pending one can');
-  assert((await admin.del(`/api/tracking/my-downtime/${gap.body.downtime.id}`)).status === 403, 'my-downtime is for drivers only');
+  assert((await drv.del(`/api/tracking/my-downtime/${gap.body.downtime.id}`)).status === 200 && (await Downtime.countDocuments()) === 3, 'a driver can remove their own entry');
+  const after2 = await drv.get('/api/tracking/my-day?date=2026-10-01&tz=Asia/Kolkata');
+  assert(after2.body.totals.workMs === 460 * MIN, '…and working hours drop by its 30 minutes');
+  assert((await admin.del(`/api/tracking/my-downtime/${before.body.downtime.id}`)).status === 403, 'my-downtime is for drivers only');
 
   console.log(`\n${passed} assertions passed`);
   await mongoose.disconnect();
