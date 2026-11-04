@@ -114,6 +114,8 @@ const MIN = 60 * 1000;
   const tripsSheet = csvRows((await admin.get('/api/trips/export-table?format=csv&level=trips')).text);
   const dts = tripsSheet.filter((r) => r.Type === 'Downtime');
   assert(dts.length === 4 && tripsSheet.filter((r) => r.Type === 'Trip').length === 2, 'the Trips sheet lists the 4 downtime entries along with the 2 trips');
+  assert(!('UKM (km)' in tripsSheet[0]) && 'Assigned UKM (km)' in tripsSheet[0] && 'Outside UKM (km)' in tripsSheet[0],
+    'no plain "UKM" column — only Assigned and Outside UKM, as on the Trips page');
   const weather = dts.find((r) => r['Downtime reason'] === 'Weather');
   assert(weather.Status === 'approved' && weather['Counts in working hours'] === 'yes' && weather['Duration (h)'] === '0.5',
     'the approved weather stop: 0.5 h, counts in working hours');
