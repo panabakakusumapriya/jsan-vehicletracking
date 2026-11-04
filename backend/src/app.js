@@ -151,6 +151,7 @@ function createApp() {
   app.use('/api/network', require('./routes/network.routes'));
   app.use('/api/ssds', require('./routes/ssds.routes'));
   app.use('/api/markers', require('./routes/marker.routes'));
+  app.use('/api/downtime', require('./routes/downtime.routes'));
   app.use('/api/academy', require('./routes/academy.routes'));
   app.use('/api/analytics', require('./routes/analytics.routes'));
 

@@ -9,6 +9,7 @@ const fileStore = require('../utils/fileStore');
 const { EXPORT_BUCKET, ORIGIN: EXPORT_ORIGIN, runJob: buildExport } = require('../services/exportRunner');
 const asyncHandler = require('../utils/asyncHandler');
 const { workMsExpr } = require('../utils/workHours');
+const downtimeService = require('../services/downtime');
 const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
 const { dayRange, isValidTimeZone } = require('../utils/timezone');
 const { timezoneForCountry } = require('../utils/countryTimezone');
@@ -699,6 +700,22 @@ async function daySummaries(filter, { skip = 0, limit = 50 } = {}) {
     workMs: t?.workMs || 0,
     maxSpeed: t?.maxSpeed || 0,
   };
+  // Approved downtime counts toward working hours (services/downtime.js) — over every matching
+  // driver-day, like the rest of these totals. Only when the filter is not narrowed to a trip
+  // status: downtime has none.
+  totals.tripWorkMs = totals.workMs;
+  totals.downtimeMs = 0;
+  totals.pendingDowntimeMs = 0;
+  if (!filter.status) {
+    const match = {};
+    if (filter.driverId) match.driverId = filter.driverId;
+    if (filter.startedAt) match.startAt = filter.startedAt;
+    for (const v of (await downtimeService.byDriverDay(match, (id) => driverTzMap.get(id) || 'UTC')).values()) {
+      totals.downtimeMs += v.approvedMs;
+      totals.pendingDowntimeMs += v.pendingMs;
+    }
+    totals.workMs += totals.downtimeMs;
+  }
 
   const summaries = results.map((r) => ({
     driverId: r._id.driverId,
@@ -745,6 +762,19 @@ async function daySummaries(filter, { skip = 0, limit = 50 } = {}) {
       const colors = byDay.get(`${s.driverId}|${s.date}`);
       s.markerCount = colors ? [...colors.values()].reduce((a, n) => a + n, 0) : 0;
       s.markerColors = colors ? [...colors].map(([color, count]) => ({ color, count })) : [];
+    }
+    // Downtime on each of these days, in the same zone: approved joins the working hours.
+    const dt = await downtimeService.byDriverDay(
+      { driverId: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) }, startAt: { $gte: from, $lte: to } },
+      (id) => driverTzMap.get(id) || 'UTC'
+    );
+    for (const s of summaries) {
+      const d = dt.get(`${s.driverId}|${s.date}`);
+      s.tripWorkMs = s.workMs;
+      s.downtimeMs = d ? d.approvedMs : 0;
+      s.pendingDowntimeMs = d ? d.pendingMs : 0;
+      s.downtimeEntries = d ? d.entries : 0;
+      s.workMs = s.tripWorkMs + s.downtimeMs;
     }
   }
 
@@ -797,6 +827,9 @@ exports.exportTable = asyncHandler(async (req, res) => {
       'First start': local(s.firstStart, s.timezone),
       'Last end': local(s.lastEnd, s.timezone),
       'Working hours': hours(s.workMs),
+      'Trip hours': hours(s.tripWorkMs ?? s.workMs),
+      'Approved downtime (h)': hours(s.downtimeMs || 0),
+      'Downtime awaiting approval (h)': hours(s.pendingDowntimeMs || 0),
       Markers: s.markerCount || 0,
       'Still driving': s.anyActive ? 'yes' : '',
     }))]);

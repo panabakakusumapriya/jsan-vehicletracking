@@ -29,6 +29,7 @@ const mongoose = require('mongoose');
 const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezone');
 const { certify } = require('./academy.controller');
 const { WORK_CAP_MS } = require('../utils/workHours');
+const downtimeService = require('../services/downtime');
 const { sendCompressed } = require('../utils/compressedJson');
 
 /**
@@ -1290,13 +1291,22 @@ exports.myDay = asyncHandler(async (req, res) => {
       distanceMeters: t.distanceMeters || 0,
     };
   });
+  // Downtime the driver reported (services/downtime.js): approved counts toward working hours,
+  // pending is shown but not counted until a manager decides.
+  const downtime = await downtimeService.ofDay(req.user._id, date, tz);
+  const tripWorkMs = trips.reduce((a, t) => a + t.durationMs, 0);
+  const downtimeMs = downtime.filter((d) => d.status === 'approved').reduce((a, d) => a + d.durationMs, 0);
   res.json({
     date,
     timezone: tz,
     trips,
+    downtime,
     totals: {
       trips: trips.length,
-      workMs: trips.reduce((a, t) => a + t.durationMs, 0),
+      tripWorkMs,
+      downtimeMs,
+      pendingDowntimeMs: downtime.filter((d) => d.status === 'pending').reduce((a, d) => a + d.durationMs, 0),
+      workMs: tripWorkMs + downtimeMs,
       distanceMeters: trips.reduce((a, t) => a + t.distanceMeters, 0),
     },
   });

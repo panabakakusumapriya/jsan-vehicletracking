@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const rateLimit = require('express-rate-limit');
 const ctrl = require('../controllers/tracking.controller');
+const downtimeCtrl = require('../controllers/downtime.controller');
 const { authenticate, requireRole } = require('../middleware/auth');
 
 /**
@@ -81,6 +82,9 @@ router.get('/my-history', authenticate, requireRole('user'), historyLimiter, ctr
 
 // The driver's trips on one day and the day's working hours — a few hundred bytes, no geometry.
 router.get('/my-day', authenticate, requireRole('user'), syncLimiter, ctrl.myDay);
+// Downtime: time stopped for a reason (weather, change-over), counted once a manager approves it.
+router.post('/my-downtime', authenticate, requireRole('user'), syncLimiter, downtimeCtrl.report);
+router.delete('/my-downtime/:id', authenticate, requireRole('user'), syncLimiter, downtimeCtrl.withdraw);
 
 // Driver Academy progress (the in-app course) — saved per account.
 router.put('/my-academy', authenticate, requireRole('user'), syncLimiter, ctrl.myAcademy);
