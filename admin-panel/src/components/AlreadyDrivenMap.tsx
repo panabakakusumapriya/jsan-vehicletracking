@@ -53,7 +53,12 @@ const when = (iso: string) =>
 
 type Piece = { path: [number, number][]; color: [number, number, number]; i: number; row: Row | null };
 
-export function useAlreadyDriven(tripId: string | undefined, enabled: boolean) {
+/**
+ * @param opts.mono  one colour for every earlier drive — for a map whose routes already use colour
+ *                   per session (the day drawer); who and when are still on hover and in the list.
+ */
+export function useAlreadyDriven(tripId: string | undefined, enabled: boolean, opts: { mono?: [number, number, number] } = {}) {
+  const mono = opts.mono;
   const [res, setRes] = useState<Result | null>(null);
   const [on, setOn] = useState(true);
   const [picked, setPicked] = useState<number | null>(null);
@@ -62,6 +67,8 @@ export function useAlreadyDriven(tripId: string | undefined, enabled: boolean) {
   useEffect(() => {
     if (!tripId || !enabled) return;
     let alive = true;
+    setRes(null);
+    setPicked(null);
     setLoading(true);
     api.get<Result>(`/api/trips/${tripId}/already-driven?shapes=1`)
       .then((r) => { if (alive) setRes(r); })
@@ -76,15 +83,16 @@ export function useAlreadyDriven(tripId: string | undefined, enabled: boolean) {
     (res.rows ?? []).forEach((row, i) => {
       for (const s of row.shapes ?? []) {
         const path = decodeRouteShapes([s]) as [number, number][];
-        if (path.length > 1) out.push({ path, color: PALETTE[i % PALETTE.length], i, row });
+        if (path.length > 1) out.push({ path, color: mono ?? PALETTE[i % PALETTE.length], i, row });
       }
     });
     for (const s of res.moreShapes ?? []) {
       const path = decodeRouteShapes([s]) as [number, number][];
-      if (path.length > 1) out.push({ path, color: OTHERS, i: -1, row: null });
+      if (path.length > 1) out.push({ path, color: mono ?? OTHERS, i: -1, row: null });
     }
     return out;
-  }, [res]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [res, mono?.join(',')]);
 
   const layers = useMemo(() => (on && pieces.length ? [
     new PathLayer<Piece>({
@@ -190,6 +198,35 @@ export function AlreadyDrivenPanel({ state }: { state: ReturnType<typeof useAlre
           <span className="adp-when">+ {res.moreTrips} more earlier drive{res.moreTrips === 1 ? '' : 's'}</span>
           <span className="adp-km">{km(res.moreMeters ?? 0)}</span>
           <span />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The same, compact: a line per earlier drive, for a session card (the day drawer). */
+export function AlreadyDrivenList({ state }: { state: ReturnType<typeof useAlreadyDriven> }) {
+  const { res, loading } = state;
+  const box = { marginTop: 8, padding: '8px 10px', borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 12.5 } as const;
+  if (loading && !res) return <div style={{ ...box, color: 'var(--muted)', background: 'var(--panel-2)', borderColor: 'var(--line)' }}>Checking which of this road had been driven before…</div>;
+  if (!res?.computed) return null;
+  const rows = res.rows ?? [];
+  if (!rows.length) return <div style={{ ...box, background: '#ecfdf5', borderColor: '#a7f3d0', color: '#047857' }}>All new road — nothing on this session had been driven before.</div>;
+  return (
+    <div style={box}>
+      <div style={{ fontWeight: 700, color: '#b91c1c', marginBottom: 4 }}>
+        Already driven before · {km(res.repeatMeters ?? 0)} (red on the map — not new road)
+      </div>
+      {rows.slice(0, 6).map((r) => (
+        <div key={r.tripId} style={{ display: 'flex', gap: 8, alignItems: 'baseline', padding: '2px 0' }}>
+          <b style={{ minWidth: 58, fontVariantNumeric: 'tabular-nums' }}>{km(r.meters)}</b>
+          <span style={{ flex: 1 }}>on {when(r.at)} by {r.self ? 'the same driver' : r.driverName}</span>
+          <Link to={`/trips/${r.tripId}`} onClick={(e) => e.stopPropagation()} style={{ fontSize: 12, fontWeight: 600 }}>trip →</Link>
+        </div>
+      ))}
+      {(rows.length > 6 || (res.moreTrips ?? 0) > 0) && (
+        <div style={{ color: 'var(--muted)', marginTop: 2 }}>
+          + {rows.length - Math.min(rows.length, 6) + (res.moreTrips ?? 0)} more earlier drives — open the trip for all of them
         </div>
       )}
     </div>

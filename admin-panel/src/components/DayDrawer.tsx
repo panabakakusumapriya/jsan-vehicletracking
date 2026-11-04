@@ -6,6 +6,7 @@ import { api } from '../lib/api';
 import { hm, km, sessionDt, statusBadge, tripMs } from '../lib/format';
 import { cleanedPaths } from '../lib/polyline';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
+import { AlreadyDrivenList, useAlreadyDriven } from './AlreadyDrivenMap';
 import { pinUrl, type TripMarker } from './TripMarkers';
 import type { Trip } from '../lib/types';
 
@@ -78,6 +79,9 @@ export function DayDrawer({
   const [segments, setSegments] = useState<Segment[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // The picked session's road that somebody had driven before: a red band under it, who/when on hover.
+  const pickedTrip = trips.find((t) => t._id === selected);
+  const alreadyDriven = useAlreadyDriven(selected ?? undefined, !!pickedTrip && pickedTrip.status !== 'active', { mono: [220, 38, 38] });
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!focusTripId) return;
@@ -140,6 +144,8 @@ export function DayDrawer({
     });
     const dim = (id: string) => selected != null && selected !== id;
     return [
+      // Under the routes, so the picked session's line draws on top of its red halo.
+      ...alreadyDriven.layers,
       new PathLayer({
         id: 'day-routes',
         data,
@@ -175,7 +181,7 @@ export function DayDrawer({
         pickable: true,
       }),
     ];
-  }, [paths, colorOf, selected, markers]);
+  }, [paths, colorOf, selected, markers, alreadyDriven.layers]);
 
   const snappedTotal = ordered.reduce((s, t) => s + (t.cleanedDistanceMeters ?? 0), 0);
   const measured = (day.splitTrips ?? 0) > 0;
@@ -251,6 +257,7 @@ export function DayDrawer({
                     <div><dt>GPS points</dt><dd>{t.pointCount ? t.pointCount.toLocaleString() : '—'}</dd></div>
                     <div><dt>Vehicle</dt><dd>{plateOf(t.vehicleId) || '—'}</dd></div>
                   </dl>
+                  {on && t.status !== 'active' && <AlreadyDrivenList state={alreadyDriven} />}
                   <div className="dd-card-foot">
                     <span className="dd-route-kind">
                       {!segments ? 'loading route…' : !p ? 'no route recorded' : p.snapped ? 'snapped route' : 'raw GPS line (not snapped yet)'}
@@ -278,7 +285,7 @@ export function DayDrawer({
             {error && <div className="dd-map-note error">{error}</div>}
             {!error && !segments && <div className="dd-map-note">Loading the day’s routes…</div>}
             {segments && !allCoords.length && <div className="dd-map-note">No route was recorded for this day.</div>}
-            <Map3D ref={mapRef} center={center} zoom={11} layers={layers} northUp basemap="light" />
+            <Map3D ref={mapRef} center={center} zoom={11} layers={layers} getTooltip={alreadyDriven.getTooltip} northUp basemap="light" />
           </div>
         </div>
       </aside>
