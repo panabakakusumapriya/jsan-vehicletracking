@@ -261,13 +261,53 @@ export type MyDayTrip = {
   distanceMeters: number;
 };
 
+export type DowntimeReason =
+  | 'weather' | 'vehicle_changeover' | 'vehicle_issue' | 'road_closed' | 'waiting_instructions' | 'fuel' | 'other';
+
+/** Time stopped for a reason, reported by the driver; counts toward working hours once approved. */
+export type MyDowntime = {
+  id: string;
+  startAt: string;
+  endAt: string;
+  durationMs: number;
+  reason: DowntimeReason;
+  note: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewNote: string | null;
+};
+
 export type MyDay = {
   date: string;
   timezone: string;
   trips: MyDayTrip[];
-  /** workMs: every trip's start to end, added up. The gaps between trips are not counted. */
-  totals: { trips: number; workMs: number; distanceMeters: number };
+  /** Absent on a server from before downtime. */
+  downtime?: MyDowntime[];
+  /**
+   * workMs: every trip's start to end added up, plus approved downtime (tripWorkMs + downtimeMs).
+   * Pending downtime is not in it until a manager approves it.
+   */
+  totals: {
+    trips: number;
+    workMs: number;
+    distanceMeters: number;
+    tripWorkMs?: number;
+    downtimeMs?: number;
+    pendingDowntimeMs?: number;
+  };
 };
+
+/** Report downtime. The server checks it against the day's trips and says why if it can't be saved. */
+export function apiReportDowntime(
+  token: string,
+  body: { startAt: string; endAt: string; reason: DowntimeReason; note?: string; tz: string | null; clientId: string }
+): Promise<{ downtime: MyDowntime }> {
+  return request('/api/tracking/my-downtime', { method: 'POST', body: JSON.stringify(body) }, token);
+}
+
+/** Take back downtime a manager has not decided yet. */
+export function apiWithdrawDowntime(token: string, id: string): Promise<{ ok: true }> {
+  return request(`/api/tracking/my-downtime/${encodeURIComponent(id)}`, { method: 'DELETE' }, token);
+}
 
 /** The driver's own trips on one local day (YYYY-MM-DD), with the day's working hours. Numbers only. */
 export function apiMyDay(token: string, date: string, tz: string | null): Promise<MyDay> {
