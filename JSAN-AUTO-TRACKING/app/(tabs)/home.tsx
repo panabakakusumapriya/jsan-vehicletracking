@@ -354,7 +354,12 @@ export default function Home() {
         ) : uiState !== 'starting' ? (
           <View style={s.heroChips}>
             <HeroChip icon="tachometer" label="Speed" value={speed} />
-            <HeroChip icon={queued ? 'cloud-upload' : 'check'} label="Uploads" value={queued ? `${queued} waiting` : 'All sent'} />
+            <HeroChip
+              icon={queued ? 'cloud-upload' : 'check'}
+              label="Uploads"
+              value={queued ? `${queued} waiting` : 'All sent'}
+              onPress={() => router.replace('/uploads' as any)}
+            />
           </View>
         ) : null}
       </View>
@@ -389,15 +394,18 @@ export default function Home() {
 }
 
 /* ── Sub-components ── */
-function HeroChip({ icon, label, value }: { icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; value: string }) {
+function HeroChip({ icon, label, value, onPress }: {
+  icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; value: string; onPress?: () => void;
+}) {
+  const Box = onPress ? TouchableOpacity : View;
   return (
-    <View style={s.chip}>
+    <Box style={s.chip} {...(onPress ? { onPress, accessibilityRole: 'button' as const, accessibilityLabel: `${label}: ${value}. Open Sync` } : {})}>
       <FontAwesome name={icon} size={14} color="#ffffff" />
       <View>
         <Text style={s.chipLabel}>{label}</Text>
         <Text style={s.chipValue}>{value}</Text>
       </View>
-    </View>
+    </Box>
   );
 }
 

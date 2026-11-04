@@ -40,6 +40,7 @@ export default function TabsLayout() {
     >
       <Tabs.Screen name="home" />
       <Tabs.Screen name="map" />
+      <Tabs.Screen name="uploads" />
     </Tabs>
   );
 }

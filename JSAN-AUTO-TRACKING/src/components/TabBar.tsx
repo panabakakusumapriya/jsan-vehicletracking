@@ -1,10 +1,12 @@
 import { router, usePathname } from 'expo-router';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
+import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { useAuth } from '@/src/lib/auth';
+import { pendingMarkerCount } from '@/src/lib/markerQueue';
 
 const C = {
   brand:  '#7c3aed',
@@ -16,10 +18,36 @@ const C = {
 // Icons are FontAwesome (bundled with Expo via @expo/vector-icons) rather than emoji: emoji
 // render differently per OEM keyboard/font and cannot take the active tint. Which tabs a
 // driver actually sees is the project's call — enabledModules, filtered below.
-const ALL_TABS = [
-  { path: '/home', label: 'Dashboard', icon: 'tachometer' as const, module: 'dashboard' },
-  { path: '/map',  label: 'My Map',    icon: 'map' as const,        module: 'map'       },
+// Sync has no module: it is about not losing data, so no project can switch it off.
+const ALL_TABS: { path: string; label: string; icon: 'tachometer' | 'map' | 'refresh'; module: string | null }[] = [
+  { path: '/home',    label: 'Dashboard', icon: 'tachometer', module: 'dashboard' },
+  { path: '/map',     label: 'My Map',    icon: 'map',        module: 'map'       },
+  { path: '/uploads', label: 'Sync',      icon: 'refresh',    module: null        },
 ];
+
+/**
+ * What is waiting on the phone, when it is worth the driver's attention: points or markers still
+ * here while offline, while the login is refused, or after the trip has ended. A few points always
+ * wait briefly while driving — that is normal and gets no badge.
+ */
+function useSyncBadge(): number {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const st = await VehicleTracker.getSyncStatus();
+        const markers = pendingMarkerCount();
+        const stuck = !st.online || st.problem !== null || !st.tripOpen;
+        if (alive) setN(stuck ? st.queued + markers : markers);
+      } catch { /* next tick */ }
+    };
+    void tick();
+    const id = setInterval(() => { void tick(); }, 5_000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+  return n;
+}
 
 export function TabBar() {
   const pathname = usePathname();
@@ -37,8 +65,9 @@ export function TabBar() {
   // Filter tabs based on project's enabledModules
   const enabled = user?.enabledModules;
   const tabs = (Array.isArray(enabled) && enabled.length > 0)
-    ? ALL_TABS.filter(t => enabled.includes(t.module))
+    ? ALL_TABS.filter(t => t.module === null || enabled.includes(t.module))
     : ALL_TABS;
+  const waiting = useSyncBadge();
 
   // If the current TAB is one the project switched off, redirect to the first allowed tab.
   // Only tab screens: this bar stays mounted under screens pushed on top of the tabs (the Driver
@@ -66,7 +95,12 @@ export function TabBar() {
             activeOpacity={0.7}
           >
             {active && <View style={s.indicator} />}
-            <FontAwesome name={tab.icon} size={19} color={active ? C.brand : C.muted} />
+            <View>
+              <FontAwesome name={tab.icon} size={19} color={active ? C.brand : C.muted} />
+              {tab.path === '/uploads' && waiting > 0 && (
+                <View style={s.badge}><Text style={s.badgeText}>{waiting > 99 ? '99+' : waiting}</Text></View>
+              )}
+            </View>
             <Text style={[s.label, active && s.labelActive]}>{tab.label}</Text>
           </TouchableOpacity>
         );
@@ -88,4 +122,9 @@ const s = StyleSheet.create({
   label:       { fontSize: 11, fontWeight: '600', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.4 },
   labelActive: { color: C.brand },
   indicator:   { position: 'absolute', top: 0, left: '25%', right: '25%', height: 3, borderRadius: 2, backgroundColor: C.brand },
+  badge:       {
+    position: 'absolute', top: -6, right: -12, minWidth: 17, height: 17, borderRadius: 9, paddingHorizontal: 4,
+    backgroundColor: '#dc2626', alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: C.bg,
+  },
+  badgeText:   { color: '#ffffff', fontSize: 9.5, fontWeight: '800' },
 });
