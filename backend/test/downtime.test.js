@@ -105,6 +105,28 @@ const MIN = 60 * 1000;
     'the Trips page row says exactly what the phone says: trips, approved downtime, pending');
   assert(sum.body.totals.workMs === row.workMs && sum.body.totals.downtimeMs === 208 * MIN, '…and so do the page totals');
 
+  console.log('\n── the export ──');
+  const csvRows = (text) => {
+    const lines = text.replace(/^﻿/, '').trim().split(/\r?\n/);
+    const head = lines[0].split(',');
+    return lines.slice(1).map((l) => Object.fromEntries(l.split(',').map((v, i) => [head[i], v])));
+  };
+  const tripsSheet = csvRows((await admin.get('/api/trips/export-table?format=csv&level=trips')).text);
+  const dts = tripsSheet.filter((r) => r.Type === 'Downtime');
+  assert(dts.length === 4 && tripsSheet.filter((r) => r.Type === 'Trip').length === 2, 'the Trips sheet lists the 4 downtime entries along with the 2 trips');
+  const weather = dts.find((r) => r['Downtime reason'] === 'Weather');
+  assert(weather.Status === 'approved' && weather['Counts in working hours'] === 'yes' && weather['Duration (h)'] === '0.5',
+    'the approved weather stop: 0.5 h, counts in working hours');
+  const fuel = dts.find((r) => r['Downtime reason'] === 'Fuel');
+  assert(fuel.Status === 'not approved' && fuel['Counts in working hours'] === 'no' && /Manager: fuel stop is not work time/.test(fuel.Note),
+    'the rejected one says not approved, does not count, and carries the manager\'s note');
+  const starts = tripsSheet.map((r) => r.Started);
+  assert(starts.every((x, i) => i === 0 || x <= starts[i - 1]), 'trips and downtime are in one time order, newest first');
+  const daysSheet = csvRows((await admin.get('/api/trips/export-table?format=csv&level=days')).text);
+  const dRow = daysSheet.find((r) => r.Date === '2026-10-01');
+  assert(dRow['Working hours'] === String(Math.round((342 / 60) * 100) / 100) && dRow['Approved downtime (h)'] === String(Math.round((208 / 60) * 100) / 100),
+    'the Days sheet: working hours 5.7 h, of which 3.47 h approved downtime');
+
   console.log('\n── taking one back ──');
   assert((await drv.del(`/api/tracking/my-downtime/${gap.body.downtime.id}`)).status === 409, 'an approved entry cannot be withdrawn by the driver');
   const pendingId = day.body.downtime.find((d) => d.status === 'pending').id;

@@ -10,6 +10,7 @@ const { EXPORT_BUCKET, ORIGIN: EXPORT_ORIGIN, runJob: buildExport } = require('.
 const asyncHandler = require('../utils/asyncHandler');
 const { workMsExpr } = require('../utils/workHours');
 const downtimeService = require('../services/downtime');
+const Downtime = require('../models/Downtime');
 const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
 const { dayRange, isValidTimeZone } = require('../utils/timezone');
 const { timezoneForCountry } = require('../utils/countryTimezone');
@@ -843,31 +844,91 @@ exports.exportTable = asyncHandler(async (req, res) => {
       .populate('vehicleId', 'plateNumber')
       .lean();
     if (trips.length > EXPORT_MAX_ROWS) { truncated = true; trips.length = EXPORT_MAX_ROWS; }
-    sheets.push(['Trips', trips.map((t) => {
+    const DOWNTIME_REASON = {
+      weather: 'Weather', vehicle_changeover: 'Vehicle change-over', vehicle_issue: 'Vehicle issue', road_closed: 'Road closed',
+      waiting_instructions: 'Waiting for instructions', fuel: 'Fuel', other: 'Other',
+    };
+    const DOWNTIME_STATUS = { approved: 'approved', pending: 'waiting for approval', rejected: 'not approved' };
+    // Every row carries every column, in one order, so trips and downtime line up in the sheet.
+    const tripRows = trips.map((t) => {
       const tz = timezoneForCountry(t.driverId?.country);
       const outside = t.linkUkmNetworkMeters == null ? null : Math.max(0, t.linkUkmNetworkMeters - (t.linkUkmMeters || 0));
       const batch = t.importBatchId ? String(t.importBatchId) : '';
       return {
-        Date: formatDateInZone(t.startedAt, tz),
-        Driver: t.driverId?.name || '',
-        Vehicle: t.vehicleId?.plateNumber || '',
-        Status: t.status,
-        Started: local(t.startedAt, tz),
-        Ended: local(t.endedAt, tz),
-        'Duration (h)': t.endedAt ? hours(new Date(t.endedAt) - new Date(t.startedAt)) : null,
-        'Distance (km)': km(t.distanceMeters),
-        'Cleaned distance (km)': km(t.cleanedDistanceMeters),
-        'Max speed (km/h)': Math.round(t.maxSpeedKmh || 0),
-        'GPS points': t.pointCount ?? null,
-        'UKM (km)': km(t.effectiveUkmMeters),
-        'Assigned UKM (km)': km(t.linkUkmMeters),
-        'Outside UKM (km)': km(outside),
-        'Inside area (km)': km(t.inAreaMeters),
-        'Outside area (km)': km(t.outAreaMeters),
-        Source: !batch ? 'App' : batch.startsWith('vts') ? 'VTS import' : 'Import',
-        'Trip ID': String(t._id),
+        at: new Date(t.startedAt).getTime(),
+        row: {
+          Date: formatDateInZone(t.startedAt, tz),
+          Driver: t.driverId?.name || '',
+          Type: 'Trip',
+          Vehicle: t.vehicleId?.plateNumber || '',
+          Status: t.status,
+          Started: local(t.startedAt, tz),
+          Ended: local(t.endedAt, tz),
+          'Duration (h)': t.endedAt ? hours(new Date(t.endedAt) - new Date(t.startedAt)) : null,
+          // An imported day's times are the importer's fixed window, not recorded work.
+          'Counts in working hours': batch ? 'no' : 'yes',
+          'Distance (km)': km(t.distanceMeters),
+          'Cleaned distance (km)': km(t.cleanedDistanceMeters),
+          'Max speed (km/h)': Math.round(t.maxSpeedKmh || 0),
+          'GPS points': t.pointCount ?? null,
+          'UKM (km)': km(t.effectiveUkmMeters),
+          'Assigned UKM (km)': km(t.linkUkmMeters),
+          'Outside UKM (km)': km(outside),
+          'Inside area (km)': km(t.inAreaMeters),
+          'Outside area (km)': km(t.outAreaMeters),
+          'Downtime reason': '',
+          Note: '',
+          'Reviewed by': '',
+          Source: !batch ? 'App' : batch.startsWith('vts') ? 'VTS import' : 'Import',
+          'Trip ID': String(t._id),
+        },
       };
-    })]);
+    });
+    // Downtime the drivers reported, between their trips (services/downtime.js): approved counts
+    // toward working hours, the rest is listed with its status. Not when the export is narrowed
+    // to a trip status — downtime has none.
+    let downtimeRows = [];
+    if (!filter.status) {
+      const dtMatch = {};
+      if (filter.driverId) dtMatch.driverId = filter.driverId;
+      if (filter.startedAt) dtMatch.startAt = filter.startedAt;
+      const dts = await Downtime.find(dtMatch).sort({ startAt: -1 }).limit(EXPORT_MAX_ROWS).lean();
+      const dtDrivers = new Map((await User.find({ _id: { $in: [...new Set(dts.map((d) => String(d.driverId)))] } }).select('name country').lean())
+        .map((u) => [String(u._id), u]));
+      downtimeRows = dts.map((d) => {
+        const u = dtDrivers.get(String(d.driverId));
+        const tz = timezoneForCountry(u?.country);
+        return {
+          at: new Date(d.startAt).getTime(),
+          row: {
+            Date: formatDateInZone(d.startAt, tz),
+            Driver: u?.name || d.driverName || '',
+            Type: 'Downtime',
+            Vehicle: '',
+            Status: DOWNTIME_STATUS[d.status] || d.status,
+            Started: local(d.startAt, tz),
+            Ended: local(d.endAt, tz),
+            'Duration (h)': hours(new Date(d.endAt) - new Date(d.startAt)),
+            'Counts in working hours': d.status === 'approved' ? 'yes' : 'no',
+            'Distance (km)': null,
+            'Cleaned distance (km)': null,
+            'Max speed (km/h)': null,
+            'GPS points': null,
+            'UKM (km)': null,
+            'Assigned UKM (km)': null,
+            'Outside UKM (km)': null,
+            'Inside area (km)': null,
+            'Outside area (km)': null,
+            'Downtime reason': DOWNTIME_REASON[d.reason] || d.reason,
+            Note: [d.note, d.reviewNote ? `Manager: ${d.reviewNote}` : null].filter(Boolean).join(' · '),
+            'Reviewed by': d.reviewedByName || '',
+            Source: 'App',
+            'Trip ID': '',
+          },
+        };
+      });
+    }
+    sheets.push(['Trips', [...tripRows, ...downtimeRows].sort((x, y) => y.at - x.at).map((r) => r.row)]);
   }
 
   const q = req.query;
@@ -897,6 +958,7 @@ exports.exportTable = asyncHandler(async (req, res) => {
     ['Status', q.status ? String(q.status) : 'all'],
     ['Drivers', q.driverId ? 'one driver' : q.driverIds ? `${String(q.driverIds).split(',').length} drivers` : 'all you can see'],
     ['Times', "each driver's local time"],
+    ['Working hours', 'each trip start to end, plus downtime a manager approved. Downtime drivers reported is listed in the Trips sheet (Type = Downtime); only rows with "Counts in working hours" = yes are in the total'],
     ['Distances', 'km; UKM = new road driven first (Assigned: inside the driver\'s areas; Outside: elsewhere on the network)'],
     ...(truncated ? [['Note', `Capped at ${EXPORT_MAX_ROWS.toLocaleString()} rows per sheet — narrow the dates for the rest`]] : []),
   ];
