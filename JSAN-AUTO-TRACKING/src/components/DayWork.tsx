@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Modal,
-  Pressable,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,11 +20,15 @@ import {
   type MyDay,
   type MyDowntime,
 } from '@/src/lib/api';
+import { ModalSheet } from '@/src/components/ModalSheet';
 import { deviceTimezone } from '@/src/lib/timezone';
 
 /**
- * "Today's work": the driver's trips on one day, start – end and how long each ran, with the day's
- * total working hours as the last row. ‹ › step back through earlier days.
+ * "Today's work". On the Home screen it is one compact card — the day's working hours, trips and
+ * km, and what still needs the driver (downtime waiting for approval, stops with no reason yet) —
+ * so the screen stays short. Tapping it opens a bottom sheet (ModalSheet) with the whole day: each
+ * trip start – end and how long it ran, the downtime between them, the total as the last row, and
+ * ‹ › to step back through earlier days. Adding downtime is a page of the same sheet.
  *
  * Working hours are every trip's start to end added up, plus DOWNTIME a manager has approved: time
  * the driver was stopped for a reason (a weather stop, a vehicle change-over). Each gap between
@@ -118,6 +122,8 @@ export function DayWork({ token, refreshKey }: { token: string | null; refreshKe
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Slot | null>(null);
+  /** The bottom sheet with the whole day. */
+  const [open, setOpen] = useState(false);
   /** When `day` arrived — a running trip's duration grows from there. */
   const fetchedAt = useRef(Date.now());
   const [, setTick] = useState(0);
@@ -211,8 +217,50 @@ export function DayWork({ token, refreshKey }: { token: string | null; refreshKe
     ]);
   };
 
+  const gaps = rows.filter((r) => r.type === 'slot' && r.slot.kind === 'gap').length;
+  const closeSheet = () => { setOpen(false); setEditing(null); setOffset(0); };
+
   return (
-    <View style={s.card}>
+    <>
+      {/* On the screen: one line of the day. Everything else is in the sheet. */}
+      <TouchableOpacity style={s.card} onPress={() => setOpen(true)} activeOpacity={0.8} accessibilityRole="button" accessibilityLabel="Open working hours">
+        <View style={s.head}>
+          <Text style={s.title}>Working hours · {dayLabel(offset, date)}</Text>
+          <Text style={s.viewLink}>View ›</Text>
+        </View>
+        {!shown ? (
+          <View style={s.empty}>
+            {loading ? <ActivityIndicator color={C.brand} /> : <Text style={s.muted}>{error ?? 'No trips yet.'}</Text>}
+          </View>
+        ) : (
+          <>
+            <View style={s.summary}>
+              <Text style={s.summaryBig}>{hm(workMs)}</Text>
+              <Text style={s.summarySub}>
+                {shown.trips.length} trip{shown.trips.length === 1 ? '' : 's'} · {km(shown.totals.distanceMeters)}
+                {approvedMs > 0 ? ` · incl. ${hm(approvedMs)} downtime` : ''}
+              </Text>
+            </View>
+            {(pendingMs > 0 || gaps > 0) && (
+              <View style={s.summaryChips}>
+                {pendingMs > 0 && <Text style={[s.badge, s.badgeWait]}>{hm(pendingMs)} waiting for approval</Text>}
+                {gaps > 0 && <Text style={[s.badge, s.badgeGap]}>{gaps} stop{gaps === 1 ? '' : 's'} — add a reason</Text>}
+              </View>
+            )}
+          </>
+        )}
+      </TouchableOpacity>
+
+      <ModalSheet visible={open} onClose={closeSheet}>
+        {editing && token ? (
+          <DowntimeForm
+            slot={editing}
+            token={token}
+            onClose={() => setEditing(null)}
+            onSaved={() => { setEditing(null); load(); }}
+          />
+        ) : (
+          <ScrollView contentContainerStyle={s.sheetBody}>
       <View style={s.head}>
         <Text style={s.title}>Working hours</Text>
         <View style={s.nav}>
@@ -321,20 +369,15 @@ export function DayWork({ token, refreshKey }: { token: string | null; refreshKe
         </>
       )}
 
-      {editing && token && (
-        <DowntimeSheet
-          slot={editing}
-          token={token}
-          onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); load(); }}
-        />
-      )}
-    </View>
+          </ScrollView>
+        )}
+      </ModalSheet>
+    </>
   );
 }
 
 /** Reason, start and end (moved in 5-minute steps inside the free time), an optional note. */
-function DowntimeSheet({ slot, token, onClose, onSaved }: { slot: Slot; token: string; onClose: () => void; onSaved: () => void }) {
+function DowntimeForm({ slot, token, onClose, onSaved }: { slot: Slot; token: string; onClose: () => void; onSaved: () => void }) {
   const [start, setStart] = useState(slot.start);
   const [end, setEnd] = useState(slot.end);
   const [reason, setReason] = useState<DowntimeReason | null>(null);
@@ -385,10 +428,11 @@ function DowntimeSheet({ slot, token, onClose, onSaved }: { slot: Slot; token: s
   );
 
   return (
-    <Modal transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={s.backdrop} onPress={onClose} />
-      <View style={s.sheet}>
-        <ScrollView keyboardShouldPersistTaps="handled">
+    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.sheetBody}>
+          <TouchableOpacity onPress={onClose} hitSlop={10} style={{ alignSelf: 'flex-start', marginBottom: 6 }}>
+            <Text style={s.link}>‹ Back to the day</Text>
+          </TouchableOpacity>
           <Text style={s.sheetTitle}>Add downtime</Text>
           <Text style={s.sheetSub}>
             Time you were working but stopped. It counts toward your working hours once your manager approves it.
@@ -428,8 +472,7 @@ function DowntimeSheet({ slot, token, onClose, onSaved }: { slot: Slot; token: s
             </TouchableOpacity>
           </View>
         </ScrollView>
-      </View>
-    </Modal>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -474,8 +517,13 @@ const s = StyleSheet.create({
   slotText: { fontSize: 12.5, color: C.text2, fontVariant: ['tabular-nums'] },
   slotAdd: { fontSize: 12.5, fontWeight: '700', color: C.brand },
 
-  backdrop: { flex: 1, backgroundColor: 'rgba(13,13,18,0.45)' },
-  sheet: { backgroundColor: C.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 18, maxHeight: '85%' },
+  sheetBody: { paddingHorizontal: 18, paddingBottom: 24 },
+  viewLink: { fontSize: 13, fontWeight: '700', color: C.brand },
+  summary: { flexDirection: 'row', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' },
+  summaryBig: { fontSize: 26, fontWeight: '800', color: C.text, fontVariant: ['tabular-nums'] },
+  summarySub: { fontSize: 13, color: C.text2 },
+  summaryChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  badgeGap: { backgroundColor: '#ede9fe', color: C.brand },
   sheetTitle: { fontSize: 18, fontWeight: '800', color: C.text },
   sheetSub: { fontSize: 13, color: C.text2, marginTop: 4, lineHeight: 18 },
   fieldLabel: { fontSize: 12, fontWeight: '700', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.3, marginTop: 16, marginBottom: 8 },
