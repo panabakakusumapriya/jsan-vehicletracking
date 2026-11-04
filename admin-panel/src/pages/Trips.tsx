@@ -7,6 +7,7 @@ import { AlreadyDrivenTip } from '../components/AlreadyDrivenTip';
 import { pinUrl, type TripMarker } from '../components/TripMarkers';
 import { ExportButtons } from '../components/ExportButtons';
 import { DayDrawer } from '../components/DayDrawer';
+import { DowntimeReview } from '../components/DowntimeReview';
 import { api, downloadFile, viewerTimeZone } from '../lib/api';
 import { normalizeCountry } from '../lib/country';
 import { runExportJob, describeJob } from '../lib/exportJobs';
@@ -28,6 +29,9 @@ interface TripTotals {
   outsideUkm: number;
   workMs: number;
   maxSpeed: number;
+  /** Of workMs: approved downtime (the rest is trip time). Pending is not in workMs. */
+  downtimeMs?: number;
+  pendingDowntimeMs?: number;
 }
 
 /** One row per driver+calendar-day — /api/trips/merged-summary. */
@@ -49,6 +53,11 @@ interface DaySummary {
    * trip counts to now; imported trips are left out — their times are the importer's fixed window).
    */
   workMs?: number;
+  /** Trip time alone; workMs = tripWorkMs + downtimeMs (approved downtime). */
+  tripWorkMs?: number;
+  downtimeMs?: number;
+  /** Downtime the driver reported that a manager has not decided yet — not in workMs. */
+  pendingDowntimeMs?: number;
   /** Markers the driver dropped that day (by when, not by trip — they often stop between trips). */
   markerCount?: number;
   markerColors?: { color: string; count: number }[];
@@ -174,6 +183,15 @@ export function Trips() {
   const page = Math.max(1, Number(searchParams.get('page')) || 1);
   // The driver-day open in the side drawer (Details on a trip), and which of its sessions was clicked.
   const [drawer, setDrawer] = useState<{ key: string; tripId: string } | null>(null);
+  // Downtime drivers reported (weather stop, change-over), waiting for a manager.
+  const [pendingDowntime, setPendingDowntime] = useState(0);
+  const [downtimeOpen, setDowntimeOpen] = useState(false);
+  const loadPendingDowntime = useCallback(() => {
+    api.get<{ pending: number }>('/api/downtime?status=pending')
+      .then((r) => setPendingDowntime(r.pending || 0))
+      .catch(() => setPendingDowntime(0)); // an older server, or a role that cannot review
+  }, []);
+  useEffect(() => { loadPendingDowntime(); }, [loadPendingDowntime]);
   const expanded = useMemo(
     () => new Set((searchParams.get('exp') ?? '').split(',').filter(Boolean)),
     [searchParams]
@@ -450,9 +468,20 @@ export function Trips() {
             <b>{activeDays}</b> Active
           </button>
           <span className="dr-sep" aria-hidden="true" />
-          <span className="dr-stat static" title="Working hours of every driver-day matching the filters: each trip's start to end, added up">
+          <span
+            className="dr-stat static"
+            title={`Working hours of every driver-day matching the filters: each trip's start to end, added up, plus approved downtime${totals?.downtimeMs ? ` (${hm(totals.downtimeMs)} of it)` : ''}`}
+          >
             <b>{hm(workMs)}</b> Working hours
           </span>
+          <button
+            type="button"
+            className={`dr-stat${pendingDowntime ? ' amber' : ''}`}
+            onClick={() => setDowntimeOpen(true)}
+            title="Time drivers were stopped for a reason (weather, change-over). It counts toward working hours once approved."
+          >
+            <b>{pendingDowntime}</b> Downtime to approve
+          </button>
           <span className="dr-stat static" title="Distance of every driver-day matching the filters (all pages)">
             <b>{km(totalKm)}</b> Distance
           </span>
@@ -633,9 +662,23 @@ export function Trips() {
                       style={{ fontWeight: 700 }}
                       title={(s.importedTrips ?? 0) > 0
                         ? `Recorded trips only — ${s.importedTrips} imported trip${s.importedTrips === 1 ? ' has' : 's have'} no real start and end times`
-                        : 'Every trip’s start to end, added up'}
+                        : s.downtimeMs || s.pendingDowntimeMs
+                          ? `Trips ${hm(s.tripWorkMs ?? s.workMs)}${s.downtimeMs ? ` + approved downtime ${hm(s.downtimeMs)}` : ''}${s.pendingDowntimeMs ? ` · ${hm(s.pendingDowntimeMs)} downtime waiting for approval (not counted)` : ''}`
+                          : 'Every trip’s start to end, added up'}
                     >
                       {(s.importedTrips ?? 0) >= s.totalTrips ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>—</span> : hm(s.workMs)}
+                      {s.downtimeMs ? <div style={{ fontSize: 11.5, fontWeight: 500, color: 'var(--muted)' }}>incl. {hm(s.downtimeMs)} downtime</div> : null}
+                      {s.pendingDowntimeMs ? (
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => { e.stopPropagation(); setDowntimeOpen(true); }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setDowntimeOpen(true); } }}
+                          style={{ fontSize: 11.5, fontWeight: 600, color: '#b45309', cursor: 'pointer' }}
+                        >
+                          +{hm(s.pendingDowntimeMs)} to approve
+                        </div>
+                      ) : null}
                     </td>
                     <td title={s.markerCount ? `${s.markerCount} marker${s.markerCount === 1 ? '' : 's'} dropped that day — open the day to see them` : 'No markers that day'}>
                       {s.markerCount ? (
@@ -961,6 +1004,12 @@ export function Trips() {
         </div>
       )}
 
+      {downtimeOpen && (
+        <DowntimeReview
+          onClose={() => setDowntimeOpen(false)}
+          onChanged={() => { loadPendingDowntime(); load(page); }}
+        />
+      )}
       {drawer && (() => {
         const day = summaries.find((x) => dayKey(x) === drawer.key);
         if (!day) return null;
