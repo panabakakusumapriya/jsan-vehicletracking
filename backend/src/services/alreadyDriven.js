@@ -5,6 +5,9 @@ const CoverageSegment = require('../models/CoverageSegment');
 const { analyseTrip } = require('./linkCoverage');
 const { walkTrip, unionWithinTrip, eligibility } = require('./globalUkm');
 const { scopeForTrip } = require('./coverageScope');
+const { encodePolyline6 } = require('./valhalla');
+
+const encode = (coords) => encodePolyline6(coords.map(([lon, lat]) => ({ lat, lon })));
 
 /**
  * "Already driven before" — the road a trip covered that it does NOT get UKM for, and who had it.
@@ -20,6 +23,10 @@ const { scopeForTrip } = require('./coverageScope');
  * Measured on the customer's road links (LinkCoverage) wherever the trip was attributed against a
  * network, which is what both UKM columns are measured on. A trip with no network to measure
  * against falls back to the fleet-wide road ledger (CoverageSegment), so it still gets an answer.
+ *
+ * With `shapes`, each earlier drive also carries the road itself — encoded polyline6 lines, one
+ * per road link (or per run of the trip's own steps on the fleet-wide ledger) — so the trip page
+ * can draw it: "this stretch was already driven on 3 Oct by Ravi".
  *
  * Read-only: it re-reads the trip's geometry and the ledgers and writes nothing.
  */
@@ -42,7 +49,7 @@ async function findChunked(Model, filter, key, values, select) {
 }
 
 /** Name the earlier drives: their driver, and when each one started. */
-async function describe(groups, tripDriverId) {
+async function describe(groups, tripDriverId, withShapes = false) {
   const tripIds = [...groups.keys()];
   const [trips, users] = await Promise.all([
     Trip.find({ _id: { $in: tripIds } }).select('startedAt driverId').lean(),
@@ -66,6 +73,7 @@ async function describe(groups, tripDriverId) {
       outsideMeters: g.outsideMeters,
       // Re-driving your own road is route planning; someone else's is crew coordination.
       self: String(g.driverId) === String(tripDriverId),
+      ...(withShapes ? { shapes: g.lines.filter((l) => l.length > 1).map(encode) } : {}),
     }))
     .sort((a, b) => b.meters - a.meters);
 
@@ -75,6 +83,8 @@ async function describe(groups, tripDriverId) {
     rows: shown,
     moreTrips: rest.length,
     moreMeters: rest.reduce((n, r) => n + r.meters, 0),
+    // The road of the drives not listed one by one, so the map still shows all of it.
+    ...(withShapes ? { moreShapes: rest.flatMap((r) => r.shapes) } : {}),
   };
 }
 
@@ -82,16 +92,17 @@ function addTo(groups, owner, meters, inside) {
   const key = String(owner.firstTripId);
   let g = groups.get(key);
   if (!g) {
-    g = { tripId: key, driverId: owner.firstDriverId, firstAt: owner.firstAt, meters: 0, insideMeters: 0, outsideMeters: 0 };
+    g = { tripId: key, driverId: owner.firstDriverId, firstAt: owner.firstAt, meters: 0, insideMeters: 0, outsideMeters: 0, lines: [], lastStep: -2 };
     groups.set(key, g);
   }
   g.meters += meters;
   if (inside) g.insideMeters += meters;
   else g.outsideMeters += meters;
   if (owner.firstAt < g.firstAt) g.firstAt = owner.firstAt;
+  return g;
 }
 
-async function alreadyDriven(tripId) {
+async function alreadyDriven(tripId, { shapes = false } = {}) {
   const trip = await Trip.findById(tripId).select(TRIP_FIELDS).lean();
   if (!trip) return null;
   const { eligible, status } = eligibility(trip);
@@ -131,7 +142,8 @@ async function alreadyDriven(tripId) {
         else ownOutside += meters;
       } else {
         repeatMeters += meters;
-        addTo(groups, owner, meters, inside);
+        const g = addTo(groups, owner, meters, inside);
+        if (shapes && hit.link.geometry && hit.link.geometry.coordinates) g.lines.push(hit.link.geometry.coordinates);
       }
     }
     return {
@@ -142,7 +154,7 @@ async function alreadyDriven(tripId) {
       ownOutsideMeters: ownOutside,
       repeatMeters,
       clearedMeters,
-      ...(await describe(groups, trip.driverId)),
+      ...(await describe(groups, trip.driverId, shapes)),
     };
   }
 
@@ -169,6 +181,21 @@ async function alreadyDriven(tripId) {
       addTo(groups, owner, seg.meters, false);
     }
   }
+  // The road of each earlier drive, from the trip's own steps: consecutive steps become one line.
+  if (shapes) {
+    walkTrip(trip).forEach((st, i) => {
+      const owner = byKey.get(st.key);
+      if (!owner || String(owner.firstTripId) === String(trip._id)) return;
+      const g = groups.get(String(owner.firstTripId));
+      if (!g) return;
+      // Steps carry {lat, lon} vertices; the lines are [lon, lat], as the road links are.
+      const pa = [st.a.lon, st.a.lat];
+      const pb = [st.b.lon, st.b.lat];
+      if (g.lastStep === i - 1 && g.lines.length) g.lines[g.lines.length - 1].push(pb);
+      else g.lines.push([pa, pb]);
+      g.lastStep = i;
+    });
+  }
   return {
     computed: true,
     basis: 'global',
@@ -177,7 +204,7 @@ async function alreadyDriven(tripId) {
     ownOutsideMeters: ownMeters,
     repeatMeters,
     clearedMeters: 0,
-    ...(await describe(groups, trip.driverId)),
+    ...(await describe(groups, trip.driverId, shapes)),
   };
 }
 

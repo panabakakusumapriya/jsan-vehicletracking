@@ -111,6 +111,13 @@ const near = (a, b, msg) => assert(a != null && Math.abs(a - b) <= 2, `${msg} (g
   assert(new Date(res.body.rows[0].at).toISOString().slice(0, 10) === '2026-10-03', '…on 3 Oct');
   near(res.body.rows[0].insideMeters, W1.lengthMeters + W2.lengthMeters, '…all of it inside Ravi\'s area');
   assert(String(res.body.rows[0].tripId) === String(samTrip._id), '…naming the trip that drove it first');
+  assert(res.body.rows[0].shapes === undefined, 'without ?shapes=1 the hover gets no geometry (kept small)');
+  const withShapes = (await boss.as(request(app).get(`/api/trips/${raviTrip._id}/already-driven?shapes=1`))).body;
+  const { decodePolyline6 } = require('../src/services/roadSegments');
+  const drawn = withShapes.rows[0].shapes.map((x) => decodePolyline6(x));
+  assert(withShapes.rows[0].shapes.length === 2 && drawn.every((line) => line.length >= 2), 'with ?shapes=1: the two re-driven links, W1 and W2, as lines to draw');
+  const w1 = W1.geometry.coordinates;
+  assert(drawn.some((line) => Math.abs(line[0].lon - w1[0][0]) < 1e-5 && Math.abs(line[0].lat - w1[0][1]) < 1e-5), '…in the right place (W1 starts where the road does)');
 
   const again = (await ask(raviAgain)).body;
   assert(again.rows.length === 1 && again.rows[0].self && again.rows[0].driverName === 'ravi', '7 Oct: W3 again is Ravi\'s own earlier road — marked as his own');
@@ -133,6 +140,8 @@ const near = (a, b, msg) => assert(a != null && Math.abs(a - b) <= 2, `${msg} (g
   const g = (await ask(b2)).body;
   assert(g.computed && g.basis === 'global' && g.rows.length === 1 && g.rows[0].self, 'no network: answered from the fleet-wide ledger — his own drive of 1 Oct');
   assert(g.repeatMeters > 400 && g.ownOutsideMeters < 1, '…the whole route was already his');
+  const gs = (await boss.as(request(app).get(`/api/trips/${b2._id}/already-driven?shapes=1`))).body;
+  assert(gs.rows[0].shapes.length === 1 && decodePolyline6(gs.rows[0].shapes[0]).length >= 4, '…and with ?shapes=1 his earlier road comes back as one joined line');
 
   console.log(`\n${passed} assertions passed`);
   await mongoose.disconnect();

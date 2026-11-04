@@ -74,7 +74,8 @@ exports.alreadyDriven = asyncHandler(async (req, res) => {
   const scope = await accessibleDriverFilter(req.user);
   const trip = await Trip.findOne({ _id: req.params.id, ...scope }).select('_id').lean();
   if (!trip) return res.status(404).json({ error: 'Trip not found' });
-  const result = await alreadyDrivenFor(trip._id);
+  // ?shapes=1: the road of each earlier drive too, for drawing it on the trip's map.
+  const result = await alreadyDrivenFor(trip._id, { shapes: req.query.shapes === '1' });
   if (!result) return res.status(404).json({ error: 'Trip not found' });
   return res.json(result);
 });
