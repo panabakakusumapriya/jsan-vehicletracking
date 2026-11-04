@@ -63,7 +63,6 @@ export default function Home() {
   const [lastFix, setLastFix] = useState<VehicleTracker.LocationEvent | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadError, setUploadError] = useState<UploadError>(null);
-  const [daylightInfo, setDaylightInfo] = useState<VehicleTracker.DaylightInfo | null>(null);
   /** Bumped when a trip starts or ends, or on pull-to-refresh: the working-hours card reloads. */
   const [workKey, setWorkKey] = useState(0);
   const started = useRef(false);
@@ -88,8 +87,8 @@ export default function Home() {
   const refreshStatus = useCallback(async () => {
     try { setStatus(await VehicleTracker.getStatus()); } catch {}
     try {
+      // Daylight still decides the night state (tracking paused); it is just not shown as a card.
       const dl = await VehicleTracker.getDaylightInfo();
-      setDaylightInfo(dl);
       if (dl.isDaylight === false && uiState !== 'starting' && uiState !== 'blocked') {
         setUiState('night');
       } else if (dl.isDaylight === true && uiState === 'night') {
@@ -350,48 +349,6 @@ export default function Home() {
              battery limits, GPS toggled off) are seen, not suffered. ── */}
       <TrackingChecklist compact />
 
-      {/* ── Daylight info ── */}
-      {daylightInfo?.sunrise && daylightInfo?.sunset && (
-        <View style={s.daylightCard}>
-          <Text style={s.daylightTitle}>Daylight tracking</Text>
-          <View style={s.daylightRow}>
-            <Text style={s.daylightLabel}>Sunrise</Text>
-            <Text style={s.daylightValue}>{daylightInfo.sunrise}</Text>
-          </View>
-          <View style={s.daylightRow}>
-            <Text style={s.daylightLabel}>Sunset</Text>
-            <Text style={s.daylightValue}>{daylightInfo.sunset}</Text>
-          </View>
-          <View style={s.daylightRow}>
-            <Text style={s.daylightLabel}>Timezone</Text>
-            <Text style={s.daylightValue}>{daylightInfo.timezoneId}</Text>
-          </View>
-        </View>
-      )}
-
-      {/* ── Trip settings ──
-             The stop timeout is set per project in the admin panel and pushed down; showing it
-             here is what lets anyone confirm a change actually reached THIS handset, instead of
-             parking a vehicle and timing the trip end with a watch. Hidden on an older native
-             build, which does not report the field at all. ── */}
-      {typeof status?.tripEndAfterMinutes === 'number' && (
-        <View style={s.daylightCard}>
-          <Text style={s.daylightTitle}>Trip settings</Text>
-          <View style={s.daylightRow}>
-            <Text style={s.daylightLabel}>Ends trip after</Text>
-            <Text style={s.daylightValue}>
-              {status.tripEndAfterMinutes} min stopped
-            </Text>
-          </View>
-          <View style={s.daylightRow}>
-            <Text style={s.daylightLabel}>Source</Text>
-            <Text style={s.daylightValue}>
-              {status.tripEndIsProjectSetting ? 'Project setting' : 'Default'}
-            </Text>
-          </View>
-        </View>
-      )}
-
       {/* ── Stats grid ── */}
       <View style={s.grid}>
         <StatTile label="Speed"   value={lastFix ? `${Math.round(lastFix.speedKmh)}` : '—'} unit="km/h"  color={C.brand}   />
@@ -464,15 +421,6 @@ const s = StyleSheet.create({
   },
   uploadErrText: { flex: 1, fontSize: 12.5, color: C.amber, fontWeight: '600', lineHeight: 17 },
   uploadErrDismiss: { fontSize: 14, color: C.muted, fontWeight: '700', paddingHorizontal: 4 },
-
-  daylightCard: {
-    backgroundColor: C.surface, borderRadius: 16, borderWidth: 1, borderColor: C.border,
-    padding: 14,
-  },
-  daylightTitle: { fontSize: 12, fontWeight: '700', color: C.muted, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 },
-  daylightRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
-  daylightLabel: { fontSize: 13, color: C.text2 },
-  daylightValue: { fontSize: 13, fontWeight: '700', color: C.text },
 });
 
 const st = StyleSheet.create({
