@@ -129,6 +129,8 @@ function createApp() {
         // socket), so a reset signs that account out everywhere at once. Before this build an old
         // token stayed valid until its JWT expiry. See User.passwordChangedAt.
         passwordChangeSignsOut: true,
+        // Drivers report downtime with a reason; approved downtime joins working hours.
+        downtime: true,
       },
     })
   );
