@@ -11,6 +11,7 @@ import { useTripPlayback } from '../lib/map3d/useTripPlayback';
 import { cleanedPaths, decodeRouteShapes } from '../lib/polyline';
 import type { Trip } from '../lib/types';
 import { useTripMarkers } from '../components/TripMarkers';
+import { AlreadyDrivenPanel, useAlreadyDriven } from '../components/AlreadyDrivenMap';
 import { TripWeatherStrip, WeatherNowChip, sampleAt, tripWeatherLayers, useTripRouteWeather } from '../components/weather/TripWeather';
 
 interface PathPoint {
@@ -424,6 +425,8 @@ export function TripDetail() {
   const lastFlyRef = useRef(0);
   // Markers the driver dropped during THIS trip — drawn on the route, click → Google Maps.
   const tripMarkers = useTripMarkers(id);
+  // The stretches of this trip somebody had driven before (who and when), drawn under the route.
+  const alreadyDriven = useAlreadyDriven(id, !!trip && trip.status !== 'active');
 
   useEffect(() => {
     if (!id) return;
@@ -524,11 +527,13 @@ export function TripDetail() {
 
   const layers = useMemo(
     () => [
+      // First, so the route draws on top of it: the band shows as a coloured halo round the road.
+      ...alreadyDriven.layers,
       ...buildReplayLayers(points, playback.currentTimeMs, playback.playing, snappedPaths, ukmPaths, outsidePaths),
       ...tripWeatherLayers(routeWeather.weather, weatherNow),
       ...tripMarkers.layers,
     ],
-    [points, playback.currentTimeMs, playback.playing, snappedPaths, ukmPaths, outsidePaths, tripMarkers.layers, routeWeather.weather, weatherNow]
+    [alreadyDriven.layers, points, playback.currentTimeMs, playback.playing, snappedPaths, ukmPaths, outsidePaths, tripMarkers.layers, routeWeather.weather, weatherNow]
   );
 
   if (loading) return <div className="muted">Loading trip…</div>;
@@ -737,12 +742,12 @@ export function TripDetail() {
       )}
 
       <div className="map-wrap" style={{ height: 'calc(100vh - 340px - var(--topbar-h))', minHeight: 380, position: 'relative' }}>
-        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} northUp />
+        <Map3D ref={mapRef} center={start} zoom={14} layers={layers} onClick={tripMarkers.onMapClick} getTooltip={alreadyDriven.getTooltip} northUp />
         {tripMarkers.popup}
         <WeatherNowChip sample={weatherNow} />
         {/* Two colours on a map need saying out loud — without this the muted stretches read as
             a rendering glitch rather than "the driver had been here before". */}
-        {((ukmPaths && ukmPaths.length > 0) || (outsidePaths && outsidePaths.length > 0)) && (
+        {((ukmPaths && ukmPaths.length > 0) || (outsidePaths && outsidePaths.length > 0) || (alreadyDriven.hasRoad && alreadyDriven.on)) && (
           <div
             style={{
               position: 'absolute', bottom: 12, left: 12, zIndex: 1,
@@ -772,9 +777,17 @@ export function TripDetail() {
                 Outside the assigned area
               </span>
             )}
+            {alreadyDriven.hasRoad && alreadyDriven.on && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 7, color: 'rgb(185,28,28)' }}>
+                <span style={{ width: 16, height: 8, borderRadius: 4, background: 'linear-gradient(90deg, rgb(220,38,38), rgb(192,38,211), rgb(37,99,235))' }} />
+                Wide band — already driven before (hover it, or see the list below)
+              </span>
+            )}
           </div>
         )}
       </div>
+
+      <AlreadyDrivenPanel state={alreadyDriven} />
 
       {points.length > 1 && (
         <div
