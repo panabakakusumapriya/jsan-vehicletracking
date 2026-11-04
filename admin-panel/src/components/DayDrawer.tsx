@@ -35,6 +35,9 @@ export interface DaySummaryLite {
   outsideUkm?: number;
   splitTrips?: number;
   workMs?: number;
+  /** Of workMs: approved downtime; pending is not in workMs. */
+  downtimeMs?: number;
+  pendingDowntimeMs?: number;
   importedTrips?: number;
   maxSpeed: number;
   firstStart: string;
@@ -198,7 +201,14 @@ export function DayDrawer({
           <div><b>{snappedTotal ? km(snappedTotal) : '—'}</b><span>snapped</span></div>
           <div className="blue"><b>{measured ? km(day.assignedUkm ?? 0) : '—'}</b><span>assigned UKM</span></div>
           <div className="amber"><b>{measured ? km(day.outsideUkm ?? 0) : '—'}</b><span>outside UKM</span></div>
-          <div><b>{(day.importedTrips ?? 0) >= day.totalTrips ? '—' : hm(day.workMs)}</b><span>working hours</span></div>
+          <div
+            title={day.downtimeMs || day.pendingDowntimeMs
+              ? `Includes ${hm(day.downtimeMs ?? 0)} approved downtime${day.pendingDowntimeMs ? `; ${hm(day.pendingDowntimeMs)} more waiting for approval` : ''}`
+              : 'Every trip’s start to end, added up'}
+          >
+            <b>{(day.importedTrips ?? 0) >= day.totalTrips ? '—' : hm(day.workMs)}</b>
+            <span>working hours{day.downtimeMs ? ` · incl. ${hm(day.downtimeMs)} downtime` : ''}</span>
+          </div>
           <div><b>{Math.round(day.maxSpeed)}</b><span>km/h top</span></div>
           <div><b>{markers.length}</b><span>markers</span></div>
         </div>
