@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Linking, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, Linking, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ModalSheet } from '@/src/components/ModalSheet';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import {
   getFullTrackingHealth,
@@ -17,6 +18,10 @@ import {
  *
  * Re-checked when the app returns to the foreground (the driver coming back from Settings)
  * and every 30 s while visible.
+ *
+ * `compact` (the Home screen): one line — all good, or which checks fail with Fix now right there —
+ * and the full list in a bottom sheet on tap, so the screen stays short. The tracking gate shows it
+ * in full.
  */
 
 type Row = { key: keyof FullTrackingHealth; label: string; minVersion?: number };
@@ -52,9 +57,10 @@ function oemTip(): string | null {
   return null;
 }
 
-export function TrackingChecklist() {
+export function TrackingChecklist({ compact = false }: { compact?: boolean }) {
   const [health, setHealth] = useState<FullTrackingHealth | null>(null);
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try { setHealth(await getFullTrackingHealth()); } catch { /* next tick retries */ }
@@ -94,17 +100,27 @@ export function TrackingChecklist() {
   const allOk = isAllTrackingHealthOk(health);
   const tip = oemTip();
 
-  return (
-    <View style={[c.card, allOk ? c.cardOk : c.cardBad]}>
-      <View style={c.head}>
-        <Text style={c.title}>Tracking checklist</Text>
-        <Text style={[c.badge, allOk ? c.badgeOk : c.badgeBad]}>
-          {allOk ? 'ALL GOOD' : 'NEEDS ATTENTION'}
-        </Text>
-      </View>
+  const okOf = (r: Row) => health[r.key] === 'granted' || health[r.key] === 'unavailable';
+  const failing = rows.filter((r) => !okOf(r));
+  const badge = (
+    <Text style={[c.badge, allOk ? c.badgeOk : c.badgeBad]}>
+      {allOk ? 'ALL GOOD' : 'NEEDS ATTENTION'}
+    </Text>
+  );
+  const buttons = !allOk && (
+    <View style={c.btnRow}>
+      <TouchableOpacity style={c.fixBtn} onPress={fixAll} disabled={busy}>
+        <Text style={c.fixTxt}>{busy ? 'Checking…' : 'Fix now'}</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={c.setBtn} onPress={() => Linking.openSettings()}>
+        <Text style={c.setTxt}>App settings</Text>
+      </TouchableOpacity>
+    </View>
+  );
+  const list = (
+    <>
       {rows.map((r) => {
-        const st = health[r.key];
-        const ok = st === 'granted' || st === 'unavailable';
+        const ok = okOf(r);
         return (
           <View key={r.key} style={c.row}>
             <Text style={[c.mark, ok ? c.markOk : c.markBad]}>{ok ? '✓' : '✕'}</Text>
@@ -113,17 +129,60 @@ export function TrackingChecklist() {
         );
       })}
       {tip && !allOk && <Text style={c.tip}>{tip}</Text>}
-      {!allOk && (
-        <View style={c.btnRow}>
-          <TouchableOpacity style={c.fixBtn} onPress={fixAll} disabled={busy}>
-            <Text style={c.fixTxt}>{busy ? 'Checking…' : 'Fix now'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={c.setBtn} onPress={() => Linking.openSettings()}>
-            <Text style={c.setTxt}>App settings</Text>
-          </TouchableOpacity>
+    </>
+  );
+
+  if (!compact) {
+    return (
+      <View style={[c.card, allOk ? c.cardOk : c.cardBad]}>
+        <View style={c.head}>
+          <Text style={c.title}>Tracking checklist</Text>
+          {badge}
         </View>
-      )}
-    </View>
+        {list}
+        {buttons}
+      </View>
+    );
+  }
+
+  return (
+    <>
+      <TouchableOpacity
+        style={[c.card, allOk ? c.cardOk : c.cardBad]}
+        onPress={() => setOpen(true)}
+        activeOpacity={0.8}
+        accessibilityRole="button"
+        accessibilityLabel="Open tracking checklist"
+      >
+        <View style={c.head}>
+          <Text style={c.title}>Tracking checklist</Text>
+          {badge}
+        </View>
+        <View style={c.summaryRow}>
+          <Text style={[c.summary, !allOk && c.labelBad]} numberOfLines={2}>
+            {allOk
+              ? `All ${rows.length} checks pass — tracking runs in the background`
+              : `${failing.length} to fix: ${failing.map((r) => r.label).join(', ')}`}
+          </Text>
+          <Text style={c.view}>View ›</Text>
+        </View>
+        {buttons}
+      </TouchableOpacity>
+
+      <ModalSheet visible={open} onClose={() => setOpen(false)} heightRatio={0.62}>
+        <ScrollView contentContainerStyle={c.sheetBody}>
+          <View style={c.head}>
+            <Text style={c.sheetTitle}>Tracking checklist</Text>
+            {badge}
+          </View>
+          <Text style={c.sheetSub}>
+            Everything the phone needs so trips are recorded on their own, even with the app closed.
+          </Text>
+          {list}
+          {buttons}
+        </ScrollView>
+      </ModalSheet>
+    </>
   );
 }
 
@@ -153,4 +212,10 @@ const c = StyleSheet.create({
   fixTxt:  { color: '#ffffff', fontSize: 13, fontWeight: '800' },
   setBtn:  { flex: 1, backgroundColor: '#f1f5f9', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
   setTxt:  { color: '#475569', fontSize: 13, fontWeight: '700' },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  summary: { flex: 1, fontSize: 12.5, color: '#374151' },
+  view:    { fontSize: 13, fontWeight: '700', color: '#7c3aed' },
+  sheetBody: { paddingHorizontal: 18, paddingBottom: 24 },
+  sheetTitle: { fontSize: 18, fontWeight: '800', color: '#0f172a' },
+  sheetSub: { fontSize: 13, color: '#475569', marginBottom: 10, lineHeight: 18 },
 });

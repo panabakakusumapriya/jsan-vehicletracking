@@ -290,7 +290,7 @@ export default function Home() {
             <Text style={s.avatarText}>{initials}</Text>
           </View>
           <View>
-            <Text style={s.greeting}>Good day, {firstName}</Text>
+            <Text style={s.greeting}>Good day {firstName}</Text>
             <Text style={s.email}>{user?.email}</Text>
           </View>
         </View>
@@ -348,7 +348,7 @@ export default function Home() {
       {/* ── Tracking health checklist — the same six switches the login gate enforces,
              kept visible so post-login regressions (revoked permission, OEM re-enabling
              battery limits, GPS toggled off) are seen, not suffered. ── */}
-      <TrackingChecklist />
+      <TrackingChecklist compact />
 
       {/* ── Daylight info ── */}
       {daylightInfo?.sunrise && daylightInfo?.sunset && (
