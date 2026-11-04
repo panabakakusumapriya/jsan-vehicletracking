@@ -188,10 +188,9 @@ export function TrackingChecklist({ compact = false }: { compact?: boolean }) {
 
 const c = StyleSheet.create({
   card: {
-    backgroundColor: '#ffffff', borderRadius: 16, padding: 14,
+    backgroundColor: '#ffffff', borderRadius: 18, padding: 16,
     borderWidth: 1,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04, shadowRadius: 3, elevation: 1,
+    shadowColor: '#0f172a', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2,
   },
   cardOk:  { borderColor: '#a7f3d0' },
   cardBad: { borderColor: '#fecaca' },

@@ -1,3 +1,4 @@
+import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -11,10 +12,13 @@ import {
   View,
 } from 'react-native';
 
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { AcademyCard } from '@/src/components/AcademyCard';
 import { DayWork } from '@/src/components/DayWork';
 import { TrackingChecklist } from '@/src/components/TrackingChecklist';
+import { loadProgress } from '@/src/lib/academy';
 import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
 import { ensurePermissions } from '@/src/lib/permissions';
@@ -47,13 +51,21 @@ const C = {
   redBd:     '#fecaca',
 };
 
+/** The hero card: one colour per state, white text on it. */
 const STATE = {
-  tracking: { label: 'Trip in progress',       sub: 'Your location is being recorded.',                              color: C.green, bg: C.greenBg, bd: C.greenBd },
-  blocked:  { label: 'Action needed',           sub: '',                                                              color: C.red,   bg: C.redBg,   bd: C.redBd   },
-  starting: { label: 'Starting…',              sub: 'Setting up background tracking.',                              color: C.amber, bg: C.amberBg, bd: C.amberBd },
-  idle:     { label: 'Ready',                   sub: '',                                                             color: C.brand, bg: C.brandSoft, bd: '#d8b4fe' },
-  night:    { label: 'Idle',                   sub: 'Waiting for movement — tracking runs at any hour.',            color: C.muted, bg: '#f1f5f9',   bd: C.border   },
-};
+  tracking: { label: 'Trip in progress',    sub: 'Your drive is being recorded.',                     bg: '#059669', icon: 'road' },
+  blocked:  { label: 'Action needed',       sub: '',                                                  bg: '#dc2626', icon: 'exclamation-triangle' },
+  starting: { label: 'Getting ready…',      sub: 'Setting up background tracking.',                   bg: '#d97706', icon: 'hourglass-half' },
+  idle:     { label: 'Ready to drive',      sub: 'Tracking starts by itself as soon as you move.',    bg: C.brand,   icon: 'check-circle' },
+  night:    { label: 'Waiting for movement', sub: 'Tracking starts by itself as soon as you drive.',  bg: '#475569', icon: 'moon-o' },
+} as const;
+
+function greetingNow(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
 
 export default function Home() {
   const { user, token, signOut } = useAuth();
@@ -269,36 +281,41 @@ export default function Home() {
     }
   };
 
+  const insets = useSafeAreaInsets();
   const cfg = STATE[uiState];
   const subText = uiState === 'blocked' ? (permMsg ?? '') : cfg.sub;
   const firstName = user?.name?.split(' ')[0] ?? 'Driver';
   const initials = (user?.name ?? 'D').split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
+  const today = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+  const queued = status?.queued ?? 0;
+  const speed = uiState === 'tracking' && lastFix ? `${Math.round(lastFix.speedKmh)} km/h` : '—';
+  // Until the course is finished it sits near the top; after, it is a way back in, at the bottom.
+  const academyDone = Boolean(loadProgress(user).completedAt);
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1, backgroundColor: C.bg }}>
     <ScrollView
       style={s.root}
-      contentContainerStyle={s.content}
+      contentContainerStyle={[s.content, { paddingTop: insets.top + 14 }]}
       showsVerticalScrollIndicator={false}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.brand} />}
     >
-      {/* ── Header ── */}
+      {/* ── Header: who, and today ── */}
       <View style={s.header}>
-        <View style={s.headerLeft}>
-          <View style={s.avatar}>
-            <Text style={s.avatarText}>{initials}</Text>
-          </View>
-          <View>
-            <Text style={s.greeting}>Good day {firstName}</Text>
-            <Text style={s.email}>{user?.email}</Text>
-          </View>
+        <View style={s.avatar}>
+          <Text style={s.avatarText}>{initials}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={s.greeting} numberOfLines={1}>{greetingNow()}, {firstName}</Text>
+          <Text style={s.date}>{today}</Text>
         </View>
         {/* Project-level permission. `!== false` on purpose: a driver whose project predates
             the setting, or whose session was restored from storage before the server answered,
             must keep the button. Hiding it on a missing value would strand drivers signed in on
             a shared handset with no way to hand it over. */}
         {user?.showLogout !== false && (
-          <TouchableOpacity style={s.signOutBtn} onPress={confirmSignOut} disabled={signingOutUi}>
+          <TouchableOpacity style={s.signOutBtn} onPress={confirmSignOut} disabled={signingOutUi} accessibilityLabel="Sign out">
+            <FontAwesome name="sign-out" size={15} color={C.text2} />
             <Text style={s.signOutText}>{signingOutUi ? 'Signing out…' : 'Sign out'}</Text>
           </TouchableOpacity>
         )}
@@ -307,132 +324,139 @@ export default function Home() {
       {/* ── Upload error banner ── */}
       {uploadError && (
         <View style={s.uploadErrBanner}>
+          <FontAwesome name="exclamation-circle" size={16} color={C.amber} />
           <Text style={s.uploadErrText}>
             {uploadError.reason === 'auth_failure'
-              ? '⚠️ Auth expired — sign out and back in to resume uploads.'
-              : '⚠️ Upload paused — open the app to re-authenticate.'}
+              ? 'Sign-in expired — sign out and back in so your trips upload again.'
+              : 'Uploads paused — open the app to sign in again.'}
           </Text>
-          <TouchableOpacity onPress={() => setUploadError(null)}>
+          <TouchableOpacity onPress={() => setUploadError(null)} hitSlop={10} accessibilityLabel="Dismiss">
             <Text style={s.uploadErrDismiss}>✕</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* ── Status card ── */}
-      <View style={[s.statusCard, { backgroundColor: cfg.bg, borderColor: cfg.bd }]}>
-        <View style={s.statusRow}>
-          {/* Animated dot */}
+      {/* ── Hero: what the app is doing right now ── */}
+      <View style={[s.hero, { backgroundColor: cfg.bg }]}>
+        <View style={s.heroTop}>
           <View style={s.dotArea}>
-            <Animated.View style={[s.dotRing, { backgroundColor: cfg.color + '30', transform: [{ scale: pulseAnim }] }]} />
-            <View style={[s.dot, { backgroundColor: cfg.color }]} />
+            <Animated.View style={[s.dotRing, { transform: [{ scale: pulseAnim }] }]} />
+            <View style={s.dot} />
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={[s.statusLabel, { color: cfg.color }]}>{cfg.label}</Text>
-            {subText ? <Text style={s.statusSub}>{subText}</Text> : null}
-          </View>
+          <Text style={s.heroLabel}>{cfg.label}</Text>
+          <FontAwesome name={cfg.icon} size={20} color="rgba(255,255,255,0.85)" style={{ marginLeft: 'auto' }} />
         </View>
-        {uiState === 'blocked' && (
-          <TouchableOpacity style={[s.permBtn, { backgroundColor: cfg.color }]} onPress={retryPermissions}>
-            <Text style={s.permBtnText}>Grant permissions</Text>
+        {subText ? <Text style={s.heroSub}>{subText}</Text> : null}
+        {uiState === 'blocked' ? (
+          <TouchableOpacity style={s.permBtn} onPress={retryPermissions}>
+            <Text style={[s.permBtnText, { color: cfg.bg }]}>Grant permissions</Text>
           </TouchableOpacity>
-        )}
+        ) : uiState !== 'starting' ? (
+          <View style={s.heroChips}>
+            <HeroChip icon="tachometer" label="Speed" value={speed} />
+            <HeroChip icon={queued ? 'cloud-upload' : 'check'} label="Uploads" value={queued ? `${queued} waiting` : 'All sent'} />
+          </View>
+        ) : null}
       </View>
 
-      {/* ── Driver Academy: how to use the app — progress, and a way back in any time ── */}
-      <AcademyCard />
+      {!academyDone && <AcademyCard />}
 
-      {/* ── Working hours: the day's trips, start – end, and their total ── */}
+      {/* ── Today: working hours (compact; the whole day opens in a sheet) ── */}
+      <Text style={s.section}>Today</Text>
       <DayWork token={token} refreshKey={workKey} />
 
-      {/* ── Tracking health checklist — the same six switches the login gate enforces,
-             kept visible so post-login regressions (revoked permission, OEM re-enabling
-             battery limits, GPS toggled off) are seen, not suffered. ── */}
+      {/* ── The phone: the same switches the login gate enforces, kept in sight so a revoked
+             permission, an OEM re-enabling battery limits or GPS toggled off is seen, not suffered. ── */}
+      <Text style={s.section}>Your phone</Text>
       <TrackingChecklist compact />
 
-      {/* ── Stats grid ── */}
-      <View style={s.grid}>
-        <StatTile label="Speed"   value={lastFix ? `${Math.round(lastFix.speedKmh)}` : '—'} unit="km/h"  color={C.brand}   />
-        <StatTile label="Queued"  value={String(status?.queued ?? 0)}                         unit="pts"   color="#7c3aed"   />
-        <StatTile label="Lat"     value={lastFix ? lastFix.lat.toFixed(4) : '—'}              unit=""      color="#059669"   />
-        <StatTile label="Lon"     value={lastFix ? lastFix.lon.toFixed(4) : '—'}              unit=""      color="#d97706"   />
-      </View>
+      {academyDone && (
+        <>
+          <Text style={s.section}>Help</Text>
+          <AcademyCard />
+        </>
+      )}
 
-      {/* spacer */}
-      <View style={{ paddingBottom: 20 }} />
+      {/* For support on the phone: who is signed in, and where the GPS last put the phone. */}
+      <Text style={s.footer}>
+        {user?.email}
+        {lastFix ? `  ·  GPS ${lastFix.lat.toFixed(4)}, ${lastFix.lon.toFixed(4)}` : ''}
+        {`  ·  ${queued} point${queued === 1 ? '' : 's'} waiting`}
+      </Text>
     </ScrollView>
     </View>
   );
 }
 
 /* ── Sub-components ── */
-function StatTile({ label, value, unit, color }: { label: string; value: string; unit: string; color: string }) {
+function HeroChip({ icon, label, value }: { icon: React.ComponentProps<typeof FontAwesome>['name']; label: string; value: string }) {
   return (
-    <View style={[st.tile, { borderTopColor: color }]}>
-      <Text style={[st.val, { color }]}>{value}</Text>
-      {unit ? <Text style={st.unit}>{unit}</Text> : null}
-      <Text style={st.label}>{label}</Text>
+    <View style={s.chip}>
+      <FontAwesome name={icon} size={14} color="#ffffff" />
+      <View>
+        <Text style={s.chipLabel}>{label}</Text>
+        <Text style={s.chipValue}>{value}</Text>
+      </View>
     </View>
   );
 }
 
 
 /* ── Styles ── */
+const card = {
+  backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: C.border,
+  shadowColor: '#0f172a', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2,
+} as const;
+
 const s = StyleSheet.create({
   root:    { flex: 1, backgroundColor: C.bg },
-  content: { padding: 20, paddingTop: 64, gap: 12 },
+  content: { paddingHorizontal: 18, paddingBottom: 28, gap: 12 },
 
-  header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 11 },
+  header:     { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 2 },
   avatar: {
-    width: 44, height: 44, borderRadius: 14,
+    width: 46, height: 46, borderRadius: 23,
     backgroundColor: C.brand, alignItems: 'center', justifyContent: 'center',
-    shadowColor: C.brandDeep,
-    shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
+    shadowColor: C.brandDeep, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4,
   },
   avatarText:  { color: '#fff', fontSize: 16, fontWeight: '900' },
-  greeting:    { color: C.text, fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
-  email:       { color: C.muted, fontSize: 12, marginTop: 2 },
+  greeting:    { color: C.text, fontSize: 18, fontWeight: '800', letterSpacing: -0.3 },
+  date:        { color: C.muted, fontSize: 12.5, marginTop: 2 },
   signOutBtn:  {
-    paddingHorizontal: 14, paddingVertical: 8,
-    backgroundColor: C.surface, borderWidth: 1, borderColor: C.border,
-    borderRadius: 10,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 2, elevation: 1,
+    ...card, flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12,
   },
-  signOutText: { color: C.text2, fontSize: 12.5, fontWeight: '600' },
+  signOutText: { color: C.text2, fontSize: 12.5, fontWeight: '700' },
 
-  statusCard: {
-    borderRadius: 20, borderWidth: 1.5, padding: 18, gap: 14,
+  hero: {
+    borderRadius: 22, padding: 18, gap: 10,
+    shadowColor: '#0f172a', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.16, shadowRadius: 14, elevation: 6,
   },
-  statusRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 14 },
-  dotArea:   { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
-  dotRing:   { position: 'absolute', width: 24, height: 24, borderRadius: 12 },
-  dot:       { width: 12, height: 12, borderRadius: 6 },
-  statusLabel: { fontSize: 15.5, fontWeight: '700', lineHeight: 22 },
-  statusSub:   { color: C.text2, fontSize: 12.5, marginTop: 4, lineHeight: 18 },
-  permBtn:     { borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 2 },
-  permBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  heroTop:   { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  dotArea:   { width: 22, height: 22, alignItems: 'center', justifyContent: 'center' },
+  dotRing:   { position: 'absolute', width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.35)' },
+  dot:       { width: 11, height: 11, borderRadius: 6, backgroundColor: '#ffffff' },
+  heroLabel: { color: '#ffffff', fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
+  heroSub:   { color: 'rgba(255,255,255,0.88)', fontSize: 13.5, lineHeight: 19 },
+  heroChips: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  chip: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10,
+  },
+  chipLabel: { color: 'rgba(255,255,255,0.75)', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+  chipValue: { color: '#ffffff', fontSize: 15, fontWeight: '800', marginTop: 1 },
+  permBtn:     { backgroundColor: '#ffffff', borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 2 },
+  permBtnText: { fontSize: 14, fontWeight: '800' },
 
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  section: {
+    color: C.muted, fontSize: 12, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.6,
+    marginTop: 8, marginBottom: -4, marginLeft: 4,
+  },
+  footer: { color: C.muted, fontSize: 11.5, textAlign: 'center', marginTop: 10, lineHeight: 17 },
 
-  note: { color: C.muted, fontSize: 12, lineHeight: 18, textAlign: 'center', paddingBottom: 20 },
   uploadErrBanner: {
-    backgroundColor: C.amberBg, borderRadius: 12, borderWidth: 1, borderColor: C.amberBd,
-    paddingHorizontal: 14, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: C.amberBg, borderRadius: 14, borderWidth: 1, borderColor: C.amberBd,
+    paddingHorizontal: 14, paddingVertical: 11, flexDirection: 'row', alignItems: 'center', gap: 10,
   },
-  uploadErrText: { flex: 1, fontSize: 12.5, color: C.amber, fontWeight: '600', lineHeight: 17 },
+  uploadErrText: { flex: 1, fontSize: 13, color: '#92400e', fontWeight: '600', lineHeight: 18 },
   uploadErrDismiss: { fontSize: 14, color: C.muted, fontWeight: '700', paddingHorizontal: 4 },
 });
-
-const st = StyleSheet.create({
-  tile: {
-    flexGrow: 1, flexBasis: '47%',
-    backgroundColor: C.surface, borderRadius: 16,
-    borderWidth: 1, borderColor: C.border,
-    borderTopWidth: 3, padding: 16,
-    shadowColor: '#111', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 2,
-  },
-  val:   { fontSize: 24, fontWeight: '900', letterSpacing: -0.5 },
-  unit:  { color: C.muted, fontSize: 12, fontWeight: '600', marginTop: 2 },
-  label: { color: C.muted, fontSize: 11.5, fontWeight: '600', marginTop: 8, textTransform: 'uppercase', letterSpacing: 0.4 },
-});
-

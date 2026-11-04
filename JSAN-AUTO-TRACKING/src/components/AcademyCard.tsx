@@ -30,7 +30,8 @@ export function AcademyCard() {
 const s = StyleSheet.create({
   card: {
     flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#ffffff',
-    borderRadius: 16, borderWidth: 1, borderColor: '#e9ecf0', padding: 14,
+    borderRadius: 18, borderWidth: 1, borderColor: '#e9ecf0', padding: 16,
+    shadowColor: '#0f172a', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2,
   },
   icon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#7c3aed', alignItems: 'center', justifyContent: 'center' },
   title: { fontSize: 14.5, fontWeight: '800', color: '#0d0d12' },
