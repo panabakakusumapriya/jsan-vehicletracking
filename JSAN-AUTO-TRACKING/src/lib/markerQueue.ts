@@ -157,8 +157,10 @@ export function flushMarkerQueue(token: string): Promise<{ sent: MapMarker[]; pe
 
 /**
  * Tell the server about the markers taken off the map, one request each (removals are rare). A
- * 400 is permanent (a key it can never accept); anything else — offline, 5xx, a server too old to
- * have the route — keeps the removal for the next flush. Returns how many are still waiting.
+ * 400 is permanent (a key it can never accept), and so is a 404 — a server too old to have the
+ * route: sign-out waits for this outbox to empty, so a removal that can never go through must not
+ * hold it forever (the marker simply shows again on the next map load). Offline and 5xx keep the
+ * removal for the next flush. Returns how many are still waiting.
  */
 async function flushRemovals(token: string): Promise<number> {
   const list = readRemovals();
@@ -170,8 +172,8 @@ async function flushRemovals(token: string): Promise<number> {
       done.add(key);
     } catch (e) {
       const status = (e as { status?: number }).status;
-      if (status === 400) done.add(key);
-      else if (status !== 404) break; // offline or 5xx: try the rest next time
+      if (status === 400 || status === 404) done.add(key);
+      else break; // offline or 5xx: try the rest next time
     }
   }
   // Re-read: a removal made during the requests must stay queued.

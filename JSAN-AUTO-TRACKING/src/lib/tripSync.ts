@@ -1,5 +1,6 @@
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import type { SyncStatus } from '@/modules/vehicle-tracker';
+import { flushMarkerQueue, pendingMarkerCount } from './markerQueue';
 
 /**
  * Getting a driver's trip points off the phone before they sign out.
@@ -37,6 +38,21 @@ export async function uploadWhatIsLeft(timeoutMs: number): Promise<SyncStatus> {
     st = await VehicleTracker.getSyncStatus();
   }
   return st;
+}
+
+/**
+ * Markers (drops and removals) still on the phone, after one upload attempt of at most `timeoutMs`.
+ * Sign-out waits for these as well as for trip points: a marker left on the phone at sign-out
+ * would otherwise go up under whoever signs in next.
+ */
+export async function uploadMarkersLeft(token: string | null, timeoutMs: number): Promise<number> {
+  if (token && pendingMarkerCount() > 0) {
+    await Promise.race([
+      flushMarkerQueue(token).catch(() => null),
+      new Promise((r) => setTimeout(r, timeoutMs)),
+    ]);
+  }
+  return pendingMarkerCount();
 }
 
 /**

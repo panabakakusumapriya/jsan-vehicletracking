@@ -22,7 +22,7 @@ import { loadProgress } from '@/src/lib/academy';
 import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
 import { ensurePermissions } from '@/src/lib/permissions';
-import { setSigningOut, uploadWhatIsLeft } from '@/src/lib/tripSync';
+import { setSigningOut, uploadMarkersLeft, uploadWhatIsLeft } from '@/src/lib/tripSync';
 import { deviceTimezone } from '@/src/lib/timezone';
 
 type UiState = 'starting' | 'idle' | 'tracking' | 'blocked' | 'night';
@@ -251,8 +251,10 @@ export default function Home() {
     setSigningOut(true);
     try {
       await VehicleTracker.endTripAndStop().catch(() => {});
-      const st = await uploadWhatIsLeft(4_000);
-      if (st.queued === 0) {
+      // Trip points AND markers: sign-out happens only once both are on the server. Anything left
+      // goes to the Sync screen, which keeps uploading and signs out by itself when it is all up.
+      const [st, markersLeft] = await Promise.all([uploadWhatIsLeft(4_000), uploadMarkersLeft(token, 4_000)]);
+      if (st.queued === 0 && markersLeft === 0) {
         await signOut();
         setSigningOut(false);
         router.replace('/login');
