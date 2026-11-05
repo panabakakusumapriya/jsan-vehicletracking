@@ -135,6 +135,8 @@ function createApp() {
         // can skip signed-off areas instead of failing whole (skipCompleted), and the re-figuring
         // of earlier trips runs on one background queue instead of one burst per save.
         assignByCode: true,
+        // A driver can take their own marker off the map (DELETE /api/markers/mine/:key).
+        markerRemove: true,
       },
     })
   );

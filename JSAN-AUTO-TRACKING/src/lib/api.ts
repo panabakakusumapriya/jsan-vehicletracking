@@ -368,6 +368,8 @@ export type MapMarker = {
   driverName: string | null;
   vehiclePlate: string | null;
   recordedAt: string;
+  /** The phone's id for the drop (servers from 2026-11-05 send it back). */
+  clientId?: string | null;
 };
 
 export function apiMarkerCategories(token: string): Promise<{ categories: MarkerCategory[] }> {
@@ -383,6 +385,15 @@ export function apiDropMarker(
   m: { lat: number; lon: number; categoryId: string; clientId: string; recordedAt: string }
 ): Promise<{ marker: MapMarker }> {
   return request('/api/markers', { method: 'POST', body: JSON.stringify(m) }, token);
+}
+
+/**
+ * Take one of your own markers off the map. `key` is the marker's id, or the clientId of the drop
+ * (all a phone knows of a marker removed before it uploaded). Idempotent: { removed: false } when
+ * there was nothing to remove.
+ */
+export function apiRemoveMarker(token: string, key: string): Promise<{ ok: boolean; removed: boolean }> {
+  return request(`/api/markers/mine/${encodeURIComponent(key)}`, { method: 'DELETE' }, token);
 }
 
 /** Several queued drops in one request (POST /api/markers/batch); each entry answered on its own. */

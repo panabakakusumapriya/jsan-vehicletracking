@@ -32,6 +32,14 @@ const markerSchema = new mongoose.Schema(
     recordedAt: { type: Date, required: true },
     /** Set on markers brought in from another system (seed/importVtsMarkers.js) — what --revert removes. */
     importBatchId: { type: String, default: null },
+    /**
+     * Taken off the map by the driver who dropped it (a pin in the wrong place, a flag no longer
+     * true). Kept, not deleted: who removed it and when stays on record, and an admin can put it
+     * back. Every read for the map, the Trips page and Coverage leaves removed markers out
+     * (`removedAt: null` matches markers from before this field too).
+     */
+    removedAt: { type: Date, default: null },
+    removedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   },
   { timestamps: true }
 );

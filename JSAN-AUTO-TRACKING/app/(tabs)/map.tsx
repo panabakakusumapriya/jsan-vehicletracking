@@ -30,7 +30,9 @@ import {
   apiMarkerCategories, apiMyAreas, apiMyMarkers, apiMyRoadsVersion, apiMyTripsSettled,
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
 } from '@/src/lib/api';
-import { enqueueMarker, flushMarkerQueue, newClientId, pendingMarkerCount, pendingMarkers } from '@/src/lib/markerQueue';
+import {
+  enqueueMarker, flushMarkerQueue, newClientId, pendingMarkerCount, pendingMarkers, pendingRemovals, removeMarker,
+} from '@/src/lib/markerQueue';
 import {
   buildSnapIndexAsync, createCoverStore, createMatcher, coverLines, coverTripIds, dropTrip,
   expireTrips, ingestFix,
@@ -137,6 +139,9 @@ function km(m: number) {
   return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
 }
 
+/** How long the "Undo" stays up after a drop. */
+const UNDO_MS = 10_000;
+
 function fmtMarkerTime(iso: string) {
   return new Date(iso).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
@@ -205,6 +210,19 @@ export default function MapScreen() {
   /** Category being POSITIONED: the picker chose the flag, now the map centre is the pin. */
   const [placing, setPlacing] = useState<MarkerCategory | null>(null);
   const [tappedMarker, setTappedMarker] = useState<MapMarker | null>(null);
+  /** The card's "Remove" asks once more before it acts — a tap on a moving phone is easy to miss. */
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  useEffect(() => setConfirmRemove(false), [tappedMarker]);
+  /**
+   * The marker just dropped, for UNDO_MS: a pin put down by mistake comes straight back off with
+   * one tap, no questions — undoing what you did a moment ago needs no "are you sure".
+   */
+  const [lastDrop, setLastDrop] = useState<MapMarker | null>(null);
+  useEffect(() => {
+    if (!lastDrop) return undefined;
+    const t = setTimeout(() => setLastDrop(null), UNDO_MS);
+    return () => clearTimeout(t);
+  }, [lastDrop]);
   const [markerNote, setMarkerNote] = useState<string | null>(null);
 
   /** Live local breadcrumb of the CURRENT trip, straight from the service's fixes. */
@@ -1034,15 +1052,18 @@ export default function MapScreen() {
       setMarkerCats(cats.categories.filter((c) => c.active !== false));
       // The server's list plus the drops still queued on this phone — replacing the list with the
       // server's alone made a queued marker disappear from the driver's map until it uploaded.
-      const sent = new Set(mine.markers.map((m) => m.id));
+      // Markers removed here but not yet confirmed by the server stay off the map meanwhile.
+      const gone = new Set(pendingRemovals());
+      const live = mine.markers.filter((m) => !gone.has(m.id) && !(m.clientId && gone.has(m.clientId)));
+      const sent = new Set(live.flatMap((m) => [m.id, m.clientId ?? '']).filter(Boolean));
       const queued = pendingMarkers()
-        .filter((p) => !sent.has(p.clientId))
+        .filter((p) => !sent.has(p.clientId) && !gone.has(p.clientId))
         .map((p) => ({
           id: p.clientId, lat: p.lat, lon: p.lon,
           category: cats.categories.find((c) => c.id === p.categoryId) ?? null,
           driverName: user?.name ?? null, vehiclePlate: null, recordedAt: p.recordedAt,
         }));
-      setMarkers([...mine.markers, ...queued]);
+      setMarkers([...live, ...queued]);
     } catch { /* auxiliary layer — the map must not degrade over it */ }
   }, [token, user]);
 
@@ -1087,11 +1108,13 @@ export default function MapScreen() {
       recordedAt: new Date().toISOString(),
     };
     // On the map immediately — the driver must SEE the drop landed; delivery is separate.
-    setMarkers((cur) => [
-      ...cur,
-      { id: pending.clientId, lat: pending.lat, lon: pending.lon, category: cat,
-        driverName: user?.name ?? null, vehiclePlate: null, recordedAt: pending.recordedAt },
-    ]);
+    const dropped: MapMarker = {
+      id: pending.clientId, lat: pending.lat, lon: pending.lon, category: cat,
+      driverName: user?.name ?? null, vehiclePlate: null, recordedAt: pending.recordedAt,
+      clientId: pending.clientId,
+    };
+    setMarkers((cur) => [...cur, dropped]);
+    setLastDrop(dropped);
     // Saved on the phone first, every time, and confirmed at once: the driver never waits on the
     // network. The outbox uploads in the background — a few seconds after the last drop (so a run of
     // drops goes up as one batch), every minute while anything is queued, and on returning to the
@@ -1102,10 +1125,26 @@ export default function MapScreen() {
     flushTimerRef.current = setTimeout(() => { flushTimerRef.current = null; flushMarkers(); }, 4000);
   }, [user, flushMarkers]);
 
+  /**
+   * Take one of the driver's own markers off the map — a pin dropped in the wrong place, or a flag
+   * that is no longer true. Off the map at once; the server is told in the background, the same way
+   * drops go up (works with no signal, and a drop still waiting to upload simply never goes).
+   */
+  const removeMarkerNow = useCallback((m: MapMarker) => {
+    setMarkers((cur) => cur.filter((x) => x.id !== m.id));
+    setTappedMarker(null);
+    setLastDrop((cur) => (cur && cur.id === m.id ? null : cur));
+    removeMarker(m.id);
+    setMarkerNote(`Marker removed: ${m.category?.name ?? 'marker'}`);
+    if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = setTimeout(() => { flushTimerRef.current = null; flushMarkers(); }, 1500);
+  }, [flushMarkers]);
+
   /** Colour chosen — now the driver positions the pin: the map centre IS the marker. */
   const beginPlacing = useCallback((cat: MarkerCategory) => {
     setPickerOpen(false);
     setTappedMarker(null);
+    setLastDrop(null);
     // The placement bar and the pin need the map, not the sheet — and the sheet overlays both.
     sheetRef.current?.collapse();
     setPlacing(cat);
@@ -1726,6 +1765,25 @@ export default function MapScreen() {
           </View>
         )}
 
+        {/* Just dropped: one tap takes it straight back off, for a pin put down by mistake. */}
+        {lastDrop && !tappedMarker && !placing && (
+          <View style={s.undoBar}>
+            <View style={[s.undoDot, { backgroundColor: lastDrop.category?.color ?? '#ef4444' }]} />
+            <Text style={s.undoText} numberOfLines={1}>
+              {lastDrop.category?.name ?? 'Marker'} dropped
+            </Text>
+            <TouchableOpacity
+              style={s.undoBtn}
+              onPress={() => removeMarkerNow(lastDrop)}
+              accessibilityLabel="Undo — remove the marker just dropped"
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <FontAwesome name="undo" size={14} color="#0f172a" />
+              <Text style={s.undoBtnText}>Undo</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Marker details — the reviewed popup: what, who, when, and a straight Google link. */}
         {tappedMarker && !placing && (
           <View style={s.markerCard}>
@@ -1742,13 +1800,47 @@ export default function MapScreen() {
                 elapsed(tappedMarker.recordedAt),
               ].filter(Boolean).join(' · ')}
             </Text>
-            <TouchableOpacity
-              onPress={() => Linking.openURL(
-                `https://www.google.com/maps/search/?api=1&query=${tappedMarker.lat},${tappedMarker.lon}`
-              )}
-            >
-              <Text style={s.markerLink}>Open in Google Maps ↗</Text>
-            </TouchableOpacity>
+            {confirmRemove ? (
+              <View style={s.markerConfirm}>
+                <Text style={s.markerConfirmTxt}>Remove this marker from the map?</Text>
+                <View style={s.markerActions}>
+                  <TouchableOpacity
+                    style={s.markerBtnGhost}
+                    onPress={() => setConfirmRemove(false)}
+                    accessibilityLabel="Keep the marker"
+                  >
+                    <Text style={s.markerBtnGhostTxt}>Keep</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={s.markerBtnDanger}
+                    onPress={() => removeMarkerNow(tappedMarker)}
+                    accessibilityLabel="Remove the marker"
+                  >
+                    <FontAwesome name="trash" size={14} color="#ffffff" />
+                    <Text style={s.markerBtnDangerTxt}>Remove</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={s.markerActions}>
+                <TouchableOpacity
+                  style={{ flex: 1 }}
+                  onPress={() => Linking.openURL(
+                    `https://www.google.com/maps/search/?api=1&query=${tappedMarker.lat},${tappedMarker.lon}`
+                  )}
+                >
+                  <Text style={s.markerLink}>Open in Google Maps ↗</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={s.markerRemove}
+                  onPress={() => setConfirmRemove(true)}
+                  accessibilityLabel="Remove this marker"
+                >
+                  <FontAwesome name="trash-o" size={14} color="#dc2626" />
+                  <Text style={s.markerRemoveTxt}>Remove</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </View>
         )}
 
@@ -1874,6 +1966,41 @@ const s = StyleSheet.create({
   markerClose: { fontSize: 14, color: '#64748b', paddingHorizontal: 4 },
   markerMeta:  { fontSize: 12.5, color: '#64748b', marginTop: 3 },
   markerLink:  { fontSize: 13.5, color: '#2563eb', fontWeight: '700', marginTop: 8 },
+  markerActions: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 },
+  /* Above the Follow Me pill (SHEET_PEEK + 14, ~44 tall), so the two never sit on each other. */
+  undoBar: {
+    position: 'absolute', left: 12, right: 12, bottom: SHEET_PEEK + 66,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: 'rgba(15,23,42,0.94)', borderRadius: 12,
+    paddingVertical: 8, paddingLeft: 14, paddingRight: 8,
+    shadowColor: '#0f172a', shadowOpacity: 0.3, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 }, elevation: 6,
+  },
+  undoDot: { width: 12, height: 12, borderRadius: 6, borderWidth: 2, borderColor: '#ffffff' },
+  undoText: { flex: 1, color: '#ffffff', fontSize: 14, fontWeight: '700' },
+  undoBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#ffffff', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 9,
+  },
+  undoBtnText: { color: '#0f172a', fontSize: 14, fontWeight: '800' },
+  markerRemove: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8,
+    paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8,
+    borderWidth: 1, borderColor: '#fecaca', backgroundColor: '#fef2f2',
+  },
+  markerRemoveTxt: { fontSize: 13, color: '#dc2626', fontWeight: '700' },
+  markerConfirm: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#f1f5f9' },
+  markerConfirmTxt: { fontSize: 13.5, color: '#0f172a', fontWeight: '700' },
+  markerBtnGhost: {
+    flex: 1, alignItems: 'center', paddingVertical: 9, marginTop: 8, borderRadius: 8,
+    borderWidth: 1, borderColor: '#cbd5e1', backgroundColor: '#ffffff',
+  },
+  markerBtnGhostTxt: { fontSize: 13.5, color: '#334155', fontWeight: '700' },
+  markerBtnDanger: {
+    flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6,
+    paddingVertical: 9, marginTop: 8, borderRadius: 8, backgroundColor: '#dc2626',
+  },
+  markerBtnDangerTxt: { fontSize: 13.5, color: '#ffffff', fontWeight: '800' },
   sheetBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.45)', justifyContent: 'flex-end' },
   sheet: {
     backgroundColor: '#ffffff', borderTopLeftRadius: 16, borderTopRightRadius: 16,

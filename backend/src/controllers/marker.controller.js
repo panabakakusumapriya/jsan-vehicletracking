@@ -30,8 +30,13 @@ function toJSON(m) {
     recordedAt: m.recordedAt,
     createdAt: m.createdAt,
     tripId: m.tripId ? String(m.tripId) : null,
+    // The phone's own id for the drop: lets it match a marker it removed before the upload landed.
+    clientId: m.clientId || null,
   };
 }
+
+/** Markers still on the map — a driver can take their own off (removeMine); history keeps them. */
+const LIVE = { removedAt: null };
 
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
 
@@ -273,7 +278,7 @@ exports.createBatch = asyncHandler(async (req, res) => {
 
 // GET /api/markers/mine  (driver)
 exports.mine = asyncHandler(async (req, res) => {
-  const markers = await Marker.find({ driverId: req.user._id })
+  const markers = await Marker.find({ driverId: req.user._id, ...LIVE })
     .sort({ createdAt: -1 })
     .limit(500)
     .populate('categoryId', 'name color');
@@ -300,6 +305,7 @@ exports.list = asyncHandler(async (req, res) => {
     const to = new Date((trip.endedAt ? trip.endedAt.getTime() : Date.now()) + TRIP_GRACE_MS);
     const markers = await Marker.find({
       driverId: trip.driverId,
+      ...LIVE,
       $or: [{ tripId: trip._id }, { recordedAt: { $gte: from, $lte: to } }],
     })
       .sort({ recordedAt: 1 })
@@ -323,6 +329,7 @@ exports.list = asyncHandler(async (req, res) => {
     if (!allowed) return res.json({ markers: [] });
     const markers = await Marker.find({
       driverId: req.query.driverId,
+      ...LIVE,
       recordedAt: { $gte: range.from, $lt: range.to },
     })
       .sort({ recordedAt: 1 })
@@ -332,7 +339,7 @@ exports.list = asyncHandler(async (req, res) => {
 
   const days = Math.min(Math.max(parseInt(req.query.days, 10) || 90, 1), 365);
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const where = { ...scope, createdAt: { $gte: since } };
+  const where = { ...scope, ...LIVE, createdAt: { $gte: since } };
   // A map extent: the Coverage map asks for the markers on the ground it is showing.
   const bbox = String(req.query.bbox || '').split(',').map(Number);
   if (bbox.length === 4 && bbox.every(Number.isFinite)) {
@@ -344,6 +351,31 @@ exports.list = asyncHandler(async (req, res) => {
     .limit(5000)
     .populate('categoryId', 'name color');
   res.json({ markers: markers.map(toJSON), days });
+});
+
+/**
+ * DELETE /api/markers/mine/:key  (driver) — take one of your own markers off the map.
+ *
+ * `key` is the marker's id, or the clientId the phone made when it was dropped: a marker removed
+ * while it was still waiting to upload is only known to the phone by that. Idempotent and quiet:
+ * removing one that is already gone, never arrived, or is not yours answers { removed: false } —
+ * the phone's removal outbox can retry freely, and nothing about other drivers' markers leaks.
+ *
+ * A soft removal (removedAt / removedBy): the record and who took it off stay, for the office.
+ */
+exports.removeMine = asyncHandler(async (req, res) => {
+  const key = String(req.params.key || '').trim();
+  if (!key || key.length > 100) return res.status(400).json({ error: 'invalid marker' });
+  const or = [{ clientId: key }];
+  if (/^[a-f\d]{24}$/i.test(key)) or.push({ _id: key });
+  const m = await Marker.findOne({ driverId: req.user._id, $or: or });
+  if (!m) return res.json({ ok: true, removed: false });
+  if (!m.removedAt) {
+    m.removedAt = new Date();
+    m.removedBy = req.user._id;
+    await m.save();
+  }
+  return res.json({ ok: true, removed: true, id: String(m._id) });
 });
 
 // DELETE /api/markers/:id  (admin)

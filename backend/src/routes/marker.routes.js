@@ -14,6 +14,8 @@ router.delete('/categories/:id', requireRole('admin'), ctrl.deleteCategory);
 router.post('/', requireRole('user'), ctrl.create);
 router.post('/batch', requireRole('user'), ctrl.createBatch);
 router.get('/mine', requireRole('user'), ctrl.mine);
+// A driver takes their own marker off the map (by id, or the clientId of a drop still uploading).
+router.delete('/mine/:key', requireRole('user'), ctrl.removeMine);
 router.get('/', requireRole('admin', 'manager', 'team_lead'), ctrl.list);
 router.delete('/:id', requireRole('admin'), ctrl.remove);
 

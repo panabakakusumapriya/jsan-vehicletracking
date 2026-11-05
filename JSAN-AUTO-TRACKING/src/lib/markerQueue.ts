@@ -1,5 +1,5 @@
 import { Directory, File, Paths } from 'expo-file-system';
-import { apiDropMarker, apiDropMarkers, type MapMarker } from './api';
+import { apiDropMarker, apiDropMarkers, apiRemoveMarker, type MapMarker } from './api';
 
 /**
  * Offline outbox for dropped markers.
@@ -20,15 +20,41 @@ export type PendingMarker = {
 
 const ROOT_DIR_NAME = 'jsan-map';
 const FILE_NAME = 'marker-outbox.json';
+/** Markers the driver took off the map, by id or clientId, until the server has been told. */
+const REMOVALS_FILE_NAME = 'marker-removals.json';
 
-function outboxFile(): File | null {
+function outboxFile(name: string = FILE_NAME): File | null {
   try {
     const root = new Directory(Paths.document, ROOT_DIR_NAME);
     if (!root.exists) root.create({ intermediates: true });
-    return new File(root, FILE_NAME);
+    return new File(root, name);
   } catch {
     // No writable storage still leaves online drops working; only offline buffering is lost.
     return null;
+  }
+}
+
+function readRemovals(): string[] {
+  try {
+    const f = outboxFile(REMOVALS_FILE_NAME);
+    if (f && f.exists) {
+      const parsed = JSON.parse(f.textSync());
+      if (Array.isArray(parsed)) return parsed.filter((k) => typeof k === 'string' && k);
+    }
+  } catch {
+    /* corrupt file = nothing waiting; at worst a removed marker shows again and can be removed again */
+  }
+  return [];
+}
+
+function writeRemovals(list: string[]) {
+  try {
+    const f = outboxFile(REMOVALS_FILE_NAME);
+    if (!f) return;
+    if (!f.exists) f.create();
+    f.write(JSON.stringify(list));
+  } catch {
+    /* the next removal rewrites the whole list anyway */
   }
 }
 
@@ -66,8 +92,27 @@ export function enqueueMarker(p: PendingMarker) {
   writeOutbox(list);
 }
 
+/** Drops still to upload plus removals still to tell the server — what the Sync tab counts. */
 export function pendingMarkerCount(): number {
-  return readOutbox().length;
+  return readOutbox().length + readRemovals().length;
+}
+
+/**
+ * The driver took a marker off the map. `key` is its id; for a drop still waiting to upload that
+ * id IS its clientId, and the drop is taken out of the outbox so it never uploads. The removal is
+ * queued either way: the drop may already be on its way up (a flush in flight), and the server
+ * answers a removal of something it never got with a quiet { removed: false }.
+ */
+export function removeMarker(key: string) {
+  writeOutbox(readOutbox().filter((p) => p.clientId !== key));
+  const list = readRemovals();
+  if (!list.includes(key)) list.push(key);
+  writeRemovals(list);
+}
+
+/** Keys of markers removed on this phone that the server has not confirmed yet — kept off the map. */
+export function pendingRemovals(): string[] {
+  return readRemovals();
 }
 
 /** The drops still waiting to upload — drawn on the driver's map so a queued marker never vanishes. */
@@ -81,6 +126,8 @@ export function pendingMarkers(): PendingMarker[] {
  * next flush.
  */
 let flushing: Promise<{ sent: MapMarker[]; pending: number }> | null = null;
+/** A drop or removal arrived while a flush was running: run once more when it ends. */
+let again = false;
 
 /**
  * Deliver the outbox: in batches of up to 50 (POST /api/markers/batch), one request instead of one
@@ -88,8 +135,49 @@ let flushing: Promise<{ sent: MapMarker[]; pending: number }> | null = null;
  * flush runs at once — a drop made while one is in flight waits in the outbox for the next.
  */
 export function flushMarkerQueue(token: string): Promise<{ sent: MapMarker[]; pending: number }> {
-  if (!flushing) flushing = flushOnce(token).finally(() => { flushing = null; });
+  if (flushing) {
+    // Something changed while a flush is running (a drop or a removal): run once more after it,
+    // rather than leaving it for the next minute's flush.
+    again = true;
+    return flushing;
+  }
+  flushing = (async () => {
+    let out = { sent: [] as MapMarker[], pending: 0 };
+    do {
+      again = false;
+      // Drops first, then removals: a removal must never overtake the upload of its own drop.
+      const r = await flushOnce(token);
+      const left = await flushRemovals(token);
+      out = { sent: [...out.sent, ...r.sent], pending: r.pending + left };
+    } while (again);
+    return out;
+  })().finally(() => { flushing = null; });
   return flushing;
+}
+
+/**
+ * Tell the server about the markers taken off the map, one request each (removals are rare). A
+ * 400 is permanent (a key it can never accept); anything else — offline, 5xx, a server too old to
+ * have the route — keeps the removal for the next flush. Returns how many are still waiting.
+ */
+async function flushRemovals(token: string): Promise<number> {
+  const list = readRemovals();
+  if (list.length === 0) return 0;
+  const done = new Set<string>();
+  for (const key of list) {
+    try {
+      await apiRemoveMarker(token, key);
+      done.add(key);
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      if (status === 400) done.add(key);
+      else if (status !== 404) break; // offline or 5xx: try the rest next time
+    }
+  }
+  // Re-read: a removal made during the requests must stay queued.
+  const left = readRemovals().filter((k) => !done.has(k));
+  writeRemovals(left);
+  return left.length;
 }
 
 async function flushOnce(token: string): Promise<{ sent: MapMarker[]; pending: number }> {

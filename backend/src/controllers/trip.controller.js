@@ -749,7 +749,7 @@ async function daySummaries(filter, { skip = 0, limit = 50 } = {}) {
     const starts = summaries.map((s) => new Date(s.firstStart).getTime());
     const from = new Date(Math.min(...starts) - 36 * 3600 * 1000);
     const to = new Date(Math.max(...starts) + 36 * 3600 * 1000);
-    const marks = await Marker.find({ driverId: { $in: ids }, recordedAt: { $gte: from, $lte: to } })
+    const marks = await Marker.find({ driverId: { $in: ids }, removedAt: null, recordedAt: { $gte: from, $lte: to } })
       .select('driverId recordedAt categoryId')
       .populate('categoryId', 'color')
       .lean();
