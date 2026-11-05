@@ -85,8 +85,10 @@ const POSITION_PILL: Record<DriverPosition['state'], { tone: string; label: stri
   moving: { tone: 'green', label: 'Driving now' },
   stopped: { tone: 'blue', label: 'Stopped · drive open' },
   stale: { tone: 'amber', label: 'No signal' },
-  ended: { tone: 'gray', label: 'Drive ended' },
+  ended: { tone: 'gray', label: 'Stopped here' },
 };
+/** "Driver positions" window: where each driver stopped within the last 1 / 3 / 7 days. */
+const POSITION_DAYS = [1, 3, 7] as const;
 /** A pin for someone the palette has not met — cannot normally happen, must not crash if it does. */
 const PIN_FALLBACK: [number, number, number] = [71, 85, 105];
 
@@ -559,10 +561,16 @@ function ProgressTab({
     { driverId: string | null; name: string; links: number; meters: number }[]
   >([]);
   /**
-   * Where each driver left off: the last fix of their last drive on this project, refreshed every
-   * minute. On by default — "where is the crew up to" is the question the map gets opened with.
+   * Where each current driver last stopped: the end of their latest finished drive on this project,
+   * within the chosen days (one by default), refreshed every minute. On by default — "where is the
+   * crew up to" is the question the map gets opened with.
    */
   const [showPositions, setShowPositions] = useState(true);
+  /**
+   * How recent a stop must be to get a pin. One day by default — "where did everyone stop" for
+   * planning the next shift; 3 or 7 for a Monday, when the last stops were on Friday.
+   */
+  const [positionDays, setPositionDays] = useState<number>(1);
   const [positions, setPositions] = useState<DriverPosition[]>([]);
   /** When the positions were last read. Every "3 h ago" on the page is measured from it. */
   const [clock, setClock] = useState(() => Date.now());
@@ -822,7 +830,7 @@ function ProgressTab({
       // A hidden tab asks for nothing; it catches up the moment it is looked at again.
       if (document.hidden) return;
       api
-        .get<{ positions: DriverPosition[] }>(`/api/network/versions/${scopeId}/driver-positions`)
+        .get<{ positions: DriverPosition[] }>(`/api/network/versions/${scopeId}/driver-positions?withinHours=${positionDays * 24}`)
         .then((r) => {
           if (!alive) return;
           setPositions(r.positions || []);
@@ -839,7 +847,7 @@ function ProgressTab({
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', load);
     };
-  }, [scopeId, showPositions, reloadKey]);
+  }, [scopeId, showPositions, reloadKey, positionDays]);
 
   // Who has a position, as a string that changes only when the SET of drivers does. The pins
   // refresh every minute, and the palette below must not be rebuilt — and every road on the map
@@ -1513,10 +1521,11 @@ function ProgressTab({
         {pinned.state === 'moving' && pinned.speedKmh != null && pinned.speedKmh >= 1 && (
           <span className="cov-pop-holder">{Math.round(pinned.speedKmh)} km/h</span>
         )}
+        {pinned.drivingNow && <span className="cov-pill green">Driving again now</span>}
       </div>
 
       <dl className="cov-pop-facts">
-        <dt>{pinned.state === 'ended' ? 'Left off' : 'Last seen'}</dt>
+        <dt>{pinned.state === 'ended' ? 'Stopped' : 'Last seen'}</dt>
         <dd>{sessionDt(pinned.at)}</dd>
         <dt>Where</dt>
         <dd>
@@ -1795,8 +1804,25 @@ function ProgressTab({
                   onChange={setShowPositions}
                   label="Driver positions"
                   explain={layersExplain}
-                  hint="A pin where each driver is now, or where their last drive ended. Updates every minute."
+                  hint="A pin where each driver last stopped — the end of their latest drive — within the days below. Only drivers on the project now; anyone who has left is not shown."
                 />
+                {showPositions && (
+                  <div className="cov-layer-sub">
+                    <div className="cov-presets" role="group" aria-label="Stopped within">
+                      {POSITION_DAYS.map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          className={positionDays === d ? 'on' : ''}
+                          onClick={() => setPositionDays(d)}
+                          title={`Drivers who stopped in the last ${d === 1 ? 'day' : `${d} days`}`}
+                        >
+                          {d === 1 ? 'Last day' : `${d} days`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <LayerRow
                   on={markersOn}
                   onChange={setMarkersOn}
@@ -1901,8 +1927,8 @@ function ProgressTab({
                           type="button"
                           className="cov-crew-loc"
                           onClick={() => locateDriver(pos)}
-                          title={`Show where ${d.name} ${pos.state === 'ended' ? 'left off' : 'is'}`}
-                          aria-label={`Show where ${d.name} ${pos.state === 'ended' ? 'left off' : 'is'}`}
+                          title={`Show where ${d.name} ${pos.state === 'ended' ? 'last stopped' : 'is'}`}
+                          aria-label={`Show where ${d.name} ${pos.state === 'ended' ? 'last stopped' : 'is'}`}
                         >
                           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
                             <circle cx="8" cy="8" r="4.2" />

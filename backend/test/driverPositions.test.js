@@ -1,12 +1,13 @@
-// Where each driver left off, on the coverage map: services/driverPositions.js.
+// Where each driver last stopped, on the coverage map: services/driverPositions.js.
 //
 // The map shows what is driven and who holds an area. This adds the point the work stopped at —
-// the last GPS fix of each driver's last real drive on the project — so tomorrow can be planned
-// from the map.
+// the end of each CURRENT driver's latest finished drive on the project, when that stop was
+// recent (the last day by default) — so tomorrow can be planned from the map.
 //
-// Under test: which trip is "the last drive" (not a parked-jitter session, not an imported day
-// with no GPS, not a drive for another project), what an unstamped trip by a two-project driver
-// counts toward, the live states, the area a fix falls in, who may ask, and the route endpoint.
+// Under test: who gets a pin (on the project, account active — not former drivers), which drive
+// counts (finished, not a parked-jitter session, not an imported day with no GPS, not a drive for
+// another project), the time window, "driving again now", the area a stop falls in, who may ask,
+// and the route endpoint.
 //
 // Run: node test/driverPositions.test.js
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'driver_positions_test_secret_1234567890';
@@ -37,7 +38,6 @@ function assert(cond, msg) {
   const WorkArea = require('../src/models/WorkArea');
   const AreaAssignment = require('../src/models/AreaAssignment');
   const LinkCoverage = require('../src/models/LinkCoverage');
-  const AppActivity = require('../src/models/AppActivity');
   await WorkArea.init();
   await Trip.init();
   await LinkCoverage.init();
@@ -85,7 +85,7 @@ function assert(cond, msg) {
     ...rest,
   });
   const url = (id, tail = '') => `/api/network/versions/${id}/driver-positions${tail}`;
-  const ask = async (who = boss, id = drive._id) => (await who.as(request(app).get(url(id)))).body.positions;
+  const ask = async (who = boss, id = drive._id, query = '') => (await who.as(request(app).get(url(id, query)))).body.positions;
   const of = (rows, who) => rows.find((r) => r.driverId === String(who.user._id));
 
   /* ── who may ask ── */
@@ -95,8 +95,8 @@ function assert(cond, msg) {
   const empty = await boss.as(request(app).get(url(drive._id)));
   assert(empty.status === 200 && empty.body.positions.length === 0, 'nobody has driven yet: no positions, not an error');
 
-  /* ── the last drive, and where it ended ── */
-  await mkTrip(ravi, { lon: 8.02, lat: 50.001, startMin: 3000, endMin: 2950 });
+  /* ── the latest stop, and where it was ── */
+  await mkTrip(ravi, { lon: 8.02, lat: 50.001, startMin: 600, endMin: 550 });
   const shape = encodePolyline6([{ lat: 50.001, lon: 8 }, { lat: 50.003, lon: 8 }]);
   const last = await mkTrip(ravi, {
     lon: 8, lat: 50.003, startMin: 200, endMin: 150,
@@ -104,74 +104,85 @@ function assert(cond, msg) {
   });
   let rows = await ask();
   let r = of(rows, ravi);
-  assert(rows.length === 1 && r.trip.id === String(last._id) && r.lat === 50.003 && r.lon === 8, 'Ravi is where his NEWEST drive ended, not an earlier one');
-  assert(r.state === 'ended' && r.name === 'ravi' && r.heading === 90, 'it is a finished drive, with his name and heading');
+  assert(rows.length === 1 && r.trip.id === String(last._id) && r.lat === 50.003 && r.lon === 8, 'Ravi is where his NEWEST drive stopped, not an earlier one');
+  assert(r.state === 'ended' && r.name === 'ravi' && r.heading === 90 && r.drivingNow === false, 'a finished drive, with his name and heading — and he is not on the road now');
   assert(Math.abs(new Date(r.at) - ago(151)) < 5000, 'the time is the last GPS fix, not when the trip was closed');
   assert(r.area && r.area.areaCode === 'WEST' && r.area.name === 'Westside' && r.area.mine === true, 'it names the work area he stopped in — one of his own');
   assert(r.trip.meters === 3900 && r.trip.snapped === true, 'the drive is reported with its snapped distance');
   assert(!of(rows, tara), 'a driver who holds an area but never drove has no position');
 
-  /* ── what does not count as "the last drive" ── */
+  /* ── what does not count as a stop ── */
   await mkTrip(ravi, { lon: 8.0001, lat: 50.0031, startMin: 60, endMin: 20, parkedJitter: true, parkedJitterAt: new Date() });
   r = of(await ask(), ravi);
-  assert(r.trip.id === String(last._id) && Math.abs(new Date(r.at) - ago(151)) < 5000, 'a later parked-GPS-jitter session does not move him, nor change when he left off');
+  assert(r.trip.id === String(last._id) && Math.abs(new Date(r.at) - ago(151)) < 5000, 'a later parked-GPS-jitter session does not move him, nor change when he stopped');
   await mkTrip(ravi, { lon: null, startMin: 30, endMin: 25, importBatchId: 'batch-1', cleanedRouteShapes: [shape], mapMatchStatus: 'matched' });
   assert(of(await ask(), ravi).trip.id === String(last._id), 'an imported day has no GPS fix, so it cannot say where he stopped');
 
-  /* ── still out there ── */
-  const live = await mkTrip(sam, { lon: 8.02, lat: 50.002, startMin: 40, endMin: null });
+  /* ── on the road again: the pin stays at the last stop ── */
+  const live = await mkTrip(ravi, { lon: 8.02, lat: 50.002, startMin: 10, endMin: null });
   await Trip.updateOne({ _id: live._id }, { $set: { 'lastLocation.recordedAt': new Date() } });
-  rows = await ask();
-  let s = of(rows, sam);
-  assert(s.state === 'moving' && rows[0].driverId === s.driverId, 'a fresh fix on an open trip is "moving", and listed first');
-  assert(s.area.areaCode === 'EAST' && s.area.mine === false, 'Sam is in Eastside — which is not his area');
-  assert(s.trip.meters === 4200 && s.trip.snapped === false && s.trip.endedAt === null, 'an open trip reports its live GPS distance');
-  await Trip.updateOne({ _id: live._id }, { $set: { 'lastLocation.recordedAt': ago(10) } });
-  assert(of(await ask(), sam).state === 'stale', 'no fix for ten minutes and no heartbeat: we have lost the phone');
-  await AppActivity.create({ driverId: sam.user._id, action: 'heartbeat', timestamp: new Date() });
-  assert(of(await ask(), sam).state === 'stopped', 'no fix, but the app is alive: stopped, not lost');
-  await Trip.updateOne({ _id: live._id }, { $set: { 'lastLocation.lon': 8.5, 'lastLocation.lat': 50.2 } });
-  assert(of(await ask(), sam).area === null, 'outside every work area is reported as exactly that');
+  r = of(await ask(), ravi);
+  assert(r.trip.id === String(last._id) && r.lat === 50.003, 'a drive still under way is not a stop: Ravi stays where he last stopped');
+  assert(r.drivingNow === true, '…and the pin says he is driving again now');
+  await Trip.updateOne({ _id: live._id }, { $set: { 'lastLocation.recordedAt': ago(60) } });
+  assert(of(await ask(), ravi).drivingNow === false, 'an open drive with no fix for an hour is not "driving now"');
+  await Trip.deleteOne({ _id: live._id });
+  const onlyOpen = await mkTrip(sam, { lon: 8.02, lat: 50.002, startMin: 40, endMin: null });
+  assert(!of(await ask(), sam), 'a driver whose only drive is still open has not stopped yet: no pin');
+
+  /* ── only recent stops ── */
+  await Trip.deleteOne({ _id: onlyOpen._id });
+  const old = await mkTrip(sam, { lon: 8.02, lat: 50.002, startMin: 60 * 30, endMin: 60 * 29 }); // stopped 29 h ago
+  assert(!of(await ask(), sam), 'a stop more than a day old gets no pin');
+  assert(of(await ask(boss, drive._id, '?withinHours=72'), sam)?.trip.id === String(old._id), '…unless the map asks for the last 3 days');
+  assert(Boolean(of(await ask(boss, drive._id, '?withinHours=9999'), sam)), 'an absurd window is capped at 7 days, not refused');
+  const longDrive = await mkTrip(sam, { lon: 8.021, lat: 50.0021, startMin: 60 * 28, endMin: 60 * 23 }); // started 28 h ago, stopped 23 h ago
+  assert(of(await ask(), sam)?.trip.id === String(longDrive._id), 'a long drive that STOPPED inside the day counts, though it started before it');
+  assert(of(await ask(), sam).area.areaCode === 'EAST' && of(await ask(), sam).area.mine === false, 'Sam stopped in Eastside — which is not his area');
 
   /* ── a driver on two projects: her trips carry no project ── */
   const here = await mkTrip(mona, { lon: 8.005, lat: 50.002, startMin: 500, endMin: 450, project: null });
   const there = await mkTrip(mona, { lon: 20, lat: 50.002, startMin: 100, endMin: 70, project: null });
   let m = of(await ask(), mona);
   assert(m && m.trip.id === String(here._id) && m.area.areaCode === 'WEST' && m.area.mine === false,
-    'on this map she is where she last drove on THIS ground, though a newer drive exists elsewhere');
+    'on this map she is where she last stopped on THIS ground, though a newer drive exists elsewhere');
   m = of(await ask(stranger, north._id), mona);
-  assert(m && m.trip.id === String(there._id) && m.area.areaCode === 'N1', '…and on the other project\'s map she is at that newer drive');
+  assert(m && m.trip.id === String(there._id) && m.area.areaCode === 'N1', '…and on the other project\'s map she is at that newer stop');
   assert(!of(await ask(stranger, north._id), ravi), 'a driver who is not on that project does not appear on it');
   const stamped = await mkTrip(mona, { lon: 8.6, lat: 50.3, startMin: 50, endMin: 45 });
   m = of(await ask(), mona);
   assert(m.trip.id === String(stamped._id) && m.area === null, 'a drive stamped with the project counts wherever it ended — even off the map\'s areas');
 
-  /* ── people who are no longer on the project, or no longer exist ── */
+  /* ── people who are no longer on the project, or no longer active ── */
   const lena = await mkUser('lena', 'user', [drive]);
-  const lenaTrip = await mkTrip(lena, { lon: 8.001, lat: 50.004, startMin: 900, endMin: 850 });
-  await LinkCoverage.create({ projectId: drive._id, networkVersionId: version._id, linkId: 'W9', lengthMeters: 100, areaId: west._id, firstTripId: lenaTrip._id, firstDriverId: lena.user._id, firstAt: ago(860) });
+  const lenaTrip = await mkTrip(lena, { lon: 8.001, lat: 50.004, startMin: 90, endMin: 85 });
+  await LinkCoverage.create({ projectId: drive._id, networkVersionId: version._id, linkId: 'W9', lengthMeters: 100, areaId: west._id, firstTripId: lenaTrip._id, firstDriverId: lena.user._id, firstAt: ago(86) });
+  await AreaAssignment.create({ projectId: drive._id, networkVersionId: version._id, areaId: west._id, driverId: lena.user._id, areaCode: 'WEST', assignedAt: new Date('2026-01-02') });
+  assert(of(await ask(), lena)?.trip.id === String(lenaTrip._id), 'Lena, on the project, has her pin');
   await User.updateOne({ _id: lena.user._id }, { $set: { projectIds: [] } });
-  assert(of(await ask(), lena)?.trip.id === String(lenaTrip._id), 'moved off the project, but her driven road is on this map: so is where she left off');
+  assert(!of(await ask(), lena), 'moved off the project: no pin — though she drove its road and an assignment row is left');
+  await User.updateOne({ _id: lena.user._id }, { $set: { projectIds: [drive._id], active: false } });
+  assert(!of(await ask(), lena), 'on the project but her account deactivated: no pin');
   await User.deleteOne({ _id: lena.user._id });
   assert(!of(await ask(), lena), 'a deleted account is not drawn');
 
   /* ── either id works, and the rows are ordered ── */
   const byVersion = await ask(boss, version._id);
   rows = await ask();
-  assert(rows.length === 3, 'the whole project: three drivers');
-  // One delivery (the region filter) is narrower: a drive counts when it was on THAT ground. Sam's
-  // open drive is 35 km off it, and Mona's stamped drive too — so she shows at her earlier one.
-  assert(byVersion.map((x) => x.name).sort().join() === 'mona,ravi' && of(byVersion, mona).trip.id === String(here._id),
-    'one delivery: only drivers whose last drive was on its ground, at that drive');
-  assert(rows.map((x) => x.state).join() === 'stopped,ended,ended' && new Date(rows[1].at) > new Date(rows[2].at), 'open trips first, then the most recent');
+  assert(rows.map((x) => x.name).sort().join() === 'mona,ravi,sam', `the whole project: three drivers with a recent stop (got ${rows.map((x) => x.name).join()})`);
+  // One delivery (the region filter) is narrower: a drive counts when it was on THAT ground.
+  // Mona's stamped drive is off it, so she shows at her earlier stop.
+  assert(of(byVersion, mona)?.trip.id === String(here._id), 'one delivery: a driver shows at their last stop on its ground');
+  assert(rows.every((x, i) => i === 0 || new Date(rows[i - 1].at) >= new Date(x.at)), 'the most recent stop first');
 
   /* ── the route leading up to the pin ── */
   const route = (who, tripId) => who.as(request(app).get(url(drive._id, `/route?tripId=${tripId}`)));
   const snapped = await route(boss, last._id);
   assert(snapped.status === 200 && snapped.body.snapped === true && snapped.body.shapes.length === 1 && snapped.body.shapes[0] === shape && snapped.body.pending === false,
     'a snapped drive comes back with its route');
-  const open = await route(boss, live._id);
-  assert(open.status === 200 && open.body.snapped === false && open.body.pending === true && open.body.shapes.length === 0,
+  const open = await mkTrip(sam, { lon: 8.02, lat: 50.002, startMin: 5, endMin: null });
+  const openRoute = await route(boss, open._id);
+  assert(openRoute.status === 200 && openRoute.body.snapped === false && openRoute.body.pending === true && openRoute.body.shapes.length === 0,
     'an open drive has no route yet, and says so');
   assert((await route(boss, here._id)).status === 200, 'an unstamped drive by one of the project\'s drivers is readable');
   const foreign = await Trip.create({ clientTripId: 'f1', driverId: stranger.user._id, projectId: north._id, status: 'completed', startedAt: ago(90), endedAt: ago(80), cleanedRouteShapes: [shape] });

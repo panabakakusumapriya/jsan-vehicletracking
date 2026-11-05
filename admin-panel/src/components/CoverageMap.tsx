@@ -294,8 +294,8 @@ export function CoverageMap({
   areaPopupId?: string | null;
   areaPopup?: ReactNode;
   /**
-   * Where each driver left off: one pin per driver at the last fix of their last drive (or where
-   * they are right now, if that drive is still open). Drawn above everything else.
+   * Where each driver last stopped: one pin per current driver at the end of their latest finished
+   * drive (services/driverPositions.js). Drawn above everything else.
    */
   driverPins?: DriverPin[];
   /** The picked pin's driver. Its card takes the place of the area card while it is picked. */

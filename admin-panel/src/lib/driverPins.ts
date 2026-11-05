@@ -52,7 +52,7 @@ export function statusText(p: DriverPosition, now: number): string {
   if (p.state === 'moving') return 'Driving now';
   if (p.state === 'stopped') return 'Stopped — drive still open';
   if (p.state === 'stale') return `No signal · last seen ${agoText(p.at, now)}`;
-  return `Left off ${agoText(p.at, now)}`;
+  return `Stopped ${agoText(p.at, now)}${p.drivingNow ? ' · driving again now' : ''}`;
 }
 
 export function whereText(p: DriverPosition): string {

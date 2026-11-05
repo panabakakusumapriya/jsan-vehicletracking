@@ -846,6 +846,11 @@ export interface DriverPosition {
    * lost) — the live map's vocabulary. ended is a finished drive: this is where it stopped.
    */
   state: 'moving' | 'stopped' | 'stale' | 'ended';
+  /**
+   * On the road again right now (an open drive with a fresh fix). The pin stays where they last
+   * STOPPED; this only says they have moved on since. Servers from 2026-11-05 send it.
+   */
+  drivingNow?: boolean;
   trip: {
     id: string;
     status: 'active' | 'completed' | 'timed_out';

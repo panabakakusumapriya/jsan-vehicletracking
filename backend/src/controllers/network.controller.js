@@ -2233,8 +2233,9 @@ async function versionRoadState(req, res) {
 /* ---- where each driver left off, on the coverage map ---- */
 
 /**
- * GET /versions/:id/driver-positions — one row per driver: the last GPS fix of their last real
- * drive on this project, the work area it falls in, and whether they are still out there.
+ * GET /versions/:id/driver-positions[?withinHours=24] — one row per CURRENT driver of the project
+ * who stopped recently: where their latest finished drive ended (within the last day by default,
+ * at most 7), the work area it falls in, and whether they are on the road again now.
  *
  * The map shows what is driven and who holds what; this adds where the work actually stopped, so
  * tomorrow can be planned from the map instead of from a phone call. See
@@ -2245,7 +2246,7 @@ async function versionDriverPositions(req, res) {
     const scope = await resolveNetworkScope(req);
     if (!scope) return res.status(404).json({ error: 'Network version not found' });
     assertProjectAccess(req.user, scope.projectId);
-    const positions = await driverPositions.lastPositions(scope);
+    const positions = await driverPositions.lastPositions(scope, { withinHours: req.query.withinHours });
     // Never cached: the same URL answers differently a minute later, by design.
     res.set('Cache-Control', 'no-store');
     return res.json({ positions, serverTime: new Date().toISOString() });

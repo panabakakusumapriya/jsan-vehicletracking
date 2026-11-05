@@ -4,23 +4,31 @@ const WorkArea = require('../models/WorkArea');
 const LinkCoverage = require('../models/LinkCoverage');
 const AreaAssignment = require('../models/AreaAssignment');
 const env = require('../config/env');
-const { driversWithLiveApp } = require('./tripLifecycle');
 
 /**
- * Where each of a project's drivers left off — for the coverage map.
+ * Where each of a project's drivers last STOPPED — for the coverage map.
  *
- * The map already says WHAT is driven (blue roads) and WHO holds an area. It could not say where
- * the driver actually is: a manager planning tomorrow, or handing an area on, had to open the live
- * map or a trip to find the point the work stopped at. This is that point, per driver: the last
- * GPS fix of their last real drive on this project's ground.
+ * The map already says WHAT is driven (blue roads) and WHO holds an area. This adds where the work
+ * stopped, per driver, so tomorrow can be planned from the map: the end of their most recent
+ * FINISHED drive on this project's ground (its last GPS fix), and only when that stop was recent —
+ * within the last day by default (`withinHours`).
  *
- * Three decisions worth knowing about:
+ * It used to be the last fix of the last drive of anyone who had ever been near the project: live
+ * moving positions mixed with stops weeks old, and drivers who had long left the project — four of
+ * twenty-four pins were deactivated accounts last seen up to three months before. Now:
+ *
+ *  - Who: the project's drivers today — on the project, account active. Not whoever once drove
+ *    its road or still has an assignment row.
+ *  - Where: where a drive ENDED. A drive still under way has no stop yet; the driver's pin stays at
+ *    their previous stop, marked `drivingNow` (the live map is the place for a moving dot).
+ *  - When: the stop is at most `withinHours` old; an older one gets no pin at all.
+ *
+ * Three more decisions worth knowing about:
  *
  *  - "Last real drive" excludes parked-GPS-jitter sessions (services/tripNoise.js), exactly as the
  *    Driven tracks layer on the same map does. The vehicle is in the same place either way, but
- *    the time would be wrong: "left off at 17:40" must not become "22:10" because the phone sat
- *    reporting in a car park. An ACTIVE trip is always taken — it has no verdict yet, and it is
- *    the driver being out there right now.
+ *    the time would be wrong: "stopped at 17:40" must not become "22:10" because the phone sat
+ *    reporting in a car park.
  *
  *  - Which trips are this project's. A trip is stamped with its project at start, but only when
  *    the driver held exactly one (see tracking.controller.js) — a driver on two projects records
@@ -41,12 +49,25 @@ const UNSTAMPED_LOOKBACK = 12;
 const GROUND_PAD_DEG = 0.25;
 /** Drivers resolved at once — each costs three small indexed reads. */
 const PARALLEL = 8;
+/** "Recently stopped": the last day, unless the caller asks for more (the map offers 1 / 3 / 7 days). */
+const DEFAULT_WITHIN_HOURS = 24;
+const MAX_WITHIN_HOURS = 24 * 7;
+/**
+ * A drive that STOPPED inside the window may have STARTED before it (trips are capped at 8 h, and a
+ * timed-out one closes after its last fix). Lets the lookups ride the { driverId, startedAt } index.
+ */
+const START_SLACK_MS = 12 * 3600 * 1000;
 
+/** A finished, real drive with a GPS fix to place it by. */
 const HAS_FIX = {
   'lastLocation.lat': { $type: 'number' },
   'lastLocation.lon': { $type: 'number' },
   parkedJitter: { $ne: true },
+  status: { $ne: 'active' },
 };
+
+/** When the vehicle actually stood still: the last fix, not the (possibly much later) close. */
+const stopTime = (trip) => new Date(trip.lastLocation.recordedAt || trip.endedAt || trip.startedAt);
 
 async function inBatches(items, size, fn) {
   const out = [];
@@ -57,9 +78,17 @@ async function inBatches(items, size, fn) {
   return out;
 }
 
+/** The project's drivers today: on the project, account active. Only they get a pin. */
+async function currentDrivers(scope) {
+  return User.find({ projectIds: scope.projectId, role: 'user', active: { $ne: false } })
+    .select('_id name')
+    .lean();
+}
+
 /**
- * Everyone whose position belongs on this project's map: its drivers today, whoever holds one of
- * its areas, and whoever has driven road on it — the same people the map's crew list names.
+ * Everyone whose drives belong to this project, past drivers included: its drivers today, whoever
+ * holds one of its areas, and whoever has driven road on it. Decides who may have a ROUTE read
+ * (lastDriveRoute) — not who gets a pin, which is currentDrivers.
  */
 async function projectDriverIds(scope) {
   const [members, holders, drove] = await Promise.all([
@@ -99,9 +128,9 @@ function groundTester(scope) {
  * ground. A driver who has since moved to the other side of the Tasman is still shown here at
  * where they last worked here.
  */
-async function lastDriveIn(driverId, scope, onGround) {
+async function lastDriveIn(driverId, scope, onGround, since) {
   const ours = new Set(scope.versionIds.map(String));
-  const recent = await Trip.find({ ...HAS_FIX, driverId, projectId: { $in: [scope.projectId, null] } })
+  const recent = await Trip.find({ ...HAS_FIX, driverId, projectId: { $in: [scope.projectId, null] }, startedAt: { $gte: since } })
     .sort({ startedAt: -1 })
     .limit(UNSTAMPED_LOOKBACK)
     .select(TRIP_FIELDS)
@@ -117,15 +146,15 @@ async function lastDriveIn(driverId, scope, onGround) {
   return null;
 }
 
-/** The driver's last real drive on this project, or null. */
-async function lastDrive(driverId, scope, onGround) {
-  if (!scope.isProject) return lastDriveIn(driverId, scope, onGround);
+/** The driver's last finished real drive on this project that started after `since`, or null. */
+async function lastDrive(driverId, scope, onGround, since) {
+  if (!scope.isProject) return lastDriveIn(driverId, scope, onGround, since);
   const [stamped, unstamped] = await Promise.all([
-    Trip.findOne({ ...HAS_FIX, driverId, projectId: scope.projectId })
+    Trip.findOne({ ...HAS_FIX, driverId, projectId: scope.projectId, startedAt: { $gte: since } })
       .sort({ startedAt: -1 })
       .select(TRIP_FIELDS)
       .lean(),
-    Trip.find({ ...HAS_FIX, driverId, projectId: null })
+    Trip.find({ ...HAS_FIX, driverId, projectId: null, startedAt: { $gte: since } })
       .sort({ startedAt: -1 })
       .limit(UNSTAMPED_LOOKBACK)
       .select(TRIP_FIELDS)
@@ -169,48 +198,48 @@ async function areaAt(scope, lon, lat) {
   return hits.find((a) => String(a.networkVersionId) === primary) || hits[0];
 }
 
-/**
- * moving  — a fix inside the last STALE_AFTER_SECONDS: the vehicle is under way.
- * stopped — the trip is open and the app is alive, but no fresh fix: a traffic light, a break.
- * stale   — the trip is open and we have lost the phone.
- * ended   — the drive is over; this is where it finished.
- * The first three are the live map's vocabulary (tracking.controller.js `live`), deliberately.
- */
-function stateOf(trip, now, liveApps) {
-  if (trip.status !== 'active') return 'ended';
-  const at = trip.lastLocation.recordedAt ? new Date(trip.lastLocation.recordedAt).getTime() : 0;
-  if ((now - at) / 1000 <= env.STALE_AFTER_SECONDS) return 'moving';
-  return liveApps.has(String(trip.driverId)) ? 'stopped' : 'stale';
+/** The window asked for, in hours, kept to 1 h – 7 days. */
+function windowHours(raw) {
+  const h = Number(raw);
+  if (!Number.isFinite(h) || h <= 0) return DEFAULT_WITHIN_HOURS;
+  return Math.min(MAX_WITHIN_HOURS, Math.max(1, h));
 }
 
-async function lastPositions(scope) {
-  const ids = [...(await projectDriverIds(scope))];
-  if (!ids.length) return [];
+/**
+ * One pin per current driver who stopped within the window: where their latest finished drive
+ * ended. @param opts.withinHours  how recent a stop must be (default 24, at most 168).
+ */
+async function lastPositions(scope, opts = {}) {
+  const hours = windowHours(opts.withinHours);
+  const now = Date.now();
+  const cutoff = new Date(now - hours * 3600 * 1000);
+  const since = new Date(cutoff.getTime() - START_SLACK_MS);
+
+  const users = await currentDrivers(scope);
+  if (!users.length) return [];
+  const ids = users.map((u) => String(u._id));
 
   const onGround = groundTester(scope);
-  const [users, trips, held] = await Promise.all([
-    User.find({ _id: { $in: ids } }).select('name').lean(),
-    inBatches(ids, PARALLEL, (id) => lastDrive(id, scope, onGround)),
+  const [trips, held, driving] = await Promise.all([
+    inBatches(ids, PARALLEL, (id) => lastDrive(id, scope, onGround, since)),
     AreaAssignment.find({ projectId: scope.projectId, releasedAt: null, driverId: { $in: ids } })
       .select('driverId areaCode')
       .lean(),
+    // On the road again right now: an open drive with a fresh fix. Said on the pin, not drawn.
+    Trip.distinct('driverId', {
+      driverId: { $in: ids },
+      status: 'active',
+      'lastLocation.recordedAt': { $gte: new Date(now - env.STALE_AFTER_SECONDS * 1000) },
+    }),
   ]);
-  // A driver whose account is gone has no name to put on the map; the live map skips them too.
   const nameById = new Map(users.map((u) => [String(u._id), u.name]));
-  const found = trips.filter((t) => t && nameById.has(String(t.driverId)));
+  const found = trips.filter((t) => t && nameById.has(String(t.driverId)) && stopTime(t) >= cutoff);
   if (!found.length) return [];
 
-  const now = Date.now();
   const holds = new Set(held.map((a) => `${a.driverId}:${a.areaCode}`));
-  const [liveApps, areas] = await Promise.all([
-    driversWithLiveApp(
-      found.filter((t) => t.status === 'active').map((t) => t.driverId),
-      new Date(now - env.STALE_AFTER_SECONDS * 1000)
-    ),
-    inBatches(found, PARALLEL, (t) => areaAt(scope, t.lastLocation.lon, t.lastLocation.lat)),
-  ]);
+  const drivingNow = new Set(driving.map(String));
+  const areas = await inBatches(found, PARALLEL, (t) => areaAt(scope, t.lastLocation.lon, t.lastLocation.lat));
 
-  const rank = { moving: 0, stopped: 1, stale: 2, ended: 3 };
   return found
     .map((trip, i) => {
       const driverId = String(trip.driverId);
@@ -222,10 +251,12 @@ async function lastPositions(scope) {
         lon: trip.lastLocation.lon,
         heading: Number.isFinite(trip.lastLocation.heading) ? trip.lastLocation.heading : null,
         speedKmh: Number.isFinite(trip.lastLocation.speed) ? trip.lastLocation.speed : null,
-        // When the vehicle was last seen there — the fix's own time, not the trip's close time:
-        // a timed-out trip is closed minutes or hours after its last fix.
-        at: trip.lastLocation.recordedAt || trip.endedAt || trip.startedAt,
-        state: stateOf(trip, now, liveApps),
+        // When the vehicle stopped there — the fix's own time, not the trip's close time: a
+        // timed-out trip is closed minutes or hours after its last fix.
+        at: stopTime(trip),
+        // Always a finished drive now; kept for the panel, which still reads the field.
+        state: 'ended',
+        drivingNow: drivingNow.has(driverId),
         trip: {
           id: String(trip._id),
           status: trip.status,
@@ -247,7 +278,7 @@ async function lastPositions(scope) {
           : null,
       };
     })
-    .sort((a, b) => rank[a.state] - rank[b.state] || new Date(b.at) - new Date(a.at));
+    .sort((a, b) => new Date(b.at) - new Date(a.at));
 }
 
 const refuse = (message, status) => Object.assign(new Error(message), { status });
@@ -284,4 +315,4 @@ async function lastDriveRoute(scope, tripId) {
   };
 }
 
-module.exports = { lastPositions, lastDriveRoute, projectDriverIds };
+module.exports = { lastPositions, lastDriveRoute, projectDriverIds, DEFAULT_WITHIN_HOURS, MAX_WITHIN_HOURS };

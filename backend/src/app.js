@@ -137,6 +137,9 @@ function createApp() {
         assignByCode: true,
         // A driver can take their own marker off the map (DELETE /api/markers/mine/:key).
         markerRemove: true,
+        // Coverage driver pins: current drivers only, where they last STOPPED, within ?withinHours
+        // (default 24).
+        driverStops: true,
       },
     })
   );
