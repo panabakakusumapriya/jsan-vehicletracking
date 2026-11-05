@@ -246,6 +246,99 @@ function assert(cond, msg) {
   assert(withImported.body.pendingSnap === 1,
     'and it is NOT counted as still snapping: there is nothing left to snap');
 
+  console.log('\n-- holders are read the way the phone reads them: by area code --');
+  const bulk = (areaIds, driverIds, extra = {}) => as(request(app).put(`/api/network/versions/${version._id}/assignments`))
+    .send({ areaIds: areaIds.map(String), driverIds: driverIds.map(String), mode: 'set', ...extra });
+  const holdersOf = async (code) => (await AreaAssignment.find({ areaCode: code, releasedAt: null }).lean()).map((r) => String(r.driverId));
+  // Mo holds Wallan on the live delivery; Dan is still recorded on the OLDER delivery's copy of it.
+  // The phone gives Wallan to both — and the save used to see only Mo, so a handover left Dan on it.
+  await AreaAssignment.create({
+    projectId: project._id, networkVersionId: old._id, areaId: oldArea._id, driverId: dan._id,
+    areaName: 'Wallan', areaCode: 'SA2-1', driverName: 'Dan', assignedBy: admin._id, assignedAt: new Date(),
+  });
+  assert((await bulk([area._id], [mo._id])).status === 200, 'setting Wallan to Mo saves');
+  let wallan = await holdersOf('SA2-1');
+  assert(wallan.length === 1 && wallan[0] === String(mo._id),
+    `and releases Dan's row on the older delivery too — one holder, as the phone sees it (got ${wallan.length})`);
+
+  await AreaAssignment.updateMany({ areaCode: 'SA2-1', releasedAt: null }, { $set: { releasedAt: new Date() } });
+  await AreaAssignment.create({
+    projectId: project._id, networkVersionId: old._id, areaId: oldArea._id, driverId: dan._id,
+    areaName: 'Wallan', areaCode: 'SA2-1', driverName: 'Dan', assignedBy: admin._id, assignedAt: new Date(),
+  });
+  const addMo = await as(request(app).put(`/api/network/versions/${version._id}/assignments`))
+    .send({ areaIds: [String(area._id)], driverIds: [String(mo._id)], mode: 'add' });
+  assert(addMo.status === 409 && addMo.body.blockers[0].reason === 'multiple_drivers',
+    'adding Mo beside Dan is refused even though Dan is recorded on another delivery’s copy of Wallan');
+  assert((await bulk([area._id], [dan._id])).status === 200, 'setting it to Dan, who already holds it, is fine');
+  wallan = await holdersOf('SA2-1');
+  assert(wallan.length === 1 && wallan[0] === String(dan._id), 'and leaves him holding it once');
+
+  console.log('\n-- several areas at once, one of them signed off --');
+  const laraDone = await as(request(app).post(`/api/network/versions/${version._id}/areas/${other._id}/complete`)).send({});
+  assert(laraDone.status === 200, 'Lara is signed off');
+  const strict = await bulk([area._id, other._id], [mo._id]);
+  assert(strict.status === 409 && strict.body.blockers.some((b) => b.areaCode === 'SA2-2' && b.reason === 'completed'),
+    'without skipCompleted the whole save is refused, as before');
+  assert((await holdersOf('SA2-1'))[0] === String(dan._id), 'and nothing moved');
+  const lenient = await bulk([area._id, other._id], [mo._id], { skipCompleted: true });
+  assert(lenient.status === 200, 'with skipCompleted the open area is saved');
+  assert(lenient.body.skipped.length === 1 && lenient.body.skipped[0].areaCode === 'SA2-2',
+    'and the signed-off one is named as left out');
+  assert((await holdersOf('SA2-2')).length === 0, 'nobody was put on the signed-off area');
+  wallan = await holdersOf('SA2-1');
+  assert(wallan.length === 1 && wallan[0] === String(mo._id), 'Wallan went from Dan to Mo');
+  const allDone = await bulk([other._id], [dan._id], { skipCompleted: true });
+  assert(allDone.status === 200 && allDone.body.added === 0 && allDone.body.skipped.length === 1,
+    'a selection of only signed-off areas changes nothing and says why');
+
+  console.log('\n-- a zone cut from an area is held by whoever holds the area --');
+  const kilmoreOld = await WorkArea.create({
+    projectId: project._id, networkVersionId: old._id, areaCode: 'SA2-9', name: 'Kilmore',
+    geometry: square(4, 4), bbox: [4, 4, 5, 5], targetMeters: 100, targetLinks: 1,
+  });
+  const zone = await WorkArea.create({
+    projectId: project._id, networkVersionId: version._id, areaCode: 'SA2-9-02', name: 'Kilmore (rest)',
+    geometry: square(4, 4), bbox: [4, 4, 5, 5], targetMeters: 100, targetLinks: 1,
+    props: { splitFrom: { code: 'SA2-9', name: 'Kilmore', cut: true } },
+  });
+  await AreaAssignment.create({
+    projectId: project._id, networkVersionId: old._id, areaId: kilmoreOld._id, driverId: dan._id,
+    areaName: 'Kilmore', areaCode: 'SA2-9', driverName: 'Dan', assignedBy: admin._id, assignedAt: new Date(),
+  });
+  const clash = await bulk([zone._id], [mo._id]);
+  assert(clash.status === 409 && clash.body.blockers[0].reason === 'multiple_drivers'
+    && clash.body.blockers[0].drivers.some((d) => d.startsWith('Dan')),
+    'giving Mo a zone of Dan’s area is refused — Dan’s phone already has it');
+  assert((await holdersOf('SA2-9')).length === 1, 'and Dan keeps the whole area');
+  const single = await as(request(app).put(`/api/network/versions/${version._id}/areas/${zone._id}/assignments`))
+    .send({ driverIds: [String(mo._id)] });
+  assert(single.status === 409 && single.body.blockers[0].reason === 'multiple_drivers',
+    'the one-area endpoint reads it the same way');
+  assert((await bulk([zone._id], [dan._id])).status === 200, 'giving the zone to Dan himself is fine — one holder, not two');
+
+  console.log('\n-- re-figuring earlier trips after an assignment --');
+  const { recomputeForAssignment, queueRecomputeForAssignment, assignmentQueueIdle } = require('../src/services/linkCoverage');
+  await assignmentQueueIdle(); // the saves above queued their own work
+  const floorTrip = await mkTrip(mo, day(5), { importBatchId: 'vtsfloor-test', linkUkmNetworkMeters: 0 });
+  const realTrip = await mkTrip(mo, day(6), {});
+  for (const t of [floorTrip, realTrip]) {
+    await LinkCoverage.create({
+      networkVersionId: version._id, linkId: await mkLink(80), projectId: project._id, areaId: area._id,
+      lengthMeters: 80, firstDriverId: mo._id, firstTripId: t._id, firstAt: new Date(), passes: 1,
+    });
+  }
+  const redo = await recomputeForAssignment(project._id, [{ driverId: mo._id, areaCode: 'SA2-1' }]);
+  assert(!(await Trip.findById(floorTrip._id).lean()).linkCoverageComputedAt,
+    'a VTS floor placeholder is never re-figured — it has no points to measure');
+  assert((await Trip.findById(realTrip._id).lean()).linkCoverageComputedAt && redo.trips === 1,
+    `a real trip that owns a road there is (re-figured ${redo.trips})`);
+  const q1 = queueRecomputeForAssignment(project._id, [{ driverId: mo._id, areaCode: 'SA2-1' }]);
+  const q2 = queueRecomputeForAssignment(project._id, [{ driverId: mo._id, areaCode: 'SA2-1' }]);
+  assert(q1 === 1 && q2 === 1, 'the same driver + area queued twice is one piece of work');
+  await assignmentQueueIdle();
+  assert(true, 'and the background queue drains');
+
   console.log(`\n🎉 AREA COMPLETION VERIFIED — ${passed} assertions passed`);
   await mongoose.disconnect();
   await mongod.stop();

@@ -131,6 +131,10 @@ function createApp() {
         passwordChangeSignsOut: true,
         // Drivers report downtime with a reason; approved downtime joins working hours.
         downtime: true,
+        // Assigning areas: holders read by area code (as the phone reads them), a multi-area save
+        // can skip signed-off areas instead of failing whole (skipCompleted), and the re-figuring
+        // of earlier trips runs on one background queue instead of one burst per save.
+        assignByCode: true,
       },
     })
   );

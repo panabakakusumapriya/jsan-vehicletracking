@@ -806,24 +806,125 @@ async function rebuildNetworkCoverage(networkVersionId, { onProgress } = {}) {
   };
 }
 
+/** VTS floor placeholders own ledger rows but have no points: their figures are never re-worked. */
+const FLOOR_BATCH = /^vtsfloor-/;
+
+/**
+ * The polygons an area code stands for on the ground: the area itself in every delivery that has
+ * it, plus the zones it was cut into (props.splitFrom.cut), a generation at a time — the same
+ * reading resolveAssignedAreas gives a driver who holds the code.
+ */
+async function groundOfCode(projectId, areaCode) {
+  const docs = await WorkArea.find({ projectId, areaCode }).select('_id networkVersionId').lean();
+  let frontier = [areaCode];
+  for (let depth = 0; depth < 8 && frontier.length; depth++) {
+    // eslint-disable-next-line no-await-in-loop
+    const zones = await WorkArea.find({ projectId, 'props.splitFrom.code': { $in: frontier }, 'props.splitFrom.cut': true })
+      .select('_id networkVersionId areaCode')
+      .lean();
+    docs.push(...zones);
+    frontier = zones.map((z) => z.areaCode);
+  }
+  return docs;
+}
+
 /**
  * A polygon was just assigned: re-figure the drivers' EARLIER trips that were first on roads inside
  * it, so that work moves from outside UKM into their assigned UKM (see assignedAreasForTrip).
  * Only trips that own a road there can change — every other trip's figures are untouched.
- * Called fire-and-forget after an assignment is saved; failures are logged, never thrown.
+ * Failures are logged, never thrown.
+ *
+ * @param opts.yieldBetween  give the event loop back between trips (the API's background queue)
+ * @param opts.skip          (tripId) => true to leave a trip out — one already re-figured since
  */
-async function recomputeForAssignment(projectId, assignments) {
-  const WorkArea = require('../models/WorkArea');
+async function recomputeForAssignment(projectId, assignments, opts = {}) {
+  let trips = 0;
   for (const { driverId, areaCode } of assignments) {
     try {
-      const areaIds = await WorkArea.find({ projectId, areaCode }).distinct('_id');
-      if (!areaIds.length) continue;
-      const tripIds = await LinkCoverage.distinct('firstTripId', { areaId: { $in: areaIds }, firstDriverId: driverId });
-      for (const id of tripIds) await computeTripLinkMetrics(id);
+      const ground = await groundOfCode(projectId, areaCode);
+      if (!ground.length) continue;
+      // networkVersionId leads the query so it rides an index (cov_version_area_len); without it
+      // every assignment scanned the whole coverage ledger.
+      const ids = await LinkCoverage.distinct('firstTripId', {
+        networkVersionId: { $in: [...new Set(ground.map((a) => String(a.networkVersionId)))].map((id) => new mongoose.Types.ObjectId(id)) },
+        areaId: { $in: ground.map((a) => a._id) },
+        firstDriverId: driverId,
+      });
+      if (!ids.length) continue;
+      const tripIds = await Trip.find({ _id: { $in: ids }, importBatchId: { $not: FLOOR_BATCH } }).distinct('_id');
+      for (const id of tripIds) {
+        if (opts.skip && opts.skip(String(id))) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await computeTripLinkMetrics(id);
+        trips += 1;
+        if (opts.onTrip) opts.onTrip(String(id));
+        // eslint-disable-next-line no-await-in-loop
+        if (opts.yieldBetween) await new Promise((resolve) => setImmediate(resolve));
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error('[assignment] re-figuring earlier trips', String(driverId), areaCode, err.message);
     }
+  }
+  return { trips };
+}
+
+/**
+ * The same, for the API: queued and worked one trip at a time in the background.
+ *
+ * Each save used to start its own re-figuring at once. A manager assigning a run of areas in a row
+ * started a run of them side by side, all CPU-heavy, all in the process that also answers every
+ * request — and the panel hung until they were through. Now the save returns straight away and
+ * the work joins one queue: the same driver + area queued twice is done once, a trip already
+ * re-figured since its assignment was saved is not done again, and the event loop is handed back
+ * between trips so requests keep being answered.
+ */
+const assignmentQueue = { items: [], keys: new Set(), running: false, doneAt: new Map() };
+
+function queueRecomputeForAssignment(projectId, assignments) {
+  const now = Date.now();
+  for (const { driverId, areaCode } of assignments || []) {
+    if (!driverId || !areaCode) continue;
+    const key = `${projectId}|${driverId}|${areaCode}`;
+    if (assignmentQueue.keys.has(key)) continue;
+    assignmentQueue.keys.add(key);
+    assignmentQueue.items.push({ key, projectId, driverId, areaCode, queuedAt: now });
+  }
+  if (!assignmentQueue.running && assignmentQueue.items.length) {
+    assignmentQueue.running = true;
+    setImmediate(() => drainAssignmentQueue().catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[assignment] background queue', err.message);
+    }));
+  }
+  return assignmentQueue.items.length;
+}
+
+async function drainAssignmentQueue() {
+  try {
+    while (assignmentQueue.items.length) {
+      const item = assignmentQueue.items.shift();
+      assignmentQueue.keys.delete(item.key);
+      // eslint-disable-next-line no-await-in-loop
+      await recomputeForAssignment(item.projectId, [item], {
+        yieldBetween: true,
+        skip: (id) => (assignmentQueue.doneAt.get(id) || 0) >= item.queuedAt,
+        onTrip: (id) => assignmentQueue.doneAt.set(id, Date.now()),
+      });
+    }
+  } finally {
+    assignmentQueue.running = false;
+    assignmentQueue.doneAt.clear();
+    // Something queued in the last instant, after the loop saw an empty queue.
+    if (assignmentQueue.items.length) queueRecomputeForAssignment(null, []);
+  }
+}
+
+/** Resolves once the background queue is empty — for tests and scripts. */
+async function assignmentQueueIdle() {
+  while (assignmentQueue.running || assignmentQueue.items.length) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
@@ -832,6 +933,8 @@ module.exports = {
   claimInOtherDeliveries,
   computeTripLinkMetrics,
   recomputeForAssignment,
+  queueRecomputeForAssignment,
+  assignmentQueueIdle,
   rebuildNetworkCoverage,
   releaseLinks,
   // exported for the tests

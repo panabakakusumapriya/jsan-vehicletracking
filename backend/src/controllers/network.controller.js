@@ -13,7 +13,7 @@ const AreaAssignment = require('../models/AreaAssignment');
 const AreaCompletion = require('../models/AreaCompletion');
 const User = require('../models/User');
 const Trip = require('../models/Trip');
-const { rebuildNetworkCoverage, recomputeForAssignment } = require('../services/linkCoverage');
+const { rebuildNetworkCoverage, queueRecomputeForAssignment } = require('../services/linkCoverage');
 const { compactLine } = require('../services/driverRoads');
 const { sendCompressed } = require('../utils/compressedJson');
 
@@ -1431,6 +1431,90 @@ function respondBlocked(res, blockers, user) {
   });
 }
 
+/**
+ * Who holds each of these areas right now, read the way the driver's phone reads it.
+ *
+ * Entitlement goes by the customer's area CODE (resolveAssignedAreas), so a row recorded against
+ * another delivery's copy of the same code holds this polygon too. Looking holders up by _id alone
+ * missed those rows: a handover then left the old holder in place and added the new one beside
+ * them -- two drivers on one area, which is exactly what the one-driver rule is there to stop.
+ *
+ * Each row comes back pointed at the selected area (areaId as a string); a second record of the
+ * same driver for the same area is marked `duplicate`. `inherited` lists, per selected area, the
+ * drivers ({ driverId, name }) who hold it through the area it was CUT from
+ * (props.splitFrom.cut): they count as holders for the one-driver rule, but are never released
+ * from here -- that would take the whole parent area off them.
+ */
+async function liveHoldersOf(projectId, areas) {
+  const idByCode = new Map();
+  const ids = [];
+  for (const a of areas) {
+    idByCode.set(a.areaCode, String(a._id));
+    ids.push(a._id);
+  }
+  const rows = await AreaAssignment.find({
+    projectId,
+    releasedAt: null,
+    $or: [{ areaId: { $in: ids } }, { areaCode: { $in: [...idByCode.keys()] } }],
+  }).select('areaId areaCode driverId driverName');
+  const selected = new Set(ids.map(String));
+  const seen = new Set();
+  const current = [];
+  for (const row of rows) {
+    const areaId = selected.has(String(row.areaId)) ? String(row.areaId) : idByCode.get(row.areaCode);
+    if (!areaId) continue;
+    const key = `${areaId}:${row.driverId}`;
+    const duplicate = seen.has(key);
+    seen.add(key);
+    current.push({ _id: row._id, areaId, driverId: row.driverId, driverName: row.driverName, duplicate });
+  }
+
+  // Cut zones: the parent's code (and its parent's, for a zone of a zone) holds them too.
+  const inherited = new Map(); // areaId -> [driver names]
+  const chains = new Map(); // areaId -> [ancestor codes]
+  for (const a of areas) {
+    const from = a.props && a.props.splitFrom;
+    if (from && from.cut && from.code) chains.set(String(a._id), [from.code]);
+  }
+  if (chains.size) {
+    const parentOf = new Map();
+    let frontier = [...new Set([...chains.values()].flat())];
+    for (let depth = 0; depth < 8 && frontier.length; depth++) {
+      // eslint-disable-next-line no-await-in-loop
+      const ups = await WorkArea.find({ projectId, areaCode: { $in: frontier }, 'props.splitFrom.cut': true })
+        .select('areaCode props.splitFrom')
+        .lean();
+      frontier = [];
+      for (const u of ups) {
+        const code = u.props && u.props.splitFrom && u.props.splitFrom.code;
+        if (code && !parentOf.has(u.areaCode)) {
+          parentOf.set(u.areaCode, code);
+          frontier.push(code);
+        }
+      }
+    }
+    for (const codes of chains.values()) {
+      let up = codes[0];
+      for (let depth = 0; depth < 8 && parentOf.has(up); depth++) {
+        up = parentOf.get(up);
+        codes.push(up);
+      }
+    }
+    const allCodes = [...new Set([...chains.values()].flat())];
+    const parentRows = await AreaAssignment.find({ projectId, releasedAt: null, areaCode: { $in: allCodes } })
+      .select('areaCode driverId driverName')
+      .lean();
+    for (const [areaId, codes] of chains) {
+      const byDriver = new Map();
+      for (const r of parentRows) {
+        if (codes.includes(r.areaCode)) byDriver.set(String(r.driverId), r.driverName || 'another driver');
+      }
+      if (byDriver.size) inherited.set(areaId, [...byDriver].map(([driverId, name]) => ({ driverId, name })));
+    }
+  }
+  return { current, inherited };
+}
+
 async function setAreaAssignments(req, res) {
   const scope = await resolveNetworkScope(req);
   if (!scope) return res.status(404).json({ error: 'Network version not found' });
@@ -1440,7 +1524,7 @@ async function setAreaAssignments(req, res) {
   const area = await WorkArea.findOne({
     _id: asObjectId(req.params.areaId) || null,
     networkVersionId: { $in: scope.versionIds },
-  }).select('name areaCode networkVersionId');
+  }).select('name areaCode networkVersionId props.splitFrom');
   if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
 
   const wanted = Array.isArray(req.body.driverIds)
@@ -1454,12 +1538,17 @@ async function setAreaAssignments(req, res) {
     return res.status(400).json({ error: 'One or more of those drivers do not exist' });
   }
 
-  const current = await AreaAssignment.find({ areaId: area._id, releasedAt: null });
+  // By code, as the phone reads it -- see liveHoldersOf.
+  const { current, inherited } = await liveHoldersOf(scope.projectId, [area]);
   const currentIds = new Set(current.map((row) => String(row.driverId)));
   const wantedIds = new Set(wanted);
 
-  const toRelease = current.filter((row) => !wantedIds.has(String(row.driverId)));
+  const toRelease = current.filter((row) => !wantedIds.has(String(row.driverId)) || row.duplicate);
   const toAdd = drivers.filter((driver) => !currentIds.has(String(driver._id)));
+  const wantedSet = new Set(wanted.map(String));
+  const inheritedNames = (inherited.get(String(area._id)) || [])
+    .filter((h) => !wantedSet.has(h.driverId))
+    .map((h) => `${h.name} (through the whole area)`);
 
   // Only a NEW holder can be blocked. Releasing drivers, or re-saving the same set, always goes
   // through — a manager must never be trapped unable to take an area off someone.
@@ -1470,7 +1559,7 @@ async function setAreaAssignments(req, res) {
     const blocker = blockerFor(
       area,
       completions.get(area.areaCode),
-      drivers.map((d) => d.name)
+      [...drivers.map((d) => d.name), ...inheritedNames]
     );
     // The override clears a completion; it can never clear the one-driver-per-area invariant.
     if (blocker && !(override && clearableByOverride(blocker))) {
@@ -1503,15 +1592,16 @@ async function setAreaAssignments(req, res) {
       })),
       { ordered: false }
     );
-    // Roads these drivers already drove inside the area become their assigned UKM — in the
-    // background, so the save is not held up by re-figuring their history.
-    recomputeForAssignment(scope.projectId, toAdd.map((d) => ({ driverId: d._id, areaCode: area.areaCode }))).catch(() => {});
+    // Roads these drivers already drove inside the area become their assigned UKM — queued in the
+    // background (one trip at a time), so the save is not held up by re-figuring their history.
+    queueRecomputeForAssignment(scope.projectId, toAdd.map((d) => ({ driverId: d._id, areaCode: area.areaCode })));
   }
 
-  const rows = await AreaAssignment.find({ areaId: area._id, releasedAt: null }).populate(
-    'driverId',
-    'name email'
-  );
+  const rows = await AreaAssignment.find({
+    projectId: scope.projectId,
+    releasedAt: null,
+    $or: [{ areaId: area._id }, { areaCode: area.areaCode }],
+  }).populate('driverId', 'name email');
   return res.json({ assignments: rows, added: toAdd.length, released: toRelease.length });
 }
 
@@ -1542,7 +1632,7 @@ async function bulkAssign(req, res) {
   const areas = await WorkArea.find({
     _id: { $in: areaIds },
     networkVersionId: { $in: scope.versionIds },
-  }).select('name areaCode networkVersionId');
+  }).select('name areaCode networkVersionId props.splitFrom');
   if (areas.length !== areaIds.length) {
     return res.status(400).json({ error: 'One or more areas do not belong to this network version' });
   }
@@ -1570,13 +1660,11 @@ async function bulkAssign(req, res) {
 
   const areaById = new Map(areas.map((a) => [String(a._id), a]));
   const wanted = new Set(driverIds);
-  const current = await AreaAssignment.find({
-    areaId: { $in: areaIds },
-    releasedAt: null,
-  }).select('areaId driverId driverName');
+  const { current, inherited } = await liveHoldersOf(scope.projectId, areas);
 
   const held = new Map(); // areaId -> Set(driverId)
   for (const row of current) {
+    if (row.duplicate) continue;
     const key = String(row.areaId);
     if (!held.has(key)) held.set(key, new Set());
     held.get(key).add(String(row.driverId));
@@ -1593,7 +1681,10 @@ async function bulkAssign(req, res) {
       if (String(row.areaId) !== areaId) continue;
       const driverId = String(row.driverId);
       const shouldRelease =
-        (mode === 'set' && !wanted.has(driverId)) || (mode === 'remove' && wanted.has(driverId));
+        // A second record of a driver who keeps the area goes too, so they are held once.
+        (row.duplicate && mode !== 'remove' && wanted.has(driverId)) ||
+        (mode === 'set' && !wanted.has(driverId)) ||
+        (mode === 'remove' && wanted.has(driverId));
       if (shouldRelease) releaseIds.push(row._id);
     }
 
@@ -1619,9 +1710,18 @@ async function bulkAssign(req, res) {
   // Blockers are checked once, for every area gaining a driver, and the whole save is refused if
   // any single area is blocked. All-or-nothing on purpose: a lasso over twelve suburbs that
   // silently assigned nine and skipped three would be discovered in the field, not on the screen.
+  //
+  // The one exception is asked for, not silent: `skipCompleted` (the panel sends it for a
+  // multi-area save, and lists the areas it leaves out before saving). A selection that takes in a
+  // signed-off polygon used to fail as a whole — "12 areas cannot be assigned as requested" —
+  // which, with hundreds of areas closed, made assigning several at once nearly impossible. Now
+  // the signed-off ones are left exactly as they are (nobody gains them, nobody is released from
+  // them), the rest are saved, and the response names what was left out.
   const override = req.body && req.body.override === true && mayOverride(req.user);
+  const skipCompleted = req.body && req.body.skipCompleted === true && !override;
+  const skipped = [];
   if (additions.length) {
-    const gaining = [...new Set(additions.map((a) => String(a.areaId)))];
+    let gaining = [...new Set(additions.map((a) => String(a.areaId)))];
     const cycleId = await cycleIdFor(version.projectId);
     const completions = await completionsByCode(
       version.projectId,
@@ -1629,18 +1729,46 @@ async function bulkAssign(req, res) {
       gaining.map((id) => areaById.get(id)).filter(Boolean).map((a) => a.areaCode)
     );
 
+    if (skipCompleted) {
+      const leave = new Set();
+      for (const areaId of gaining) {
+        const area = areaById.get(areaId);
+        const done = area && completions.get(area.areaCode);
+        if (!done) continue;
+        leave.add(areaId);
+        skipped.push(blockerFor(area, done, []));
+      }
+      if (leave.size) {
+        for (let i = additions.length - 1; i >= 0; i--) {
+          if (leave.has(String(additions[i].areaId))) additions.splice(i, 1);
+        }
+        const releasable = new Set(
+          current.filter((row) => !leave.has(String(row.areaId))).map((row) => String(row._id))
+        );
+        for (let i = releaseIds.length - 1; i >= 0; i--) {
+          if (!releasable.has(String(releaseIds[i]))) releaseIds.splice(i, 1);
+        }
+        gaining = gaining.filter((id) => !leave.has(id));
+      }
+    }
+
     const releasing = new Set(releaseIds.map(String));
-    const holdersAfter = new Map(); // areaId -> driver names still holding it after this save
+    // areaId -> (driverId -> name) still holding it after this save. Keyed by driver, so one
+    // person recorded twice -- or holding it both directly and through its parent -- is one holder.
+    const holdersAfter = new Map();
+    const addHolder = (key, driverId, name) => {
+      if (!holdersAfter.has(key)) holdersAfter.set(key, new Map());
+      const m = holdersAfter.get(key);
+      if (!m.has(String(driverId))) m.set(String(driverId), name);
+    };
     for (const row of current) {
       if (releasing.has(String(row._id))) continue;
-      const key = String(row.areaId);
-      if (!holdersAfter.has(key)) holdersAfter.set(key, []);
-      holdersAfter.get(key).push(row.driverName || 'another driver');
+      addHolder(String(row.areaId), row.driverId, row.driverName || 'another driver');
     }
-    for (const add of additions) {
-      const key = String(add.areaId);
-      if (!holdersAfter.has(key)) holdersAfter.set(key, []);
-      holdersAfter.get(key).push(add.driverName);
+    for (const add of additions) addHolder(String(add.areaId), add.driverId, add.driverName);
+    // Held through the area it was cut from: counts here, and is not released from here.
+    for (const [areaId, list] of inherited) {
+      for (const h of list) addHolder(areaId, h.driverId, `${h.name} (through the whole area)`);
     }
 
     const blockers = [];
@@ -1650,7 +1778,7 @@ async function bulkAssign(req, res) {
       const blocker = blockerFor(
         area,
         completions.get(area.areaCode),
-        holdersAfter.get(areaId) || []
+        [...(holdersAfter.get(areaId) || new Map()).values()]
       );
       // An override clears completions only — a second driver on a polygon is refused regardless.
       if (blocker && !(override && clearableByOverride(blocker))) blockers.push(blocker);
@@ -1670,7 +1798,7 @@ async function bulkAssign(req, res) {
       if (err && err.code !== 11000) throw err;
     });
     // As above: earlier driving inside the newly assigned areas becomes assigned UKM.
-    recomputeForAssignment(scope.projectId, additions.map((a) => ({ driverId: a.driverId, areaCode: a.areaCode }))).catch(() => {});
+    queueRecomputeForAssignment(scope.projectId, additions.map((a) => ({ driverId: a.driverId, areaCode: a.areaCode })));
   }
 
   const rows = await AreaAssignment.find({
@@ -1683,6 +1811,8 @@ async function bulkAssign(req, res) {
     areas: areaIds.length,
     added: additions.length,
     released: releaseIds.length,
+    // Signed-off areas left as they were (skipCompleted) — the panel says which.
+    skipped,
   });
 }
 
