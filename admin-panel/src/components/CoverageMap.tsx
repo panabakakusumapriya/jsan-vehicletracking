@@ -199,6 +199,7 @@ export function CoverageMap({
   deliveryTargets,
   holdersByCode,
   onAreasLoaded,
+  showCompleted = true,
 }: {
   /** A committed version — shows coverage and lets road links load. */
   versionId?: string;
@@ -327,6 +328,8 @@ export function CoverageMap({
   holdersByCode?: Record<string, string[]>;
   /** Every polygon's properties once the outlines are in, so the page can act on any of them. */
   onAreasLoaded?: (areas: AreaProps[]) => void;
+  /** Draw the signed-off (completed) polygons. Off leaves only the ground still being worked. */
+  showCompleted?: boolean;
 }) {
   const mapRef = useRef<Map3DHandle>(null);
   const [areas, setAreas] = useState<AreaCollection | null>(null);
@@ -678,6 +681,12 @@ export function CoverageMap({
 
   // A primitive to compare -- a Set never differs by identity in a useMemo dep.
   const selectionKey = (selectedIds || []).join(',');
+  /** The polygons the area layer draws: all of them, or all but the completed ones. */
+  const drawnAreas = useMemo(() => {
+    if (!areas || showCompleted) return areas;
+    return { ...areas, features: areas.features.filter((f) => !f.properties.completed) };
+  }, [areas, showCompleted]);
+
   const selectedFeatures = useMemo(() => {
     if (!selectionKey || !areas) return [];
     const want = new Set(selectionKey.split(','));
@@ -873,11 +882,11 @@ export function CoverageMap({
 
     const out: Layer[] = [];
 
-    if (showAreas && areas?.features.length) {
+    if (showAreas && drawnAreas?.features.length) {
       out.push(
         new GeoJsonLayer<AreaProps>({
           id: 'work-areas',
-          data: areas as unknown as never,
+          data: drawnAreas as unknown as never,
           pickable: true,
           stroked: true,
           filled: true,
@@ -1147,6 +1156,7 @@ export function CoverageMap({
     selectedFeatures,
     driverColorByArea,
     holdersByCode,
+    drawnAreas,
   ]);
 
   const getTooltip = useCallback((info: PickingInfo) => {

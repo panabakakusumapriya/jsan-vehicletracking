@@ -1208,6 +1208,23 @@ function ProgressTab({
   };
   /** Areas nobody holds yet (and nobody signed off) stand out; every other area is pushed back. */
   const [highlightUnassigned, setHighlightUnassigned] = useState(false);
+  /** Completed (signed-off) polygons on the map, or hidden to leave only the ground still in play.
+   *  Remembered for the next visit. */
+  const [showCompletedAreas, setShowCompletedAreasState] = useState(() => {
+    try {
+      return localStorage.getItem('cov-show-completed') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const setShowCompletedAreas = (on: boolean) => {
+    setShowCompletedAreasState(on);
+    try {
+      localStorage.setItem('cov-show-completed', on ? '1' : '0');
+    } catch {
+      /* private window: the switch still works, it just is not remembered */
+    }
+  };
   /** The road layers are one choice shown as switches: turning one on turns the others off. */
   const roadSwitch = (scope: 'assigned' | 'covered' | 'all') => (on: boolean) =>
     setRoadScope(on ? scope : roadScope === scope ? 'off' : roadScope);
@@ -1849,6 +1866,17 @@ function ProgressTab({
                   explain={layersExplain}
                   hint="Makes the orange areas stand out and fades the rest, to find ground to hand out."
                 />
+                <LayerRow
+                  on={showCompletedAreas}
+                  onChange={(on) => {
+                    setShowCompletedAreas(on);
+                    if (on) setShowAreasLayer(true);
+                  }}
+                  label="Completed areas"
+                  note={completedCount.toLocaleString()}
+                  explain={layersExplain}
+                  hint="The dark-green, signed-off polygons. Switch off to see only the ground still being worked."
+                />
                 {roadScope !== 'off' && (
                   <LayerRow
                     on={colorRoadsByDriver}
@@ -1958,6 +1986,7 @@ function ProgressTab({
           driverColorByArea={driverViz.byArea}
           driverNamesByArea={driverViz.namesByArea}
           showAreas={showAreasLayer}
+          showCompleted={showCompletedAreas}
           roadScope={roadScope}
           // Refetch outlines and roads only when THEY change (a sign-off, a clear, a split). Who
           // holds what is passed live instead, so an assignment does not re-download the region.
