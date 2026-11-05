@@ -1,7 +1,7 @@
 import { PageIcon } from '../components/AppIcon';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { AREA_STATUS, CoverageMap } from '../components/CoverageMap';
+import { AREA_STATUS, CoverageMap, type AreaProps } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
@@ -635,8 +635,21 @@ function ProgressTab({
     setFocusNonce((n) => n + 1);
   }, []);
 
-  /** Plain click replaces the selection; shift/ctrl-click builds a cluster up one area at a time. */
-  const toggleSelect = useCallback((areaId: string, additive: boolean) => {
+  /**
+   * "Pick more areas": while on, a plain click ADDS a polygon to the selection instead of replacing
+   * it. Shift/Ctrl-click always did that, but nothing on screen said so, and a manager clicking a
+   * second polygon saw the first one drop -- "unable to assign more than one polygon" to a driver.
+   */
+  const [pickMore, setPickMore] = useState(false);
+  const pickMoreRef = useRef(pickMore);
+  pickMoreRef.current = pickMore;
+  useEffect(() => {
+    if (selectedIds.length === 0) setPickMore(false);
+  }, [selectedIds.length]);
+
+  /** Plain click replaces the selection; shift/ctrl-click (or "Pick more") builds a cluster up. */
+  const toggleSelect = useCallback((areaId: string, keyHeld: boolean) => {
+    const additive = keyHeld || pickMoreRef.current;
     // Clicking a polygon asks about the area, so a picked driver's card gives way to it. If that
     // area was already the one selected, the click only brings its card back — it must not also
     // deselect it.
@@ -745,14 +758,42 @@ function ProgressTab({
     }
   };
 
+  const assignmentsSig = useRef('');
   const loadAssignments = useCallback(() => {
     api
       .get<{ assignments: AreaAssignment[] }>(`/api/network/versions/${scopeId}/assignments`)
-      .then((r) => setAssignments(r.assignments))
-      .catch(() => setAssignments([]));
+      .then((r) => {
+        // Unchanged -> no new array, so the map and table are not redrawn for nothing.
+        const sig = (r.assignments || [])
+          .map((a) => `${a._id}:${a.areaId}:${typeof a.driverId === 'object' && a.driverId ? a.driverId._id : a.driverId}`)
+          .sort()
+          .join('|');
+        if (sig === assignmentsSig.current) return;
+        assignmentsSig.current = sig;
+        setAssignments(r.assignments || []);
+      })
+      .catch(() => {
+        /* a failed refresh keeps the last list rather than blanking every polygon */
+      });
   }, [scopeId]);
 
-  useEffect(loadAssignments, [loadAssignments]);
+  useEffect(() => {
+    assignmentsSig.current = '';
+    setAssignments([]);
+    loadAssignments();
+  }, [loadAssignments]);
+
+  // Another manager's changes show without a reload: the list is small and cheap to re-read now
+  // that the map no longer downloads everything again when it changes.
+  useEffect(() => {
+    const tick = () => { if (!document.hidden) loadAssignments(); };
+    const timer = window.setInterval(tick, 120_000);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [loadAssignments]);
 
   useEffect(() => {
     api
@@ -807,6 +848,55 @@ function ProgressTab({
     () => positions.map((p) => `${p.driverId}\t${p.name}`).sort().join('\n'),
     [positions]
   );
+
+  /**
+   * areaCode -> who holds it now, for the map. Read by code, as the phone and the server read it,
+   * and re-read after every save -- so the map shows a new assignment straight away, without
+   * downloading every outline and road file of the region again (which is what froze the panel).
+   */
+  const holdersByCode = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const a of assignments) {
+      if (!a.areaCode) continue;
+      const name = typeof a.driverId === 'object' && a.driverId ? a.driverId.name : a.driverName || 'Unknown driver';
+      const list = out[a.areaCode] || (out[a.areaCode] = []);
+      if (!list.includes(name)) list.push(name);
+    }
+    return out;
+  }, [assignments]);
+
+  /** Every polygon on the map as an assignable row -- see findArea. */
+  const [mapAreas, setMapAreas] = useState<Map<string, CoverageArea>>(() => new Map());
+  const onAreasLoaded = useCallback((list: AreaProps[]) => {
+    const m = new Map<string, CoverageArea>();
+    for (const p of list) {
+      if (!p.areaId) continue;
+      m.set(p.areaId, {
+        _id: p.areaId,
+        areaCode: p.areaCode,
+        name: p.name,
+        parentName: p.parentName ?? null,
+        priority: p.priority ?? 0,
+        areaSqKm: p.areaSqKm ?? null,
+        targetMeters: p.targetMeters ?? 0,
+        targetLinks: p.targetLinks ?? 0,
+        coveredMeters: p.coveredMeters ?? 0,
+        coveredLinks: p.coveredLinks ?? 0,
+        bbox: p.bbox ?? undefined,
+        completed: p.completed,
+        completedAt: p.completedAt ?? null,
+        completedByName: p.completedByName ?? null,
+      });
+    }
+    setMapAreas(m);
+  }, []);
+
+  /** Opens the assign dialog; stable, so the memoised table does not redraw over it. */
+  const openAssign = useCallback((list: CoverageArea[]) => {
+    if (list.length) setAssigning(list);
+  }, []);
+  /** What the last save left out (signed-off areas), shown under the map until dismissed. */
+  const [assignNote, setAssignNote] = useState<string | null>(null);
 
   // areaId -> the drivers currently responsible for it. Built once per load rather than filtered
   // per row, so a 402-row table is not 402 passes over the assignment list.
@@ -933,9 +1023,24 @@ function ProgressTab({
     return { byArea, namesByArea, legend, byDriver };
   }, [assignments, coverageDrivers, positionDriversKey]);
 
+  /**
+   * Any area by id: the table's row when it has one, else the polygon the map drew.
+   *
+   * The table holds at most 1,000 areas (3,000 for a whole project), biggest first, and assigning
+   * used to look the picked polygon up there only. For every polygon past that cut -- most of a
+   * region's small areas and zones -- "Assign driver..." silently did nothing, and a multi-pick
+   * quietly dropped them: "unable to assign the work area in most of the areas".
+   */
+  const findArea = useCallback(
+    (id: string): CoverageArea | null =>
+      areas.find((a) => a._id === id) ??
+      mapAreas.get(id) ??
+      (searchPickRef.current?._id === id ? searchPickRef.current : null),
+    [areas, mapAreas]
+  );
   const selectedAreas = useMemo(
-    () => areas.filter((a) => selectedIds.includes(a._id)),
-    [areas, selectedIds]
+    () => selectedIds.map((id) => findArea(id)).filter((a): a is CoverageArea => Boolean(a)),
+    [findArea, selectedIds]
   );
 
   /**
@@ -1315,12 +1420,26 @@ function ProgressTab({
               <button
                 className="btn-ghost"
                 onClick={() => {
-                  const row = areas.find((a) => a._id === shownDetail.area._id)
-                    ?? (searchPickRef.current?._id === shownDetail.area._id ? searchPickRef.current : null);
-                  if (row) setAssigning([row]);
+                  const a = shownDetail.area;
+                  const row = findArea(a._id) ?? {
+                    _id: a._id, areaCode: a.areaCode, name: a.name, parentName: a.parentName,
+                    priority: a.priority, areaSqKm: null, targetMeters: a.targetMeters,
+                    targetLinks: a.targetLinks, coveredMeters: shownDetail.coveredMeters,
+                    coveredLinks: shownDetail.coveredLinks, completed: false,
+                  };
+                  setAssigning([row]);
                 }}
               >
                 Assign driver…
+              </button>
+            )}
+            {canEdit && !shownDone && (
+              <button
+                className="btn-ghost"
+                title="Then click more polygons on the map to add them, and assign them all to one driver"
+                onClick={() => setPickMore(true)}
+              >
+                + Pick more areas
               </button>
             )}
             {/* Too much road for one driver? Cut it into zones of a chosen size. Only while nobody
@@ -1814,8 +1933,11 @@ function ProgressTab({
           driverNamesByArea={driverViz.namesByArea}
           showAreas={showAreasLayer}
           roadScope={roadScope}
-          // Refetch when assignments move or an area is signed off — both change what is drawn.
-          assignedKey={`${assignments.length}:${reloadKey}`}
+          // Refetch outlines and roads only when THEY change (a sign-off, a clear, a split). Who
+          // holds what is passed live instead, so an assignment does not re-download the region.
+          assignedKey={String(reloadKey)}
+          holdersByCode={holdersByCode}
+          onAreasLoaded={onAreasLoaded}
           showTracks={showTracks}
           markersOn={markersOn}
           onMarkersOnChange={setMarkersOn}
@@ -1844,10 +1966,13 @@ function ProgressTab({
           deliveryTargets={deliveryTargets}
         />
 
-        {selectedIds.length > 1 && (
+        {(selectedIds.length > 1 || pickMore) && (
           <div className="cov-selection-bar">
             <div>
               <strong>{selectedIds.length} area{selectedIds.length === 1 ? '' : 's'} selected</strong>
+              {pickMore && (
+                <span style={{ color: 'var(--muted)' }}> · click more polygons to add them (click one again to drop it)</span>
+              )}
               <span style={{ color: 'var(--muted)' }}>
                 {' · '}{km(selectedAreas.reduce((sum, a) => sum + a.targetMeters, 0))} km
                 {' · '}{selectedAreas.reduce((sum, a) => sum + a.targetLinks, 0).toLocaleString()} links
@@ -1855,12 +1980,23 @@ function ProgressTab({
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button className="btn-ghost" onClick={() => setSelectedIds([])}>Clear</button>
+              {canEdit && !pickMore && (
+                <button className="btn-ghost" title="Plain clicks add areas instead of replacing them" onClick={() => setPickMore(true)}>
+                  + Pick more
+                </button>
+              )}
               {canEdit && (
-                <button className="btn" onClick={() => setAssigning(selectedAreas)}>
-                  Assign drivers…
+                <button className="btn" disabled={selectedAreas.length === 0} onClick={() => openAssign(selectedAreas)}>
+                  Assign {selectedAreas.length > 1 ? `${selectedAreas.length} areas` : 'driver'}…
                 </button>
               )}
             </div>
+          </div>
+        )}
+        {assignNote && (
+          <div className="cov-issue warn" style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <span style={{ flex: 1 }}>{assignNote}</span>
+            <button type="button" className="cov-pop-x" aria-label="Dismiss" onClick={() => setAssignNote(null)}>✕</button>
           </div>
         )}
       </div>
@@ -2035,75 +2171,12 @@ function ProgressTab({
             </select>
           </div>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Area</th>
-              <th>Region</th>
-              <th>Priority</th>
-              <th>Links</th>
-              <th>Target</th>
-              <th>Assigned to</th>
-              <th style={{ width: '18%' }}>Progress</th>
-            </tr>
-          </thead>
-          <tbody>
-            {areas.map((a) => (
-              <tr
-                key={a._id}
-                className="cov-row-clickable"
-                onClick={() => showAreaOnMap(a._id)}
-                title={`Show ${a.name} on the map`}
-              >
-                <td>
-                  <div style={{ fontWeight: 600 }}>
-                    {a.name}
-                    {a.completed && (
-                      <span
-                        className="badge green"
-                        style={{ marginLeft: 6 }}
-                        title={`Signed off${a.completedByName ? ` by ${a.completedByName}` : ''}${
-                          a.completedAt ? ` on ${new Date(a.completedAt).toLocaleDateString()}` : ''
-                        }`}
-                      >
-                        ✓ Completed
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'monospace' }}>{a.areaCode}</div>
-                </td>
-                <td style={{ color: 'var(--muted)' }}>{a.parentName || '—'}</td>
-                <td><span className="badge gray">P{a.priority}</span></td>
-                <td>{a.targetLinks.toLocaleString()}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>{km(a.targetMeters)} km</td>
-                <td onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="cov-assign-cell"
-                    onClick={() => setAssigning([a])}
-                    title="Assign drivers to this area"
-                  >
-                    {(driversByArea.get(a._id) || []).length === 0 ? (
-                      <span style={{ color: 'var(--muted)' }}>+ assign</span>
-                    ) : (
-                      (driversByArea.get(a._id) || []).map((d) => (
-                        <span key={d.id} className="badge gray" style={{ marginRight: 4 }}>{d.name}</span>
-                      ))
-                    )}
-                  </button>
-                </td>
-                <td>
-                  <div className="cov-cell">
-                    <Bar value={a.coveredMeters} total={a.targetMeters} tone="green" />
-                    <span className="cov-pct">{pct(a.coveredMeters, a.targetMeters).toFixed(1)}%</span>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {areas.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No areas match.</td></tr>
-            )}
-          </tbody>
-        </table>
+        <AreasTable
+          areas={areas}
+          driversByArea={driversByArea}
+          onShow={showAreaOnMap}
+          onAssign={openAssign}
+        />
       </div>
 
       {splitting && (
@@ -2145,9 +2218,10 @@ function ProgressTab({
           areas={assigning}
           driversByArea={driversByArea}
           onClose={() => setAssigning(null)}
-          onSaved={() => {
+          onSaved={(note) => {
             setAssigning(null);
             setSelectedIds([]);
+            setAssignNote(note);
             loadAssignments();
           }}
         />
@@ -2878,6 +2952,114 @@ function ReportView({
 /* ================================================================= assignment */
 
 /**
+ * The areas table under the map, on its own so a click on the map does not redraw it.
+ *
+ * It used to render every row it was given (up to 3,000 areas) inside the page, so each click that
+ * picked or added a polygon re-rendered thousands of rows as well as the map; building up a
+ * selection of a few areas felt like the panel had hung. Memoised, and drawn 200 rows at a time.
+ */
+const TABLE_PAGE = 200;
+const AreasTable = memo(function AreasTable({
+  areas,
+  driversByArea,
+  onShow,
+  onAssign,
+}: {
+  areas: CoverageArea[];
+  driversByArea: Map<string, { id: string; name: string }[]>;
+  onShow: (areaId: string) => void;
+  onAssign: (areas: CoverageArea[]) => void;
+}) {
+  const [limit, setLimit] = useState(TABLE_PAGE);
+  // A new search or filter starts from the top again.
+  useEffect(() => setLimit(TABLE_PAGE), [areas]);
+  const shown = areas.length > limit ? areas.slice(0, limit) : areas;
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Region</th>
+          <th>Priority</th>
+          <th>Links</th>
+          <th>Target</th>
+          <th>Assigned to</th>
+          <th style={{ width: '18%' }}>Progress</th>
+        </tr>
+      </thead>
+      <tbody>
+        {shown.map((a) => (
+          <tr
+            key={a._id}
+            className="cov-row-clickable"
+            onClick={() => onShow(a._id)}
+            title={`Show ${a.name} on the map`}
+          >
+            <td>
+              <div style={{ fontWeight: 600 }}>
+                {a.name}
+                {a.completed && (
+                  <span
+                    className="badge green"
+                    style={{ marginLeft: 6 }}
+                    title={`Signed off${a.completedByName ? ` by ${a.completedByName}` : ''}${
+                      a.completedAt ? ` on ${new Date(a.completedAt).toLocaleDateString()}` : ''
+                    }`}
+                  >
+                    ✓ Completed
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'monospace' }}>{a.areaCode}</div>
+            </td>
+            <td style={{ color: 'var(--muted)' }}>{a.parentName || '—'}</td>
+            <td><span className="badge gray">P{a.priority}</span></td>
+            <td>{a.targetLinks.toLocaleString()}</td>
+            <td style={{ whiteSpace: 'nowrap' }}>{km(a.targetMeters)} km</td>
+            <td onClick={(e) => e.stopPropagation()}>
+              <button
+                className="cov-assign-cell"
+                onClick={() => onAssign([a])}
+                title="Assign drivers to this area"
+              >
+                {(driversByArea.get(a._id) || []).length === 0 ? (
+                  <span style={{ color: 'var(--muted)' }}>+ assign</span>
+                ) : (
+                  (driversByArea.get(a._id) || []).map((d) => (
+                    <span key={d.id} className="badge gray" style={{ marginRight: 4 }}>{d.name}</span>
+                  ))
+                )}
+              </button>
+            </td>
+            <td>
+              <div className="cov-cell">
+                <Bar value={a.coveredMeters} total={a.targetMeters} tone="green" />
+                <span className="cov-pct">{pct(a.coveredMeters, a.targetMeters).toFixed(1)}%</span>
+              </div>
+            </td>
+          </tr>
+        ))}
+        {areas.length === 0 && (
+          <tr><td colSpan={7} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No areas match.</td></tr>
+        )}
+        {areas.length > shown.length && (
+          <tr>
+            <td colSpan={7} style={{ textAlign: 'center', padding: '14px 24px' }}>
+              <button type="button" className="btn-ghost" onClick={() => setLimit((n) => n + TABLE_PAGE)}>
+                Show {Math.min(TABLE_PAGE, areas.length - shown.length)} more
+              </button>
+              <span style={{ color: 'var(--muted)', fontSize: 12, marginLeft: 10 }}>
+                {shown.length.toLocaleString()} of {areas.length.toLocaleString()} shown · search to find one quickly
+              </span>
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  );
+});
+
+/**
  * Set which drivers are responsible for one work area.
  *
  * A multi-select rather than one-driver-per-area: a 1,400 km² rural SA2 is realistically shared
@@ -2899,7 +3081,8 @@ function AssignDriversModal({
   areas: CoverageArea[];
   driversByArea: Map<string, { id: string; name: string }[]>;
   onClose: () => void;
-  onSaved: () => void;
+  /** `note`: what the save left out (signed-off areas), for the page to show; null if nothing. */
+  onSaved: (note: string | null) => void;
 }) {
   /**
    * Pre-tick only drivers who hold EVERY selected area.
@@ -2923,6 +3106,13 @@ function AssignDriversModal({
   const [error, setError] = useState<string | null>(null);
   // Set by a refusal the server says this user may force past — only ever a completed area.
   const [canOverride, setCanOverride] = useState(false);
+  /**
+   * Several areas at once: signed-off ones are left out rather than failing the whole save (the
+   * server's skipCompleted). Listed here first, so nothing is skipped without being said.
+   */
+  const multi = areas.length > 1;
+  const completedOnes = useMemo(() => (multi ? areas.filter((a) => a.completed) : []), [areas, multi]);
+  const allCompleted = multi && completedOnes.length === areas.length;
 
   useEffect(() => {
     const projectId =
@@ -2955,13 +3145,22 @@ function AssignDriversModal({
     setCanOverride(false);
     try {
       // One request for the whole selection — see bulkAssign in network.controller.js.
-      await api.put(`/api/network/versions/${scopeId}/assignments`, {
+      const r = await api.put<{ skipped?: { name: string }[] }>(`/api/network/versions/${scopeId}/assignments`, {
         areaIds: areas.map((a) => a._id),
         driverIds: selected,
         mode: 'set',
+        ...(multi && !override ? { skipCompleted: true } : {}),
         ...(override ? { override: true } : {}),
       });
-      onSaved();
+      const skipped = r?.skipped || [];
+      onSaved(
+        skipped.length
+          ? `${skipped.length} signed-off area${skipped.length === 1 ? ' was' : 's were'} left as ${skipped.length === 1 ? 'it was' : 'they were'}: ${skipped
+              .slice(0, 6)
+              .map((b) => b.name)
+              .join(', ')}${skipped.length > 6 ? ` +${skipped.length - 6} more` : ''}. Reopen an area first to hand it out again.`
+          : null
+      );
     } catch (e) {
       // A 409 is a rule, not a failure: the area is signed off, or it already has a driver. The
       // body says which, and whether this user is allowed to force past it.
@@ -2999,6 +3198,16 @@ function AssignDriversModal({
           coverage belongs to whoever drove a road first, so the driver will see those roads as done.
           To have {areas.length === 1 ? 'it' : 'an area'} driven again from zero, use
           {' '}<b>Clear driven data</b> on the area’s card first.
+        </div>
+      )}
+      {completedOnes.length > 0 && (
+        <div className="cov-issue warn" style={{ marginBottom: 10 }}>
+          {allCompleted
+            ? 'Every selected area is signed off (completed). Reopen one first to hand it out again.'
+            : `${completedOnes.length} of these ${areas.length} areas ${completedOnes.length === 1 ? 'is' : 'are'} signed off and will be left as ${completedOnes.length === 1 ? 'it is' : 'they are'}: ${completedOnes
+                .slice(0, 4)
+                .map((a) => a.name)
+                .join(', ')}${completedOnes.length > 4 ? ` +${completedOnes.length - 4} more` : ''}. The other ${areas.length - completedOnes.length} will be saved.`}
         </div>
       )}
       {areas.length > 1 && commonDrivers.length === 0 &&
@@ -3051,8 +3260,8 @@ function AssignDriversModal({
             Assign anyway
           </button>
         )}
-        <button className="btn" disabled={busy} onClick={() => save()}>
-          {busy ? 'Saving…' : selected.length === 0 ? 'Release area' : 'Assign driver'}
+        <button className="btn" disabled={busy || (allCompleted && selected.length > 0)} onClick={() => save()}>
+          {busy ? 'Saving…' : selected.length === 0 ? (multi ? 'Release areas' : 'Release area') : multi ? `Assign ${areas.length - completedOnes.length} areas` : 'Assign driver'}
         </button>
       </div>
     </Modal>

@@ -44,7 +44,7 @@ const BLUE: [number, number, number] = [37, 99, 235];
 
 type Geometry = { type: string; coordinates: unknown };
 
-interface AreaProps {
+export interface AreaProps {
   areaId?: string;
   areaCode: string;
   name: string;
@@ -62,8 +62,8 @@ interface AreaProps {
   completedAt?: string | null;
   completedByName?: string | null;
   /**
-   * Who holds this area, delivered with the polygon itself. Authoritative over the separately
-   * fetched assignment list, which can be older than the map it is describing.
+   * Who held this area when the outlines were fetched. The page's live list (`holdersByCode`) wins
+   * when it is passed: it is re-read after every save, while the outlines are not.
    */
   assignedTo?: string[];
 }
@@ -197,6 +197,8 @@ export function CoverageMap({
   focusBox,
   onStateCoverage,
   deliveryTargets,
+  holdersByCode,
+  onAreasLoaded,
 }: {
   /** A committed version — shows coverage and lets road links load. */
   versionId?: string;
@@ -315,9 +317,21 @@ export function CoverageMap({
   deliveryTargets?: Record<string, number>;
   /** Reports what came back, so the page can show the count and how many are still snapping. */
   onTracksMeta?: (meta: { count: number; pendingSnap: number; truncated: boolean }) => void;
+  /**
+   * areaCode -> who holds it now, from the page's live assignment list (re-read after every save).
+   *
+   * When passed, it decides which polygons and roads read as held, instead of the copy that came
+   * with the outlines. That is what lets an assignment show without downloading every outline and
+   * road file of the region again -- which is what used to freeze the panel after each save.
+   */
+  holdersByCode?: Record<string, string[]>;
+  /** Every polygon's properties once the outlines are in, so the page can act on any of them. */
+  onAreasLoaded?: (areas: AreaProps[]) => void;
 }) {
   const mapRef = useRef<Map3DHandle>(null);
   const [areas, setAreas] = useState<AreaCollection | null>(null);
+  /** The road files drawn right now, for effects that must not re-run on every change of them. */
+  const netsRef = useRef<RoadNet[]>([]);
   /**
    * Markers drivers dropped on this delivery's ground (the last year), drawn as pins over the
    * roads — the reviewer sees "Road Is Impassable" where the red road is. Switched on and off from
@@ -384,6 +398,12 @@ export function CoverageMap({
       ? `/api/network/imports/${importJobId}/preview.geojson`
       : null;
 
+  const areasLoadedRef = useRef(onAreasLoaded);
+  areasLoadedRef.current = onAreasLoaded;
+  useEffect(() => {
+    if (areas) areasLoadedRef.current?.(areas.features.map((f) => f.properties));
+  }, [areas]);
+
   useEffect(() => {
     if (!source) return;
     setLoading(true);
@@ -403,8 +423,9 @@ export function CoverageMap({
       .finally(() => setLoading(false));
   }, [source]);
 
-  // A sign-off, a clear or an assignment changes what the polygons say (the completed border, the
-  // fill, who holds it). Refetch them quietly — without re-framing the camera the reader has set.
+  // A sign-off, a clear or a split changes what the polygons say (the completed border, the fill,
+  // the zones). Refetch them quietly -- without re-framing the camera the reader has set. An
+  // assignment does NOT come through here: who holds what arrives live as `holdersByCode`.
   const firstKey = useRef(true);
   useEffect(() => {
     if (firstKey.current) { firstKey.current = false; return; }
@@ -450,10 +471,25 @@ export function CoverageMap({
         // Deliveries that are no longer in view (another region picked) go at once.
         const wanted = new Set(list.map((b) => `${b.versionId}-${b.key}`));
         setNets((prev) => prev.filter((n) => wanted.has(`${n.versionId}-${n.key}`)));
+        // A file already drawn is kept as it is: its key names its contents, so the same key is the
+        // same roads. Only a delivery whose file changed (a split, a roads-only import) loads again,
+        // and when none did, nothing is redrawn at all.
+        const inHand = new Map(netsRef.current.map((n) => [`${n.versionId}-${n.key}`, n]));
+        if (list.every((b) => inHand.has(`${b.versionId}-${b.key}`))) {
+          const same = list.map((b) => inHand.get(`${b.versionId}-${b.key}`)!);
+          const current = netsRef.current;
+          if (same.length !== current.length || same.some((n, i) => n !== current[i])) setNets(same);
+          return;
+        }
         setNetLoading({ done: 0, total: list.length, mb: 0 });
         const got: RoadNet[] = [];
         let mbDone = 0;
         for (let i = 0; i < list.length; i++) {
+          const kept = inHand.get(`${list[i].versionId}-${list[i].key}`);
+          if (kept) {
+            got.push(kept);
+            continue;
+          }
           let net: RoadNet;
           try {
             // eslint-disable-next-line no-await-in-loop
@@ -485,7 +521,8 @@ export function CoverageMap({
     return () => {
       alive = false;
     };
-    // assignedKey: a split or a roads-only import gives a delivery a new file.
+    // assignedKey: a split or a roads-only import gives a delivery a new file. Files that did not
+    // change are kept (above), so a sign-off or a clear costs nothing here.
   }, [versionId, wantRoads, assignedKey]);
 
   // What is driven, held and signed off — small, and fetched again whenever the page says the
@@ -624,20 +661,28 @@ export function CoverageMap({
   // the tooltip would name whoever held the area when the map first drew.
   const driverNamesRef = useRef(driverNamesByArea);
   driverNamesRef.current = driverNamesByArea;
-  const netsRef = useRef(nets);
+  const holdersByCodeRef = useRef(holdersByCode);
+  holdersByCodeRef.current = holdersByCode;
   netsRef.current = nets;
   const roadStateRef = useRef(roadState);
   roadStateRef.current = roadState;
   // Area code -> who holds it now, for the road tooltip.
   const holdersRef = useRef(new Map<string, string[]>());
   holdersRef.current = useMemo(
-    () => new Map((areas?.features || []).map((f) => [f.properties.areaCode, f.properties.assignedTo || []])),
-    [areas]
+    () => new Map((areas?.features || []).map((f) => [
+      f.properties.areaCode,
+      holdersByCode ? holdersByCode[f.properties.areaCode] || [] : f.properties.assignedTo || [],
+    ])),
+    [areas, holdersByCode]
   );
 
-  const selected = useMemo(() => new Set(selectedIds || []), [selectedIds]);
-  // A primitive deck.gl can compare — a Set never differs by identity in a useMemo dep.
+  // A primitive to compare -- a Set never differs by identity in a useMemo dep.
   const selectionKey = (selectedIds || []).join(',');
+  const selectedFeatures = useMemo(() => {
+    if (!selectionKey || !areas) return [];
+    const want = new Set(selectionKey.split(','));
+    return areas.features.filter((f) => want.has(f.properties.areaId || ''));
+  }, [selectionKey, areas]);
   const filterKey = (driverFilter || []).join(',');
   const driverSet = useMemo(() => new Set(driverFilter || []), [driverFilter]);
   const visibleTracks = useMemo(
@@ -660,7 +705,8 @@ export function CoverageMap({
       // Per area: 1 held by a driver, 2 signed off.
       const flags = new Uint8Array(net.areas.length);
       net.areas.forEach((a, i) => {
-        if (roadState?.heldCodes.has(a.code)) flags[i] |= 1;
+        const held = holdersByCode ? (holdersByCode[a.code]?.length ?? 0) > 0 : roadState?.heldCodes.has(a.code);
+        if (held) flags[i] |= 1;
         if (roadState?.signedOffCodes.has(a.code)) flags[i] |= 2;
       });
       // Pass 1 decides each link's bucket and colour; pass 2 copies it into that bucket's own
@@ -732,7 +778,7 @@ export function CoverageMap({
       buckets.forEach((out, j) => { out.startIndices[out.length] = nVert[j]; });
       return { net, todo: buckets[0], done: buckets[1], shown, driven };
     });
-  }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet]);
+  }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet, holdersByCode]);
 
   /**
    * Two layers per delivery over the SAME binary: the roads still to drive first, thin; the driven
@@ -801,11 +847,12 @@ export function CoverageMap({
     const shadeOf = (p: AreaProps): [number, number, number] => priorityColor(p.priority);
 
     /**
-     * Held by somebody right now. The polygon's own `assignedTo` is the truth; the colour map is
-     * only a fallback for an older server that does not send it yet.
+     * Held by somebody right now: the page's live list when it passes one, else the copy that came
+     * with the outlines. The colour map is a fallback for an older server.
      */
+    const holdersOf = (p: AreaProps) => (holdersByCode ? holdersByCode[p.areaCode] || [] : p.assignedTo || []);
     const isAssigned = (p: AreaProps) =>
-      (p.assignedTo ? p.assignedTo.length > 0 : false) || Boolean(driverColorByArea?.[p.areaId || '']);
+      holdersOf(p).length > 0 || Boolean(driverColorByArea?.[p.areaId || '']);
     /**
      * An assigned polygon is drawn as an OUTLINE, with no fill at all.
      *
@@ -819,9 +866,10 @@ export function CoverageMap({
     /** "Highlight unassigned" pushes every other area back so the open ground stands out. */
     const dimmed = (p: AreaProps) => isFaded(p) || (highlightUnassigned && statusOf(p) !== 'open');
 
-    /** Outside the driver filter: kept on the map for context, but pushed well back. */
+    /** Outside the driver filter: kept on the map for context, but pushed well back. (A selected
+     *  area is drawn again on top by the selection layer, so it never sits faded.) */
     const isFaded = (p: AreaProps) =>
-      Boolean(highlightAreaIds) && !highlightAreaIds!.has(p.areaId || '') && !selected.has(p.areaId || '');
+      Boolean(highlightAreaIds) && !highlightAreaIds!.has(p.areaId || '');
 
     const out: Layer[] = [];
 
@@ -834,8 +882,6 @@ export function CoverageMap({
           stroked: true,
           filled: true,
           getFillColor: (f: { properties: AreaProps }) => {
-            const id = f.properties.areaId || '';
-            if (selected.has(id)) return [0, 80, 169, 190]; // selected reads first, before hue
             const st = statusOf(f.properties);
             /**
              * An assigned area keeps NO fill while its roads are on the map.
@@ -861,8 +907,6 @@ export function CoverageMap({
           },
           // The outline answers "whose is this", independently of the fill's percentage.
           getLineColor: (f: { properties: AreaProps }) => {
-            const id = f.properties.areaId || '';
-            if (selected.has(id)) return [15, 23, 42, 255];
             if (isFaded(f.properties)) return [100, 116, 139, 70];
             const st = statusOf(f.properties);
             if (mode === 'assignment' || st === 'done') {
@@ -877,15 +921,13 @@ export function CoverageMap({
           // An assigned outline has to carry on its own what a fill used to say, so it is drawn
           // heavier than an unassigned one.
           getLineWidth: (f: { properties: AreaProps }) =>
-            selected.has(f.properties.areaId || '')
+            f.properties.completed
               ? 3
-              : f.properties.completed
-                ? 3
-                : isAssigned(f.properties)
-                  ? 2
-                  : highlightUnassigned
-                    ? 2.5
-                    : 1.5,
+              : isAssigned(f.properties)
+                ? 2
+                : highlightUnassigned
+                  ? 2.5
+                  : 1.5,
           lineWidthUnits: 'pixels',
           lineWidthMinPixels: 1.2,
           /**
@@ -902,20 +944,20 @@ export function CoverageMap({
               mode === 'assignment' &&
               !highlightUnassigned &&
               !isAssigned(f.properties) &&
-              !f.properties.completed &&
-              !selected.has(f.properties.areaId || '')
+              !f.properties.completed
                 ? DASH_PATTERN
                 : SOLID,
           } as object),
           updateTriggers: {
-            // deck.gl caches accessor results; without naming every input here a selection would
-            // change state but not repaint.
-            getFillColor: [mode, selectionKey, driverColorByArea, roadScope, highlightAreaIds, highlightUnassigned],
-            getLineColor: [mode, selectionKey, driverColorByArea, highlightAreaIds, highlightUnassigned],
-            // Width now depends on whether an area is assigned, so the colour map belongs here too
-            // — without it, assigning an area would recolour its outline but not thicken it.
-            getLineWidth: [selectionKey, driverColorByArea, highlightUnassigned],
-            getDashArray: [mode, selectionKey, driverColorByArea, highlightUnassigned],
+            // deck.gl caches accessor results; without naming every input here a change would not
+            // repaint. The selection is NOT one of them: it has its own small layer (below), so a
+            // click no longer re-colours every polygon of the region.
+            getFillColor: [mode, driverColorByArea, holdersByCode, roadScope, highlightAreaIds, highlightUnassigned],
+            getLineColor: [mode, driverColorByArea, holdersByCode, highlightAreaIds, highlightUnassigned],
+            // Width depends on whether an area is assigned, so the holders belong here too --
+            // without them, assigning an area would recolour its outline but not thicken it.
+            getLineWidth: [driverColorByArea, holdersByCode, highlightUnassigned],
+            getDashArray: [mode, driverColorByArea, holdersByCode, highlightUnassigned],
           },
           onClick: (info: PickingInfo, event?: { srcEvent?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } }) => {
             const props = (info.object as AreaFeature | undefined)?.properties;
@@ -932,6 +974,28 @@ export function CoverageMap({
           },
         })
       );
+      /**
+       * The picked areas, drawn again on top: a solid blue fill and a heavy dark border, so a
+       * chosen cluster is legible even where the areas are tiny and packed. On its own layer so
+       * picking a polygon redraws a handful of shapes, not every polygon of the region. Not
+       * pickable: clicks go through to the area layer underneath, which owns them.
+       */
+      if (selectedFeatures.length) {
+        out.push(
+          new GeoJsonLayer<AreaProps>({
+            id: 'work-areas-selected',
+            data: { type: 'FeatureCollection', features: selectedFeatures } as unknown as never,
+            pickable: false,
+            stroked: true,
+            filled: true,
+            getFillColor: [0, 80, 169, 190],
+            getLineColor: [15, 23, 42, 255],
+            getLineWidth: 3,
+            lineWidthUnits: 'pixels',
+            lineWidthMinPixels: 1.2,
+          })
+        );
+      }
     }
 
     // Under the road layers on purpose: the tracks say where the fleet went, the roads say what
@@ -1080,9 +1144,9 @@ export function CoverageMap({
     mode,
     onSelectArea,
     onToggleSelect,
-    selected,
-    selectionKey,
+    selectedFeatures,
     driverColorByArea,
+    holdersByCode,
   ]);
 
   const getTooltip = useCallback((info: PickingInfo) => {
@@ -1148,9 +1212,12 @@ export function CoverageMap({
       if (p.parentName) rows.push(`<div style="opacity:.7">${p.parentName}</div>`);
       rows.push(`<div style="opacity:.7">P${p.priority} · ${p.areaCode}</div>`);
       // Same source the fill uses, so the hover can never contradict the panel.
-      const holders = p.assignedTo?.length
-        ? p.assignedTo
-        : driverNamesRef.current?.[p.areaId || ''] || [];
+      const live = holdersByCodeRef.current;
+      const holders = live
+        ? live[p.areaCode] || []
+        : p.assignedTo?.length
+          ? p.assignedTo
+          : driverNamesRef.current?.[p.areaId || ''] || [];
       rows.push(
         holders.length
           ? `<div style="margin-top:4px"><b>${holders.join(', ')}</b></div>`
