@@ -40,7 +40,13 @@ const COLOR_COVERED = '#2563eb';
 const COLOR_TRACE = '#059669';
 const COLOR_AREA = '#7c3aed';
 const COLOR_VEHICLE = '#7c3aed';
-const COLOR_HISTORY = '#6b7280';
+/**
+ * Earlier trips. Was a thin grey line at 55% drawn OVER the roads — drivers could hardly make it
+ * out. Now a wide fuchsia band UNDER the roads, like a highlighter: easy to see at any zoom, and
+ * the road on top still shows red (to drive) or blue (driven). Fuchsia, not the violet of the
+ * dashed area outlines and the vehicle, so the two never read as one thing.
+ */
+const COLOR_HISTORY = '#d946ef';
 const COLOR_OUTSIDE = '#f59e0b';
 
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -354,6 +360,16 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
           />
         </GeoJSONSource>
 
+        {/* Earlier trips: a wide fuchsia band UNDER the roads, so each road's own colour stays on
+            top — wider than any road, so the band shows either side of it (see COLOR_HISTORY). */}
+        <GeoJSONSource id="history" data={historyFC}>
+          <Layer
+            type="line" id="history-line"
+            paint={{ 'line-color': COLOR_HISTORY, 'line-width': lineWidthByZoom(4, 6, 10, 15), 'line-opacity': 0.5 }}
+            layout={{ 'line-cap': 'round', 'line-join': 'round', visibility: showHistory ? 'visible' : 'none' }}
+          />
+        </GeoJSONSource>
+
         {/* Roads: covered first, remaining work stays on top at junctions */}
         <GeoJSONSource id="roads-covered" data={coveredFC}>
           <Layer
@@ -375,15 +391,6 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
             type="line" id="roads-live-covered"
             paint={{ 'line-color': COLOR_COVERED, 'line-width': lineWidthByZoom(0.8, 1.8, 3.7, 6.4), 'line-opacity': 1 }}
             layout={{ 'line-cap': 'round', 'line-join': 'round', visibility: showRoads ? 'visible' : 'none' }}
-          />
-        </GeoJSONSource>
-
-        {/* Earlier trips: thin grey context */}
-        <GeoJSONSource id="history" data={historyFC}>
-          <Layer
-            type="line" id="history-line"
-            paint={{ 'line-color': COLOR_HISTORY, 'line-width': lineWidthByZoom(1.2, 2, 3.2, 4.5), 'line-opacity': 0.55 }}
-            layout={{ 'line-cap': 'round', 'line-join': 'round', visibility: showHistory ? 'visible' : 'none' }}
           />
         </GeoJSONSource>
 
