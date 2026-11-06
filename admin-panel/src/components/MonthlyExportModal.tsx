@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { viewerTimeZone } from '../lib/api';
-import { describeJob, runExportJob, type ExportJobStatus } from '../lib/exportJobs';
+import { clockText, runExportJob, timeLeftText, type ExportJobStatus, type ExportProgress } from '../lib/exportJobs';
 
 /**
  * A region's whole month in one download: every driver's raw GPS merged into one KML, their
@@ -12,6 +12,63 @@ import { describeJob, runExportJob, type ExportJobStatus } from '../lib/exportJo
  */
 
 type Layers = 'both' | 'raw' | 'cleaned';
+
+const mb = (bytes: number) => `${(bytes / 1e6).toFixed(bytes >= 1e7 ? 0 : 1)} MB`;
+
+/**
+ * Where the export is up to, with the time left: step 1 the server builds the files (trips done
+ * of total), step 2 the zip comes down (MB of MB, speed). The time left is measured from the
+ * speed so far and counts down every second between updates.
+ */
+function ExportProgressPanel({ p, now }: { p: ExportProgress; now: number }) {
+  const left = timeLeftText(p.finishBy, now);
+  let step = 1;
+  let title = 'Starting…';
+  let pct: number | null = 0;
+  let detail = '';
+  if (p.phase === 'queued') {
+    title = p.waiting ? 'Waiting for another export to finish' : 'Starting…';
+    detail = p.waiting ? 'One export is built at a time — yours starts as soon as the one before it is done.' : '';
+  } else if (p.phase === 'building') {
+    title = 'Building the files on the server';
+    pct = p.total ? p.done / p.total : 0;
+    detail = `${p.done.toLocaleString()} of ${p.total.toLocaleString()} trips · ${left ?? 'working out the time left…'}`;
+  } else if (p.phase === 'packing') {
+    title = 'Packing the zip';
+    pct = null;
+    detail = `All ${p.total.toLocaleString()} trips written — compressing and storing the file. Nearly there.`;
+  } else {
+    step = 2;
+    title = 'Downloading';
+    pct = p.bytes ? p.received / p.bytes : null;
+    detail = [
+      p.bytes ? `${mb(p.received)} of ${mb(p.bytes)}` : mb(p.received),
+      p.bytesPerSec ? `${mb(p.bytesPerSec)}/s` : null,
+      left ?? (p.bytes ? 'working out the time left…' : null),
+    ].filter(Boolean).join(' · ');
+  }
+  return (
+    <div style={{ marginTop: 14, padding: '12px 14px', border: '1px solid var(--line)', borderRadius: 10, background: 'var(--panel-2)' }}>
+      <style>{`@keyframes mx-slide { from { background-position: 0 0; } to { background-position: 40px 0; } }`}</style>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Step {step} of 2</span>
+        <b style={{ fontSize: 14, flex: 1 }}>{title}</b>
+        <span style={{ fontSize: 12, color: 'var(--muted)', fontVariantNumeric: 'tabular-nums' }} title="Time since you started this export">
+          {clockText(now - p.startedAt)}
+        </span>
+      </div>
+      <div style={{ height: 8, borderRadius: 99, background: 'var(--line)', overflow: 'hidden', marginTop: 10 }}>
+        {pct == null ? (
+          // Size or end not known (packing, or a download without a length): moving stripes.
+          <div style={{ height: '100%', width: '100%', background: 'repeating-linear-gradient(45deg, var(--brand) 0 10px, var(--brand-light, #c7d2fe) 10px 20px)', animation: 'mx-slide 0.8s linear infinite' }} />
+        ) : (
+          <div style={{ height: '100%', width: `${Math.min(100, Math.round(pct * 100))}%`, background: 'var(--brand)', transition: 'width 0.4s ease' }} />
+        )}
+      </div>
+      {detail && <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--text-2)', fontVariantNumeric: 'tabular-nums' }}>{detail}</div>}
+    </div>
+  );
+}
 
 /** The month before this one, as YYYY-MM — a month report is usually for the month just closed. */
 function lastMonth(): string {
@@ -35,9 +92,16 @@ export function MonthlyExportModal({
   const [region, setRegion] = useState(initialRegion);
   const [layers, setLayers] = useState<Layers>('both');
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ExportJobStatus | null>(null);
+  // A clock for the countdown and the elapsed time, ticking only while an export runs.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!busy) return undefined;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
 
   // Drivers' countries arrive in mixed case ("Australia", "australia"): one choice per region.
   const choices = useMemo(() => {
@@ -50,22 +114,21 @@ export function MonthlyExportModal({
     setBusy(true);
     setError(null);
     setResult(null);
-    setStatus('Queued…');
-    let last: ExportJobStatus | null = null;
+    setNow(Date.now());
+    setProgress({ phase: 'queued', done: 0, total: 0, received: 0, bytes: 0, bytesPerSec: 0, finishBy: null, startedAt: Date.now(), waiting: false });
     try {
-      await runExportJob(
+      const job = await runExportJob(
         { format: 'kml', layer: 'raw', kind: 'month', month, country: region || undefined, layers, tz: viewerTimeZone() },
-        (job) => {
-          last = job;
-          setStatus(describeJob(job));
-        }
+        undefined,
+        (p) => { setProgress(p); setNow(Date.now()); },
+        // A whole region's month can take a while to build; do not give up at the usual 30 min.
+        { timeoutMs: 90 * 60 * 1000 }
       );
-      setResult(last);
-      setStatus(null);
+      setResult(job);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'The export failed');
-      setStatus(null);
     } finally {
+      setProgress(null);
       setBusy(false);
     }
   };
@@ -76,7 +139,7 @@ export function MonthlyExportModal({
   })();
 
   return (
-    <Modal title="Monthly export" onClose={busy ? () => {} : onClose}>
+    <Modal title="Monthly export" onClose={onClose}>
       <p style={{ marginTop: 0, color: 'var(--muted)', fontSize: 13, lineHeight: 1.5 }}>
         Every driver of a region for one month, merged into one zip: all their <b>raw GPS</b> in one
         file and all their <b>cleaned roads</b> in another, organised by driver and then by day, plus
@@ -114,12 +177,11 @@ export function MonthlyExportModal({
 
       <p style={{ color: 'var(--muted)', fontSize: 12, margin: '12px 0 0' }}>
         A trip belongs to the month by its local date. A busy month for a large region can take a few
-        minutes and be tens of MB — keep this window open; the download starts by itself.
+        minutes and be tens of MB — the time left is shown as it goes, and the download starts by
+        itself (even if you close this window).
       </p>
 
-      {status && (
-        <div className="cov-issue" style={{ marginTop: 12 }}>{status}</div>
-      )}
+      {progress && <ExportProgressPanel p={progress} now={now} />}
       {error && <div className="cov-issue error" style={{ marginTop: 12 }}>{error}</div>}
       {result && (
         <div className="cov-issue" style={{ marginTop: 12, background: 'var(--green-bg, #ecfdf5)', color: 'var(--green, #047857)' }}>
@@ -133,7 +195,9 @@ export function MonthlyExportModal({
       )}
 
       <div className="modal-actions">
-        <button className="btn-ghost" onClick={onClose} disabled={busy}>Close</button>
+        <button className="btn-ghost" onClick={onClose} title={busy ? 'The export carries on and downloads by itself' : undefined}>
+          {busy ? 'Hide' : 'Close'}
+        </button>
         <button className="btn" onClick={build} disabled={busy || !/^\d{4}-\d{2}$/.test(month)}>
           {busy ? 'Building…' : `Build ${monthLabel}`}
         </button>

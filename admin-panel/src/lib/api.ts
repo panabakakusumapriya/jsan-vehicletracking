@@ -86,7 +86,15 @@ export const api = {
 // then saves it via a synthetic link click -- a plain <a href> can't carry
 // the token, since auth here is a header, not a cookie. Filename comes from
 // the server's Content-Disposition header (it knows the trip/driver names).
-export async function downloadFile(path: string, fallbackFilename = 'download'): Promise<void> {
+/**
+ * @param onProgress  called as the body arrives: bytes so far, and the size when the server says
+ *                    it (Content-Length) — so a long download can show how much is left.
+ */
+export async function downloadFile(
+  path: string,
+  fallbackFilename = 'download',
+  onProgress?: (received: number, total: number | null) => void
+): Promise<void> {
   const headers: Record<string, string> = {};
   const token = tokenStore.get();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -112,7 +120,26 @@ export async function downloadFile(path: string, fallbackFilename = 'download'):
   const disposition = res.headers.get('Content-Disposition') || '';
   const filename = /filename="?([^"]+)"?/.exec(disposition)?.[1] || fallbackFilename;
 
-  const blob = await res.blob();
+  let blob: Blob;
+  if (onProgress && res.body) {
+    // Read in pieces rather than res.blob(), so the caller can say "12 of 23 MB".
+    const sized = Number(res.headers.get('Content-Length'));
+    const total = Number.isFinite(sized) && sized > 0 ? sized : null;
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    onProgress(0, total);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      onProgress(received, total);
+    }
+    blob = new Blob(chunks as BlobPart[], { type: res.headers.get('Content-Type') || 'application/octet-stream' });
+  } else {
+    blob = await res.blob();
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
