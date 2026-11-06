@@ -14,6 +14,14 @@ const mongoose = require('mongoose');
 const exportJobSchema = new mongoose.Schema(
   {
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    /**
+     * 'trips' — a zip with one file per trip (the original export).
+     * 'month' — one region's whole month merged: a raw-GPS KML, a cleaned-roads KML and a summary
+     * CSV, every driver in Driver → Day folders (services/monthExport.js). Its choices are in `params`.
+     */
+    kind: { type: String, enum: ['trips', 'month'], default: 'trips' },
+    /** month jobs: { month: 'YYYY-MM', country: '' | name, layers: 'both'|'raw'|'cleaned', tz }. */
+    params: { type: mongoose.Schema.Types.Mixed, default: null },
     format: { type: String, enum: ['kml', 'json'], default: 'kml' },
     // 'snapped' exports each trip's map-matched route + UKM layer; 'raw' the recorded trace.
     layer: { type: String, enum: ['raw', 'snapped'], default: 'raw' },

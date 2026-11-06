@@ -140,6 +140,9 @@ function createApp() {
         // Coverage driver pins: current drivers only, where they last STOPPED, within ?withinHours
         // (default 24).
         driverStops: true,
+        // Reports → Monthly export: a region's month merged into raw-GPS + cleaned-roads KMLs
+        // (POST /api/trips/export-jobs { kind: 'month' }).
+        monthExport: true,
       },
     })
   );

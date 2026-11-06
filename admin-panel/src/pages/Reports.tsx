@@ -2,6 +2,7 @@ import { PageIcon } from '../components/AppIcon';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DistanceModeToggle, type DistanceMode } from '../components/DistanceModeToggle';
 import { ExportButtons } from '../components/ExportButtons';
+import { MonthlyExportModal } from '../components/MonthlyExportModal';
 import { api, downloadFile, viewerTimeZone } from '../lib/api';
 import { runExportJob, describeJob } from '../lib/exportJobs';
 import { km } from '../lib/format';
@@ -196,6 +197,8 @@ export function Reports() {
   const filteredDrivers = country ? drivers.filter(d => d.country === country) : drivers;
 
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  /** The month-wise merged export (every driver of a region), while its dialog is open. */
+  const [monthOpen, setMonthOpen] = useState(false);
 
   const handleExport = async (format: 'kml' | 'json', layer: 'raw' | 'snapped') => {
     // A single driver-day is small and merges into one file, so it stays a direct download.
@@ -308,8 +311,20 @@ export function Reports() {
           )}
           <DistanceModeToggle mode={mode} onChange={setMode} cleanedAvailable={cleanedAvailable} />
           <ExportButtons onExport={handleExport} onSpreadsheet={handleSheet} snappedAvailable status={exportStatus} />
+          <button
+            className="btn-ghost"
+            style={{ padding: '6px 12px', fontSize: 12.5, fontWeight: 600 }}
+            onClick={() => setMonthOpen(true)}
+            title="Every driver of a region for one month: raw GPS and cleaned roads, merged"
+          >
+            Monthly export
+          </button>
         </div>
       </div>
+
+      {monthOpen && (
+        <MonthlyExportModal regions={countries} initialRegion={country} onClose={() => setMonthOpen(false)} />
+      )}
 
       {!showDetail ? (
         /* Overview: all merged trip summaries */

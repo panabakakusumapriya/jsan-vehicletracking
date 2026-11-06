@@ -13,6 +13,7 @@ require('../models/User');
 require('../models/Vehicle');
 const { buildKml, buildSnappedKml, buildJson, baseFilename, snappedRouteParts } = require('../utils/tripExport');
 const { decodePolyline6 } = require('./roadSegments');
+const { runMonthJob } = require('./monthExport');
 
 /**
  * Background worker for bulk trip exports. See models/ExportJob.js for why these do not run
@@ -86,6 +87,8 @@ function snappedPathsFor(trip) {
 /** Build one job's zip on disk. Never throws — failure is recorded on the job. */
 async function runJob(job) {
   ensureDir();
+  // A region's whole month, merged into one raw and one cleaned file: its own builder.
+  if (job.kind === 'month') return runMonthJob(job, { dir: EXPORT_DIR, bucket: EXPORT_BUCKET });
   const wantSnapped = job.layer === 'snapped';
   const fileName = `trips_${wantSnapped ? 'snapped_' : ''}${new Date(job.createdAt).toISOString().slice(0, 10)}_${String(job._id).slice(-6)}.zip`;
   const filePath = path.join(EXPORT_DIR, fileName);

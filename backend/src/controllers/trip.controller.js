@@ -308,8 +308,60 @@ exports.exportOne = asyncHandler(async (req, res) => {
  * it, download the finished artifact. See services/exportRunner.js.
  */
 
+/**
+ * POST /api/trips/export-jobs  { kind: 'month', month: 'YYYY-MM', country?, layers? }
+ *
+ * Every driver of a region (their `country`; empty = all regions the requester can see) over one
+ * calendar month, merged: one raw-GPS KML, one cleaned-roads KML, one summary CSV. Built in the
+ * background like any export (services/monthExport.js).
+ *
+ * The stored filter is the month widened by 14 h either side — no single zone fits a region that
+ * spans several — and the builder keeps each trip by its own LOCAL start date.
+ */
+async function createMonthExportJob(req, res) {
+  const body = { ...req.query, ...req.body };
+  const month = String(body.month || '');
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return res.status(400).json({ error: 'month must look like 2026-10' });
+  const country = String(body.country || '').trim();
+  const layers = ['both', 'raw', 'cleaned'].includes(body.layers) ? body.layers : 'both';
+  const tz = country ? timezoneForCountry(country) : (isValidTimeZone(body.tz) ? body.tz : 'UTC');
+
+  const scope = await accessibleDriverFilter(req.user);
+  const [y, m] = month.split('-').map(Number);
+  const SLACK = 14 * 3600 * 1000;
+  const filter = {
+    ...scope,
+    parkedJitter: { $ne: true },
+    startedAt: {
+      $gte: new Date(Date.UTC(y, m - 1, 1) - SLACK),
+      $lt: new Date(Date.UTC(m === 12 ? y + 1 : y, m === 12 ? 0 : m, 1) + SLACK),
+    },
+  };
+  if (country) {
+    const escaped = country.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const ids = await User.find({ role: 'user', country: { $regex: `^${escaped}$`, $options: 'i' } }).distinct('_id');
+    filter.driverId = { $in: narrowDrivers(scope, ids) };
+  }
+
+  const total = await Trip.countDocuments(filter);
+  if (!total) return res.status(404).json({ error: `No trips in ${month}${country ? ` for ${country}` : ''}` });
+
+  const job = await ExportJob.create({
+    requestedBy: req.user._id,
+    kind: 'month',
+    params: { month, country, layers, tz },
+    format: 'kml',
+    layer: layers === 'cleaned' ? 'snapped' : 'raw',
+    filter,
+    total,
+    origin: EXPORT_ORIGIN,
+  });
+  return res.status(202).json({ jobId: job._id, status: job.status, total });
+}
+
 // POST /api/trips/export-jobs   { format, layer, ...same filters as /export }
 exports.createExportJob = asyncHandler(async (req, res) => {
+  if ((req.body && req.body.kind) === 'month') return createMonthExportJob(req, res);
   const scope = await accessibleDriverFilter(req.user);
   const filter = buildTripFilter({ query: { ...req.query, ...req.body } }, scope);
 
