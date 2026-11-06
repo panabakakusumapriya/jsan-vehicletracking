@@ -74,7 +74,7 @@ const C = {
   roadTodo:  '#dc2626', // assigned, not yet driven
   roadDone:  '#2563eb', // already covered
   roadTrace: '#059669', // the current drive
-  roadHistory: '#d946ef', // earlier trips: a fuchsia band under the roads (MapNative COLOR_HISTORY)
+  roadHistory: '#00CFFF', // earlier trips: a cyan band under the roads (MapNative COLOR_HISTORY)
   outside:   '#f59e0b', // the current drive, outside the assigned polygon
 };
 
@@ -296,7 +296,7 @@ export default function MapScreen() {
   }, [roads, refreshLiveCovered]);
 
   /**
-   * Route history: every closed trip in the chosen window, drawn as a fuchsia band under the roads.
+   * Route history: every closed trip in the chosen window, drawn as a cyan band under the roads.
    * `history` carries the figures for the summary line; `historyLines` is the decoded geometry,
    * rebuilt only when the server's version moves — decoding a month of polylines on every poll
    * would be wasted work, and handing the map a new object would re-upload megabytes.
