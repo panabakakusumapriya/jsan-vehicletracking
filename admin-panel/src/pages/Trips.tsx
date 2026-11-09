@@ -818,14 +818,17 @@ export function Trips() {
                                   </td>
                                   {t.linkUkmNetworkMeters == null ? (
                                     <td colSpan={2} style={{ color: 'var(--muted)' }}
-                                      title={t.status === 'active' ? 'Worked out once the trip ends and is map-matched' : 'Not established yet — this is not zero'}>
-                                      {t.status === 'active' ? 'after the trip ends' : '—'}
+                                      title={t.status === 'active' ? 'Worked out while the trip runs — first figures about 10 minutes in, then every 10 minutes' : 'Not established yet — this is not zero'}>
+                                      {t.status === 'active' ? 'in a few min' : '—'}
                                     </td>
                                   ) : (
                                     <>
                                       <td style={{ fontWeight: 600, color: 'var(--brand)' }}
-                                        title={assignedUkmOf(t) == null ? 'No area was assigned to the driver during this trip' : 'New customer road driven first, inside the assigned areas'}>
+                                        title={assignedUkmOf(t) == null ? 'No area was assigned to the driver during this trip'
+                                          : t.status === 'active' ? `So far — the trip is still running; updated every 10 minutes${t.liveMatch?.at ? ` (last ${new Date(t.liveMatch.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})` : ''}, final once it ends`
+                                          : 'New customer road driven first, inside the assigned areas'}>
                                         {assignedUkmOf(t) == null ? <span style={{ color: 'var(--muted)', fontWeight: 400 }}>no area</span> : km(assignedUkmOf(t) ?? 0)}
+                                        {t.status === 'active' && assignedUkmOf(t) != null && <span style={{ fontSize: 10.5, fontWeight: 600, color: '#059669', marginLeft: 4 }}>so far</span>}
                                       </td>
                                       <td style={{ fontWeight: 600, color: (outsideUkmOf(t) ?? 0) > 0 ? '#d97706' : 'var(--muted)' }}
                                         title="New customer road driven first, outside the assigned areas">

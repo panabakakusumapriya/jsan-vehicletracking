@@ -100,6 +100,27 @@ const tripSchema = new mongoose.Schema(
     // matchSegment() in services/valhalla.js. Stored because a partly-raw route is otherwise
     // indistinguishable from a fully-snapped one: both just look like a line on the map.
     cleanedMatchedRatio: { type: Number, default: null },
+    /**
+     * Live matching while the trip RUNS (services/liveMatcher.js): every ~10 min the newest stretch
+     * is snapped and appended to cleanedRouteShapes / cleanedDistanceMeters, and its roads
+     * credited. `through` is the last GPS fix included; the next pass starts there. Null on a trip
+     * that never had a pass. The full match when the trip ends replaces the provisional figures
+     * (mapMatchStatus stays 'pending' until then).
+     */
+    liveMatch: {
+      type: new mongoose.Schema(
+        {
+          at: { type: Date, default: null },
+          through: { type: Date, default: null },
+          passes: { type: Number, default: 0 },
+          points: { type: Number, default: 0 },
+          matchedMeters: { type: Number, default: 0 },
+          totalMeters: { type: Number, default: 0 },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
     // ---- UKM (unique kilometers) for this trip — see services/roadSegments.js ----
     // Road in this trip that no EARLIER trip by the same driver covered. Drive a route on Monday
     // and it counts here; drive the same route Tuesday and Tuesday's trip earns nothing. Derived

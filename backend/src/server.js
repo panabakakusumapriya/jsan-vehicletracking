@@ -5,6 +5,7 @@ const { createApp } = require('./app');
 const { initSocket } = require('./realtime/io');
 const { startWatchdog } = require('./services/driverWatchdog');
 const { startMapMatcher } = require('./services/mapMatcher');
+const { startLiveMatcher } = require('./services/liveMatcher');
 const { startExportRunner } = require('./services/exportRunner');
 const { startImportRunner } = require('./services/importRunner');
 const { seedDefaultCategories } = require('./controllers/marker.controller');
@@ -23,6 +24,7 @@ async function start() {
     // Started after listen so the socket layer exists before the first sweep can emit.
     startWatchdog();
     startMapMatcher();
+    startLiveMatcher();
     startExportRunner();
     startImportRunner();
     seedDefaultCategories();

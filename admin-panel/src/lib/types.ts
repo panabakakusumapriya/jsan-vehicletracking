@@ -389,6 +389,8 @@ export type MapMatchStatus = 'pending' | 'matching' | 'matched' | 'failed' | 'sk
 
 export interface Trip {
   _id: string;
+  /** A running trip's live matching (backend services/liveMatcher.js): figures so far, every ~10 min. */
+  liveMatch?: { at: string | null; through: string | null; passes: number } | null;
   driverId: { _id: string; name: string; email: string } | string;
   vehicleId?: { _id: string; plateNumber: string } | string | null;
   status: 'active' | 'completed' | 'timed_out';

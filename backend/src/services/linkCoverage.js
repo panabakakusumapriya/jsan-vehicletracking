@@ -686,13 +686,20 @@ async function computeTripLinkMetrics(tripId, analysis = null) {
  * Attribute one trip: claim its links, then recompute its figures and those of anything it
  * displaced. The incremental path, called by the map-matcher once snapped geometry exists.
  */
-async function attributeTripLinks(tripId) {
+/**
+ * @param opts.allowActive  the live matcher's provisional pass on a RUNNING trip
+ *   (services/liveMatcher.js). Safe because a claim here is idempotent and settled by when each
+ *   road was driven: every pass keeps what the route so far covers, releases what it no longer
+ *   does, and the full pass after the trip closes has the last word.
+ */
+async function attributeTripLinks(tripId, opts = {}) {
   if (!env.LINK_COVERAGE_ENABLED) return null;
   const trip = await Trip.findById(tripId).select(TRIP_FIELDS).lean();
   if (!trip) return null;
-  // Closed rides only, for the reason given in globalUkm.attributeTrip: a claim decides who is
-  // paid for a street and must not be made on a drive that is still changing.
-  if (trip.status !== 'completed' && trip.status !== 'timed_out') return null;
+  // Closed rides only, for the reason given in globalUkm.attributeTrip — except the live pass,
+  // which runs on the route so far (see opts.allowActive).
+  const closed = trip.status === 'completed' || trip.status === 'timed_out';
+  if (!closed && !(opts.allowActive && trip.status === 'active')) return null;
 
   try {
     const analysis = await analyseTrip(trip);

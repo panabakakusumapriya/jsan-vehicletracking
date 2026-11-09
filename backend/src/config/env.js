@@ -160,6 +160,17 @@ module.exports = {
   // spending a Valhalla call on a trace with nothing meaningful to snap.
   MAP_MATCH_MIN_DISTANCE_METERS: parseInt(process.env.MAP_MATCH_MIN_DISTANCE_METERS || '30', 10),
 
+  // ---- Live matching: cleaned km and assigned UKM WHILE a trip runs (services/liveMatcher.js) ----
+  // Every LIVE_MATCH_EVERY_MINUTES a running trip's newest stretch is snapped and its roads
+  // credited, so the figures move during the day instead of appearing only at the end. The full
+  // match when the trip closes still replaces them.
+  LIVE_MATCH_ENABLED: (process.env.LIVE_MATCH_ENABLED || 'true').toLowerCase() !== 'false',
+  LIVE_MATCH_EVERY_MINUTES: parseFloat(process.env.LIVE_MATCH_EVERY_MINUTES || '10'),
+  // Running trips looked at per sweep (one sweep a minute); the oldest-updated go first.
+  LIVE_MATCH_MAX_PER_TICK: parseInt(process.env.LIVE_MATCH_MAX_PER_TICK || '10', 10),
+  // A new stretch shorter than this waits for the next pass — not worth a Valhalla call.
+  LIVE_MATCH_MIN_SEGMENT_METERS: parseInt(process.env.LIVE_MATCH_MIN_SEGMENT_METERS || '200', 10),
+
   // ---- Parked-GPS jitter: phantom "trips" the vehicle never drove ----
   // The app keeps reporting while the vehicle sits still, so a parking spot produces "trips" made
   // of a few hundred metres of GPS drift. Left alone they inflate trip counts, wreck averages (one

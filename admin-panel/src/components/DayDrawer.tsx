@@ -250,7 +250,7 @@ export function DayDrawer({
                   <dl className="dd-facts">
                     <div><dt>Duration</dt><dd>{t.importBatchId ? '—' : hm(tripMs(t))}</dd></div>
                     <div><dt>GPS distance</dt><dd>{km(t.distanceMeters)}</dd></div>
-                    <div><dt>Snapped</dt><dd>{t.cleanedDistanceMeters != null ? km(t.cleanedDistanceMeters) : t.status === 'active' ? 'after the trip' : '—'}</dd></div>
+                    <div><dt>Snapped</dt><dd>{t.cleanedDistanceMeters != null ? `${km(t.cleanedDistanceMeters)}${t.status === 'active' ? ' so far' : ''}` : t.status === 'active' ? 'in a few min' : '—'}</dd></div>
                     <div><dt>Assigned UKM</dt><dd className="blue">{assignedOf(t) == null ? (t.linkUkmNetworkMeters == null ? '—' : 'no area') : km(assignedOf(t) ?? 0)}</dd></div>
                     <div><dt>Outside UKM</dt><dd className="amber">{outsideOf(t) == null ? '—' : km(outsideOf(t) ?? 0)}</dd></div>
                     <div><dt>Max speed</dt><dd>{t.importBatchId && !t.pointCount ? '—' : `${Math.round(t.maxSpeedKmh)} km/h`}</dd></div>

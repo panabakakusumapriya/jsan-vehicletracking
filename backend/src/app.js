@@ -143,6 +143,9 @@ function createApp() {
         // Reports → Monthly export: a region's month merged into raw-GPS + cleaned-roads KMLs
         // (POST /api/trips/export-jobs { kind: 'month' }).
         monthExport: true,
+        // Running trips get cleaned km and assigned UKM every LIVE_MATCH_EVERY_MINUTES (10), not
+        // only after they end (services/liveMatcher.js).
+        liveMatch: true,
       },
     })
   );

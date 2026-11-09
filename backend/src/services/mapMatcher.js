@@ -4,7 +4,8 @@ const env = require('../config/env');
 const { matchTrace } = require('./valhalla');
 const { recomputeDriverUkm } = require('./roadSegments');
 const { attributeTrip, computeTripMetrics } = require('./globalUkm');
-const { attributeTripLinks } = require('./linkCoverage');
+const { attributeTripLinks, releaseLinks } = require('./linkCoverage');
+const LinkCoverage = require('../models/LinkCoverage');
 const { featuresFromPoints, verdictFields } = require('./tripNoise');
 
 /**
@@ -33,6 +34,37 @@ const PENDING_FILTER = { $in: ['pending', null] };
 let timer = null;
 let running = false;
 
+/**
+ * A trip the live matcher credited while it ran (services/liveMatcher.js) is, now it has closed,
+ * not a drive after all — parked-GPS jitter, too short, too few fixes. Give everything back: its
+ * provisional route and figures, and every road it claimed. Whoever last passed those roads gets
+ * the chance to claim them again (their own attribution re-run), so a street another driver
+ * really drove does not go red.
+ */
+async function discardLive(trip) {
+  if (!trip.liveMatch) return;
+  const rows = await LinkCoverage.find({ firstTripId: trip._id }).select('lastTripId').lean();
+  const passers = new Set(
+    rows.map((r) => r.lastTripId).filter((id) => id && String(id) !== String(trip._id)).map(String)
+  );
+  await releaseLinks(trip._id);
+  await Trip.updateOne(
+    { _id: trip._id },
+    {
+      $set: {
+        cleanedDistanceMeters: null, cleanedMatchedRatio: null,
+        linkUkmMeters: null, linkUkmNetworkMeters: null, linkUkmShapes: [], linkCoveredCount: null,
+        inAreaMeters: null, outAreaMeters: null, outAreaShapes: [], effectiveUkmMeters: null,
+      },
+      $unset: { cleanedRouteShapes: 1 },
+    }
+  );
+  for (const id of passers) {
+    // eslint-disable-next-line no-await-in-loop
+    await attributeTripLinks(id).catch(() => {});
+  }
+}
+
 /** One trip: claim it, fetch its raw points, match, persist. Never throws. */
 async function processTrip(tripId) {
   const trip = await Trip.findOneAndUpdate(
@@ -59,6 +91,7 @@ async function processTrip(tripId) {
     // never drove. See services/tripNoise.js for the rule and why both clauses are load-bearing.
     const verdict = verdictFields(featuresFromPoints(points));
     if (verdict && verdict.parkedJitter) {
+      await discardLive(trip);
       await Trip.updateOne(
         { _id: trip._id },
         {
@@ -76,6 +109,7 @@ async function processTrip(tripId) {
     }
 
     if ((trip.distanceMeters || 0) < env.MAP_MATCH_MIN_DISTANCE_METERS) {
+      await discardLive(trip);
       // The verdict (when there is one — 0-1 valid fixes can't produce it) rides along, so even a
       // too-short trip carries the evidence of why it was skipped.
       await Trip.updateOne(
@@ -86,6 +120,7 @@ async function processTrip(tripId) {
     }
 
     if (points.length < 2) {
+      await discardLive(trip);
       await Trip.updateOne({ _id: trip._id }, { $set: { mapMatchStatus: 'skipped' } });
       return 'skipped';
     }
