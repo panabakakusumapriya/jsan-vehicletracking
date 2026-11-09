@@ -358,6 +358,11 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
         onDidFailLoadingMap={onFail}
         onDidFinishLoadingMap={onLoaded}
         logo={false}
+        // The map's own compass sat top-right, under the + / - buttons: drivers reaching for +
+        // hit the compass instead and the map spun round. Top-left is clear of every control.
+        compass
+        compassPosition={{ top: 12, left: 12 }}
+        compassHiddenFacingNorth
       >
         <Camera ref={cameraRef} initialViewState={initialView} />
 
