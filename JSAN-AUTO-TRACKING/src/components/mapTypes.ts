@@ -83,7 +83,10 @@ export interface MapGLMarkers {
  */
 export interface MapGLTrail {
   version: number;
+  /** The trip being driven now. */
   line: [number, number][];
+  /** Today's earlier trips, kept after each one ends (and across app restarts) until midnight. */
+  earlier?: [number, number][][];
 }
 
 export interface MapGLProps {
@@ -153,7 +156,8 @@ export interface MapGLProps {
    * programmatic camera moves. Follow-mode uses it to tell "driver panned away" (suspend)
    * from "driver pinch-zoomed" (keep following at the new zoom).
    */
-  onUserPan?: (center: [number, number]) => void;
+  /** A hand on the map. `view.pinch`: the zoom changed (a pinch, not a drag); `view.zoom`: where it settled. */
+  onUserPan?: (center: [number, number], view?: { zoom: number; pinch: boolean }) => void;
 }
 
 /** Imperative controls, for on-screen zoom and recentre buttons. */

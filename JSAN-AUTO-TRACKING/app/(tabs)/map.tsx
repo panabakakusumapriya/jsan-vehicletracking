@@ -47,6 +47,8 @@ import {
   startFollowing, suspendForFraming, type FollowState,
 } from '@/src/lib/followCamera';
 import { useFocusEffect } from 'expo-router';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { capDay, loadTodayTrail, localDate, saveTodayTrail, type Line } from '@/src/lib/todayTrail';
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -225,10 +227,19 @@ export default function MapScreen() {
   }, [lastDrop]);
   const [markerNote, setMarkerNote] = useState<string | null>(null);
 
-  /** Live local breadcrumb of the CURRENT trip, straight from the service's fixes. */
-  const [trail, setTrail] = useState<MapGLTrail>({ version: 0, line: [] });
+  /**
+   * Live local breadcrumb, straight from the service's fixes: the trip now (`line`) and today's
+   * earlier trips (`earlier`), kept through breaks and restarts until midnight (src/lib/todayTrail).
+   */
+  const [trail, setTrail] = useState<MapGLTrail>({ version: 0, line: [], earlier: [] });
   const trailLineRef = useRef<[number, number][]>([]);
   const trailTripRef = useRef<string | null>(null);
+  const trailEarlierRef = useRef<Line[]>([]);
+  const trailDateRef = useRef<string>(localDate());
+  const trailSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** A trip is running right now — the screen is then kept awake on this tab. */
+  const [tripRunning, setTripRunning] = useState(false);
+  const [mapFocused, setMapFocused] = useState(false);
 
   /**
    * LIVE coverage — streets flip blue AS they are driven. The server's post-trip link
@@ -821,6 +832,31 @@ export default function MapScreen() {
    */
   useEffect(() => { loadRoads(areas, false); }, [areas, loadRoads]);
 
+  // Today's green lines for whoever is signed in — a restart mid-shift keeps them.
+  useEffect(() => {
+    const t = loadTodayTrail(driverId);
+    trailEarlierRef.current = t.lines;
+    trailDateRef.current = t.date;
+    trailLineRef.current = [];
+    trailTripRef.current = null;
+    setTrail({ version: Date.now(), line: [], earlier: t.lines });
+  }, [driverId]);
+
+  /**
+   * The screen stays on while this tab is open and a trip is running. It dimmed and locked after
+   * the phone's timeout, and the touch to wake it was read as a gesture on the map. Released as
+   * soon as the trip ends or the driver leaves the tab, so a parked phone still sleeps.
+   */
+  useFocusEffect(useCallback(() => {
+    setMapFocused(true);
+    return () => setMapFocused(false);
+  }, []));
+  useEffect(() => {
+    if (!mapFocused || !tripRunning) return undefined;
+    activateKeepAwakeAsync('jsan-map-driving').catch(() => {});
+    return () => { deactivateKeepAwake('jsan-map-driving').catch(() => {}); };
+  }, [mapFocused, tripRunning]);
+
   // Rehydrate for whoever is signed in: an app restart mid-shift must not paint the morning's
   // work red again while the server is still working through the trips that produced it. Keyed
   // on the driver, so a different driver signing in on this phone starts from their own store
@@ -973,7 +1009,17 @@ export default function MapScreen() {
         }
 
         if (e.tripStatus === 'active' && e.tripId) {
+          setTripRunning(true);
+          // A new day starts with a clean map.
+          const today = localDate();
+          if (trailDateRef.current !== today) {
+            trailDateRef.current = today;
+            trailEarlierRef.current = [];
+            trailLineRef.current = [];
+          }
           if (trailTripRef.current !== e.tripId) {
+            // A new trip: the last one's line stays, as one of today's.
+            if (trailLineRef.current.length >= 2) trailEarlierRef.current.push(trailLineRef.current);
             trailTripRef.current = e.tripId;
             trailLineRef.current = [];
           }
@@ -983,8 +1029,16 @@ export default function MapScreen() {
             || Math.abs(last[0] - e.lon) > 1.1e-4 || Math.abs(last[1] - e.lat) > 1.1e-4;
           if (moved) {
             line.push([e.lon, e.lat]);
-            if (line.length > 600) line.splice(0, line.length - 600);
-            setTrail({ version: Date.now(), line: [...line] });
+            capDay(trailEarlierRef.current, line);
+            setTrail({ version: Date.now(), line: [...line], earlier: trailEarlierRef.current });
+            // Saved every half minute while driving, so a restart loses at most that much.
+            if (!trailSaveTimerRef.current) {
+              trailSaveTimerRef.current = setTimeout(() => {
+                trailSaveTimerRef.current = null;
+                const lines = [...trailEarlierRef.current, trailLineRef.current].filter((l) => l.length >= 2);
+                saveTodayTrail(coverOwnerRef.current, { date: trailDateRef.current, lines });
+              }, 30_000);
+            }
           }
         }
       }),
@@ -995,9 +1049,15 @@ export default function MapScreen() {
         coverSaveTimerRef.current = null;
         saveCover(coverOwnerRef.current, coverStoreRef.current);
         activeTripIdRef.current = null;
+        setTripRunning(false);
+        // The trip's line stays on the map as one of today's — a break must not wipe it.
+        if (trailLineRef.current.length >= 2) trailEarlierRef.current.push(trailLineRef.current);
         trailTripRef.current = null;
         trailLineRef.current = [];
-        setTrail({ version: Date.now(), line: [] });
+        if (trailSaveTimerRef.current) clearTimeout(trailSaveTimerRef.current);
+        trailSaveTimerRef.current = null;
+        saveTodayTrail(coverOwnerRef.current, { date: trailDateRef.current, lines: trailEarlierRef.current });
+        setTrail({ version: Date.now(), line: [], earlier: trailEarlierRef.current });
       }),
       // Upload failures were only ever shown on the home screen; drivers live on this one.
       VehicleTracker.addUploadErrorListener((e) => setUploadErr({ msg: e.message, at: Date.now() })),
@@ -1006,6 +1066,8 @@ export default function MapScreen() {
       subs.forEach((s) => s?.remove());
       if (coverSaveTimerRef.current) clearTimeout(coverSaveTimerRef.current);
       coverSaveTimerRef.current = null;
+      if (trailSaveTimerRef.current) clearTimeout(trailSaveTimerRef.current);
+      trailSaveTimerRef.current = null;
     };
   }, [refreshLiveCovered, scheduleCoverSave, syncFollowUi]);
 
@@ -1155,7 +1217,8 @@ export default function MapScreen() {
     // instead of under the pin the driver is looking at.
     if (liveFix && Date.now() - liveFixAtRef.current < 30_000) {
       lastCameraRef.current = liveFix;
-      mapRef.current?.flyTo(liveFix, 16);
+      // The driver's zoom stays: placing a marker used to jump to street level every time.
+      mapRef.current?.flyTo(liveFix);
     } else {
       mapRef.current?.recenter();
     }
@@ -1205,8 +1268,8 @@ export default function MapScreen() {
   }, [markers]);
 
   /** A hand on the map: a pan-away suspends following, a pinch does not (followCamera.ts). */
-  const onUserPan = useCallback((center: [number, number]) => {
-    followOnGesture(followRef.current, center, Date.now());
+  const onUserPan = useCallback((center: [number, number], view?: { zoom: number; pinch: boolean }) => {
+    followOnGesture(followRef.current, center, Date.now(), view);
     syncFollowUi();
   }, [syncFollowUi]);
 

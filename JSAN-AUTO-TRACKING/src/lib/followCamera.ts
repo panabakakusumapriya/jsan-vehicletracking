@@ -31,6 +31,15 @@ export const FOLLOW_RESUME_MS = 10_000;
 const DRIVING_FRESH_MS = 15_000;
 /** A centre this far from the followed position is a pan-away, not a pinch (~80 m). */
 const PAN_AWAY_DEG = 8e-4;
+/**
+ * …and at least this far ON SCREEN. 80 m is ~45 px at street zoom but only ~6 px zoomed out to
+ * a suburb (zoom 13), so a thumb resting on the glass — or a tap to wake the screen — counted as
+ * dragging the map away, following stopped, and ten seconds later the camera came back. Drivers
+ * read that as "the map keeps zooming in by itself".
+ */
+const PAN_AWAY_PX = 60;
+/** Ground metres per screen pixel at `zoom` (web-mercator, 512-px tiles as MapLibre uses). */
+const metresPerPx = (zoom: number, lat: number) => (78_271.517 * Math.cos((lat * Math.PI) / 180)) / 2 ** zoom;
 /** Fixes closer than this to the last pan (~5 m) do not move the camera. */
 const PAN_STEP_DEG = 5e-5;
 const MIN_TRAVEL_M = 20;
@@ -78,7 +87,7 @@ export type FollowAction =
   | { kind: 'none' }
   /** Already following: move to the vehicle at the current zoom, facing `bearing` (null = as is). */
   | { kind: 'pan'; center: LonLat; bearing: number | null }
-  /** Taking the vehicle back after a suspension: move there, lifting a zoomed-out view. */
+  /** Taking the vehicle back after a suspension: move there, keeping the driver's zoom. */
   | { kind: 'resume'; center: LonLat; bearing: number | null };
 
 export const createFollow = (): FollowState => ({
@@ -199,14 +208,23 @@ function turnCamera(s: FollowState, force: boolean): number | null {
   return s.camBearing;
 }
 
-/** The driver moved the map by hand (pan or pinch); `center` is where the camera settled. */
-export function onGesture(s: FollowState, center: LonLat, now: number): void {
+/**
+ * The driver moved the map by hand (pan or pinch); `center` is where the camera settled.
+ * @param view.zoom   the zoom it settled at — the pan-away distance is measured on screen
+ * @param view.pinch  the zoom changed: a pinch never lets go of the vehicle, so the driver can zoom
+ *                    in or out while it keeps following at their new zoom
+ */
+export function onGesture(s: FollowState, center: LonLat, now: number, view: { zoom?: number; pinch?: boolean } = {}): void {
   // Every gesture restarts the resume clock, pinch included: a driver still handling the map is
   // not done looking at it.
   s.lastTouchAt = now;
+  if (view.pinch) return;
   const p = s.lastPan;
   if (!p) return;
-  if (Math.abs(p[0] - center[0]) > PAN_AWAY_DEG || Math.abs(p[1] - center[1]) > PAN_AWAY_DEG) {
+  const limit = typeof view.zoom === 'number' && Number.isFinite(view.zoom)
+    ? Math.max(PAN_AWAY_DEG, (PAN_AWAY_PX * metresPerPx(view.zoom, center[1])) / 111_320)
+    : PAN_AWAY_DEG;
+  if (Math.abs(p[0] - center[0]) > limit || Math.abs(p[1] - center[1]) > limit) {
     s.following = false;
   }
 }

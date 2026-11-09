@@ -51,7 +51,14 @@ const COLOR_OUTSIDE = '#f59e0b';
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 
 /** Street level: close enough to read which street the car is on while following it. */
-const FOLLOW_MIN_ZOOM = 15.5;
+/**
+ * Following (and the my-location button) keeps the driver's zoom. It used to lift anything below
+ * 15.5 back to street level, so a driver who had zoomed out to see their suburb was pulled back in
+ * every time following resumed. Only a view zoomed right out (a whole city) is brought in.
+ */
+const FOLLOW_MIN_ZOOM = 11.5;
+const FOLLOW_LIFT_ZOOM = 14;
+const followZoom = (z: number) => (z < FOLLOW_MIN_ZOOM ? FOLLOW_LIFT_ZOOM : z);
 
 function multiLineFC(lines: [number, number][][]): GeoJSON.FeatureCollection {
   if (!lines.length) return EMPTY_FC;
@@ -193,9 +200,12 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
   const traceFC = useMemo(() => multiLineFC(trace?.lines ?? []), [trace]);
   const outsideFC = useMemo(() => multiLineFC(trace?.outsideLines ?? []), [trace]);
   const snapped = trace?.kind === 'snapped';
+  // Today's driving: the trip now plus today's earlier ones, so a break (which ends a trip) no
+  // longer wipes the green lines the driver was working from.
   const trailFC = useMemo(() => {
-    const line = (trail as MapGLTrail | null)?.line ?? [];
-    return multiLineFC(line.length >= 2 ? [line] : []);
+    const t = trail as MapGLTrail | null;
+    const lines = [...(t?.earlier ?? []), t?.line ?? []].filter((l) => l.length >= 2);
+    return multiLineFC(lines);
   }, [trail]);
   // The heading rides on the point as a property, so turning the car is a data change, not a
   // re-styled layer. Rounded to whole degrees: finer turns are invisible, and each change is a
@@ -237,15 +247,21 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
   const armedRef = useRef(false);
   const onUserPanRef = useRef(onUserPan);
   onUserPanRef.current = onUserPan;
+  /** The zoom the camera last settled at — by hand or by the app — to tell a pinch from a drag. */
+  const zoomRef = useRef<number | null>(null);
   const onRegionDidChange = useCallback(
     (e: NativeSyntheticEvent<ViewStateChangeEvent>) => {
       const v = e.nativeEvent;
+      const before = zoomRef.current;
+      zoomRef.current = v.zoom;
       // Only after the driver has touched the map: auto-framing at load must not overwrite
       // the remembered camera (same rule as the WebView's cameraArmed gate).
       if (v.userInteraction) {
         armedRef.current = true;
-        // Real gesture — follow-mode decides whether it was a pan-away or just a pinch.
-        onUserPanRef.current?.([v.center[0], v.center[1]]);
+        // Real gesture — follow-mode decides whether it was a pan-away or just a pinch. A pinch
+        // shifts the centre too (it zooms about the fingers), so it is told apart by the zoom.
+        const pinch = before != null && Math.abs(v.zoom - before) > 0.05;
+        onUserPanRef.current?.([v.center[0], v.center[1]], { zoom: v.zoom, pinch });
       }
       if (!armedRef.current) return;
       onCamera?.([v.center[0], v.center[1]], v.zoom);
@@ -283,8 +299,8 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
       const v = vehicleRef.current;
       if (v) {
         mapRef.current?.getZoom()
-          .then((z) => cameraRef.current?.easeTo({ center: v, zoom: Math.max(z, 15), duration: 500 }))
-          .catch(() => cameraRef.current?.easeTo({ center: v, zoom: 15, duration: 500 }));
+          .then((z) => cameraRef.current?.easeTo({ center: v, zoom: followZoom(z), duration: 500 }))
+          .catch(() => cameraRef.current?.easeTo({ center: v, duration: 500 }));
       }
     },
     flyTo: (center: [number, number], zoom?: number) => {
@@ -311,8 +327,8 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
       // would throw the camera back off the vehicle the driver is now following.
       pendingFitRef.current = null;
       mapRef.current?.getZoom()
-        .then((z) => cameraRef.current?.easeTo({ center, zoom: Math.max(z, FOLLOW_MIN_ZOOM), duration: 600, ...(bearing === undefined ? {} : { bearing }) }))
-        .catch(() => cameraRef.current?.easeTo({ center, zoom: FOLLOW_MIN_ZOOM, duration: 600, ...(bearing === undefined ? {} : { bearing }) }));
+        .then((z) => cameraRef.current?.easeTo({ center, zoom: followZoom(z), duration: 600, ...(bearing === undefined ? {} : { bearing }) }))
+        .catch(() => cameraRef.current?.easeTo({ center, duration: 600, ...(bearing === undefined ? {} : { bearing }) }));
     },
     rotateTo: (bearing: number) => {
       // easeTo insists on a centre; zoomTo to the zoom we are already at turns the map in place.
@@ -373,7 +389,9 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
         <GeoJSONSource id="roads-covered" data={coveredFC}>
           <Layer
             type="line" id="roads-covered"
-            paint={{ 'line-color': COLOR_COVERED, 'line-width': lineWidthByZoom(0.7, 1.6, 3.4, 6), 'line-opacity': 0.9 }}
+            // Driven roads drawn about twice as wide as the red ones still to drive: drivers found
+            // the thin blue hard to pick out at a glance.
+            paint={{ 'line-color': COLOR_COVERED, 'line-width': lineWidthByZoom(1.6, 3, 5.5, 9), 'line-opacity': 0.95 }}
             layout={{ 'line-cap': 'round', 'line-join': 'round', visibility: showRoads ? 'visible' : 'none' }}
           />
         </GeoJSONSource>
@@ -388,7 +406,7 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
         <GeoJSONSource id="roads-live-covered" data={liveCoveredFC}>
           <Layer
             type="line" id="roads-live-covered"
-            paint={{ 'line-color': COLOR_COVERED, 'line-width': lineWidthByZoom(0.8, 1.8, 3.7, 6.4), 'line-opacity': 1 }}
+            paint={{ 'line-color': COLOR_COVERED, 'line-width': lineWidthByZoom(1.6, 3, 5.5, 9), 'line-opacity': 1 }}
             layout={{ 'line-cap': 'round', 'line-join': 'round', visibility: showRoads ? 'visible' : 'none' }}
           />
         </GeoJSONSource>

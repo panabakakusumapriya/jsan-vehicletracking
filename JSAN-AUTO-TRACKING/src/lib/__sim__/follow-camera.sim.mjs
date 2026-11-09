@@ -367,5 +367,34 @@ const near = (a, b, tol = 3) => a !== null && Math.min(Math.abs(a - b), 360 - Ma
   check('tapping it resumes following and hides it again', isFollowing(s));
 }
 
+// 27 ─ Drivers: "it zooms back in after a tap, and I can't pinch". A pinch never lets go.
+{
+  const s = createFollow();
+  const d = path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  // Pinching out to see the suburb moves the centre ~300 m — but it is a zoom, not a drag.
+  onGesture(s, [s.lastPan[0] + 0.004, s.lastPan[1]], d.t, { zoom: 13, pinch: true });
+  check('a pinch keeps following (the driver\'s new zoom stays)', isFollowing(s));
+}
+
+// 28 ─ Zoomed out, a thumb on the glass (or a tap to wake the screen) is not a drag.
+{
+  const s = createFollow();
+  const d = path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  // ~150 m at zoom 13 is ~15 px on screen: a nudge.
+  onGesture(s, [s.lastPan[0] + 150 * M_LON, s.lastPan[1]], d.t, { zoom: 13 });
+  check('zoomed out, a ~15 px nudge keeps following', isFollowing(s));
+  // ~2 km at zoom 13 is ~200 px: a real look elsewhere.
+  onGesture(s, [s.lastPan[0] + 2000 * M_LON, s.lastPan[1]], d.t + 1000, { zoom: 13 });
+  check('zoomed out, a real drag still lets go', !isFollowing(s));
+}
+
+// 29 ─ At street zoom the old 80 m rule still holds.
+{
+  const s = createFollow();
+  const d = path(s, [{ bearing: 90, metres: 200, kmh: 40 }]);
+  onGesture(s, [s.lastPan[0] + 150 * M_LON, s.lastPan[1]], d.t, { zoom: 17 });
+  check('at street zoom a 150 m drag lets go, as before', !isFollowing(s));
+}
+
 console.log(failed ? `\n${failed} FOLLOW-CAMERA SCENARIO(S) FAILED` : '\nALL FOLLOW-CAMERA SCENARIOS PASS');
 process.exit(failed ? 1 : 0);
