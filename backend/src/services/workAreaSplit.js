@@ -70,8 +70,8 @@ function zoneLocator(zones) {
 const refuse = (message) => Object.assign(new Error(message), { status: 409 });
 
 /** Nobody may be holding it, and it may not be signed off: both are keyed by a code about to change. */
-async function assertFree(areas, verb) {
-  const held = await AreaAssignment.find({ areaId: { $in: areas.map((a) => a._id) }, releasedAt: null })
+async function assertFree(areas, verb, { allowHeld = false } = {}) {
+  const held = allowHeld ? [] : await AreaAssignment.find({ areaId: { $in: areas.map((a) => a._id) }, releasedAt: null })
     .select('areaName driverName')
     .lean();
   if (held.length) {
@@ -573,20 +573,28 @@ function convexHull(points) {
  * cut zone takes `cutGeometry` and the rest keeps the parent's outline.
  *
  * Recorded like a split (AreaSplit, props.splitFrom), so joinSplitArea puts the area back exactly.
- * Refused while the area is held by a driver or signed off.
+ * Refused while the area is signed off, and while a driver holds it — unless `allowHeld`, for a
+ * caller that moves the driver's assignment onto the zone they keep (exactVtsClosedAreas --held:
+ * the part VTS closed is signed off, the driver stays on the open rest).
+ *
+ * `dropEmptyPieces`: two systems' outlines never share an edge, so clipping one by the other leaves
+ * crumbs all round the border (2,372 of them over 43 areas on 2026-11-10). With this, a piece of a
+ * zone's outline that holds none of that zone's roads is dropped; the biggest piece always stays.
  *
  * @param names  { cut, rest } zone names; codes are the parent's + "-01" (cut) and "-02" (rest)
  * @param tag    stored on the AreaSplit record (placesSource) so a script can find its own cuts
  */
-async function cutCommittedArea({ versionId, areaId, linkIds, cutGeometry, names = {}, tag = null, userId = null, apply = false }) {
+async function cutCommittedArea({ versionId, areaId, linkIds, cutGeometry, names = {}, tag = null, userId = null, apply = false, allowHeld = false, dropEmptyPieces = false }) {
   const pc = require('polygon-clipping');
   const version = await NetworkVersion.findById(versionId);
   if (!version) throw Object.assign(new Error('Network version not found'), { status: 404 });
   const parent = await WorkArea.findOne({ _id: areaId, networkVersionId: versionId }).lean();
   if (!parent) throw Object.assign(new Error('Work area not found in this network version'), { status: 404 });
-  await assertFree([parent], 'cutting it');
+  await assertFree([parent], 'cutting it', { allowHeld });
 
-  const linkDocs = await RoadLink.find({ networkVersionId: versionId, areaId: parent._id }).select('_id lengthMeters').lean();
+  const linkDocs = await RoadLink.find({ networkVersionId: versionId, areaId: parent._id })
+    .select(dropEmptyPieces ? '_id lengthMeters geometry.coordinates' : '_id lengthMeters')
+    .lean();
   const wanted = new Set(linkIds.map(String));
   const cutIds = [];
   const restIds = [];
@@ -617,6 +625,26 @@ async function cutCommittedArea({ versionId, areaId, linkIds, cutGeometry, names
   restPolys = tidyPolygons(restPolys);
   if (!cutPolys.length) cutPolys = tidyPolygons(C);
   if (!restPolys.length) restPolys = P;
+  if (dropEmptyPieces) {
+    const withRoads = (polys, mids) => {
+      if (polys.length < 2) return polys;
+      const boxes = polys.map((poly) => bboxOf(poly[0]));
+      const used = polys.map(() => false);
+      for (const pt of mids) {
+        for (let i = 0; i < polys.length; i++) {
+          const b = boxes[i];
+          if (used[i] || pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
+          if (pointInPolygon(pt, polys[i])) { used[i] = true; break; }
+        }
+      }
+      const size = (poly) => Math.abs(areaSplit.geometryAreaSqm({ type: 'Polygon', coordinates: poly }));
+      const biggest = polys.reduce((best, poly, i) => (size(poly) > size(polys[best]) ? i : best), 0);
+      return polys.filter((poly, i) => used[i] || i === biggest);
+    };
+    const mids = (inCut) => linkDocs.filter((l) => wanted.has(String(l._id)) === inCut).map((l) => midpointOf(l.geometry.coordinates));
+    cutPolys = withRoads(cutPolys, mids(true));
+    restPolys = withRoads(restPolys, mids(false));
+  }
   const asGeometry = (polys) => (polys.length === 1 ? { type: 'Polygon', coordinates: polys[0] } : { type: 'MultiPolygon', coordinates: polys });
   const box = (polys) => {
     let b = [180, 90, -180, -90];
