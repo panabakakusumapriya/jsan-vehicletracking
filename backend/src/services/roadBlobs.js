@@ -49,11 +49,14 @@ function bucket() {
 async function blobKey(versionId) {
   const [links, areas] = await Promise.all([
     RoadLink.countDocuments({ networkVersionId: versionId }),
-    WorkArea.find({ networkVersionId: versionId }).select('_id areaCode').sort({ _id: 1 }).lean(),
+    WorkArea.find({ networkVersionId: versionId }).select('_id areaCode targetLinks').sort({ _id: 1 }).lean(),
   ]);
+  // targetLinks is in the key because roads can join an area that keeps its id and code — a
+  // repaired polygon (seed/repairAreaPieces.js) took 22,598 roads out of "no area", and without
+  // this the old file, cached for good in every browser, would go on drawing them as orphans.
   const hash = crypto
     .createHash('sha1')
-    .update(areas.map((a) => `${a._id}:${a.areaCode}`).join(','))
+    .update(areas.map((a) => `${a._id}:${a.areaCode}:${a.targetLinks || 0}`).join(','))
     .digest('hex')
     .slice(0, 10);
   return { key: `f${FORMAT}-${links}-${hash}`, links };
