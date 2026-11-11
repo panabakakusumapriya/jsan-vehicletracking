@@ -1,5 +1,6 @@
 import { COORDINATE_SYSTEM, type Layer, type PickingInfo } from '@deck.gl/core';
 import { PathStyleExtension } from '@deck.gl/extensions';
+import { TileLayer } from '@deck.gl/geo-layers';
 import { GeoJsonLayer, IconLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../lib/api';
@@ -15,6 +16,8 @@ import {
   type RoadState,
 } from '../lib/roadNetwork';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
+import { MAX_TILE_Z, buildRoadTile, type RoadTileData, type RoadTilePart } from '../lib/roadTiles';
+import { AREA_LOD_TOLERANCES, areaLodOf, simplifyAreas } from '../lib/simplifyAreas';
 import { stateCoverage, type StateCoverage } from '../lib/stateCoverage';
 import { MarkerCard, pinUrl, type TripMarker } from './TripMarkers';
 
@@ -34,11 +37,6 @@ import { MarkerCard, pinUrl, type TripMarker } from './TripMarkers';
  *     is a grey smear that tells you nothing and costs everything.
  */
 
-/**
- * One road layer's own geometry: only the links it draws, copied out of the delivery's binary.
- * `link[k]` is the delivery-wide link index of the layer's k-th path, for the tooltip.
- */
-type RoadBucket = { positions: Float32Array; startIndices: Uint32Array; colors: Uint8Array; link: Uint32Array; length: number };
 const RED: [number, number, number] = [220, 38, 38];
 const BLUE: [number, number, number] = [37, 99, 235];
 
@@ -156,6 +154,12 @@ const SOLID: [number, number] = [0, 0];
  * Same treatment as the trip markers and the replay vehicle.
  */
 const ALWAYS_ON_TOP = { depthCompare: 'always', depthWriteEnabled: false } as const;
+const WARM_STARTS = new Uint32Array([0, 2]);
+const WARM_PATH = new Float32Array([0, 0, 0.00001, 0.00001]);
+const WARM_COLOR = new Uint8Array(8);
+/** The polygons' level of detail from which only those near the view are drawn (zoom 11 in). */
+const CULL_AREAS_FROM_LOD = 3;
+const NO_AREAS = { type: 'FeatureCollection', features: [] };
 
 export function CoverageMap({
   versionId,
@@ -687,6 +691,38 @@ export function CoverageMap({
     return { ...areas, features: areas.features.filter((f) => !f.properties.completed) };
   }, [areas, showCompleted]);
 
+  /**
+   * The same polygons at five levels of detail, one per zoom band (lib/simplifyAreas). All five
+   * are handed to the GPU once and only the band in view is drawn, so crossing a band costs
+   * nothing; the last is the outlines exactly as they arrived.
+   */
+  const areaLods = useMemo(
+    () => (drawnAreas ? [...AREA_LOD_TOLERANCES.map((tol) => simplifyAreas(drawnAreas, tol)), drawnAreas] : null),
+    [drawnAreas]
+  );
+  const [areaLod, setAreaLod] = useState(() => areaLodOf(7));
+  /**
+   * From zoom 11 in, only the polygons near the view are drawn: [w, s, e, n], the view and as much
+   * again on every side. Close in, nearly all 3,900 outlines are off screen, and drawing them at
+   * full detail anyway took the map's city view from 60 frames a second to 44. Null further out,
+   * where they are all in view and drawn simplified.
+   */
+  const [areaBox, setAreaBox] = useState<[number, number, number, number] | null>(null);
+  const areaBoxRef = useRef(areaBox);
+  areaBoxRef.current = areaBox;
+  const nearAreas = useMemo(() => {
+    const fc = areaLods?.[areaLod];
+    if (!fc || !areaBox || areaLod < CULL_AREAS_FROM_LOD) return null;
+    const [w, s, e, n] = areaBox;
+    return {
+      ...fc,
+      features: fc.features.filter((f) => {
+        const b = f.properties.bbox;
+        return !b || (b[0] <= e && b[2] >= w && b[1] <= n && b[3] >= s);
+      }),
+    };
+  }, [areaLods, areaLod, areaBox]);
+
   const selectedFeatures = useMemo(() => {
     if (!selectionKey || !areas) return [];
     const want = new Set(selectionKey.split(','));
@@ -718,14 +754,10 @@ export function CoverageMap({
         if (held) flags[i] |= 1;
         if (roadState?.signedOffCodes.has(a.code)) flags[i] |= 2;
       });
-      // Pass 1 decides each link's bucket and colour; pass 2 copies it into that bucket's own
-      // arrays. Each layer then holds only what it draws — the GPU used to run every link of the
-      // network through BOTH layers and throw half away in the shader, on every frame and on
-      // every hover pick.
+      // Each link's bucket and colour, and nothing more: the geometry is cut into tiles as the map
+      // asks for them (lib/roadTiles), so a change of colour no longer copies the whole network.
       const bucketOf = new Uint8Array(net.linkCount); // 0 hidden, 1 to drive, 2 done
       const colorOf = new Uint32Array(net.linkCount); // RGBA packed
-      const links = [0, 0, 0];
-      const verts = [0, 0, 0];
       let shown = 0;
       let driven = 0;
       for (let i = 0; i < net.linkCount; i++) {
@@ -750,91 +782,96 @@ export function CoverageMap({
         }
         bucketOf[i] = bucket;
         colorOf[i] = (c[0] | (c[1] << 8) | (c[2] << 16) | (a << 24)) >>> 0;
-        links[bucket] += 1;
-        verts[bucket] += net.startIndices[i + 1] - net.startIndices[i];
       }
-      const buckets: RoadBucket[] = [1, 2].map((b) => ({
-        positions: new Float32Array(verts[b] * 2),
-        startIndices: new Uint32Array(links[b] + 1),
-        colors: new Uint8Array(verts[b] * 4),
-        link: new Uint32Array(links[b]),
-        length: links[b],
-      }));
-      const nLink = [0, 0];
-      const nVert = [0, 0];
-      const src = net.positions;
-      for (let i = 0; i < net.linkCount; i++) {
-        const b = bucketOf[i];
-        if (!b) continue;
-        const out = buckets[b - 1];
-        const k = nLink[b - 1]++;
-        out.link[k] = i;
-        out.startIndices[k] = nVert[b - 1];
-        const v0 = net.startIndices[i];
-        const v1 = net.startIndices[i + 1];
-        let w = nVert[b - 1];
-        out.positions.set(src.subarray(v0 * 2, v1 * 2), w * 2);
-        const col = colorOf[i];
-        for (let v = v0; v < v1; v++, w++) {
-          const o = w * 4;
-          out.colors[o] = col & 255;
-          out.colors[o + 1] = (col >>> 8) & 255;
-          out.colors[o + 2] = (col >>> 16) & 255;
-          out.colors[o + 3] = col >>> 24;
-        }
-        nVert[b - 1] = w;
-      }
-      buckets.forEach((out, j) => { out.startIndices[out.length] = nVert[j]; });
-      return { net, todo: buckets[0], done: buckets[1], shown, driven };
+      return { net, bucketOf, colorOf, shown, driven };
     });
   }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet, holdersByCode]);
 
   /**
-   * Two layers per delivery over the SAME binary: the roads still to drive first, thin; the driven
-   * roads on top, thick. Colour alone was not enough — at a glance the eye reads width before hue,
-   * so the work done is the heavier line and what is left sits as the thin red mesh behind it. The
-   * layers hold disjoint geometry (see roadPaint), so each link is drawn exactly once.
+   * The roads, as map tiles (lib/roadTiles): deck.gl asks for the tiles in view at the level the
+   * zoom calls for, keeps the ones it has, and draws the level it holds while the next is made.
+   * Each tile is two layers — the roads still to drive first, thin; the driven roads on top,
+   * thick. Colour alone was not enough: at a glance the eye reads width before hue, so the work
+   * done is the heavier line and what is left sits as the thin red mesh behind it.
    */
-  const roadPaintRef = useRef(roadPaint);
-  roadPaintRef.current = roadPaint;
-
-  const roadLayers = useMemo<Layer[]>(
-    () =>
-      roadPaint.flatMap(({ net, todo, done }) =>
-        (
-          [
-            { suffix: 'todo', part: todo, width: 3, min: 1.3, max: 6 },
-            { suffix: 'done', part: done, width: 5, min: 2.4, max: 10 },
-          ] as const
-        ).filter((b) => b.part.length > 0).map(
-          (b) =>
-            new PathLayer({
-              id: `roads-${net.versionId}-${b.suffix}`,
-              data: {
-                length: b.part.length,
-                startIndices: b.part.startIndices,
-                attributes: {
-                  getPath: { value: b.part.positions, size: 2 },
-                  getColor: { value: b.part.colors, size: 4, normalized: true },
-                },
-              },
-              // The binary is used as-is: open paths, offsets from the delivery's own centre
-              // (float32 near an origin is precise to centimetres; absolute longitudes are not).
-              _pathType: 'open',
-              coordinateSystem: COORDINATE_SYSTEM.LNGLAT_OFFSETS,
-              coordinateOrigin: [net.origin[0], net.origin[1], 0],
-              getWidth: b.width,
-              widthUnits: 'meters',
-              widthMinPixels: b.min,
-              widthMaxPixels: b.max,
-              capRounded: true,
-              jointRounded: true,
-              pickable: true,
-            } as never)
-        )
-      ),
-    [roadPaint]
-  );
+  const roadLayers = useMemo<Layer[]>(() => {
+    if (!roadPaint.length) return [];
+    const widths = [
+      { suffix: 'todo', width: 3, min: 1.3, max: 6 },
+      { suffix: 'done', width: 5, min: 2.4, max: 10 },
+    ] as const;
+    return [
+      new TileLayer<RoadTileData | null>({
+        id: 'roads',
+        // 1024 px tiles: a dozen in view at most, each cut to about a pixel of detail.
+        tileSize: 1024,
+        minZoom: 0,
+        maxZoom: MAX_TILE_Z,
+        maxCacheSize: 60,
+        // While a level is being made, the one already on screen stays: no blank map on a zoom.
+        refinementStrategy: 'best-available',
+        pickable: true,
+        getTileData: (tile: { index: { x: number; y: number; z: number }; bbox: unknown; signal?: AbortSignal }) => buildRoadTile(roadPaint, tile.index, tile.bbox as never, tile.signal),
+        updateTriggers: { getTileData: [roadPaint] },
+        renderSubLayers: (props: { id: string; data: unknown }) => {
+          const tile = props.data as RoadTileData | null;
+          if (!tile) return null;
+          return widths
+            .map((b) => ({ b, part: (b.suffix === 'todo' ? tile.todo : tile.done) as RoadTilePart }))
+            .filter(({ part }) => part.length > 0)
+            .map(
+              ({ b, part }) =>
+                new PathLayer({
+                  id: `${props.id}-${b.suffix}`,
+                  data: {
+                    length: part.length,
+                    startIndices: part.startIndices,
+                    attributes: {
+                      getPath: { value: part.positions, size: 2 },
+                      getColor: { value: part.colors, size: 4, normalized: true },
+                    },
+                  },
+                  // Open paths, as offsets from the tile's own centre (float32 near an origin is
+                  // precise to centimetres; absolute longitudes are not).
+                  _pathType: 'open',
+                  coordinateSystem: COORDINATE_SYSTEM.LNGLAT_OFFSETS,
+                  coordinateOrigin: [tile.origin[0], tile.origin[1], 0],
+                  getWidth: b.width,
+                  widthUnits: 'meters',
+                  widthMinPixels: b.min,
+                  widthMaxPixels: b.max,
+                  capRounded: true,
+                  jointRounded: true,
+                  pickable: tile.pickable,
+                } as never)
+            );
+        },
+      } as never) as unknown as Layer,
+      /**
+       * One invisible, pickable road, there from the start. The first pickable road layer the GPU
+       * meets costs it most of a second, once (measured: a 0.7 s freeze the first time a zoom
+       * reached the tiles that answer a hover). With this, that is paid while the map loads.
+       */
+      new PathLayer({
+        id: 'roads-warm',
+        data: {
+          length: 1,
+          startIndices: WARM_STARTS,
+          attributes: { getPath: { value: WARM_PATH, size: 2 }, getColor: { value: WARM_COLOR, size: 4, normalized: true } },
+        },
+        _pathType: 'open',
+        coordinateSystem: COORDINATE_SYSTEM.LNGLAT_OFFSETS,
+        coordinateOrigin: [roadPaint[0].net.origin[0], roadPaint[0].net.origin[1], 0],
+        getWidth: 3,
+        widthUnits: 'meters',
+        widthMinPixels: 1.3,
+        widthMaxPixels: 6,
+        capRounded: true,
+        jointRounded: true,
+        pickable: true,
+      } as never),
+    ];
+  }, [roadPaint]);
 
   const areaBbox = areas?.bbox ? areas.bbox.join(',') : '';
   useEffect(() => {
@@ -883,10 +920,13 @@ export function CoverageMap({
     const out: Layer[] = [];
 
     if (showAreas && drawnAreas?.features.length) {
-      out.push(
+      (areaLods || [drawnAreas]).forEach((fc, lod, all) => out.push(
         new GeoJsonLayer<AreaProps>({
-          id: 'work-areas',
-          data: drawnAreas as unknown as never,
+          id: lod === all.length - 1 ? 'work-areas' : `work-areas-lod${lod}`,
+          // A close-in level holds only the polygons near the view while it is the one drawn, and
+          // nothing while it is not.
+          data: (lod < CULL_AREAS_FROM_LOD || all.length === 1 ? fc : lod === areaLod && nearAreas ? nearAreas : NO_AREAS) as unknown as never,
+          visible: all.length === 1 || lod === Math.min(areaLod, all.length - 1),
           pickable: true,
           stroked: true,
           filled: true,
@@ -982,7 +1022,7 @@ export function CoverageMap({
             }
           },
         })
-      );
+      ));
       /**
        * The picked areas, drawn again on top: a solid blue fill and a heavy dark border, so a
        * chosen cluster is legible even where the areas are tiny and packed. On its own layer so
@@ -1157,6 +1197,9 @@ export function CoverageMap({
     driverColorByArea,
     holdersByCode,
     drawnAreas,
+    areaLods,
+    areaLod,
+    nearAreas,
   ]);
 
   const getTooltip = useCallback((info: PickingInfo) => {
@@ -1169,13 +1212,14 @@ export function CoverageMap({
         )}</div><div style="opacity:.7">${escapeHtml(new Date(m.recordedAt).toLocaleString())}</div></div>`,
       };
     }
-    if (layerId.startsWith('roads-') && info.index >= 0) {
-      const paint = roadPaintRef.current.find((r) => layerId.startsWith(`roads-${r.net.versionId}-`));
-      if (!paint) return null;
-      const net = paint.net;
-      const part = layerId.endsWith('-done') ? paint.done : paint.todo;
+    if (layerId === 'roads' && info.index >= 0) {
+      const picked = info as PickingInfo & { tile?: { content?: RoadTileData | null }; sourceLayer?: { id?: string } };
+      const tile = picked.tile?.content;
+      if (!tile) return null;
+      const part = (picked.sourceLayer?.id || '').endsWith('-done') ? tile.done : tile.todo;
       const li = part.link[info.index];
-      if (li === undefined) return null;
+      const net = tile.paints[part.paint[info.index]]?.net;
+      if (li === undefined || !net) return null;
       const st = roadStateRef.current;
       const d = st?.coveredBy.get(net.versionId)?.[li] ?? -1;
       const ai = net.area[li];
@@ -1356,6 +1400,24 @@ export function CoverageMap({
 
   // Re-place when the area changes, when its outline arrives, and whenever the card's own size
   // changes (it loads in two steps: a "Loading…" line, then the full numbers).
+  // Every camera frame: keep the card beside its area, and switch the polygons' level of detail
+  // when the zoom crosses a band (a state change only then, so nothing re-renders in between).
+  const handleMove = useCallback((zoom: number, bbox: [number, number, number, number]) => {
+    placePopup();
+    const lod = areaLodOf(zoom);
+    setAreaLod((was) => (was === lod ? was : lod));
+    const box = areaBoxRef.current;
+    if (lod < CULL_AREAS_FROM_LOD) {
+      if (box) setAreaBox(null);
+    } else if (!box || bbox[0] < box[0] || bbox[1] < box[1] || bbox[2] > box[2] || bbox[3] > box[3]) {
+      const dx = bbox[2] - bbox[0];
+      const dy = bbox[3] - bbox[1];
+      const next: [number, number, number, number] = [bbox[0] - dx, bbox[1] - dy, bbox[2] + dx, bbox[3] + dy];
+      areaBoxRef.current = next;
+      setAreaBox(next);
+    }
+  }, [placePopup]);
+
   useLayoutEffect(() => {
     placePopup();
     const el = popupRef.current;
@@ -1376,7 +1438,7 @@ export function CoverageMap({
         layers={layers}
         getTooltip={getTooltip}
         onMoveEnd={handleMoveEnd}
-        onMove={placePopup}
+        onMove={handleMove}
       />
 
       {pinCardOpen ? (

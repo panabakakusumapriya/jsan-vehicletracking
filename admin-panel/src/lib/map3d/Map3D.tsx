@@ -54,9 +54,9 @@ interface Map3DProps {
    *  The coverage map loads road links per viewport off this -- 654k links can
    *  never all be on screen, so what is drawn is decided by where you are. */
   onMoveEnd?: (bbox: [number, number, number, number], zoom: number) => void;
-  /** Fires on EVERY camera frame and on resize. For repositioning DOM that is pinned to a place
-   *  on the map — keep it cheap, never fetch from it. */
-  onMove?: () => void;
+  /** Fires on EVERY camera frame and on resize, with the zoom. For repositioning DOM that is
+   *  pinned to a place on the map — keep it cheap, never fetch from it. */
+  onMove?: (zoom: number, bbox: [number, number, number, number]) => void;
   /** 'light' trades the 3D buildings for a flat basemap that costs the GPU a fraction per frame. */
   basemap?: 'full' | 'light';
   /** A north-up map: it opens flat, and turning and tilting are switched off for the person
@@ -148,7 +148,12 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
     };
     map.on('moveend', handleMoveEnd);
     map.once('load', handleMoveEnd);
-    const handleMove = () => moveRef.current?.();
+    const handleMove = () => {
+      const cb = moveRef.current;
+      if (!cb) return;
+      const b = map.getBounds();
+      cb(map.getZoom(), [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    };
     map.on('move', handleMove);
     map.on('resize', handleMove);
 

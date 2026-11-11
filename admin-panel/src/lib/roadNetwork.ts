@@ -74,13 +74,25 @@ const mercatorY = (lat: number) => (512 / (2 * Math.PI)) * Math.log(Math.tan(Mat
  * the delivery. Written as 2T / (b + √(b² + 4aT)), the root that is stable when a is tiny.
  */
 function latOffsetFor(lat0: number) {
-  const cos0 = Math.cos(lat0 * RAD);
-  const b = UNITS_PER_DEGREE / cos0;
-  const a = (UNITS_PER_DEGREE * ((RAD * Math.tan(lat0 * RAD)) / cos0)) / 2;
-  const y0 = mercatorY(lat0);
+  const { a, b, y0 } = offsetFrame(lat0);
   return (lat: number) => {
     const t = mercatorY(lat) - y0;
     return (2 * t) / (b + Math.sqrt(Math.max(0, b * b + 4 * a * t)));
+  };
+}
+
+/**
+ * The numbers behind latOffsetFor for one origin latitude, for moving a vertex from one origin to
+ * another without going back to degrees (lib/roadTiles.ts): a stored latitude offset d is
+ * t = d × (b + a × d) map units north of the origin's own y0, and the offset from another origin
+ * is the same t, less the difference of the two y0, put through the root above.
+ */
+export function offsetFrame(lat0: number) {
+  const cos0 = Math.cos(lat0 * RAD);
+  return {
+    a: (UNITS_PER_DEGREE * ((RAD * Math.tan(lat0 * RAD)) / cos0)) / 2,
+    b: UNITS_PER_DEGREE / cos0,
+    y0: mercatorY(lat0),
   };
 }
 
