@@ -51,6 +51,8 @@ router.get('/my-roads', authenticate, requireRole('user'), roadsLimiter, ctrl.my
 // "Has anything changed?" — the cache key alone, no geometry. Kept next to my-roads because
 // the two must agree about what a version is.
 router.get('/my-roads/version', authenticate, requireRole('user'), ctrl.myRoadsVersion);
+// The same for every area the driver holds, in one request — what the app asks from 1.0.27 on.
+router.get('/my-roads/versions', authenticate, requireRole('user'), ctrl.myRoadsVersions);
 
 // "Has the server finished these trips?" — by the phone's own trip ids.
 router.get('/my-trips/settled', authenticate, requireRole('user'), ctrl.myTripsSettled);

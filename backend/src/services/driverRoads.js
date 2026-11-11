@@ -2,7 +2,7 @@ const RoadLink = require('../models/RoadLink');
 const LinkCoverage = require('../models/LinkCoverage');
 const AreaAssignment = require('../models/AreaAssignment');
 const WorkArea = require('../models/WorkArea');
-const { liveNetworkVersions } = require('./liveNetworks');
+const { liveNetworkVersions, resolveAssignedAreas } = require('./liveNetworks');
 const { simplifyPath } = require('../utils/geo');
 
 /**
@@ -117,6 +117,33 @@ function compactLine(coords) {
  *
  * Returns the network version id to read against, or null when the driver is not entitled.
  */
+/**
+ * The project's live deliveries, remembered for a few seconds.
+ *
+ * liveNetworkVersions() is one find plus two exists() per superseded delivery — 33 queries for
+ * PRJ-025's 17 deliveries — and authoriseArea runs it for every area a phone asks about. A map
+ * pass for a driver holding 45 areas was ~1,500 queries to learn the same seventeen facts 45
+ * times. Which deliveries are live changes when a network is imported or the first area of an
+ * idle delivery is assigned: minutes apart at the busiest, so half a minute of memory costs
+ * nothing a driver can see.
+ *
+ * Only ever trusted for a YES. A delivery missing from the remembered list is looked up afresh
+ * before anyone is refused, so a driver given the first area of a delivery is never told "not
+ * assigned" by a stale list. Process-local, like the version memo below.
+ */
+const LIVE_MEMO_TTL_MS = 30 * 1000;
+const liveMemo = new Map();
+
+async function liveVersionsFor(projectIds, { fresh = false } = {}) {
+  const key = (projectIds || []).map(String).sort().join(',');
+  const hit = liveMemo.get(key);
+  if (!fresh && hit && Date.now() - hit.at <= LIVE_MEMO_TTL_MS) return hit.versions;
+  const versions = await liveNetworkVersions(projectIds);
+  if (liveMemo.size >= 500) liveMemo.clear();
+  liveMemo.set(key, { at: Date.now(), versions });
+  return versions;
+}
+
 async function authoriseArea(driverId, projectIds, areaId) {
   // The HTTP handler already rejects a malformed areaId with a 400, but this is a shared service
   // and a caller that skips that check would otherwise get a Mongoose CastError thrown from inside
@@ -141,9 +168,9 @@ async function authoriseArea(driverId, projectIds, areaId) {
   // The area must sit in a delivery the driver's project is working from — the active one or a
   // superseded one still in use (liveNetworks.js). Active-only refused every road in a project
   // whose newest import was a different region, while myAreas listed the areas regardless.
-  const version = (await liveNetworkVersions(projectIds)).find(
-    (v) => String(v._id) === String(area.networkVersionId)
-  );
+  const inList = (versions) => versions.find((v) => String(v._id) === String(area.networkVersionId));
+  const version = inList(await liveVersionsFor(projectIds)) ||
+    inList(await liveVersionsFor(projectIds, { fresh: true }));
   if (!version) return null;
 
   const assignment = await AreaAssignment.findOne({
@@ -172,19 +199,21 @@ async function authoriseArea(driverId, projectIds, areaId) {
  * return the same rows in a different order on the next read — an order-dependent digest would
  * bust the cache at random and force a quarter-megabyte refetch for nothing.
  */
+function linkHash(id) {
+  let h = 0x811c9dc5;
+  const s = String(id);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    // Math.imul keeps the multiply in 32-bit; a plain `h * 16777619` loses the low bits to
+    // float64 rounding well before it wraps, which collapses the hash space.
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
 function coverageChecksum(linkIds) {
   let sum = 0;
-  for (const id of linkIds) {
-    let h = 0x811c9dc5;
-    const s = String(id);
-    for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
-      // Math.imul keeps the multiply in 32-bit; a plain `h * 16777619` loses the low bits to
-      // float64 rounding well before it wraps, which collapses the hash space.
-      h = Math.imul(h, 16777619);
-    }
-    sum = (sum + (h >>> 0)) % 4294967296;
-  }
+  for (const id of linkIds) sum = (sum + linkHash(id)) % 4294967296;
   return sum;
 }
 
@@ -316,6 +345,65 @@ async function getDriverRoadsVersion({ driverId, projectIds, areaId }) {
 }
 
 /**
+ * The cache keys of EVERY area the driver holds, in one request.
+ *
+ * getDriverRoadsVersion answers for one area, so the app asked once per area — every four minutes
+ * and on every return to the foreground. Per area that was an entitlement check (the area, the
+ * live deliveries, the assignment) and a read of its ledger: for a driver holding 45 areas, 45
+ * requests and some 1,600 queries per pass, and a shared request cap that ran out (Evan Miles,
+ * 2026-11-11). Here the same answer costs a fixed handful of queries however many areas there
+ * are: the live deliveries (remembered), the driver's assignments, their areas, and ONE pass over
+ * the ledgers of the areas whose key is not already remembered.
+ *
+ * The areas are the ones my-areas lists, resolved the same way, and each `version` is built by
+ * the same buildVersion as the single-area probe and the roads payload — it must stay
+ * byte-identical to both, or the app refetches forever or never.
+ */
+async function getDriverRoadsVersions({ driverId, projectIds }) {
+  const versions = await liveVersionsFor(projectIds);
+  if (!versions.length) return { areas: [] };
+  const assignments = await AreaAssignment.find({ driverId, releasedAt: null })
+    .select('areaId areaCode')
+    .lean();
+  if (!assignments.length) return { areas: [] };
+  const areas = await resolveAssignedAreas(versions, assignments, '_id');
+
+  const out = new Map();
+  const cold = new Map(); // areaId -> running { networkVersionId, count, newest, sum }
+  for (const a of areas) {
+    const known = recallVersion(a.networkVersionId, a._id);
+    if (known) out.set(String(a._id), known);
+    else cold.set(String(a._id), { networkVersionId: a.networkVersionId, count: 0, newest: 0, sum: 0 });
+  }
+  if (cold.size) {
+    // One pass, folded as it streams: nothing is held but four numbers per area. A link has one
+    // row per delivery and an area is in one delivery, so no id can arrive twice for an area —
+    // which is what lets a running sum stand in for coverageChecksum's Set.
+    const cursor = LinkCoverage.find({
+      networkVersionId: { $in: [...new Set([...cold.values()].map((c) => String(c.networkVersionId)))] },
+      areaId: { $in: [...cold.keys()] },
+    })
+      .select('areaId linkId firstAt -_id')
+      .lean()
+      .cursor();
+    for await (const row of cursor) {
+      const c = cold.get(String(row.areaId));
+      if (!c) continue;
+      c.count += 1;
+      c.sum = (c.sum + linkHash(row.linkId)) % 4294967296;
+      const ms = row.firstAt ? new Date(row.firstAt).getTime() : 0;
+      if (ms > c.newest) c.newest = ms;
+    }
+    for (const [areaId, c] of cold) {
+      const version = [c.networkVersionId, c.count, c.newest, c.sum, GEOMETRY_TAG].join('.');
+      rememberVersion(c.networkVersionId, areaId, version);
+      out.set(areaId, version);
+    }
+  }
+  return { areas: [...out].map(([areaId, version]) => ({ areaId, version })) };
+}
+
+/**
  * The geometry format, as part of the cache key.
  *
  * Coverage alone does not move the key when the SHAPE of what is served changes — dropping
@@ -382,11 +470,13 @@ function rememberVersion(networkVersionId, areaId, version) {
 /** Tests only: coverage written directly to the ledger must not be hidden by the memo. */
 function clearVersionMemo() {
   versionMemo.clear();
+  liveMemo.clear();
 }
 
 module.exports = {
   getDriverRoads,
   getDriverRoadsVersion,
+  getDriverRoadsVersions,
   clearVersionMemo,
   compactLine,
   GEOMETRY_TAG,

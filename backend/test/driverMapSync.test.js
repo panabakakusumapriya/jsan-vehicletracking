@@ -111,6 +111,27 @@ function assert(cond, msg) {
   const bad = await dan.as(request(app).get('/api/tracking/my-roads/version?areaId=nope'));
   assert(bad.status === 400, 'a malformed area id is a 400, not a 500');
 
+  console.log('-- every area in one request --');
+  await LinkCoverage.create({
+    networkVersionId: version._id, linkId: 'L2', projectId: project._id, areaId: area._id,
+    lengthMeters: 100, firstDriverId: mo.u._id, firstTripId: new mongoose.Types.ObjectId(),
+    firstAt: new Date(), passes: 1,
+  });
+  clearVersionMemo();
+  const all = await dan.as(request(app).get('/api/tracking/my-roads/versions'));
+  const vNow = await roadsVersion(dan);
+  assert(all.status === 200 && all.body.areas.length === 1 && all.body.areas[0].areaId === String(area._id),
+    'the batch probe lists the areas the driver holds');
+  assert(all.body.areas[0].version === vNow,
+    `and its version is byte-identical to my-roads, read cold from the ledger (${all.body.areas[0].version} vs ${vNow})`);
+  clearVersionMemo();
+  const one = await probe(dan);
+  assert(one.body.version === all.body.areas[0].version, 'the single-area probe agrees with it');
+  const none = await mo.as(request(app).get('/api/tracking/my-roads/versions'));
+  assert(none.status === 200 && none.body.areas.length === 0, 'a driver holding nothing gets an empty list, not an error');
+  await LinkCoverage.deleteMany({ linkId: 'L2' });
+  clearVersionMemo();
+
   console.log('\n-- which trips the server has finished --');
   const mkTrip = (driver, clientTripId, extra) => Trip.create({
     clientTripId, driverId: driver.u._id, projectId: project._id,

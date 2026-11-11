@@ -146,6 +146,7 @@ function createApp() {
         // Running trips get cleaned km and assigned UKM every LIVE_MATCH_EVERY_MINUTES (10), not
         // only after they end (services/liveMatcher.js).
         liveMatch: true,
+        roadsVersionsBatch: true,
       },
     })
   );

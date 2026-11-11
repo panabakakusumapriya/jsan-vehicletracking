@@ -72,5 +72,14 @@ workAreaSchema.index({ networkVersionId: 1, areaCode: 1 }, { unique: true });
 // The areas table: filter by version, order by priority then size of the job.
 workAreaSchema.index({ networkVersionId: 1, priority: 1, targetMeters: -1 });
 workAreaSchema.index({ geometry: '2dsphere' });
+// The zones an area was cut or split into (liveNetworks.resolveAssignedAreas, linkCoverage
+// .groundOfCode): asked on every my-areas and every trip attribution, and without this it read
+// every area of the live deliveries, polygons and all. Partial: only zones carry the field.
+workAreaSchema.index(
+  { networkVersionId: 1, 'props.splitFrom.code': 1 },
+  { name: 'area_version_splitfrom', partialFilterExpression: { 'props.splitFrom.code': { $exists: true } } }
+);
+// An area by its code across a project's deliveries (groundOfCode, assignment audits).
+workAreaSchema.index({ projectId: 1, areaCode: 1 }, { name: 'area_project_code' });
 
 module.exports = mongoose.model('WorkArea', workAreaSchema);

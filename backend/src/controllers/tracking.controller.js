@@ -19,7 +19,7 @@ const { closeDeadTrips, driversWithLiveApp } = require('../services/tripLifecycl
 // stay available for side-by-side comparison against the global engine during cutover, but
 // nothing reads them for a business number any more — see services/globalUkm.js.
 const { computeTripUkm } = require('../services/ukmCompute');
-const { getDriverRoads, getDriverRoadsVersion } = require('../services/driverRoads');
+const { getDriverRoads, getDriverRoadsVersion, getDriverRoadsVersions } = require('../services/driverRoads');
 const { scopeForProject } = require('../services/coverageScope');
 const { rebuildScope } = require('../services/globalUkm');
 const { classifyTrip } = require('../services/tripNoise');
@@ -1224,6 +1224,14 @@ exports.myRoadsVersion = asyncHandler(async (req, res) => {
   if (!result) return res.status(403).json({ error: 'You are not assigned to this area' });
 
   res.json(result);
+});
+
+/**
+ * GET /api/tracking/my-roads/versions — the same answer for EVERY area the driver holds, in one
+ * request (driverRoads.getDriverRoadsVersions). The app used to ask once per area.
+ */
+exports.myRoadsVersions = asyncHandler(async (req, res) => {
+  res.json(await getDriverRoadsVersions({ driverId: req.user._id, projectIds: req.user.projectIds }));
 });
 
 /**
