@@ -49,24 +49,39 @@ router.get('/my-roads', authenticate, requireRole('user'), roadsLimiter, ctrl.my
  * Separate from roadsLimiter on purpose: sharing it would let routine probing eat the budget
  * the real download needs, and the download is what the probe exists to avoid.
  *
- * 300 per 15 min per driver. Expected use is well under a tenth of that: a probe per area every
- * four minutes, plus one per foreground.
+ * The app probes ONCE PER AREA every four minutes and on every return to the foreground, so the
+ * use grows with the areas a driver holds: 45 areas is ~170 per 15 min before a single foreground,
+ * and 67 is ~250. With one shared cap of 300 the probes of a driver with many areas used up the
+ * budget of the Today card (my-day), which then showed "Too many map sync requests" (Evan Miles,
+ * 45 areas, 2026-11-11). So the probes have their own, larger cap — still per driver, still far
+ * below what would hurt the API (each is a memoised string) — and the screens a driver reads
+ * keep syncLimiter to themselves.
  */
-const syncLimiter = rateLimit({
+const probeLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: 2000,
   keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many map sync requests; try again shortly' },
 });
 
+/** The driver's own small reads and writes: the Today card, downtime, Academy progress. */
+const syncLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 300,
+  keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests; try again in a few minutes' },
+});
+
 // "Has anything changed?" — the cache key alone, no geometry. Kept next to my-roads because
 // the two must agree about what a version is.
-router.get('/my-roads/version', authenticate, requireRole('user'), syncLimiter, ctrl.myRoadsVersion);
+router.get('/my-roads/version', authenticate, requireRole('user'), probeLimiter, ctrl.myRoadsVersion);
 
 // "Has the server finished these trips?" — by the phone's own trip ids.
-router.get('/my-trips/settled', authenticate, requireRole('user'), syncLimiter, ctrl.myTripsSettled);
+router.get('/my-trips/settled', authenticate, requireRole('user'), probeLimiter, ctrl.myTripsSettled);
 
 // Driver reads their own route history. Heavy like my-roads (a month of snapped routes), so it
 // gets the same kind of per-driver cap; the app caches it and asks a handful of times a day.
