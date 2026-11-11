@@ -45,6 +45,7 @@ const { dayRange, formatDateInZone, isValidTimeZone } = require('../utils/timezo
  */
 
 const { normalizeCountry } = require('../utils/country');
+const coveredMemo = { key: null, at: 0, hit: null };
 const UNKNOWN = 'Unknown';
 const NO_PROJECT = 'none';
 
@@ -205,12 +206,21 @@ exports.overview = asyncHandler(async (req, res) => {
   const bucketIndex = new Map(buckets.map((b, i) => [b, i]));
 
   // Live network per project+region: total length, and driven to date.
-  const covered = live.length
-    ? await LinkCoverage.aggregate([
-      { $match: { networkVersionId: { $in: live.map((v) => v._id) } } },
-      { $group: { _id: '$networkVersionId', meters: { $sum: '$lengthMeters' } } },
-    ])
-    : [];
+  // The whole ledger, added up — on a dashboard that refreshes every minute. Shared for 5 min.
+  const liveKey = live.map((v) => String(v._id)).sort().join(',');
+  const ttl = Number(process.env.LEDGER_MEMO_MS ?? 300000);
+  if (!coveredMemo.hit || coveredMemo.key !== liveKey || Date.now() - coveredMemo.at >= ttl) {
+    coveredMemo.key = liveKey;
+    coveredMemo.at = Date.now();
+    coveredMemo.hit = live.length
+      ? LinkCoverage.aggregate([
+        { $match: { networkVersionId: { $in: live.map((v) => v._id) } } },
+        { $group: { _id: '$networkVersionId', meters: { $sum: '$lengthMeters' } } },
+      ]).exec()
+      : Promise.resolve([]);
+    coveredMemo.hit.catch(() => { coveredMemo.hit = null; });
+  }
+  const covered = await coveredMemo.hit;
   const coveredBy = new Map(covered.map((c) => [String(c._id), c.meters]));
   const networks = live.map((lv) => {
     const v = versionById.get(String(lv._id)) || lv;

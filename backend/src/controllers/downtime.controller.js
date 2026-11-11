@@ -52,7 +52,7 @@ exports.list = asyncHandler(async (req, res) => {
     if (req.query.from) filter.startAt.$gte = dayRange(req.query.from, zone).from;
     if (req.query.to) filter.startAt.$lt = dayRange(req.query.to, zone).to;
   }
-  const rows = await Downtime.find(filter).sort({ startAt: -1 }).limit(500).lean();
+  const rows = await Downtime.find(filter).sort({ startAt: -1 }).lean();
   const pending = await Downtime.countDocuments({ ...scope, status: 'pending' });
   res.json({
     downtime: rows.map((d) => ({ ...downtime.view(d), driverId: String(d.driverId), driverName: d.driverName, timezone: d.timezone })),

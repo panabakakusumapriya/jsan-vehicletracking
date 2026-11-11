@@ -84,7 +84,8 @@ async function processTrip(tripId) {
     // so the sessions that most need skipping are the ones that would sail through it.
     const points = await LocationPoint.find({ tripId: trip._id })
       .sort({ recordedAt: 1 })
-      .select('lat lon recordedAt accuracy');
+      .select('lat lon recordedAt accuracy')
+      .lean();
 
     // Parked-GPS jitter: the app reporting while the vehicle sat still. Skipping here does two
     // things at once — saves the Valhalla call, and keeps the trip from ever claiming coverage it

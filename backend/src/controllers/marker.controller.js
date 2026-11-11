@@ -305,7 +305,6 @@ exports.createBatch = asyncHandler(async (req, res) => {
 exports.mine = asyncHandler(async (req, res) => {
   const markers = await Marker.find({ driverId: req.user._id, ...LIVE })
     .sort({ createdAt: -1 })
-    .limit(500)
     .populate('categoryId', 'name color');
   res.json({ markers: markers.map(toJSON) });
 });
@@ -373,7 +372,6 @@ exports.list = asyncHandler(async (req, res) => {
   }
   const markers = await Marker.find(where)
     .sort({ createdAt: -1 })
-    .limit(5000)
     .populate('categoryId', 'name color');
   res.json({ markers: markers.map(toJSON), days });
 });

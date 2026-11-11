@@ -1,32 +1,9 @@
 const router = require('express').Router();
-const rateLimit = require('express-rate-limit');
 const ctrl = require('../controllers/tracking.controller');
 const downtimeCtrl = require('../controllers/downtime.controller');
 const { authenticate, requireRole } = require('../middleware/auth');
 
-/**
- * my-roads is the one route here that is genuinely expensive: an entire area's links read out of a
- * 654k-link collection — unbounded since the 20,000-link cap was removed — simplified, and gzipped
- * into megabytes of JSON, all on a single-process API that is also carrying live ingest. A client
- * stuck in a retry loop — a bad release, a driver force-quitting the map over and over — would
- * starve the ingest path and take live tracking down for the whole fleet, so the cap is here rather
- * than in the app where it can be shipped away.
- *
- * Keyed by driver, NOT by IP: mobile carriers put thousands of handsets behind one NAT address, so
- * the default IP key would have one busy driver lock out every other driver on the same network.
- * Safe to read req.user because `authenticate` runs before this on the route.
- *
- * 120 per 15 minutes is ~1 every 7.5s sustained. A client that honours `version` does a handful a
- * day, so this only bites something that is already misbehaving.
- */
-const roadsLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 120,
-  keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many road-layer requests; try again shortly' },
-});
+/** No rate limits on the driver's routes (product decision, 2026-11-11). */
 
 // Drivers push their location points.
 router.post('/ingest', authenticate, requireRole('user'), ctrl.ingest);
@@ -38,7 +15,7 @@ router.get('/my-session', authenticate, requireRole('user'), ctrl.mySession);
 router.get('/my-areas', authenticate, requireRole('user'), ctrl.myAreas);
 
 // Driver reads the individual roads inside one of those areas, flagged driven / not driven.
-router.get('/my-roads', authenticate, requireRole('user'), roadsLimiter, ctrl.myRoads);
+router.get('/my-roads', authenticate, requireRole('user'), ctrl.myRoads);
 
 /**
  * No rate limit on the driver's small reads and writes — the map's "has anything changed?" probes,
@@ -59,15 +36,7 @@ router.get('/my-trips/settled', authenticate, requireRole('user'), ctrl.myTripsS
 
 // Driver reads their own route history. Heavy like my-roads (a month of snapped routes), so it
 // gets the same kind of per-driver cap; the app caches it and asks a handful of times a day.
-const historyLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 60,
-  keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many history requests; try again shortly' },
-});
-router.get('/my-history', authenticate, requireRole('user'), historyLimiter, ctrl.myHistory);
+router.get('/my-history', authenticate, requireRole('user'), ctrl.myHistory);
 
 // The driver's trips on one day and the day's working hours — a few hundred bytes, no geometry.
 router.get('/my-day', authenticate, requireRole('user'), ctrl.myDay);

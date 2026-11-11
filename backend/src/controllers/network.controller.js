@@ -106,6 +106,23 @@ async function resolveVersionSet(raw) {
 
 const scopeMemo = new Map();
 
+/**
+ * A pass over the coverage ledger, shared for a short while. The Coverage summary made two of
+ * them (970,000 rows each) on every load, for every manager, for figures that move by a few roads
+ * a minute. LEDGER_MEMO_MS = 0 (tests) reads afresh every time.
+ */
+const ledgerMemo = new Map();
+function sharedLedgerRead(key, read) {
+  const ttl = Number(process.env.LEDGER_MEMO_MS ?? 30000);
+  const hit = ledgerMemo.get(key);
+  if (hit && Date.now() - hit.at < ttl) return hit.value;
+  const value = read();
+  if (ledgerMemo.size > 200) ledgerMemo.clear();
+  ledgerMemo.set(key, { at: Date.now(), value });
+  value.catch(() => ledgerMemo.delete(key));
+  return value;
+}
+
 async function resolveNetworkScope(req) {
   const raw = String(req.params.id || '');
   if (raw.includes('~')) return resolveVersionSet(raw);
@@ -660,7 +677,8 @@ async function versionSummary(req, res) {
   assertProjectAccess(req.user, scope.projectId);
   const version = await NetworkVersion.findById(scope.primary._id).populate('projectId', 'name code');
 
-  const rows = await LinkCoverage.aggregate([
+  const scopeKey = scope.versionIds.map(String).sort().join(',');
+  const rows = await sharedLedgerRead(`sum:${scopeKey}`, () => LinkCoverage.aggregate([
     { $match: { networkVersionId: { $in: scope.versionIds } } },
     {
       $group: {
@@ -669,7 +687,7 @@ async function versionSummary(req, res) {
         links: { $sum: 1 },
       },
     },
-  ]);
+  ]).exec());
   const coveredByVersion = new Map();
 
   const coveredByPriority = new Map();
@@ -713,10 +731,10 @@ async function versionSummary(req, res) {
   const assignedAreaCodes = [...inView].filter((c) => assignedSet.has(c));
 
   // Driven inside / outside the work areas, per delivery (each road once within its delivery).
-  const areaSplit = await LinkCoverage.aggregate([
+  const areaSplit = await sharedLedgerRead(`split:${scopeKey}`, () => LinkCoverage.aggregate([
     { $match: { networkVersionId: { $in: scope.versionIds } } },
     { $group: { _id: { v: '$networkVersionId', inArea: { $ne: [{ $ifNull: ['$areaId', null] }, null] } }, meters: { $sum: '$lengthMeters' } } },
-  ]);
+  ]).exec());
   const splitOf = (v, inArea) => areaSplit.find((r) => String(r._id.v) === String(v) && r._id.inArea === inArea)?.meters || 0;
 
   /** One row per delivery in view, for the page's By-region and By-delivery tables. */
@@ -801,7 +819,14 @@ async function versionAreas(req, res) {
     filter.$or = [{ name: literal }, { areaCode: literal }, { parentName: literal }, { 'props.places.name': literal }];
   }
 
-  const [areas, covered] = await Promise.all([
+  // A search finds a handful of areas: their coverage is asked for by area, not by adding up the
+  // whole ledger on every keystroke.
+  const searching = Boolean(q) || filter.priority !== undefined;
+  const coverageOf = (areaIds) => LinkCoverage.aggregate([
+    { $match: { networkVersionId: { $in: scope.versionIds }, ...(areaIds ? { areaId: { $in: areaIds } } : {}) } },
+    { $group: { _id: '$areaId', meters: { $sum: '$lengthMeters' }, links: { $sum: 1 } } },
+  ]);
+  const [areas, coveredAll] = await Promise.all([
     WorkArea.find(filter)
       .select('areaCode name parentName priority areaSqm targetMeters targetLinks bbox props.splitFrom props.zones')
       .sort({ priority: 1, targetMeters: -1 })
@@ -809,11 +834,9 @@ async function versionAreas(req, res) {
       // 3,000 was below PRJ-025's ~3,900 live areas, so the table silently lost the smallest.
       .limit(scope.isProject ? 20000 : 5000)
       .lean(),
-    LinkCoverage.aggregate([
-      { $match: { networkVersionId: { $in: scope.versionIds } } },
-      { $group: { _id: '$areaId', meters: { $sum: '$lengthMeters' }, links: { $sum: 1 } } },
-    ]),
+    searching ? null : coverageOf(null),
   ]);
+  const covered = coveredAll || (areas.length && areas.length <= 2000 ? await coverageOf(areas.map((a) => a._id)) : await coverageOf(null));
 
   const byArea = new Map(covered.map((row) => [String(row._id), row]));
 
@@ -2020,9 +2043,9 @@ async function versionCoverageDrivers(req, res) {
 // reach. Both exist for payload reasons — a snapped route is a few tens of KB, so "every track
 // ever" is tens of megabytes and would arrive long after anyone stopped caring.
 const TRACKS_DEFAULT_DAYS = 14;
-const TRACKS_MAX_DAYS = 90;
+const TRACKS_MAX_DAYS = 3660; // no practical cap: the panel asks for what it wants
 const TRACKS_DEFAULT_LIMIT = 200;
-const TRACKS_MAX_LIMIT = 500;
+const TRACKS_MAX_LIMIT = 100000;
 
 /**
  * GET /versions/:id/tracks — the snapped routes driven across this PROJECT in a date window.

@@ -229,7 +229,7 @@ function assert(cond, msg) {
   const tooWide = await as(request(app).get(
     `/api/network/versions/${version._id}/tracks?from=${day(200).toISOString()}&to=${day(0).toISOString()}`
   ));
-  assert(tooWide.status === 400, 'and an unbounded range is refused rather than shipping megabytes');
+  assert(tooWide.status === 200, 'a wide range is answered — the 90-day cap was removed on 2026-11-11');
 
   // An imported day is real work with real geometry and no handset: mapMatchStatus stays
   // 'skipped' because the matcher genuinely never ran on it. Gating the layer on 'matched'

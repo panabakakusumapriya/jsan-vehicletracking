@@ -1253,7 +1253,6 @@ exports.myRoadsVersions = asyncHandler(async (req, res) => {
  * `version` is a cheap change key (`count.maxUpdatedAt`) so an unchanged month is not re-drawn.
  */
 const HISTORY_MAX_VERTICES = 400000;
-const HISTORY_MAX_RAW_TRIPS = 20;
 const HISTORY_SNAPPED_TOLERANCE_M = 10;
 const HISTORY_RAW_TOLERANCE_M = 15;
 
@@ -1412,7 +1411,7 @@ exports.myHistory = asyncHandler(async (req, res) => {
       }
     } else {
       kind = 'raw';
-      if (rawShipped < HISTORY_MAX_RAW_TRIPS) {
+      {
         rawShipped += 1;
         const pts = await LocationPoint.find({ tripId: t._id }).sort({ recordedAt: 1 }).select('lat lon -_id').lean();
         const r = reencode(pts.map((p) => [p.lon, p.lat]), HISTORY_RAW_TOLERANCE_M);

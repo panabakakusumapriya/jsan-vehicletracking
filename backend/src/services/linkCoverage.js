@@ -48,7 +48,6 @@ const WINDOW_METERS = 3000;
 const SAMPLE_METERS = 8;
 // ~111 m cells. The buffer is 15 m, so the containing cell plus its ring always covers it.
 const GRID_CELL_DEG = 0.001;
-const MAX_LINKS_PER_WINDOW = 30000;
 const BULK_CHUNK = 1000;
 const D = Math.PI / 180;
 
@@ -217,7 +216,6 @@ async function candidateLinks(networkVersionId, items, extent = null) {
       },
     })
       .select('linkId funcClass dirTravel areaId priority lengthMeters geometry.coordinates')
-      .limit(MAX_LINKS_PER_WINDOW)
       .lean();
     for (const r of rows) if (!links.has(r.linkId)) links.set(r.linkId, r);
     pts = [];
