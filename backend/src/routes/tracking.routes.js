@@ -41,47 +41,19 @@ router.get('/my-areas', authenticate, requireRole('user'), ctrl.myAreas);
 router.get('/my-roads', authenticate, requireRole('user'), roadsLimiter, ctrl.myRoads);
 
 /**
- * The two small reads the driver map makes to keep itself current: "has any area changed
- * colour?" and "has the server finished these trips?". Both are cheap per call — the version is
- * memoised per area, the trip lookup is one indexed query — but the app makes them on a timer
- * and on every return to the foreground, so they get their own cap rather than none.
- *
- * Separate from roadsLimiter on purpose: sharing it would let routine probing eat the budget
- * the real download needs, and the download is what the probe exists to avoid.
- *
- * The app probes ONCE PER AREA every four minutes and on every return to the foreground, so the
- * use grows with the areas a driver holds: 45 areas is ~170 per 15 min before a single foreground,
- * and 67 is ~250. With one shared cap of 300 the probes of a driver with many areas used up the
- * budget of the Today card (my-day), which then showed "Too many map sync requests" (Evan Miles,
- * 45 areas, 2026-11-11). So the probes have their own, larger cap — still per driver, still far
- * below what would hurt the API (each is a memoised string) — and the screens a driver reads
- * keep syncLimiter to themselves.
+ * No rate limit on the driver's small reads and writes — the map's "has anything changed?" probes,
+ * settled trips, the Today card, downtime and Academy progress. A cap shared by all of them let a
+ * driver with many areas (Evan Miles, 45) spend it on map probes and lock out the Today card
+ * ("Too many map sync requests", 2026-11-11), and the product decision is not to limit them.
+ * Each is a small indexed read; the heavy downloads (my-roads, my-history) keep their caps.
  */
-const probeLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 2000,
-  keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many map sync requests; try again shortly' },
-});
-
-/** The driver's own small reads and writes: the Today card, downtime, Academy progress. */
-const syncLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 300,
-  keyGenerator: (req) => (req.user ? String(req.user._id) : req.ip),
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests; try again in a few minutes' },
-});
 
 // "Has anything changed?" — the cache key alone, no geometry. Kept next to my-roads because
 // the two must agree about what a version is.
-router.get('/my-roads/version', authenticate, requireRole('user'), probeLimiter, ctrl.myRoadsVersion);
+router.get('/my-roads/version', authenticate, requireRole('user'), ctrl.myRoadsVersion);
 
 // "Has the server finished these trips?" — by the phone's own trip ids.
-router.get('/my-trips/settled', authenticate, requireRole('user'), probeLimiter, ctrl.myTripsSettled);
+router.get('/my-trips/settled', authenticate, requireRole('user'), ctrl.myTripsSettled);
 
 // Driver reads their own route history. Heavy like my-roads (a month of snapped routes), so it
 // gets the same kind of per-driver cap; the app caches it and asks a handful of times a day.
@@ -96,13 +68,13 @@ const historyLimiter = rateLimit({
 router.get('/my-history', authenticate, requireRole('user'), historyLimiter, ctrl.myHistory);
 
 // The driver's trips on one day and the day's working hours — a few hundred bytes, no geometry.
-router.get('/my-day', authenticate, requireRole('user'), syncLimiter, ctrl.myDay);
+router.get('/my-day', authenticate, requireRole('user'), ctrl.myDay);
 // Downtime: time stopped for a reason (weather, change-over), counted once a manager approves it.
-router.post('/my-downtime', authenticate, requireRole('user'), syncLimiter, downtimeCtrl.report);
-router.delete('/my-downtime/:id', authenticate, requireRole('user'), syncLimiter, downtimeCtrl.withdraw);
+router.post('/my-downtime', authenticate, requireRole('user'), downtimeCtrl.report);
+router.delete('/my-downtime/:id', authenticate, requireRole('user'), downtimeCtrl.withdraw);
 
 // Driver Academy progress (the in-app course) — saved per account.
-router.put('/my-academy', authenticate, requireRole('user'), syncLimiter, ctrl.myAcademy);
+router.put('/my-academy', authenticate, requireRole('user'), ctrl.myAcademy);
 
 // Admins / managers read the live snapshot.
 router.get('/live', authenticate, requireRole('admin', 'manager', 'team_lead'), ctrl.live);
