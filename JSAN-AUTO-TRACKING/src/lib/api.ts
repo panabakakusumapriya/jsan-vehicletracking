@@ -227,6 +227,17 @@ export function apiMyRoadsVersion(
   return request(`/api/tracking/my-roads/version?areaId=${encodeURIComponent(areaId)}`, {}, token);
 }
 
+/**
+ * The same answer for EVERY area the driver holds, in one request. Asking area by area was 45
+ * requests per pass for a driver holding 45 areas. A server from before this exists answers 404;
+ * the caller falls back to the per-area probe.
+ */
+export function apiMyRoadsVersions(
+  token: string,
+): Promise<{ areas: { areaId: string; version: string }[] }> {
+  return request('/api/tracking/my-roads/versions', {}, token);
+}
+
 /** One closed trip in the driver's route history. */
 export type MyHistoryTrip = {
   id: string;

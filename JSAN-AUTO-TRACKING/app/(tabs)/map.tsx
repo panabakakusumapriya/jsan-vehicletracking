@@ -27,7 +27,7 @@ import { type MapGLHandle, type MapGLHistory, type MapGLMarkers, type MapGLTrace
 import { DriverMap } from '@/src/components/DriverMap';
 import { BottomSheet, type BottomSheetHandle } from '@/src/components/BottomSheet';
 import {
-  apiMarkerCategories, apiMyAreas, apiMyMarkers, apiMyRoadsVersion, apiMyTripsSettled,
+  apiMarkerCategories, apiMyAreas, apiMyMarkers, apiMyRoadsVersion, apiMyRoadsVersions, apiMyTripsSettled,
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
 } from '@/src/lib/api';
 import {
@@ -534,7 +534,9 @@ export default function MapScreen() {
    * commits would each be a new `roads` identity and therefore a fresh layer rebuild - the map
    * would redraw once per area instead of once.
    */
-  const loadRoads = useCallback(async (list: MyArea[], force: boolean): Promise<boolean> => {
+  // `only`: with force, the areas to download again; the rest come from the phone's own copy.
+  // One area changing colour used to download all of them — 45 quarter-megabyte files for one.
+  const loadRoads = useCallback(async (list: MyArea[], force: boolean, only?: Set<string>): Promise<boolean> => {
     if (!token) return false;
 
     const areaKey = list.map((a) => a.id).join(',');
@@ -566,7 +568,7 @@ export default function MapScreen() {
       // allSettled, not all: one area 403-ing (an assignment released mid-shift) must not blank the
       // other four. The failures are reported, the successes are drawn.
       settled = await Promise.allSettled(
-        list.map((a) => (force ? refreshRoads(token, a.id) : getRoads(token, a.id)))
+        list.map((a) => (force && (!only || only.has(a.id)) ? refreshRoads(token, a.id) : getRoads(token, a.id)))
       );
     } finally {
       if (force && pendingForceKeyRef.current === areaKey) pendingForceKeyRef.current = null;
@@ -644,26 +646,42 @@ export default function MapScreen() {
    *
    * Returns true when it started a reload.
    */
-  const revalidateRoads = useCallback(async (): Promise<boolean> => {
+  const changedAreaIds = useCallback(async (): Promise<Set<string> | null> => {
     const list = areasRef.current;
-    if (!token || !list.length || !mountedRef.current) return false;
-    const probes = await Promise.allSettled(list.map((a) => apiMyRoadsVersion(token, a.id)));
-    if (!mountedRef.current) return false;
+    if (!token || !list.length || !mountedRef.current) return null;
+    // One request for every area. Only a server from before the batch probe (404) is asked area
+    // by area; any other failure proves nothing either way and waits for the next pass.
+    const current = new Map<string, string>();
+    try {
+      const r = await apiMyRoadsVersions(token);
+      for (const a of r.areas) current.set(a.areaId, a.version);
+    } catch (e) {
+      if ((e as { status?: number })?.status !== 404) return null;
+      const probes = await Promise.allSettled(list.map((a) => apiMyRoadsVersion(token, a.id)));
+      probes.forEach((p, i) => { if (p.status === 'fulfilled') current.set(list[i].id, p.value.version); });
+    }
+    if (!mountedRef.current) return null;
     const now = Date.now();
-    let changed = false;
-    probes.forEach((p, i) => {
-      if (p.status !== 'fulfilled') return;   // a failed probe proves nothing either way
-      const id = list[i].id;
+    const changed = new Set<string>();
+    for (const { id } of list) {
+      const version = current.get(id);
+      if (version === undefined) continue;   // no answer for this area: nothing learned
       const onScreen = loadedVersionsRef.current.get(id);
       if (onScreen === undefined) {
-        if (now - (areaFailedAtRef.current.get(id) ?? 0) >= FAILED_AREA_RETRY_MS) changed = true;
-      } else if (onScreen !== p.value.version) {
-        changed = true;
+        if (now - (areaFailedAtRef.current.get(id) ?? 0) >= FAILED_AREA_RETRY_MS) changed.add(id);
+      } else if (onScreen !== version) {
+        changed.add(id);
       }
-    });
-    if (changed) void loadRoads(list, true);
+    }
     return changed;
-  }, [token, loadRoads]);
+  }, [token]);
+
+  const revalidateRoads = useCallback(async (): Promise<boolean> => {
+    const changed = await changedAreaIds();
+    if (!changed || !changed.size || !mountedRef.current) return false;
+    void loadRoads(areasRef.current, true, changed);
+    return true;
+  }, [changedAreaIds, loadRoads]);
 
   /**
    * The handover: retire the phone's own guesses for every trip the server has finished, once the
@@ -706,7 +724,10 @@ export default function MapScreen() {
       }
       if (!settledIds.length || !mountedRef.current) return false;
 
-      const fresh = await loadRoads(areasRef.current, true);
+      // Only the areas the server says have moved are downloaded again. `null` — the server could
+      // not say — keeps the old behaviour: all of them.
+      const moved = await changedAreaIds();
+      const fresh = await loadRoads(areasRef.current, true, moved ?? undefined);
       if (!fresh || !mountedRef.current) return true;   // try again on the next sync
 
       let dropped = false;
@@ -722,14 +743,21 @@ export default function MapScreen() {
     } finally {
       reconcilingRef.current = false;
     }
-  }, [token, loadRoads, refreshLiveCovered, saveCoverNow]);
+  }, [token, loadRoads, changedAreaIds, refreshLiveCovered, saveCoverNow]);
 
   /**
    * One pass of keeping the map current: settle finished trips (which reloads the roads if any
    * settled), otherwise check whether anyone else changed a colour, and retire guesses old enough
    * that no verdict is coming.
    */
+  const mapFocusedRef = useRef(false);
+  const lastSyncAtRef = useRef(0);
   const syncMap = useCallback(async () => {
+    // Only while this tab is the one on screen — the tabs stay mounted, so the timer below kept
+    // asking the server about a map nobody was looking at — and not twice within a minute: every
+    // return to the app fires 'active', and so does every notification shade.
+    if (!mapFocusedRef.current || Date.now() - lastSyncAtRef.current < 60_000) return;
+    lastSyncAtRef.current = Date.now();
     if (expireTrips(coverStoreRef.current, Date.now(), COVER_TTL_MS)) {
       refreshLiveCovered();
       saveCoverNow();
@@ -792,8 +820,13 @@ export default function MapScreen() {
     }
   }, [token, driverId]);
 
+  const sessionBusyRef = useRef(false);
   const fetchSession = useCallback(async (silent = false) => {
     if (!token) return;
+    // The 15 s poll returns the whole trip and every point of it: one at a time, and (below) only
+    // while this tab is the one on screen.
+    if (silent && sessionBusyRef.current) return;
+    sessionBusyRef.current = true;
     if (!silent) setLoading(true);
     try {
       const res  = await fetch(`${API_BASE_URL}/api/tracking/my-session`, {
@@ -815,13 +848,17 @@ export default function MapScreen() {
       // they need a blank map - but the failure is stated rather than swallowed.
       setSessionError(errMsg(e, 'Could not refresh your session'));
     }
-    finally { setLoading(false); setRefreshing(false); }
+    finally { sessionBusyRef.current = false; setLoading(false); setRefreshing(false); }
   }, [token]);
+  const fetchSessionRef = useRef(fetchSession);
+  fetchSessionRef.current = fetchSession;
 
   useEffect(() => {
     fetchSession();
     fetchAreas();
-    timerRef.current = setInterval(() => fetchSession(true), 15_000);
+    timerRef.current = setInterval(() => {
+      if (mapFocusedRef.current && RNAppState.currentState === 'active') void fetchSession(true);
+    }, 15_000);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [fetchSession, fetchAreas]);
 
@@ -849,7 +886,11 @@ export default function MapScreen() {
    */
   useFocusEffect(useCallback(() => {
     setMapFocused(true);
-    return () => setMapFocused(false);
+    mapFocusedRef.current = true;
+    // Coming back to the map is when it should catch up on what it skipped while hidden.
+    void fetchSessionRef.current(true);
+    void syncMapRef.current();
+    return () => { setMapFocused(false); mapFocusedRef.current = false; };
   }, []));
   useEffect(() => {
     if (!mapFocused || !tripRunning) return undefined;
