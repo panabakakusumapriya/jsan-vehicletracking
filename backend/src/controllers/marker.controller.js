@@ -188,18 +188,27 @@ exports.deleteCategory = asyncHandler(async (req, res) => {
  * { error, status }. Shared by POST /api/markers and POST /api/markers/batch, so a marker uploaded
  * in a batch is stamped exactly as one sent alone.
  */
-async function createOne(user, body) {
+async function createOne(user, body, ctx = null) {
   const { lat, lon, categoryId, clientId, recordedAt, note } = body || {};
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return { status: 400, error: 'lat and lon are required numbers' };
   if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return { status: 400, error: 'lat/lon out of range' };
 
   // Offline-retry safety: the same clientId is the same press, never a second marker.
+  // In a batch (ctx) the duplicates were looked up together, and categories and plates are
+  // remembered across its markers: 50 drops were 250 round trips, one after another.
   if (clientId) {
-    const dup = await Marker.findOne({ clientId }).populate('categoryId', 'name color');
+    const dup = ctx
+      ? ctx.dups.get(String(clientId))
+      : await Marker.findOne({ clientId }).populate('categoryId', 'name color');
     if (dup) return { status: 200, marker: toJSON(dup), duplicate: true };
   }
 
-  const cat = await MarkerCategory.findById(categoryId);
+  const catKey = String(categoryId);
+  let cat = ctx && ctx.cats.get(catKey);
+  if (cat === undefined || cat === null) {
+    cat = await MarkerCategory.findById(categoryId);
+    if (ctx) ctx.cats.set(catKey, cat);
+  }
   if (!cat || !cat.active) return { status: 400, error: 'Unknown or inactive marker category' };
 
   // Stamp who/what NOW — a marker is fixed history (same rule Trip applies to its timezone).
@@ -217,15 +226,22 @@ async function createOne(user, body) {
   };
   const near = await Trip.find({
     driverId: user._id,
-    startedAt: { $lte: new Date(at.getTime() + TRIP_GRACE_MS) },
+    // Bounded below as well: without it this walked every trip the driver ever made. No trip
+    // runs for three days (they are force-closed long before).
+    startedAt: { $lte: new Date(at.getTime() + TRIP_GRACE_MS), $gte: new Date(at.getTime() - 3 * 86400000) },
     $or: [{ endedAt: null }, { endedAt: { $gte: new Date(at.getTime() - TRIP_GRACE_MS) } }],
   }).select('startedAt endedAt vehicleId');
   const trip = near.sort((a, b) => gap(a) - gap(b) || b.startedAt - a.startedAt)[0] || null;
   if (trip) tripId = trip._id;
   const vehicleId = (trip && trip.vehicleId) || user.vehicleId || null;
   if (vehicleId) {
-    const v = await Vehicle.findById(vehicleId).select('plateNumber');
-    if (v) vehiclePlate = v.plateNumber;
+    const vKey = String(vehicleId);
+    if (ctx && ctx.plates.has(vKey)) vehiclePlate = ctx.plates.get(vKey);
+    else {
+      const v = await Vehicle.findById(vehicleId).select('plateNumber');
+      if (v) vehiclePlate = v.plateNumber;
+      if (ctx) ctx.plates.set(vKey, vehiclePlate);
+    }
   }
 
   const marker = await Marker.create({
@@ -241,6 +257,8 @@ async function createOne(user, body) {
     recordedAt: at,
   });
   marker.categoryId = cat; // for toJSON without a re-query
+  // The same press twice in one batch is still one marker.
+  if (ctx && clientId) ctx.dups.set(String(clientId), marker);
   return { status: 201, marker: toJSON(marker) };
 }
 
@@ -263,9 +281,16 @@ exports.createBatch = asyncHandler(async (req, res) => {
   const list = Array.isArray(req.body && req.body.markers) ? req.body.markers.slice(0, MAX_BATCH) : null;
   if (!list) return res.status(400).json({ error: 'markers must be an array' });
   const results = [];
+  const ids = list.map((m) => m && m.clientId).filter(Boolean).map(String);
+  const ctx = { dups: new Map(), cats: new Map(), plates: new Map() };
+  if (ids.length) {
+    for (const d of await Marker.find({ clientId: { $in: ids } }).populate('categoryId', 'name color')) {
+      ctx.dups.set(String(d.clientId), d);
+    }
+  }
   for (const m of list) {
     try {
-      const r = await createOne(req.user, m);
+      const r = await createOne(req.user, m, ctx);
       results.push(r.error
         ? { clientId: m && m.clientId, error: r.error, permanent: r.status === 400 }
         : { clientId: m && m.clientId, marker: r.marker });

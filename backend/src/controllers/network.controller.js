@@ -104,6 +104,8 @@ async function resolveVersionSet(raw) {
   };
 }
 
+const scopeMemo = new Map();
+
 async function resolveNetworkScope(req) {
   const raw = String(req.params.id || '');
   if (raw.includes('~')) return resolveVersionSet(raw);
@@ -121,16 +123,25 @@ async function resolveNetworkScope(req) {
   const all = await NetworkVersion.find({ projectId: project._id }).sort({ createdAt: -1 }).lean();
   if (!all.length) return null;
 
-  const withCoverage = new Set(
-    (await LinkCoverage.distinct('networkVersionId', { projectId: project._id })).map(String)
-  );
-  const withAssignments = new Set(
-    (await AreaAssignment.distinct('networkVersionId', { projectId: project._id, releasedAt: null })).map(String)
-  );
-
-  const keep = all.filter(
-    (v) => v.status === 'active' || withCoverage.has(String(v._id)) || withAssignments.has(String(v._id))
-  );
+  // Which deliveries hold coverage or a live assignment. This was two distinct() calls filtered by
+  // projectId, which neither collection indexes — a scan of the whole 970,000-row ledger on every
+  // Coverage request. Asked per delivery instead, each is one index lookup that stops at the first
+  // row; and the answer is remembered for 20 s, since every panel request on the page asks it.
+  const memoKey = String(project._id);
+  let inUse = scopeMemo.get(memoKey);
+  if (!inUse || Date.now() - inUse.at > 20000) {
+    const flags = await Promise.all(all.map(async (v) => {
+      if (v.status === 'active') return true;
+      const [cov, asg] = await Promise.all([
+        LinkCoverage.exists({ networkVersionId: v._id }),
+        AreaAssignment.exists({ networkVersionId: v._id, releasedAt: null }),
+      ]);
+      return Boolean(cov || asg);
+    }));
+    inUse = { at: Date.now(), ids: new Set(all.filter((_, i) => flags[i]).map((v) => String(v._id))) };
+    scopeMemo.set(memoKey, inUse);
+  }
+  const keep = all.filter((v) => v.status === 'active' || inUse.ids.has(String(v._id)));
   const chosen = keep.length ? keep : [all[0]];
   const primary = chosen.find((v) => v.status === 'active') || chosen[0];
 
@@ -795,7 +806,9 @@ async function versionAreas(req, res) {
       .select('areaCode name parentName priority areaSqm targetMeters targetLinks bbox props.splitFrom props.zones')
       .sort({ priority: 1, targetMeters: -1 })
       // A project spanning two states has more areas than one delivery does.
-      .limit(scope.isProject ? 3000 : 1000),
+      // 3,000 was below PRJ-025's ~3,900 live areas, so the table silently lost the smallest.
+      .limit(scope.isProject ? 20000 : 5000)
+      .lean(),
     LinkCoverage.aggregate([
       { $match: { networkVersionId: { $in: scope.versionIds } } },
       { $group: { _id: '$areaId', meters: { $sum: '$lengthMeters' }, links: { $sum: 1 } } },
@@ -2241,12 +2254,23 @@ async function versionRoadState(req, res) {
  * tomorrow can be planned from the map instead of from a phone call. See
  * services/driverPositions.js for which trips count and why.
  */
+const positionsMemo = new Map();
 async function versionDriverPositions(req, res) {
   try {
     const scope = await resolveNetworkScope(req);
     if (!scope) return res.status(404).json({ error: 'Network version not found' });
     assertProjectAccess(req.user, scope.projectId);
-    const positions = await driverPositions.lastPositions(scope, { withinHours: req.query.withinHours });
+    // Every manager's page asks this each minute and the answer is the same for all of them:
+    // two trip queries per driver and a geo lookup per pin. Shared for 30 s.
+    const pKey = `${scope.versionIds.map(String).sort().join(',')}|${req.query.withinHours || ''}`;
+    let hit = positionsMemo.get(pKey);
+    if (!hit || Date.now() - hit.at >= Number(process.env.DRIVER_POSITIONS_MEMO_MS ?? 30000)) {
+      hit = { at: Date.now(), value: driverPositions.lastPositions(scope, { withinHours: req.query.withinHours }) };
+      if (positionsMemo.size > 200) positionsMemo.clear();
+      positionsMemo.set(pKey, hit);
+      hit.value.catch(() => positionsMemo.delete(pKey));
+    }
+    const positions = await hit.value;
     // Never cached: the same URL answers differently a minute later, by design.
     res.set('Cache-Control', 'no-store');
     return res.json({ positions, serverTime: new Date().toISOString() });

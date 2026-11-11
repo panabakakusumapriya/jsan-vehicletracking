@@ -1,3 +1,4 @@
+process.env.DRIVER_POSITIONS_MEMO_MS = '0'; // every request reads afresh: the test changes data between calls
 // Where each driver last stopped, on the coverage map: services/driverPositions.js.
 //
 // The map shows what is driven and who holds an area. This adds the point the work stopped at —

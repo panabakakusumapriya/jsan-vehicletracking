@@ -199,8 +199,12 @@ async function processTrip(tripId) {
   }
 }
 
+const SWEEP_EVERY_MS = 10 * 60 * 1000;
+let lastSweepAt = 0;
+let sweepBacklog = false;
+
 /** One full sweep. Exported so tests can drive it without waiting on the timer. */
-async function tick() {
+async function tick({ sweep = true } = {}) {
   const candidates = await Trip.find({
     status: { $in: ['completed', 'timed_out'] },
     mapMatchStatus: PENDING_FILTER,
@@ -214,6 +218,11 @@ async function tick() {
     const outcome = await processTrip(_id);
     if (outcome) counts[outcome] += 1;
   }
+  // The three catch-up sweeps below each read nearly every matched trip to find the few that are
+  // stale (their filters cannot ride an index). Run on every 30 s tick that was ~21,000 trip reads
+  // a tick with nothing to do; the timer now asks for them every SWEEP_EVERY_MS, or on the next
+  // tick while a sweep is still finding work.
+  if (!sweep) return counts;
   // Catch-up sweep: recompute UKM for drivers holding a trip that HAS snapped geometry but no UKM
   // figure. processTrip() computes UKM inline, but that only covers trips matched through this
   // worker — a trip matched by the re-match script, or matched before the UKM feature existed,
@@ -227,8 +236,9 @@ async function tick() {
       mapMatchStatus: 'matched',
       cleanedRouteShapes: { $exists: true, $ne: [] },
       $or: [
-        // Never computed.
-        { ukmMeters: null },
+        // Never computed. A parked-jitter trip is CLEARED to null by recomputeDriverUkm, so
+        // without the second half it matched again on every tick, for good.
+        { ukmMeters: null, parkedJitter: { $ne: true } },
         { ukmComputedAt: null },
         // Computed, but from geometry that has since been replaced. Re-matching a trip rewrites
         // its route; the UKM figure derived from the OLD route then describes roads the trip no
@@ -327,7 +337,13 @@ function startMapMatcher() {
     if (running) return; // a slow sweep must not stack on itself
     running = true;
     try {
-      const { matched, skipped, failed } = await tick();
+      const sweep = sweepBacklog || Date.now() - lastSweepAt >= SWEEP_EVERY_MS;
+      const counts = await tick({ sweep });
+      if (sweep) {
+        lastSweepAt = Date.now();
+        sweepBacklog = Boolean(counts.ukmRecomputed || counts.globalUkmAttributed || counts.linkCoverageAttributed);
+      }
+      const { matched, skipped, failed } = counts;
       if (matched || skipped || failed) {
         // eslint-disable-next-line no-console
         console.log(`map-matcher: ${matched} matched, ${skipped} skipped, ${failed} failed`);

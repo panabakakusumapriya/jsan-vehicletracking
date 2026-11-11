@@ -700,6 +700,10 @@ function ProgressTab({
 
   // Bumped after a sign-off so the table, the stat strip and the choropleth all catch up.
   const [reloadKey, setReloadKey] = useState(0);
+  // A sign-off changes an area's status and nothing else: the table, the stat strip and the map's
+  // colours follow this key. It used to bump reloadKey, which also re-asked for the drivers, the
+  // driver pins and the list of deliveries — eleven requests for one click.
+  const [statusKey, setStatusKey] = useState(0);
 
   /**
    * Sign the area off, or put it back in play.
@@ -719,8 +723,7 @@ function ProgressTab({
       );
       loadDetail(areaId);
       loadAssignments();
-      setReloadKey((n) => n + 1);
-      onChanged();
+      setStatusKey((n) => n + 1);
     } catch (e) {
       setDetailError(e instanceof Error ? e.message : 'That did not save');
     } finally {
@@ -927,7 +930,7 @@ function ProgressTab({
       .get<{ coverage: CoverageSummary }>(`/api/network/versions/${scopeId}`)
       .then((r) => setSummary(r.coverage))
       .catch(() => setSummary(null));
-  }, [scopeId, reloadKey]);
+  }, [scopeId, reloadKey, statusKey]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -940,7 +943,7 @@ function ProgressTab({
         .catch(() => setAreas([]));
     }, 250);
     return () => clearTimeout(t);
-  }, [scopeId, priority, query, reloadKey]);
+  }, [scopeId, priority, query, reloadKey, statusKey]);
 
   const activate = async () => {
     setBusy(true);
@@ -1990,7 +1993,7 @@ function ProgressTab({
           roadScope={roadScope}
           // Refetch outlines and roads only when THEY change (a sign-off, a clear, a split). Who
           // holds what is passed live instead, so an assignment does not re-download the region.
-          assignedKey={String(reloadKey)}
+          assignedKey={`${reloadKey}:${statusKey}`}
           holdersByCode={holdersByCode}
           onAreasLoaded={onAreasLoaded}
           showTracks={showTracks}
