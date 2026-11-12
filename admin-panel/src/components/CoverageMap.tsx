@@ -1024,8 +1024,10 @@ export function CoverageMap({
         })
       ));
       /**
-       * The picked areas, drawn again on top: a solid blue fill and a heavy dark border, so a
-       * chosen cluster is legible even where the areas are tiny and packed. On its own layer so
+       * The picked areas, drawn again on top: a light, see-through blue wash and a heavy border, so
+       * a chosen cluster is legible even where the areas are tiny and packed. The wash is kept
+       * pale on purpose: a solid dark blue hid the blue driven roads and muddied the red ones to
+       * drive, which are exactly what a manager picks an area to look at. On its own layer so
        * picking a polygon redraws a handful of shapes, not every polygon of the region. Not
        * pickable: clicks go through to the area layer underneath, which owns them.
        */
@@ -1037,8 +1039,8 @@ export function CoverageMap({
             pickable: false,
             stroked: true,
             filled: true,
-            getFillColor: [0, 80, 169, 190],
-            getLineColor: [15, 23, 42, 255],
+            getFillColor: [125, 211, 252, 70],
+            getLineColor: [3, 105, 161, 255],
             getLineWidth: 3,
             lineWidthUnits: 'pixels',
             lineWidthMinPixels: 1.2,
