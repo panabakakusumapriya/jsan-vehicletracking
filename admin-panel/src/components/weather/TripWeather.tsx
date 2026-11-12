@@ -103,7 +103,7 @@ export function WeatherNowChip({ sample }: { sample: TripRouteWeatherSample | nu
       <Fact label="Visibility" value={sample.visibilityKm == null ? '—' : `${sample.visibilityKm} km`} warn={(sample.visibilityKm ?? 99) < 4} />
       <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase', color: '#b45309',
         border: '1px solid #f0b429', background: 'rgba(217,119,6,0.10)', borderRadius: 4, padding: '1px 6px' }}
-        title="Modelled from a weather model's hindcast for this place and hour — not measured by the vehicle">
+        title="Modelled from a weather model's hindcast for this place and hour">
         estimate
       </span>
     </div>

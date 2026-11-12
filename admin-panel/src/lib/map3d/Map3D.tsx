@@ -15,7 +15,7 @@ const MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const DEFAULT_PITCH = 55;
 // Flat and light: 55 layers, no building extrusion (liberty has 111 and extrudes every building).
 // For maps whose own data is the heavy part and is read as a plan, like coverage.
-const LIGHT_STYLE = 'https://tiles.openfreemap.org/styles/positron';
+const LIGHT_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 
 export interface Map3DHandle {
   flyTo(center: [number, number], zoom?: number): void;
