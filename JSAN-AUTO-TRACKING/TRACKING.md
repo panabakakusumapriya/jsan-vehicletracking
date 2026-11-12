@@ -20,6 +20,21 @@ because when the app is killed the JS runtime dies, so buffering + upload must b
 | Offline → buffer, online → upload → delete local | native SQLite (`LocationDatabase`) + `Uploader` (OkHttp) |
 | Location fix cadence                    | every 10s (`LOCATION_INTERVAL_MS`) |
 
+### Manual recording (per project, from 1.0.28)
+
+A project set to **Manual** in the admin panel (Projects → Edit → Trip recording) turns the two
+automatic rules off for its drivers: no auto-start and no auto-stop. The app shows **Start trip** /
+**Stop trip** (Home status card, and a pill at the top left of the map). Everything between the two
+presses is recorded by the ordinary recording rules, so a **walk is recorded like a drive**.
+
+- Mode reaches the phone on `/me` (`tripMode`) and on the heartbeat response; stored in
+  `TrackingConfig.tripMode`. Anything but `manual` (an older server included) is automatic.
+- Manual trips are named `manual-<uuid>`; the server stores them as `Trip.startMode = 'manual'`
+  and never classifies them as parked-phone jitter (`tripNoise.isManualTrip`).
+- A manual trip is not ended by standing still, nor by a service restart; at 8 h it rolls over
+  into a new manual trip so recording never stops behind the driver's back. Sign-out still ends it.
+- Switching the project back to Automatic hands an open manual trip to the normal stop clock.
+
 Each fix → `LocationDatabase` (SQLite) → `Uploader` POSTs to `POST /api/tracking/ingest`
 with the driver's JWT. The server acks stored `clientId`s and the app deletes exactly
 those rows. Fully idempotent, safe to retry.

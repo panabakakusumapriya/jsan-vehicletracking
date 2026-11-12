@@ -44,6 +44,11 @@ const tripSchema = new mongoose.Schema(
     // that trip's id afterwards open a continuation trip instead of vanishing into the closed one.
     // Null on trips closed before this field existed.
     closeReason: { type: String, enum: ['device', 'dead', 'superseded', 'overlong', null], default: null },
+    // How the trip began: 'auto' = the phone's own start rules (a vehicle leaving its rest circle);
+    // 'manual' = the driver pressed Start trip, on a project set to manual recording, and may have
+    // been on foot. Read from the phone's trip id (`manual-…`, see tripNoise.isManualTrip) when the
+    // trip is created. Manual trips are never treated as parked-phone noise.
+    startMode: { type: String, enum: ['auto', 'manual'], default: 'auto' },
     startLocation: { type: coordSchema, default: null },
     endLocation: { type: coordSchema, default: null },
     lastLocation: {

@@ -90,7 +90,7 @@ async function processTrip(tripId) {
     // Parked-GPS jitter: the app reporting while the vehicle sat still. Skipping here does two
     // things at once — saves the Valhalla call, and keeps the trip from ever claiming coverage it
     // never drove. See services/tripNoise.js for the rule and why both clauses are load-bearing.
-    const verdict = verdictFields(featuresFromPoints(points));
+    const verdict = verdictFields(featuresFromPoints(points), trip);
     if (verdict && verdict.parkedJitter) {
       await discardLive(trip);
       await Trip.updateOne(

@@ -140,7 +140,7 @@ async function projectTrackingSettings(user) {
   if (hit && Date.now() - hit.at < PROJECT_SETTINGS_TTL_MS) return hit.settings;
 
   const Project = require('../models/Project');
-  const project = await Project.findById(pid).select('tripEndAfterMinutes').lean();
+  const project = await Project.findById(pid).select('tripEndAfterMinutes tripMode').lean();
   // `.lean()` does not apply schema defaults, so a project saved before this field existed
   // reads undefined. Undefined has to mean "use the app's own default" — sending 0 or null as
   // a number would tell the handset to end trips instantly.
@@ -148,6 +148,10 @@ async function projectTrackingSettings(user) {
     typeof project?.tripEndAfterMinutes === 'number'
       ? { tripEndAfterMinutes: project.tripEndAfterMinutes }
       : {};
+  // Sent explicitly either way (HeartbeatSender reads a missing field as 'auto' too, which is what
+  // a server from before this setting says). This is the path that switches a phone whose app is
+  // closed: the engine runs all shift in the background and only the heartbeat reaches it.
+  settings.tripMode = project?.tripMode === 'manual' ? 'manual' : 'auto';
   projectSettingsCache.set(key, { at: Date.now(), settings });
   return settings;
 }
@@ -197,3 +201,5 @@ exports.heartbeat = asyncHandler(async (req, res) => {
 // Expose for testing
 exports.STALE_MS = STALE_MS;
 exports.heartbeatCache = heartbeatCache;
+/** Forget a project's memoised tracking settings, so an admin's edit goes out on the next heartbeat. */
+exports.clearProjectSettings = (projectId) => projectSettingsCache.delete(String(projectId));

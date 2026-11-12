@@ -96,6 +96,20 @@ function featuresFromPoints(rawPoints) {
   return { n, netMeters, spreadMeters, pathMeters, spanSeconds };
 }
 
+/**
+ * A trip the driver started and stopped by hand (projects on manual trip recording — see
+ * Project.tripMode). The phone marks them in their id, `manual-<uuid>`, which a continuation of
+ * one keeps (`manual-<uuid>~<ms>`), so the mark survives an offline sync and an 8-hour split.
+ *
+ * Never parked jitter, whatever its shape: the rule above exists because a parked phone used to
+ * start trips on its own, and a phone does not press Start. A walk round one block that ends where
+ * it began is exactly the shape the rule excludes, and exactly what an on-foot crew records.
+ */
+function isManualTrip(trip) {
+  if (!trip) return false;
+  return trip.startMode === 'manual' || /^manual-/.test(trip.clientTripId || '');
+}
+
 /** The one rule. See the header for why both clauses exist and how the thresholds were picked. */
 function isParkedJitter(features) {
   if (!env.PARKED_JITTER_ENABLED) return false;
@@ -113,10 +127,10 @@ function isParkedJitter(features) {
  * than two fixes means no displacement to measure, and "no verdict" must stay distinct from
  * "verdict: not jitter", which is why a null return must not be replaced with defaults.
  */
-function verdictFields(features) {
+function verdictFields(features, trip = null) {
   if (!features || features.n < 2) return null;
   return {
-    parkedJitter: isParkedJitter(features),
+    parkedJitter: !isManualTrip(trip) && isParkedJitter(features),
     parkedJitterAt: new Date(),
     parkedJitterMeters: features.netMeters == null ? null : Math.round(features.netMeters),
     parkedJitterSpreadMeters:
@@ -134,7 +148,7 @@ function verdictFields(features) {
 async function classifyTrip(tripId, points) {
   if (!env.PARKED_JITTER_ENABLED) return null;
 
-  const trip = await Trip.findById(tripId).select('status mapMatchStatus').lean();
+  const trip = await Trip.findById(tripId).select('status mapMatchStatus startMode clientTripId').lean();
   if (!trip) return null;
   // Closed rides only, for the reason globalUkm.attributeTrip gives: a claim decides who is paid
   // for a street and must not be made — or unmade — on a drive that is still changing.
@@ -146,7 +160,7 @@ async function classifyTrip(tripId, points) {
       .sort({ recordedAt: 1 })
       .select('lat lon recordedAt')
       .lean());
-  const fields = verdictFields(featuresFromPoints(pts));
+  const fields = verdictFields(featuresFromPoints(pts), trip);
   if (!fields) return null;
 
   await Trip.updateOne({ _id: tripId }, { $set: fields });
@@ -174,4 +188,4 @@ async function classifyTrip(tripId, points) {
   return { tripId, ...fields };
 }
 
-module.exports = { featuresFromPoints, isParkedJitter, verdictFields, classifyTrip };
+module.exports = { featuresFromPoints, isParkedJitter, isManualTrip, verdictFields, classifyTrip };

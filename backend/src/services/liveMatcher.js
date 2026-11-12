@@ -47,7 +47,7 @@ const lengthOf = (pts) => {
  */
 async function livePass(tripId) {
   const trip = await Trip.findById(tripId)
-    .select('status mapMatchStatus liveMatch cleanedDistanceMeters cleanedRouteShapes distanceMeters parkedJitter')
+    .select('status mapMatchStatus liveMatch cleanedDistanceMeters cleanedRouteShapes distanceMeters parkedJitter startMode clientTripId')
     .lean();
   if (!trip || trip.status !== 'active' || !['pending', null, undefined].includes(trip.mapMatchStatus)) return 'gone';
   const now = new Date();
@@ -76,7 +76,7 @@ async function livePass(tripId) {
     // Parked-GPS jitter: a phone reporting from a car park must not credit the street beside it.
     // Asked of the whole trip so far while it is short — past a few km it is plainly a drive.
     if (!(prev && prev.passes) && (trip.distanceMeters || 0) < 5000) {
-      const verdict = verdictFields(featuresFromPoints(pts));
+      const verdict = verdictFields(featuresFromPoints(pts), trip);
       if (verdict && verdict.parkedJitter) {
         await stamp({ through: prev ? prev.through : null });
         return 'jitter';

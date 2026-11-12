@@ -60,6 +60,7 @@ export function Projects() {
               <th>Code</th>
               <th>Country</th>
               <th title="Projects sharing a coverage scope deduplicate UKM against each other">Coverage scope</th>
+              <th title="How trips start and end on the driver's phone">Trips</th>
               <th title="How long a vehicle must sit still before its trip is ended">Stop after</th>
               <th>Status</th>
               <th></th>
@@ -80,9 +81,16 @@ export function Projects() {
                   )}
                 </td>
                 <td style={{ fontSize: 12 }}>
-                  {typeof p.tripEndAfterMinutes === 'number'
-                    ? <span>{p.tripEndAfterMinutes} min</span>
-                    : <span style={{ color: 'var(--muted)' }} title="Uses the app default">10 min · default</span>}
+                  {p.tripMode === 'manual'
+                    ? <span className="badge" title="Drivers press Start trip / Stop trip; walking is recorded too">Manual start/stop</span>
+                    : <span style={{ color: 'var(--muted)' }} title="Trips start and end by themselves when the vehicle moves">Automatic</span>}
+                </td>
+                <td style={{ fontSize: 12 }}>
+                  {p.tripMode === 'manual'
+                    ? <span style={{ color: 'var(--muted)' }} title="Manual trips end only when the driver presses Stop trip">—</span>
+                    : typeof p.tripEndAfterMinutes === 'number'
+                      ? <span>{p.tripEndAfterMinutes} min</span>
+                      : <span style={{ color: 'var(--muted)' }} title="Uses the app default">10 min · default</span>}
                 </td>
                 <td><span className={`badge ${p.active ? 'green' : 'gray'}`}>{p.active ? 'Active' : 'Inactive'}</span></td>
                 <td style={{ display: 'flex', gap: 6, alignItems: 'center', whiteSpace: 'nowrap' }}>
@@ -92,7 +100,7 @@ export function Projects() {
               </tr>
             ))}
             {projects.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No projects yet — add one to get started.</td></tr>
+              <tr><td colSpan={8} style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--muted)' }}>No projects yet — add one to get started.</td></tr>
             )}
           </tbody>
         </table>
@@ -125,6 +133,8 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
     // the instant it stops".
     tripEndAfterMinutes:
       typeof project?.tripEndAfterMinutes === 'number' ? String(project.tripEndAfterMinutes) : '',
+    // Absent on a project that predates the setting, and absent is automatic.
+    tripMode: project?.tripMode === 'manual' ? 'manual' : 'auto',
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -150,6 +160,7 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
         enabledModules: form.enabledModules,
         showLogout: form.showLogout,
         tripEndAfterMinutes: stopMinutes,
+        tripMode: form.tripMode,
       };
       if (project) await api.patch(`/api/projects/${project._id}`, body);
       else await api.post('/api/projects', body);
@@ -236,6 +247,31 @@ function ProjectForm({ project, onClose, onSaved }: { project?: Project; onClose
           />
           Sign out button
         </label>
+      </div>
+
+      <div className="field">
+        <label>Trip recording</label>
+        <select className="input" value={form.tripMode} onChange={(e) => set('tripMode', e.target.value)}>
+          <option value="auto">Automatic — trips start and stop by themselves (vehicles)</option>
+          <option value="manual">Manual — the driver presses Start trip and Stop trip (on foot or in a vehicle)</option>
+        </select>
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 4, lineHeight: 1.5 }}>
+          {form.tripMode === 'manual' ? (
+            <>
+              The app shows a <b>Start trip</b> button. Everything from Start to <b>Stop trip</b> is
+              recorded, <b>walking included</b> — use this for crews who collect on foot. Nothing
+              is recorded until the driver presses Start, and a trip only ends when they press
+              Stop (or sign out), so the stop timeout below does not apply. Needs app version
+              1.0.28 or later; older apps keep recording automatically.
+            </>
+          ) : (
+            <>
+              The app records a trip on its own when the vehicle moves, and ends it after the stop
+              timeout below. Walking is never recorded as a trip.
+            </>
+          )}
+          {' '}Changes reach handsets within about two minutes.
+        </div>
       </div>
 
       <div className="field">

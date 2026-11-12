@@ -29,6 +29,18 @@ function parseTripEndAfterMinutes(raw) {
   return { value: Math.round(n) };
 }
 
+/**
+ * 'auto' or 'manual' (see Project.tripMode). Same three outcomes as the stop timeout: absent
+ * leaves the project alone, so a PATCH that only renames it cannot switch how its trips start.
+ * Null or '' goes back to the default, 'auto'.
+ */
+function parseTripMode(raw) {
+  if (raw === undefined) return { skip: true };
+  if (raw === null || raw === '') return { value: 'auto' };
+  if (raw === 'auto' || raw === 'manual') return { value: raw };
+  return { error: "Trip recording must be 'auto' or 'manual'" };
+}
+
 // GET /api/projects?all=true  — every authenticated role can list; dropdowns need it
 // everywhere (Managers, Drivers). ?all=true (admin's own Projects tab) also returns
 // deactivated ones; everyone else only sees the assignable (active) set.
@@ -47,12 +59,14 @@ exports.list = asyncHandler(async (req, res) => {
 exports.create = asyncHandler(async (req, res) => {
   const {
     name, code, country, coverageScopeId, coverageCycleId, enabledModules, showLogout,
-    tripEndAfterMinutes,
+    tripEndAfterMinutes, tripMode,
   } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'Project name is required' });
 
   const tripEnd = parseTripEndAfterMinutes(tripEndAfterMinutes);
   if (tripEnd.error) return res.status(400).json({ error: tripEnd.error });
+  const mode = parseTripMode(tripMode);
+  if (mode.error) return res.status(400).json({ error: mode.error });
 
   try {
     const doc = {
@@ -65,6 +79,7 @@ exports.create = asyncHandler(async (req, res) => {
     if (Array.isArray(enabledModules)) doc.enabledModules = enabledModules;
     if (typeof showLogout === 'boolean') doc.showLogout = showLogout;
     if (!tripEnd.skip) doc.tripEndAfterMinutes = tripEnd.value;
+    if (!mode.skip) doc.tripMode = mode.value;
     const project = await Project.create(doc);
     res.status(201).json({ project });
   } catch (err) {
@@ -80,12 +95,15 @@ exports.update = asyncHandler(async (req, res) => {
 
   const {
     name, code, country, active, coverageScopeId, coverageCycleId, enabledModules, showLogout,
-    tripEndAfterMinutes,
+    tripEndAfterMinutes, tripMode,
   } = req.body || {};
 
   const tripEnd = parseTripEndAfterMinutes(tripEndAfterMinutes);
   if (tripEnd.error) return res.status(400).json({ error: tripEnd.error });
+  const mode = parseTripMode(tripMode);
+  if (mode.error) return res.status(400).json({ error: mode.error });
   if (!tripEnd.skip) project.tripEndAfterMinutes = tripEnd.value;
+  if (!mode.skip) project.tripMode = mode.value;
 
   if (name !== undefined) project.name = name;
   if (code !== undefined) project.code = code || null;
@@ -118,6 +136,9 @@ exports.update = asyncHandler(async (req, res) => {
   // The resolver memoises project scopes for a minute; a scope edit must take effect on the very
   // next trip, not up to a minute later.
   if (scopeChanged) clearScopeCache();
+  // Phones learn their project's tracking settings from the heartbeat, which memoises them for a
+  // minute; an admin switching a crew to manual should not wait that minute on top.
+  require('./appActivity.controller').clearProjectSettings(project._id);
   res.json({ project });
 });
 

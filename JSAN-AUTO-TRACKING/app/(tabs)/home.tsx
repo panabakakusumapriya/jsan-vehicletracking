@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { AcademyCard } from '@/src/components/AcademyCard';
 import { DayWork } from '@/src/components/DayWork';
+import { ManualTripButton, useManualTrip } from '@/src/components/ManualTripControl';
 import { TrackingChecklist } from '@/src/components/TrackingChecklist';
 import { loadProgress } from '@/src/lib/academy';
 import { API_BASE_URL } from '@/src/lib/config';
@@ -284,8 +285,17 @@ export default function Home() {
   };
 
   const insets = useSafeAreaInsets();
+  // Projects on manual recording: the driver starts and stops trips with a button, and walking
+  // counts. The card's words change with it — "starts by itself" would be untrue there.
+  const manualTrip = useManualTrip();
   const cfg = STATE[uiState];
-  const subText = uiState === 'blocked' ? (permMsg ?? '') : cfg.sub;
+  const manualSub =
+    uiState === 'tracking' ? 'Recording — on foot or driving — until you press Stop trip.'
+      : uiState === 'idle' || uiState === 'night' ? 'Press Start trip when you begin. Nothing is recorded until you do.'
+        : null;
+  const subText = uiState === 'blocked'
+    ? (permMsg ?? '')
+    : manualTrip.shown && manualSub ? manualSub : cfg.sub;
   const firstName = user?.name?.split(' ')[0] ?? 'Driver';
   const initials = (user?.name ?? 'D').split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase();
   const today = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
@@ -354,6 +364,8 @@ export default function Home() {
             <Text style={[s.permBtnText, { color: cfg.bg }]}>Grant permissions</Text>
           </TouchableOpacity>
         ) : uiState !== 'starting' ? (
+          <>
+          <ManualTripButton trip={manualTrip} />
           <View style={s.heroChips}>
             <HeroChip icon="tachometer" label="Speed" value={speed} />
             <HeroChip
@@ -363,6 +375,7 @@ export default function Home() {
               onPress={() => router.replace('/uploads' as any)}
             />
           </View>
+          </>
         ) : null}
       </View>
 

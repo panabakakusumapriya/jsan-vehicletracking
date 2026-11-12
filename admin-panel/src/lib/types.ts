@@ -74,6 +74,8 @@ export interface Project {
    * project never set one and the app uses its own default (10 min).
    */
   tripEndAfterMinutes?: number | null;
+  /** How trips start and end on the phone; absent (an older project) means 'auto'. */
+  tripMode?: 'auto' | 'manual';
   createdAt?: string;
 }
 

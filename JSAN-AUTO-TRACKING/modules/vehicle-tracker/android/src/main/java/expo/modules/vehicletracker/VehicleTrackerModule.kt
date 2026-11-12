@@ -88,7 +88,12 @@ class VehicleTrackerModule : Module() {
                 "driverId" to TrackingConfig.driverId(context),
                 "apiBaseUrl" to TrackingConfig.apiBaseUrl(context),
                 "tripEndAfterMinutes" to (effective / 60_000L).toInt(),
-                "tripEndIsProjectSetting" to (override > 0L)
+                "tripEndIsProjectSetting" to (override > 0L),
+                // What the engine will do: show Start/Stop in the app for "manual". The open trip
+                // is reported separately, because a trip started by hand stays one even if the
+                // project is switched back to automatic while it runs.
+                "tripMode" to TrackingConfig.tripMode(context),
+                "tripManual" to TrackingService.isManualTripId(TrackingConfig.currentTripId(context))
             )
         }
 
@@ -135,6 +140,24 @@ class VehicleTrackerModule : Module() {
          */
         AsyncFunction("setTripEndAfterMinutes") { minutes: Int ->
             TrackingConfig.setTripEndAfterMinutes(context, minutes)
+        }
+
+        /** The driver's project's trip mode, "auto" or "manual" (anything else is auto). */
+        AsyncFunction("setTripMode") { mode: String ->
+            TrackingConfig.setTripMode(context, mode)
+        }
+
+        /**
+         * Start trip / Stop trip, for projects on manual recording. Both are requests to the
+         * service, which owns the trip state; the app reads the outcome back from getStatus (and
+         * the onTripStart / onTripEnd events). Start does nothing while a trip is already open.
+         */
+        AsyncFunction("startTrip") {
+            TrackingService.startTripManually(context)
+        }
+
+        AsyncFunction("stopTrip") {
+            TrackingService.stopTripManually(context)
         }
 
         // ── Battery optimisation: the #1 silent background-tracking killer ───

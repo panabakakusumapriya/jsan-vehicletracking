@@ -53,6 +53,21 @@ const projectSchema = new mongoose.Schema(
      */
     tripEndAfterMinutes: { type: Number, default: null, min: 2, max: 30 },
 
+    /**
+     * How this project's trips begin and end on the phone.
+     *
+     *   'auto'   — the engine decides: a trip starts when the phone leaves its rest circle in a
+     *              vehicle and ends after tripEndAfterMinutes without travel. Walking never starts
+     *              one (StartGate.kt), on purpose: a driver walking to the car is not a trip.
+     *   'manual' — the driver decides: a Start trip / Stop trip button in the app, and everything
+     *              between the two presses is recorded, on foot or in a vehicle. For crews that
+     *              collect on foot (SEA_POI), where the vehicle-only rules would record nothing.
+     *
+     * Same `.lean()` trap as showLogout: a project saved before this field reads undefined, and
+     * undefined must mean 'auto' — so readers test `=== 'manual'`, never truthiness.
+     */
+    tripMode: { type: String, enum: ['auto', 'manual'], default: 'auto' },
+
     // Which dedup universe this project's coverage belongs to. Projects sharing a scope share one
     // history: a road first driven under Project A is not new road again under Project B. That is
     // the whole point — the customer is not billed twice because the street sat on a boundary

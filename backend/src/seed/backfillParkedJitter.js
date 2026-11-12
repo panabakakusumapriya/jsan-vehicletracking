@@ -86,7 +86,7 @@ const FETCH_BATCH = 200;
   }
 
   const trips = await Trip.find(filter)
-    .select('_id driverId projectId distanceMeters parkedJitter parkedJitterAt coverageScopeId coverageCycleId')
+    .select('_id driverId projectId distanceMeters parkedJitter parkedJitterAt coverageScopeId coverageCycleId startMode clientTripId')
     .sort({ startedAt: 1, _id: 1 })
     .lean();
 
@@ -123,7 +123,7 @@ const FETCH_BATCH = 200;
 
     const ops = [];
     for (const trip of batch) {
-      const fields = verdictFields(featuresFromPoints(byTrip.get(String(trip._id)) || []));
+      const fields = verdictFields(featuresFromPoints(byTrip.get(String(trip._id)) || []), trip);
       if (!fields) {
         noVerdict += 1;
         continue;

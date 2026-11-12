@@ -51,6 +51,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { capDay, loadTodayTrail, localDate, saveTodayTrail, type Line } from '@/src/lib/todayTrail';
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
+import { ManualTripPill, useManualTrip } from '@/src/components/ManualTripControl';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 const C = {
@@ -336,6 +337,9 @@ export default function MapScreen() {
    *  always sits above it, and neither should have to be hunted for). */
   const sheetRef = useRef<BottomSheetHandle>(null);
   const insets = useSafeAreaInsets();
+  // Start trip / Stop trip for manual-recording projects — here as well as on Home, because a
+  // project may hide the Home tab and send drivers straight to the map.
+  const manualTrip = useManualTrip();
   const { height: winH } = useWindowDimensions();
   /**
    * How tall the sheet opens to. Well short of the screen so the map stays visible behind it, and
@@ -1854,6 +1858,7 @@ export default function MapScreen() {
           onUnsupported={setMapError}
         />
         {controls}
+        <ManualTripPill trip={manualTrip} style={{ top: insets.top + 10 }} />
         {/* 📍 Follow Me: the driver moved the map away (or it is showing their area) — one tap brings
             the camera back to the vehicle and following resumes. While driving it also comes back on
             its own 10 s after the last touch; this is the immediate, visible way. */}

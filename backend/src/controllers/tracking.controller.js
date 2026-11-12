@@ -22,7 +22,7 @@ const { computeTripUkm } = require('../services/ukmCompute');
 const { getDriverRoads, getDriverRoadsVersion, getDriverRoadsVersions } = require('../services/driverRoads');
 const { scopeForProject } = require('../services/coverageScope');
 const { rebuildScope } = require('../services/globalUkm');
-const { classifyTrip } = require('../services/tripNoise');
+const { classifyTrip, isManualTrip } = require('../services/tripNoise');
 const { PIPELINE_RESET_SET, PIPELINE_RESET_UNSET } = require('../services/tripReset');
 const { stepMeters } = require('../utils/rawDistance');
 const mongoose = require('mongoose');
@@ -161,6 +161,9 @@ exports.ingest = asyncHandler(async (req, res) => {
       }
       trip = await Trip.create({
         clientTripId,
+        // The phone names a trip the driver started by hand `manual-…` (and a continuation keeps
+        // the prefix), so the mark rides every point without a field of its own.
+        startMode: isManualTrip({ clientTripId }) ? 'manual' : 'auto',
         driverId: driver._id,
         managerId: driver.managerId || null,
         vehicleId: driver.vehicleId || null,

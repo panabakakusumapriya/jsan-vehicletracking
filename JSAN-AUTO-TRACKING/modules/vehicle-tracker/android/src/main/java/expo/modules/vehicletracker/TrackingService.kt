@@ -62,6 +62,11 @@ import kotlin.math.roundToInt
  *             speed, raw displacement past the error radius) — any one is enough, because in
  *             dense traffic the first two both read a crawl as "parked".
  *
+ *   MANUAL:   projects on manual recording (TrackingConfig.isManualMode) skip IDLE and END
+ *             altogether: the driver's Start trip opens a trip at once, Stop trip closes it, and
+ *             everything between is recorded by the TRACKING rules — walking included, because
+ *             nothing in recording asks what the phone is riding in. See beginManualTrip.
+ *
  *   END:      no recorded movement for TRIP_END_NO_MOVE_MS (10 min) → end trip.
  *             Checked by the GPS-independent ticker so it fires even when GPS goes
  *             quiet on a parked vehicle. A stop shorter than that grace — however complete —
@@ -285,6 +290,22 @@ class TrackingService : Service() {
         const val TRIP_MAX_DURATION_MS      = 8 * 60 * 60 * 1000L
 
         /**
+         * Trips the driver started with the Start trip button are named `manual-<uuid>`. The name
+         * is the only mark they need: it rides every queued point to the server (which reads it as
+         * Trip.startMode 'manual' and never calls such a trip a parked phone), a continuation the
+         * server opens keeps it, and no SQLite column or migration was needed to carry it.
+         */
+        const val MANUAL_TRIP_PREFIX = "manual-"
+        fun isManualTripId(id: String?): Boolean = id != null && id.startsWith(MANUAL_TRIP_PREFIX)
+
+        /**
+         * How old the last good fix may be for Start trip to open the route right there. Older,
+         * and the trip opens at the next good fix instead — a walker who pressed Start inside a
+         * shop would otherwise begin the route wherever the phone last saw the sky.
+         */
+        const val MANUAL_START_FIX_MAX_AGE_MS = 20_000L
+
+        /**
          * If no trip starts within this window after service launch, stop the service
          * to save battery. ActivityTransitionReceiver re-launches when movement resumes.
          */
@@ -417,6 +438,8 @@ class TrackingService : Service() {
         }
 
         private const val ACTION_END_AND_STOP = "expo.modules.vehicletracker.END_AND_STOP"
+        private const val ACTION_MANUAL_START = "expo.modules.vehicletracker.MANUAL_START"
+        private const val ACTION_MANUAL_STOP = "expo.modules.vehicletracker.MANUAL_STOP"
         private const val TRIP_POINT_SAVE_MS = 30_000L
 
         /** True between onCreate and onDestroy: whether a service instance exists to ask. */
@@ -445,6 +468,37 @@ class TrackingService : Service() {
             }
             closeTripFromPrefs(ctx)
             stop(ctx)
+        }
+
+        /**
+         * The driver's Start trip. Tracking is switched on too: pressing Start is as plain a
+         * request to record as there is. A running service gets the request as an ordinary
+         * command; one that is not running is started in the foreground with it (legal here — the
+         * driver has the app open), and handles it once it is up.
+         */
+        fun startTripManually(ctx: Context) {
+            TrackingConfig.setEnabled(ctx, true)
+            val intent = Intent(ctx, TrackingService::class.java).setAction(ACTION_MANUAL_START)
+            try {
+                if (running) ctx.startService(intent)
+                else ContextCompat.startForegroundService(ctx, intent)
+            } catch (e: Exception) {
+                Log.w("JSANTracking", "manual start refused: ${e.message}")
+                ServiceWatchdog.scheduleRetry(ctx)
+            }
+        }
+
+        /** The driver's Stop trip. With no service to ask, the trip is ended from what was saved. */
+        fun stopTripManually(ctx: Context) {
+            if (running) {
+                try {
+                    ctx.startService(Intent(ctx, TrackingService::class.java).setAction(ACTION_MANUAL_STOP))
+                    return
+                } catch (e: Exception) {
+                    Log.w("JSANTracking", "manual stop intent refused: ${e.message}")
+                }
+            }
+            closeTripFromPrefs(ctx)
         }
 
         private fun isoUtc(ms: Long): String =
@@ -574,6 +628,9 @@ class TrackingService : Service() {
     )
     private val preStartBuffer = ArrayDeque<BufferedFix>()
 
+    /** Start trip was pressed with no fresh fix: the next good fix opens the route. */
+    private var manualStartPointPending = false
+
     /** Reject fixes with accuracy worse than this — underground, urban canyon reflections. */
     private val MAX_ACCURACY_M = 100f
 
@@ -674,8 +731,12 @@ class TrackingService : Service() {
                 applyCadence(idleStartedElapsedMs)
                 updateNotification("Vehicle movement detected")
             }
+            handleManualAction(intent?.action)
             return START_STICKY
         }
+        // Stop trip must work even when the service cannot come up (location permission gone):
+        // the driver asked for the trip to end, and leaving it open would be the worse outcome.
+        if (intent?.action == ACTION_MANUAL_STOP) closeTripFromPrefs(this)
         runtimeStarted = true
 
         // Nothing below can work without a location grant, and on Android 14+ even ENTERING the
@@ -750,7 +811,18 @@ class TrackingService : Service() {
         // One immediate drain on start: anything buffered while the service was dead should not
         // wait out a full window.
         triggerUpload()
+        if (intent?.action == ACTION_MANUAL_START) handleManualAction(ACTION_MANUAL_START)
         return START_STICKY
+    }
+
+    /** Start trip / Stop trip from the app, on a running service. */
+    private fun handleManualAction(action: String?) {
+        val now = SystemClock.elapsedRealtime()
+        val wallNow = System.currentTimeMillis()
+        when (action) {
+            ACTION_MANUAL_START -> beginManualTrip(now, wallNow)
+            ACTION_MANUAL_STOP -> TrackingConfig.currentTripId(this)?.let { endTrip(it, now, wallNow) }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -898,6 +970,17 @@ class TrackingService : Service() {
             if (idleTick - lastIdleEmitMs >= IDLE_EMIT_MS) {
                 lastIdleEmitMs = idleTick
                 TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, null, "idle", location.time, location))
+            }
+
+            // Manual recording: a trip starts from the Start trip button and nothing else, so the
+            // rest circle, the departure buffer and the start gates have no work to do. The dot
+            // above still moves, and the idle timeout still drops a waiting phone to low power
+            // (Start leaves it at once).
+            if (TrackingConfig.isManualMode(this)) {
+                if (idleStartedElapsedMs > 0L && now - idleStartedElapsedMs >= IDLE_TIMEOUT_MS) {
+                    enterDormant(now)
+                }
+                return
             }
 
             // A poor fix must not count for or against a departure: it is neither a fix outside
@@ -1083,6 +1166,15 @@ class TrackingService : Service() {
                 lastMovedMs     = now
                 setStopAnchor(rawLat, rawLon, now, dopplerKmh)
                 confineWindow.clear()
+                // Start trip was pressed before there was a fix to start from: this is where the
+                // driver was, so it is the route's first point. (After a restart it is only an
+                // anchor — the trip already has its points.)
+                if (manualStartPointPending) {
+                    manualStartPointPending = false
+                    savePoint(rawLat, rawLon, location, speedKmh, tripId, "active", wallNow)
+                    TrackerEvents.emit("onLocation", locMap(rawLat, rawLon, speedKmh, tripId, "active", location.time, location))
+                    triggerUpload()
+                }
                 return
             }
             if (dopplerKmh != null && dopplerKmh >= DOPPLER_CONFIRM_KMH) tripDopplerMovingFixes++
@@ -1309,7 +1401,10 @@ class TrackingService : Service() {
             // the classifier's verdict in the field without a debug build, and calling it here
             // keeps the score evaluating on the ticker even on a phone with no accelerometer,
             // where nothing else would drive it between GPS fixes.
-            updateNotification("Waiting for movement… • " + motion.describe(now))
+            updateNotification(
+                if (TrackingConfig.isManualMode(this)) idleNotificationText()
+                else "Waiting for movement… • " + motion.describe(now)
+            )
 
             // Idle — check timeout so the service stops if nobody drives. Not in the middle of
             // a confirmed exit from the rest circle, though: that is a departure being judged,
@@ -1325,8 +1420,18 @@ class TrackingService : Service() {
 
         // Hard cap: a "trip" running past TRIP_MAX_DURATION_MS is a forgotten session. End it
         // now — the server snaps it, and the next movement starts a fresh trip cleanly.
+        // A trip started by hand, on a project still set to manual, is held open until the driver
+        // presses Stop trip: no stop clock. The driver walking into a shop for twenty minutes is
+        // still on their round. Switching the project back to automatic hands an open manual trip
+        // to the stop clock, so it cannot be left open with no button on screen to end it.
+        val manualHold = isManualTripId(tripId) && TrackingConfig.isManualMode(this)
+
         if (tripStartedElapsedMs != 0L && now - tripStartedElapsedMs >= TRIP_MAX_DURATION_MS) {
             endTrip(tripId, now, wallNow)
+            // A manual trip rolls straight over into the next one rather than stopping: the driver
+            // pressed Start and has not pressed Stop, so recording must not go quiet behind their
+            // back. Same split the server makes for an over-long trip, made cleanly here.
+            if (manualHold) beginManualTrip(now, wallNow)
             return
         }
 
@@ -1337,7 +1442,7 @@ class TrackingService : Service() {
         // N is the driver's project setting when the admin panel has set one, and the built-in
         // default otherwise. Read on every tick rather than cached at trip start, so an admin
         // changing it takes effect on a trip that is already running.
-        if (lastMovedMs > 0L && now - lastMovedMs >= tripEndAfterMs()) {
+        if (!manualHold && lastMovedMs > 0L && now - lastMovedMs >= tripEndAfterMs()) {
             // The full grace passed at a dead stop → the vehicle is genuinely parked. Any real
             // movement inside the grace resets the clock and the trip simply continues.
             endTrip(tripId, now, wallNow)
@@ -1364,7 +1469,10 @@ class TrackingService : Service() {
                 "recordedAt" to iso(wallNow)
             ))
             val stoppedMin = ((now - lastMovedMs) / 60_000L).toInt()
-            updateNotification(if (stoppedMin > 0) "Stopped • $stoppedMin min" else "Stopped")
+            updateNotification(
+                if (manualHold) "Trip on • press Stop trip in the app when you finish"
+                else if (stoppedMin > 0) "Stopped • $stoppedMin min" else "Stopped"
+            )
         }
     }
 
@@ -1399,6 +1507,7 @@ class TrackingService : Service() {
         else startGate.clear()
         departWatchUntilMs = 0L
         tripDopplerMovingFixes = 0
+        manualStartPointPending = false
         hasLastRecorded = false
         lastMovedMs     = 0L
         hasStopAnchor   = false
@@ -1414,7 +1523,72 @@ class TrackingService : Service() {
         triggerUpload()
         TrackerEvents.emit("onTripEnd", mapOf("tripId" to tripId, "recordedAt" to iso(wallNow)))
         emitState("idle")
-        updateNotification("Waiting for movement…")
+        updateNotification(idleNotificationText())
+    }
+
+    private fun idleNotificationText(): String =
+        if (TrackingConfig.isManualMode(this)) "Ready • press Start trip in the app to record"
+        else "Waiting for movement…"
+
+    // ── Manual trip start (Start trip button) ─────────────────────────────────
+
+    /**
+     * Open a trip now, because the driver said so. No gate, no rest circle, no wait for speed: on
+     * a manual project the button IS the evidence. Recording then follows the ordinary TRACKING
+     * rules, which only ask whether the phone moved — so a walk is recorded like a drive.
+     *
+     * The route opens at the last good fix if it is fresh (MANUAL_START_FIX_MAX_AGE_MS), otherwise
+     * at the next one. Does nothing while a trip is already open: a second tap, or Start pressed
+     * while an automatic trip is running, keeps that trip.
+     */
+    private fun beginManualTrip(now: Long, wallNow: Long) {
+        if (TrackingConfig.currentTripId(this) != null) return
+        leaveDormant(now, wallNow)
+
+        val newId = MANUAL_TRIP_PREFIX + UUID.randomUUID().toString()
+        TrackingConfig.setCurrentTripId(this, newId)
+        TrackingConfig.setTripStartedAt(this, wallNow)
+        tripStartedElapsedMs = now
+        TrackingConfig.setIdleSince(this, 0L)
+        acquireWakeLock()
+
+        startGate.clear()
+        preStartBuffer.clear()
+        departWatchUntilMs = 0L
+        confineWindow.clear()
+        tripDopplerMovingFixes = 0
+        recentSpeeds.clear()
+        lastHeartbeatMs = now
+        lastMovedMs = now
+        tripPointSavedAtMs = 0L
+
+        val loc = lastLocation
+        val ageMs = loc?.let { (SystemClock.elapsedRealtimeNanos() - it.elapsedRealtimeNanos) / 1_000_000L }
+        val fresh = loc != null && ageMs != null && ageMs in 0..MANUAL_START_FIX_MAX_AGE_MS &&
+            (!loc.hasAccuracy() || loc.accuracy <= TRIP_ACTIVE_MAX_ACCURACY_M)
+        val kmh = if (loc != null && loc.hasSpeed() && loc.speed >= 0f) loc.speed * 3.6 else 0.0
+        if (loc != null && fresh) {
+            lastRecordedLat = loc.latitude
+            lastRecordedLon = loc.longitude
+            lastRecordedAtMs = now
+            hasLastRecorded = true
+            setStopAnchor(loc.latitude, loc.longitude, now, if (loc.hasSpeed()) kmh else null)
+            manualStartPointPending = false
+            savePoint(loc.latitude, loc.longitude, loc, kmh, newId, "active", wallNow)
+        } else {
+            hasLastRecorded = false
+            hasStopAnchor = false
+            manualStartPointPending = true
+        }
+
+        TrackerEvents.emit("onTripStart", mapOf("tripId" to newId, "recordedAt" to iso(wallNow), "manual" to true))
+        if (loc != null && fresh) {
+            TrackerEvents.emit("onLocation", locMap(loc.latitude, loc.longitude, kmh, newId, "active", loc.time, loc))
+        }
+        emitState("tracking")
+        updateNotification("Trip started • recording until you press Stop trip")
+        applyCadence(now)
+        triggerUpload()
     }
 
     // ── Persistence helpers ───────────────────────────────────────────────────
@@ -1488,6 +1662,9 @@ class TrackingService : Service() {
         val lastAt = maxOf(startedAt, TrackingConfig.lastTripPointAt(this))
         if (lastAt <= 0L) return true
         if (startedAt > 0L && wallNow - startedAt >= TRIP_MAX_DURATION_MS) return true
+        // A trip started by hand is over when the driver says so, not after a quiet spell: the
+        // phone restarting while they stood in a shop must not end their round.
+        if (isManualTripId(TrackingConfig.currentTripId(this)) && TrackingConfig.isManualMode(this)) return false
         return wallNow - lastAt > tripEndAfterMs()
     }
 

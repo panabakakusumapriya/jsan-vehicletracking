@@ -47,6 +47,10 @@ export type TrackerStatus = {
   tripEndAfterMinutes?: number;
   /** True when that number came from the driver's project rather than the built-in default. */
   tripEndIsProjectSetting?: boolean;
+  /** 'manual' = the driver starts and stops trips with buttons (walking recorded). Absent on old builds. */
+  tripMode?: 'auto' | 'manual';
+  /** The open trip was started with the Start trip button. */
+  tripManual?: boolean;
 };
 
 export type DaylightInfo = {
@@ -141,6 +145,24 @@ export async function start(): Promise<void> {
 
 export async function stop(): Promise<void> {
   if (native) await native.stop();
+}
+
+/** Whether this build has the Start trip / Stop trip engine (1.0.28+). */
+export const supportsManualTrips = Boolean(native && typeof native.startTrip === 'function');
+
+/** The project's trip mode; anything but 'manual' is automatic. No-op on builds without it. */
+export async function setTripMode(mode: 'auto' | 'manual'): Promise<void> {
+  if (native && typeof native.setTripMode === 'function') await native.setTripMode(mode);
+}
+
+/** Start trip (manual projects). The outcome arrives as onTripStart / getStatus().currentTripId. */
+export async function startTrip(): Promise<void> {
+  if (native && typeof native.startTrip === 'function') await native.startTrip();
+}
+
+/** Stop trip (manual projects). The outcome arrives as onTripEnd / getStatus(). */
+export async function stopTrip(): Promise<void> {
+  if (native && typeof native.stopTrip === 'function') await native.stopTrip();
 }
 
 /**

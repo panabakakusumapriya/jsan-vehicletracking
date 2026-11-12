@@ -48,6 +48,12 @@ export type AuthUser = {
    * own default — do NOT coerce that to 0, which would tell the engine to end trips instantly.
    */
   tripEndAfterMinutes?: number | null;
+  /**
+   * How this driver's trips start and stop: 'manual' shows Start trip / Stop trip buttons and
+   * records walking too. Absent (an older server, or a session restored before /me answered)
+   * must leave the engine's stored mode alone rather than reset it.
+   */
+  tripMode?: 'auto' | 'manual';
   /** Driver Academy progress (the in-app course), as the account last recorded it. */
   academy?: { lessons?: string[]; score?: number | null; completedAt?: string | null; skippedAt?: string | null } | null;
 };

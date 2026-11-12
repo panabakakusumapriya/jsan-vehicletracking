@@ -58,6 +58,29 @@ object TrackingConfig {
         prefs(ctx).edit().putLong("tripEndNoMoveMs", ms).apply()
     }
 
+    /**
+     * How trips begin and end, per project (Project.tripMode on the server).
+     *
+     *   auto   — the engine decides: StartGate starts a trip when a vehicle leaves its rest circle,
+     *            the stop clock ends it. Walking never starts one.
+     *   manual — the driver decides, with Start trip / Stop trip in the app. Nothing starts by
+     *            itself, nothing ends by itself (bar the 8 h roll-over), and everything between is
+     *            recorded, on foot included.
+     *
+     * Written by the heartbeat response (reaches a running engine with the app closed) and by the
+     * JS layer from /me (right at sign-in). Anything but "manual" — a missing field from an older
+     * server included — is auto, which is what every project was before the setting existed.
+     */
+    const val TRIP_MODE_AUTO = "auto"
+    const val TRIP_MODE_MANUAL = "manual"
+    fun tripMode(ctx: Context): String =
+        if (prefs(ctx).getString("tripMode", TRIP_MODE_AUTO) == TRIP_MODE_MANUAL) TRIP_MODE_MANUAL else TRIP_MODE_AUTO
+    fun isManualMode(ctx: Context): Boolean = tripMode(ctx) == TRIP_MODE_MANUAL
+    fun setTripMode(ctx: Context, mode: String?) =
+        prefs(ctx).edit()
+            .putString("tripMode", if (mode == TRIP_MODE_MANUAL) TRIP_MODE_MANUAL else TRIP_MODE_AUTO)
+            .apply()
+
     // ---- Trip state machine (persisted so a killed/restarted service resumes cleanly) ----
     fun currentTripId(ctx: Context): String? = prefs(ctx).getString("currentTripId", null)
     fun setCurrentTripId(ctx: Context, id: String?) =

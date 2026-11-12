@@ -13,7 +13,7 @@ async function attachEnabledModules(userData) {
     const Project = require('../models/Project');
     const pid = userData.projectIds[0]?._id || userData.projectIds[0];
     const project = await Project.findById(pid)
-      .select('enabledModules showLogout tripEndAfterMinutes')
+      .select('enabledModules showLogout tripEndAfterMinutes tripMode')
       .lean();
     if (project) {
       userData.enabledModules = project.enabledModules || ['dashboard', 'map'];
@@ -27,6 +27,9 @@ async function attachEnabledModules(userData) {
       // start, before the service has sent a single heartbeat.
       userData.tripEndAfterMinutes =
         typeof project.tripEndAfterMinutes === 'number' ? project.tripEndAfterMinutes : null;
+      // Always sent, and always one of the two words: the app shows Start/Stop buttons only for
+      // 'manual', and a project saved before the setting existed (undefined) is 'auto'.
+      userData.tripMode = project.tripMode === 'manual' ? 'manual' : 'auto';
     }
   }
   return userData;

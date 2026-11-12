@@ -82,6 +82,19 @@ export function TrackingBootstrap() {
     void VehicleTracker.setTripEndAfterMinutes(minutes).catch(() => {});
   }, [user]);
 
+  // The project's trip mode, pushed the same way and for the same reasons as the stop timeout.
+  // Only a real value is pushed: a user object restored from storage before /me answered may not
+  // carry it, and that must not flip a manual phone back to automatic.
+  const tripModeRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!user || user.role !== 'user' || !VehicleTracker.isSupported) return;
+    const mode = user.tripMode;
+    if (mode !== 'auto' && mode !== 'manual') return;
+    if (tripModeRef.current === mode) return;
+    tripModeRef.current = mode;
+    void VehicleTracker.setTripMode(mode).catch(() => {});
+  }, [user]);
+
   // A napping service (10-minute idle stop) must revive the moment the driver RETURNS to
   // the app — not only when Activity Recognition notices a drive. start() is idempotent and
   // a foreground start is always legal, so this is free insurance: open app = tracker up.

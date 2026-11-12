@@ -117,6 +117,11 @@ object HeartbeatSender {
                     json.optInt("tripEndAfterMinutes", 0)
                 } else 0
             TrackingConfig.setTripEndAfterMinutes(ctx, minutes)
+            // Absent (a server from before the setting) is auto, like every project used to be.
+            TrackingConfig.setTripMode(
+                ctx,
+                if (json.has("tripMode") && !json.isNull("tripMode")) json.optString("tripMode") else null
+            )
         } catch (e: Exception) {
             // A malformed body must never cost us the heartbeat itself — liveness is this
             // request's actual job, config delivery is a passenger.
