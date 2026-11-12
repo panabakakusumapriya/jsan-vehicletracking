@@ -5,7 +5,7 @@ import { MapboxOverlay } from '@deck.gl/mapbox';
 // build, which isn't consistent across its major versions (broke silently
 // switching from v5 to v6: "maplibregl.Map is not a constructor"). Named
 // imports of the documented exports are reliable across both.
-import { Map as MaplibreMap, NavigationControl } from 'maplibre-gl';
+import { Map as MaplibreMap, NavigationControl, type StyleSpecification } from 'maplibre-gl';
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 
 // Free, no-API-key, no-billing vector tiles with 3D building extrusion --
@@ -16,6 +16,30 @@ const DEFAULT_PITCH = 55;
 // Flat and light: 55 layers, no building extrusion (liberty has 111 and extrudes every building).
 // For maps whose own data is the heavy part and is read as a plan, like coverage.
 const LIGHT_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
+
+/**
+ * OpenStreetMap's own "Standard" map — the one openstreetmap.org shows — as plain image tiles,
+ * the same tiles the panel's Leaflet maps (Dashboard, Live map) already use. Flat, so it is also
+ * the cheapest basemap there is to draw: one textured square per tile, nothing to style on the GPU.
+ *
+ * tile.openstreetmap.org is run by the OSM Foundation on donations; its tile policy asks for the
+ * attribution below to stay visible (MapLibre's attribution control shows it) and no bulk or
+ * offline downloading — normal viewing only.
+ */
+const OSM_STYLE: StyleSpecification = {
+  version: 8,
+  sources: {
+    osm: {
+      type: 'raster',
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+      tileSize: 256,
+      maxzoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
+    },
+  },
+  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+};
+const STYLES = { full: MAP_STYLE, light: LIGHT_STYLE, osm: OSM_STYLE } as const;
 
 export interface Map3DHandle {
   flyTo(center: [number, number], zoom?: number): void;
@@ -57,8 +81,9 @@ interface Map3DProps {
   /** Fires on EVERY camera frame and on resize, with the zoom. For repositioning DOM that is
    *  pinned to a place on the map — keep it cheap, never fetch from it. */
   onMove?: (zoom: number, bbox: [number, number, number, number]) => void;
-  /** 'light' trades the 3D buildings for a flat basemap that costs the GPU a fraction per frame. */
-  basemap?: 'full' | 'light';
+  /** 'light' trades the 3D buildings for a flat basemap that costs the GPU a fraction per frame;
+   *  'osm' is OpenStreetMap's own Standard map (image tiles, flat). */
+  basemap?: 'full' | 'light' | 'osm';
   /** A north-up map: it opens flat, and turning and tilting are switched off for the person
    *  (right-drag, two-finger twist, touch tilt, keyboard), so the compass points north whenever
    *  the map is being read. Only the replay (driveTo) turns and tilts it, to ride behind the car;
@@ -109,7 +134,7 @@ export const Map3D = forwardRef<Map3DHandle, Map3DProps>(function Map3D(
     try {
       map = new MaplibreMap({
         container: containerRef.current,
-        style: basemap === 'light' ? LIGHT_STYLE : MAP_STYLE,
+        style: STYLES[basemap] ?? MAP_STYLE,
         center,
         zoom,
         pitch: pitchRef.current,

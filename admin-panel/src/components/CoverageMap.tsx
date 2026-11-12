@@ -1436,7 +1436,7 @@ export function CoverageMap({
         center={[144.96, -37.81]}
         zoom={7}
         pitch={0}
-        basemap="light"
+        basemap="osm"
         layers={layers}
         getTooltip={getTooltip}
         onMoveEnd={handleMoveEnd}
