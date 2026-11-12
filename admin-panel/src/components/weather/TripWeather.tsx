@@ -161,7 +161,7 @@ export function TripWeatherStrip({
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 10.5, color: 'var(--muted)' }} title={weather.source}>
-          Estimated from a weather model for each place and time — not measured by the vehicle
+          Estimated from a weather model for each place and time
         </span>
       </div>
 
