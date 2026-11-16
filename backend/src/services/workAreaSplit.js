@@ -8,6 +8,8 @@ const NetworkVersion = require('../models/NetworkVersion');
 const Project = require('../models/Project');
 const areaSplit = require('./areaSplit');
 const osmPlaces = require('./osmPlaces');
+const polygonClipping = require('polygon-clipping');
+const { liveNetworkVersions } = require('./liveNetworks');
 const { bboxOf, bboxUnion, midpointOf, pointInPolygon, simplifyGeometry } = require('../utils/geo');
 
 /**
@@ -37,6 +39,124 @@ const OUTLINE_TOLERANCE_M = 25;
 const UPDATE_CHUNK = 5000;
 
 const polygonsOf = (geometry) => (geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates);
+
+const piecesBbox = (pieces) => pieces.reduce((box, poly) => (box ? bboxUnion(box, bboxOf(poly[0])) : bboxOf(poly[0])), null);
+const boxesOverlap = (a, b) => Boolean(a && b) && a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+
+/**
+ * Do two sets of polygons share ground? Answered from sampled vertices, both ways round.
+ *
+ * An exact boolean between a zone (thousands of vertices — a Voronoi cut against a country outline)
+ * and a city polygon (7,000) took 20 seconds per pair with polygon-clipping; on a five-second budget
+ * for a dialog that is a no. A sampled vertex of either outline that lands inside the other answers
+ * the same question in milliseconds, and the only case it can miss — two shapes that overlap without
+ * a single vertex of either falling in the other — cannot happen for outlines this size.
+ */
+function piecesOverlap(aPieces, bPieces) {
+  const aBoxes = aPieces.map((p) => bboxOf(p[0]));
+  const bBoxes = bPieces.map((p) => bboxOf(p[0]));
+  const scan = (from, fromBoxes, into, intoBoxes) => {
+    for (let i = 0; i < from.length; i++) {
+      if (!intoBoxes.some((b) => boxesOverlap(fromBoxes[i], b))) continue;
+      const ring = from[i][0];
+      const step = Math.max(1, Math.floor(ring.length / 40));
+      for (let k = 0; k < ring.length; k += step) {
+        const pt = ring[k];
+        for (let j = 0; j < into.length; j++) {
+          const b = intoBoxes[j];
+          if (pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
+          if (pointInPolygon(pt, into[j])) return true;
+        }
+      }
+    }
+    return false;
+  };
+  return scan(aPieces, aBoxes, bPieces, bBoxes) || scan(bPieces, bBoxes, aPieces, aBoxes);
+}
+
+/**
+ * The other deliveries whose ground this area sits on top of.
+ *
+ * Vietnam is three PRIORITIES on the same ground: FC3 in two city polygons, FC4-5 in seven TPA
+ * sites, FC1-2 countrywide. The countrywide polygon encloses the other two sets, so splitting it
+ * cut zones straight across the seven TPA sites as if nothing were there. The roads never collide —
+ * each delivery carries its own road class — but the ground does, and a manager assigning a TPA
+ * site does not expect the countrywide delivery to have a zone drawn over it.
+ *
+ * Nothing is decided here. The panel lists what was found, per delivery, with how much of this
+ * area's road lies inside it, and the manager ticks which deliveries to cut around (see
+ * `cutAround` in splitCommittedArea).
+ */
+async function overlappingDeliveries({ versionId, parent }) {
+  const live = await liveNetworkVersions([parent.projectId]);
+  const others = live.filter((v) => String(v._id) !== String(versionId));
+  if (!others.length) return [];
+
+  const labels = new Map(
+    (await NetworkVersion.find({ _id: { $in: others.map((v) => v._id) } }).select('label').lean())
+      .map((v) => [String(v._id), v.label || 'Untitled delivery'])
+  );
+  // Asking for every area of every live delivery costs 90 MB and ~20 s of transfer on a project
+  // with 3,907 areas — the whole thing is Australian ground next to Vietnam. The stored bbox is
+  // written with every area, so narrow to the ones whose box could touch this one: 70 ms.
+  const parentPieces = polygonsOf(parent.geometry);
+  const parentBox = Array.isArray(parent.bbox) && parent.bbox.length === 4
+    ? parent.bbox
+    : piecesBbox(parentPieces);
+  const areas = await WorkArea.find({
+    networkVersionId: { $in: others.map((v) => v._id) },
+    'bbox.0': { $lte: parentBox[2] },
+    'bbox.2': { $gte: parentBox[0] },
+    'bbox.1': { $lte: parentBox[3] },
+    'bbox.3': { $gte: parentBox[1] },
+  })
+    .select('areaCode name geometry networkVersionId')
+    .lean();
+
+  const parentBoxes = parentPieces.map((p) => bboxOf(p[0]));
+  const found = new Map();
+  for (const area of areas) {
+    const pieces = polygonsOf(area.geometry);
+    const box = piecesBbox(pieces);
+    if (!boxesOverlap(box, parentBox)) continue;
+    // Only the parent's own pieces that could touch: the country is 1,411 province rings and a TPA
+    // site sits inside one or two of them.
+    const near = parentPieces.filter((p, i) => boxesOverlap(parentBoxes[i], box));
+    if (!near.length) continue;
+    if (!piecesOverlap(near, pieces)) continue;
+
+    const key = String(area.networkVersionId);
+    if (!found.has(key)) {
+      found.set(key, { versionId: area.networkVersionId, label: labels.get(key) || 'Untitled delivery', areas: [], pieces: [] });
+    }
+    const row = found.get(key);
+    row.areas.push({ areaCode: area.areaCode, name: area.name });
+    row.pieces.push(...pieces);
+  }
+  // Biggest first: the delivery with the most areas on this ground is the one to talk about.
+  return [...found.values()].sort((a, b) => b.areas.length - a.areas.length);
+}
+
+/** How much of `links` runs inside `pieces` — the road a cut around it would move. */
+function roadInside(links, pieces, boxes = pieces.map((p) => bboxOf(p[0]))) {
+  const inside = (pt) => {
+    for (let i = 0; i < pieces.length; i++) {
+      const b = boxes[i];
+      if (pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
+      if (pointInPolygon(pt, pieces[i])) return true;
+    }
+    return false;
+  };
+  let count = 0;
+  let meters = 0;
+  for (const link of links) {
+    if (!inside(midpointOf(link.coords))) continue;
+    count++;
+    meters += Number(link.meters) || 0;
+  }
+  return { links: count, meters };
+}
+
 
 /** Sizes as typed into the panel -> options for areaSplit. Throws a readable message if unusable. */
 function optionsFrom(input = {}) {
@@ -179,6 +299,7 @@ const zoneRow = (doc) => ({
  */
 async function splitCommittedArea({
   versionId, areaId = null, areaCode = null, options = {}, apply = false, userId = null, places = null, deps = {},
+  cutAround = [],
 }) {
   const fetchPlaces = deps.fetchPlaces || osmPlaces.fetchPlaces;
   const opt = areaSplit.resolveOptions(options);
@@ -206,6 +327,30 @@ async function splitCommittedArea({
     .sort({ linkId: 1 })
     .lean();
   const totalKm = linkDocs.reduce((sum, l) => sum + l.lengthMeters, 0) / 1000;
+
+  /**
+   * Ground other deliveries already cover. Listed whether or not it is cut around: a manager cannot
+   * decide about an overlap nobody told them about. `km` is this area's own road that lies inside —
+   * for Vietnam P3 that is 76 km inside the seven TPA sites, 1,279 km inside the two cities.
+   */
+  const linksForTests = linkDocs.map((l) => ({ coords: l.geometry.coordinates, meters: l.lengthMeters }));
+  const overlaps = await overlappingDeliveries({ versionId, parent });
+  for (const row of overlaps) {
+    const road = roadInside(linksForTests, row.pieces);
+    row.links = road.links;
+    row.km = road.meters / 1000;
+  }
+
+  const cutIds = (Array.isArray(cutAround) ? cutAround : []).map(String).filter(Boolean);
+  const cut = cutIds.length ? overlaps.filter((row) => cutIds.includes(String(row.versionId))) : [];
+  if (cutIds.length && !cut.length) {
+    throw refuse('None of the deliveries picked to cut around overlap this area — untick them, or pick one of the deliveries the preview lists');
+  }
+  const cutRoad = new Map();
+  for (const row of cut) {
+    const road = roadInside(linksForTests, row.pieces);
+    cutRoad.set(String(row.versionId), { links: road.links, km: road.meters / 1000 });
+  }
 
   let record = await AreaSplit.findOne({ networkVersionId: versionId, areaCode: code });
   let stats = null;
@@ -269,6 +414,32 @@ async function splitCommittedArea({
     linkZone = result.linkZone;
   }
 
+  /* ---- cut around the ground another delivery already covers ---- */
+  let zonesCutAround = 0;
+  if (cut.length && planZones) {
+    // polygon-clipping takes polygons as separate arguments, not as one array of them.
+    const hole = polygonClipping.union(...cut.flatMap((row) => row.pieces));
+    for (const zone of planZones) {
+      const subject = zone.geometry.type === 'Polygon' ? [zone.geometry.coordinates] : zone.geometry.coordinates;
+      const before = areaSplit.geometryAreaSqm(zone.geometry);
+      const kept = polygonClipping.difference(subject, hole);
+      // Nothing left means a zone lay entirely inside another delivery; leave it whole rather than
+      // delete ground this area's own roads are on.
+      if (!kept.length) continue;
+      const geometry = kept.length === 1
+        ? { type: 'Polygon', coordinates: kept[0] }
+        : { type: 'MultiPolygon', coordinates: kept };
+      const after = areaSplit.geometryAreaSqm(geometry);
+      // Only count and rewrite the zones a hole actually bites into — a zone far from the other
+      // delivery comes back identical, and all 68 of them must not report as cut.
+      if (before - after < 1) continue;
+      zone.geometry = geometry;
+      zone.bbox = piecesBbox(kept);
+      zone.areaSqm = after;
+      zonesCutAround++;
+    }
+  }
+
   const zoneList = planZones || zoneDocs.map((d) => ({ code: d.areaCode, name: d.name }));
   const perZone = zoneList.map(() => ({ meters: 0, links: 0 }));
   let unplaced = 0;
@@ -297,6 +468,23 @@ async function splitCommittedArea({
       km: perZone[z].meters / 1000,
       links: perZone[z].links,
     })),
+    // What this area sits on top of, and what cutting around it did. `excluded` is the road that
+    // stays with the zone surrounding the hole — this delivery's own road, whose class the delivery
+    // it is cut around does not hold.
+    overlaps: overlaps.map((row) => ({
+      versionId: String(row.versionId),
+      label: row.label,
+      areas: row.areas.length,
+      names: row.areas.slice(0, 4).map((a) => a.name || a.areaCode),
+      links: row.links,
+      km: row.km,
+      cutAround: cut.some((c) => String(c.versionId) === String(row.versionId)),
+    })),
+    zonesCutAround,
+    excluded: [...cutRoad.entries()].map(([versionId, road]) => {
+      const row = cut.find((c) => String(c.versionId) === versionId);
+      return { versionId, label: row.label, links: road.links, km: road.km };
+    }),
     applied: false,
   };
   if (!apply) return summary;
@@ -859,6 +1047,7 @@ module.exports = {
   optionsFrom,
   zoneLocator,
   findExistingZones,
+  overlappingDeliveries,
   splitCommittedArea,
   cutCommittedArea,
   joinSplitArea,

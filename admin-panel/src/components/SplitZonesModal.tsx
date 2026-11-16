@@ -1,7 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { api } from '../lib/api';
 import type { AreaSplitResult } from '../lib/types';
+
+/** A delivery whose ground this area sits on top of (GET .../areas/:id/overlaps). */
+interface OverlapDelivery {
+  versionId: string;
+  label: string;
+  areas: number;
+  names: string[];
+}
 
 /** What the dialog needs to know about the area being split. */
 export interface SplitArea {
@@ -110,6 +118,20 @@ export function SplitZonesModal({
   const [preview, setPreview] = useState<AreaSplitResult | null>(null);
   const [busy, setBusy] = useState<'preview' | 'split' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [overlaps, setOverlaps] = useState<OverlapDelivery[]>([]);
+  /** Deliveries to cut around — the ground they already cover is taken out of the zones. */
+  const [cut, setCut] = useState<string[]>([]);
+
+  // Whose ground this area sits on: Vietnam's countrywide FC1-2 area covers all seven FC4-5 TPA
+  // sites and both FC3 city polygons. Asked up front so the choice is there before the preview.
+  useEffect(() => {
+    let live = true;
+    api
+      .get<{ deliveries: OverlapDelivery[] }>(`/api/network/versions/${scopeId}/areas/${area._id}/overlaps`)
+      .then((r) => { if (live) setOverlaps(r.deliveries || []); })
+      .catch(() => { /* the split works without it */ });
+    return () => { live = false; };
+  }, [scopeId, area._id]);
 
   const lo = Number(minKm);
   const hi = Number(maxKm);
@@ -135,7 +157,7 @@ export function SplitZonesModal({
     try {
       const result = await api.post<AreaSplitResult>(
         `/api/network/versions/${scopeId}/areas/${area._id}/split`,
-        { minKm: lo, maxKm: hi, absorbRemainder: absorb, apply }
+        { minKm: lo, maxKm: hi, absorbRemainder: absorb, apply, cutAround: cut }
       );
       if (apply) onDone(result);
       else setPreview(result);
@@ -149,6 +171,8 @@ export function SplitZonesModal({
   const fmt = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const km1 = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 1 });
   const size = lo === hi ? `${fmt(lo)} km` : `${fmt(lo)}–${fmt(hi)} km`;
+  /** How much of this area's road lies inside a delivery, once the preview has worked it out. */
+  const overlapKm = (versionId: string) => preview?.overlaps?.find((o) => o.versionId === versionId)?.km;
 
   return (
     <Modal title={`Split into zones · ${area.name}`} onClose={busy ? () => {} : onClose}>
@@ -223,6 +247,40 @@ export function SplitZonesModal({
             </span>
           </label>
 
+          {/* Whose ground this area sits on. Vietnam: the countrywide FC1-2 area covers all seven
+              FC4-5 TPA sites and both FC3 city polygons, so splitting it drew zones across them. */}
+          {overlaps.length > 0 && (
+            <div className="cov-issue warn" style={{ marginTop: 14 }}>
+              <b>
+                This area sits on top of {overlaps.length === 1 ? 'another delivery' : `${overlaps.length} other deliveries`}.
+              </b>{' '}
+              Tick to cut the zones around their areas instead of drawing over them. The road that
+              runs inside such a hole stays with the zone around it — it is this delivery&apos;s road,
+              not theirs.
+              <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
+                {overlaps.map((o) => (
+                  <label key={o.versionId} className="cov-toggle" style={{ margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={cut.includes(o.versionId)}
+                      disabled={busy !== null}
+                      onChange={(e) => change(() => setCut((c) => (e.target.checked
+                        ? [...c, o.versionId]
+                        : c.filter((x) => x !== o.versionId))))}
+                    />
+                    <span>
+                      <b>Cut around {o.label}</b> — {o.areas} area{o.areas === 1 ? '' : 's'}
+                      {o.names.length ? `: ${o.names.join(', ')}` : ''}
+                      {overlapKm(o.versionId) !== undefined
+                        ? ` · ${km1(overlapKm(o.versionId) as number)} km of this area's road inside`
+                        : ''}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* One line under the inputs that always says what the numbers above will do. */}
           {!preview && !typed && (
             <div className="cov-issue warn" style={{ marginTop: 14 }}>
@@ -290,6 +348,16 @@ export function SplitZonesModal({
               road — are too little for a zone and are left out.
             </p>
           )}
+          {preview.zonesCutAround ? (
+            <p className="cov-sub" style={{ margin: '10px 0 0' }}>
+              {preview.zonesCutAround} of the zones are cut around ground another delivery already
+              covers.
+              {(preview.excluded || [])
+                .filter((e) => e.links > 0)
+                .map((e) => ` ${km1(e.km)} km of road inside ${e.label} stays with the zone around it.`)
+                .join('')}
+            </p>
+          ) : null}
           <p className="cov-sub" style={{ margin: '10px 0 0' }}>
             Splitting replaces {area.name} with these zones; land with no road on it is in no zone.
             Roads already driven stay driven. To change the size later, pick any zone and use

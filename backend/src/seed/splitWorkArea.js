@@ -7,12 +7,16 @@
  *   npm run split:area -- --version <id> --area <code> --apply           split it
  *   npm run split:area -- --version <id> --area <code> --min 300 --max 300
  *   npm run split:area -- --version <id> --area <code> --keep-leftover   leftover as its own zone
+ *   npm run split:area -- --version <id> --area <code> --cut <versionId>  cut around another delivery
  *   npm run split:area -- --version <id> --area <code> --join            put it back together
  *
  * --min / --max   how much road a zone should hold, km (default 250 / 300)
  * --keep-leftover when the road does not divide evenly, keep what is left over as a smaller zone
  *                 of its own instead of sharing it out among the zones (which then run a little
  *                 over --max)
+ * --cut <id>     a live delivery whose ground this area sits on: cut holes in the zones there, so
+ *                 they do not draw over its areas. Repeatable. The road inside a hole stays with
+ *                 the zone around it.
  *
  * What a split writes: the zones (WorkArea), `areaId`/`areaCode` on the area's RoadLinks, `areaId`
  * on its LinkCoverage rows, the area and orphan counts on the NetworkVersion, and an AreaSplit
@@ -53,16 +57,28 @@ const log = (...a) => console.log(...a);
         maxKm: valueOf('--max') || 300,
         absorbRemainder: !has('--keep-leftover'),
       });
-      const result = await workAreaSplit.splitCommittedArea({ versionId, areaCode, options, apply: has('--apply') });
+      const result = await workAreaSplit.splitCommittedArea({
+        versionId, areaCode, options, apply: has('--apply'),
+        cutAround: argv.filter((a, i) => argv[i - 1] === '--cut'),
+      });
       if (result.alreadySplit) {
         log(`Already split into ${result.zones.length} zones:`);
       } else {
         log(`${result.parent.name} [${result.parent.code}] — ${result.parent.km.toFixed(1)} km, ${result.parent.links} links`);
         log(`Zones of ${options.minKm}-${options.maxKm} km, leftover ${options.absorbRemainder ? 'shared out' : 'kept apart'}; place names: ${result.namesFrom}`);
+        for (const o of result.overlaps || []) {
+          log(`  overlaps ${o.label}: ${o.areas} area(s)${o.links ? `, ${o.links} links / ${o.km.toFixed(1)} km of this road inside` : ''}${o.cutAround ? ' — CUT AROUND' : ''}`);
+        }
         log(result.applied ? `SPLIT into ${result.zones.length} zones:` : `PLAN — ${result.zones.length} zones (nothing written; add --apply):`);
       }
       for (const zone of result.zones) {
         log(`  ${zone.code}  ${zone.km.toFixed(1).padStart(7)} km  ${String(zone.links).padStart(6)} links  ${zone.name}`);
+      }
+      if (result.zonesCutAround) {
+        log(`  ${result.zonesCutAround} zone(s) cut around ground another delivery covers.`);
+        for (const e of result.excluded || []) {
+          if (e.links) log(`  ${e.km.toFixed(1)} km inside ${e.label} stays with the zone around it.`);
+        }
       }
       if (result.unplacedLinks) {
         log(`  ${result.unplacedLinks} link(s), ${(result.unplacedKm || 0).toFixed(1)} km, are on detached scraps too small for a zone and ${result.applied ? 'are now' : 'would be'} outside every area.`);

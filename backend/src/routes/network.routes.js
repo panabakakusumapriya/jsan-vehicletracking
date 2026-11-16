@@ -94,6 +94,10 @@ router.post(
 );
 
 // An area too big for one driver, cut into zones of a size the manager chooses — and put back.
+router.get(
+  '/versions/:id/areas/:areaId/overlaps',
+  ctrl.areaOverlaps
+);
 router.post(
   '/versions/:id/areas/:areaId/split',
   requireRole('admin', 'manager'),

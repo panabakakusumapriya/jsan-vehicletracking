@@ -809,6 +809,24 @@ export interface AreaSplitResult {
   unplacedLinks: number;
   unplacedKm?: number;
   zones: { _id?: string; code: string; name: string; km: number; links: number }[];
+  /**
+   * Other deliveries whose ground this area sits on top of — Vietnam's countrywide FC1-2 area
+   * covers all seven FC4-5 TPA sites and both FC3 city polygons. `links`/`km` are this area's own
+   * road inside them.
+   */
+  overlaps?: {
+    versionId: string;
+    label: string;
+    areas: number;
+    names: string[];
+    links?: number;
+    km?: number;
+    cutAround?: boolean;
+  }[];
+  /** How many zones were cut with holes where another delivery's areas are. */
+  zonesCutAround?: number;
+  /** Road kept in the zone surrounding a hole, per delivery it was cut around. */
+  excluded?: { versionId: string; label: string; links: number; km: number }[];
   applied: boolean;
   alreadySplit?: boolean;
 }

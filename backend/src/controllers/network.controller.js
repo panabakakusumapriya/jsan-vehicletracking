@@ -910,6 +910,7 @@ async function splitArea(req, res) {
       options: workAreaSplit.optionsFrom(req.body || {}),
       apply: req.body?.apply === true,
       userId: req.user._id,
+      cutAround: Array.isArray(req.body?.cutAround) ? req.body.cutAround : [],
     });
     return res.json(result);
   } catch (err) {
@@ -917,6 +918,40 @@ async function splitArea(req, res) {
     // eslint-disable-next-line no-console
     console.error('[split area]', err);
     return res.status(500).json({ error: 'The area could not be split — nothing was changed that a second attempt will not finish' });
+  }
+}
+
+/**
+ * GET /versions/:id/areas/:areaId/overlaps — whose ground this area sits on top of.
+ *
+ * Answered before anything is cut so the panel can offer "cut around" while the manager is still
+ * choosing a zone size. Vietnam: the countrywide FC1-2 area covers all seven FC4-5 TPA sites and
+ * both FC3 city polygons, and splitting it drew zones straight across them.
+ */
+async function areaOverlaps(req, res) {
+  try {
+    const scope = await resolveNetworkScope(req);
+    if (!scope) return res.status(404).json({ error: 'Network version not found' });
+    assertProjectAccess(req.user, scope.projectId);
+    const area = await WorkArea.findOne({
+      _id: asObjectId(req.params.areaId) || null,
+      networkVersionId: { $in: scope.versionIds },
+    }).select('projectId networkVersionId geometry bbox').lean();
+    if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
+
+    const rows = await workAreaSplit.overlappingDeliveries({ versionId: area.networkVersionId, parent: area });
+    return res.json({
+      deliveries: rows.map((row) => ({
+        versionId: String(row.versionId),
+        label: row.label,
+        areas: row.areas.length,
+        names: row.areas.slice(0, 6).map((a) => a.name || a.areaCode),
+      })),
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[area overlaps]', err);
+    return res.status(500).json({ error: 'Could not work out which deliveries overlap this area' });
   }
 }
 
@@ -2652,6 +2687,7 @@ module.exports = {
   completeArea,
   reopenArea,
   splitArea,
+  areaOverlaps,
   joinArea,
   clearAreaCoverage,
   versionTracks,
