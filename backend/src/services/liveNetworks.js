@@ -19,7 +19,8 @@ const AreaAssignment = require('../models/AreaAssignment');
  *
  * The rule is the panel's rule, so the two cannot disagree: the active version, plus any superseded
  * one that still holds a live assignment or a coverage ledger. A superseded re-delivery of the same
- * ground carries neither, so it drops out and its duplicate areas never compete.
+ * ground carries neither, so it drops out and its duplicate areas never compete. One marked
+ * keepLive (imported alongside, not replaced — Vietnam's three priorities) stays in regardless.
  *
  * Returned active-first, then newest-first. That order is what resolves an areaCode present in more
  * than one live delivery: the current copy of an area wins over an older one.
@@ -35,7 +36,7 @@ async function liveNetworkVersions(projectIds) {
     projectId: { $in: ids },
     status: { $in: ['active', 'superseded'] },
   })
-    .select('_id projectId status createdAt')
+    .select('_id projectId status createdAt keepLive')
     .lean();
   if (!all.length) return [];
 
@@ -43,7 +44,7 @@ async function liveNetworkVersions(projectIds) {
   // stop at the first row, and this runs on every my-areas poll from every phone.
   const flags = await Promise.all(
     all.map(async (v) => {
-      if (v.status === 'active') return true;
+      if (v.status === 'active' || v.keepLive) return true;
       const [cov, asg] = await Promise.all([
         LinkCoverage.exists({ networkVersionId: v._id }),
         AreaAssignment.exists({ networkVersionId: v._id, releasedAt: null }),

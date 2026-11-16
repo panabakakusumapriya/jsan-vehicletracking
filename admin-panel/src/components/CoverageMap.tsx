@@ -19,7 +19,7 @@ import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
 import { MAX_TILE_Z, buildRoadTile, type RoadTileData, type RoadTilePart } from '../lib/roadTiles';
 import { AREA_LOD_TOLERANCES, areaLodOf, simplifyAreas } from '../lib/simplifyAreas';
 import { stateCoverage, type StateCoverage } from '../lib/stateCoverage';
-import { MarkerCard, pinUrl, type TripMarker } from './TripMarkers';
+import { MarkerCardBody, pinUrl, type TripMarker } from './TripMarkers';
 
 /**
  * WebGL view of a customer's work areas and target road network.
@@ -1327,21 +1327,27 @@ export function CoverageMap({
   // One card at a time. A picked pin's card takes the place of the area's: the reader asked about
   // the driver, and two callouts on one map end up on top of each other.
   const pickedPin = (selectedPinId && driverPins?.find((p) => p.driverId === selectedPinId)) || null;
-  const pinCardOpen = Boolean(pickedPin && pinPopup);
-  const pinLon = pinCardOpen ? pickedPin!.lon : null;
-  const pinLat = pinCardOpen ? pickedPin!.lat : null;
+  // A field marker's card is the newest thing asked about, so it goes first; closing it brings back
+  // the driver's or the area's card underneath. It opens BESIDE the marker, like those do — it used
+  // to sit in the map's bottom-left corner, far from the flag it described.
+  const markerCardOpen = Boolean(pickedMarker && showMarkers);
+  const pinCardOpen = !markerCardOpen && Boolean(pickedPin && pinPopup);
+  const pointLon = markerCardOpen ? pickedMarker!.lon : pinCardOpen ? pickedPin!.lon : null;
+  const pointLat = markerCardOpen ? pickedMarker!.lat : pinCardOpen ? pickedPin!.lat : null;
+  const popupKind: 'marker' | 'pin' | 'area' = markerCardOpen ? 'marker' : pinCardOpen ? 'pin' : 'area';
 
   const popupBox = useMemo(() => {
-    // A pin is a point: a box with no extent, which the placement below handles like any other.
-    if (pinLon != null && pinLat != null) return [pinLon, pinLat, pinLon, pinLat];
+    // A pin or a marker is a point: a box with no extent, which the placement below handles like
+    // any other.
+    if (pointLon != null && pointLat != null) return [pointLon, pointLat, pointLon, pointLat];
     if (!areaPopupId || !areas) return null;
     const box = areas.features.find((f) => f.properties.areaId === areaPopupId)?.properties.bbox;
     return box && box.length === 4 ? box : null;
-  }, [areaPopupId, areas, pinLon, pinLat]);
+  }, [areaPopupId, areas, pointLon, pointLat]);
   const popupBoxRef = useRef(popupBox);
   popupBoxRef.current = popupBox;
-  const pinCardRef = useRef(pinCardOpen);
-  pinCardRef.current = pinCardOpen;
+  const popupKindRef = useRef(popupKind);
+  popupKindRef.current = popupKind;
 
   /**
    * Pin the card beside the area. Written straight to the element's style because it runs on
@@ -1372,11 +1378,13 @@ export function CoverageMap({
 
     const pw = el.offsetWidth;
     const ph = el.offsetHeight;
-    // Beside a pin the card clears the teardrop, and points at its head rather than at its tip.
-    const forPin = pinCardRef.current;
-    const GAP = forPin ? 30 : 14;
+    // Beside a pin the card clears the teardrop, and points at its head rather than at its tip. The
+    // driver pin is drawn large (~56 px); a field marker is an 18 px flag whose head sits ~10 px
+    // above the spot.
+    const kind = popupKindRef.current;
+    const GAP = kind === 'pin' ? 30 : kind === 'marker' ? 16 : 14;
     const EDGE = 10;
-    const anchorY = (north[1] + south[1]) / 2 - (forPin ? 28 : 0);
+    const anchorY = (north[1] + south[1]) / 2 - (kind === 'pin' ? 28 : kind === 'marker' ? 10 : 0);
 
     // Right of the area first; the left if that would run off the map; otherwise whichever side
     // has more room, clamped inside the frame.
@@ -1427,7 +1435,7 @@ export function CoverageMap({
     const ro = new ResizeObserver(() => placePopup());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [placePopup, popupBox, areaPopupId, pinCardOpen]);
+  }, [placePopup, popupBox, areaPopupId, pinCardOpen, markerCardOpen, pickedMarker]);
 
   return (
     <div ref={wrapRef} className="cov-map" style={{ height }}>
@@ -1443,7 +1451,13 @@ export function CoverageMap({
         onMove={handleMove}
       />
 
-      {pinCardOpen ? (
+      {markerCardOpen ? (
+        <div key={`marker-${pickedMarker!.id}`} ref={popupRef} className="cov-area-pop cov-marker-pop" role="dialog" aria-label="Selected marker">
+          <div className="cov-pop-card">
+            <MarkerCardBody marker={pickedMarker!} onClose={() => setPickedMarker(null)} />
+          </div>
+        </div>
+      ) : pinCardOpen ? (
         <div key="pin" ref={popupRef} className="cov-area-pop" role="dialog" aria-label="Selected driver">
           {pinPopup}
         </div>
@@ -1453,10 +1467,6 @@ export function CoverageMap({
             {areaPopup}
           </div>
         )
-      )}
-
-      {pickedMarker && showMarkers && (
-        <MarkerCard marker={pickedMarker} onClose={() => setPickedMarker(null)} style={{ zIndex: 6 }} />
       )}
 
       <div className={`cov-map-legend${legendMin ? ' is-min' : ''}`}>

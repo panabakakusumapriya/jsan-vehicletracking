@@ -1,3 +1,7 @@
+// .env.local first (git-ignored): secrets for this machine only — S3 keys and the like — that must
+// never land in the tracked .env. dotenv never overwrites a variable already set, so .env.local
+// wins over .env, and real environment variables (Railway) win over both.
+require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env.local') });
 require('dotenv').config();
 
 const required = ['MONGODB_URI', 'JWT_SECRET'];

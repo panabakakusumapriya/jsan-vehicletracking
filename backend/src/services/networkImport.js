@@ -944,6 +944,15 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
    */
   let footprint = null;
   let drawnInfo = null;
+  /**
+   * With no polygon file there is no .dbf for the customer's priority band — so the road file may
+   * carry it: a PRIORITY column with one value on every road makes the drawn area (and so every
+   * zone cut from it) that band. Vietnam came as three deliveries by priority — FC3 in the two
+   * cities, FC4-5 at 7 TPA sites, FC1-2 countrywide — on the same ground, and a zone has one band.
+   * Mixed values cannot name one area's band: it stays P0 and the report says why.
+   */
+  const roadPriorityField = drawn && networkInfo ? pick(networkInfo.fields || [], [/^PRIORITY$/i]) : null;
+  const roadPriorities = new Map();
   if (drawn) {
     footprint = createFootprint(networkInfo.bbox);
     areas.push({
@@ -1005,6 +1014,10 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
     const name = mapping.linkName ? String(attrs[mapping.linkName] ?? '').trim() : '';
     const fc = mapping.funcClass ? Number(attrs[mapping.funcClass] ?? 0) || null : null;
     const dir = mapping.dirTravel ? String(attrs[mapping.dirTravel] ?? 'B').trim().toUpperCase() : 'B';
+    if (roadPriorityField) {
+      const band = Number(attrs[roadPriorityField] ?? 0) || 0;
+      roadPriorities.set(band, (roadPriorities.get(band) || 0) + 1);
+    }
 
     for (const { id, coords, fromShape } of links) {
       const metres = lineLength(coords);
@@ -1051,9 +1064,23 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
       area.geometry = out.geometry;
       area.bbox = out.geometry.coordinates.reduce((box, polygon) => bboxUnion(box, bboxOf(polygon[0])), bboxOf(out.geometry.coordinates[0][0]));
       area.areaSqm = out.areaSqm;
+      if (roadPriorities.size === 1) {
+        area.priority = [...roadPriorities.keys()][0];
+      } else if (roadPriorities.size > 1) {
+        const bands = [...roadPriorities.entries()].sort((a, b) => a[0] - b[0]);
+        warnings.push({
+          code: 'MIXED_ROAD_PRIORITY',
+          message:
+            `The roads' ${roadPriorityField} column holds several bands (` +
+            `${bands.map(([p, n]) => `P${p}: ${n.toLocaleString('en')} roads`).join(', ')}), and a zone has one — ` +
+            'the zones are left at P0. Load each band as its own delivery to keep them apart.',
+        });
+      }
       drawnInfo = {
         code: area.code,
         name: area.name,
+        priority: area.priority,
+        priorityFrom: roadPriorities.size === 1 ? roadPriorityField : null,
         pieces: out.pieces,
         cellM: out.cellM,
         km: area.targetMeters / 1000,

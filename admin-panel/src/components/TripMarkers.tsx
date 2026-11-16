@@ -25,6 +25,10 @@ export type TripMarker = {
   driverName: string | null;
   vehiclePlate: string | null;
   note: string | null;
+  /** Why the driver flagged it: one of the colour's reasons, or their own words (app 1.0.28+). */
+  reason?: string | null;
+  /** Photos of the spot; `url` is a signed link from the server, valid for a few hours. */
+  photos?: { key: string; url?: string; width?: number | null; height?: number | null }[];
   recordedAt: string;
   /** The trip the server linked it to, by when it was dropped — null between trips. */
   tripId?: string | null;
@@ -65,18 +69,15 @@ export function age(iso: string) {
   return `${Math.floor(m / 1440)} d`;
 }
 
-/** The card a picked marker opens — the same on every map that draws markers. */
-export function MarkerCard({ marker, onClose, style }: { marker: TripMarker; onClose: () => void; style?: React.CSSProperties }) {
+/**
+ * What a picked marker says: colour, who and when, WHY it was flagged, the driver's words, the
+ * photos, and a Google Maps link. The same on every map that draws markers — the Coverage map pins
+ * it beside the marker (inside its own callout), the trip maps show it in a card (MarkerCard).
+ */
+export function MarkerCardBody({ marker, onClose }: { marker: TripMarker; onClose: () => void }) {
+  const photos = (marker.photos || []).filter((p) => p.url);
   return (
-    <div
-      style={{
-        position: 'absolute', left: 12, bottom: 12, zIndex: 2,
-        background: 'var(--panel, #ffffff)', border: '1px solid var(--line-2, #e2e8f0)',
-        borderRadius: 10, padding: '10px 12px', minWidth: 220, maxWidth: 300,
-        boxShadow: '0 4px 14px rgba(15,23,42,0.18)', fontSize: 13,
-        ...style,
-      }}
-    >
+    <div style={{ fontSize: 13 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
         <b style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 10, height: 10, borderRadius: 99, background: marker.category?.color ?? '#ef4444' }} />
@@ -97,7 +98,33 @@ export function MarkerCard({ marker, onClose, style }: { marker: TripMarker; onC
           age(marker.recordedAt),
         ].filter(Boolean).join(' · ')}
       </div>
-      {marker.note && <div style={{ marginBottom: 6 }}>{marker.note}</div>}
+      {marker.reason && (
+        <div style={{ margin: '6px 0 2px' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase', color: 'var(--muted, #64748b)' }}>
+            Reason
+          </span>
+          <div style={{ fontWeight: 700, color: 'var(--text, #0f172a)' }}>{marker.reason}</div>
+        </div>
+      )}
+      {marker.note && <div style={{ marginBottom: 6, color: 'var(--text, #0f172a)' }}>{marker.note}</div>}
+      {photos.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(photos.length, 3)}, 1fr)`, gap: 6, margin: '8px 0' }}>
+          {photos.map((ph, i) => (
+            // Opens the full photo in a new tab: the link is signed and good for a few hours.
+            <a key={ph.key} href={ph.url} target="_blank" rel="noreferrer" title={`Photo ${i + 1} — open full size`}>
+              <img
+                src={ph.url}
+                alt={`Photo ${i + 1} of the marked spot`}
+                loading="lazy"
+                style={{
+                  width: '100%', aspectRatio: photos.length === 1 ? '4 / 3' : '1 / 1', objectFit: 'cover',
+                  borderRadius: 8, border: '1px solid var(--line-2, #e2e8f0)', display: 'block', background: 'var(--panel-2, #f1f5f9)',
+                }}
+              />
+            </a>
+          ))}
+        </div>
+      )}
       <a
         href={`https://www.google.com/maps/search/?api=1&query=${marker.lat},${marker.lon}`}
         target="_blank"
@@ -105,6 +132,23 @@ export function MarkerCard({ marker, onClose, style }: { marker: TripMarker; onC
       >
         Open in Google Maps ↗
       </a>
+    </div>
+  );
+}
+
+/** The card on its own, in the map's corner — the trip maps (SessionMap / TripDetail). */
+export function MarkerCard({ marker, onClose, style }: { marker: TripMarker; onClose: () => void; style?: React.CSSProperties }) {
+  return (
+    <div
+      style={{
+        position: 'absolute', left: 12, bottom: 12, zIndex: 2,
+        background: 'var(--panel, #ffffff)', border: '1px solid var(--line-2, #e2e8f0)',
+        borderRadius: 10, padding: '10px 12px', minWidth: 220, maxWidth: 300,
+        boxShadow: '0 4px 14px rgba(15,23,42,0.18)',
+        ...style,
+      }}
+    >
+      <MarkerCardBody marker={marker} onClose={onClose} />
     </div>
   );
 }

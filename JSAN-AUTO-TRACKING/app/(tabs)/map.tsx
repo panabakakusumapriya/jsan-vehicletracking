@@ -31,7 +31,7 @@ import {
   type MapMarker, type MarkerCategory, type MyArea, type MyHistory,
 } from '@/src/lib/api';
 import {
-  enqueueMarker, flushMarkerQueue, newClientId, pendingMarkerCount, pendingMarkers, pendingRemovals, removeMarker,
+  enqueueMarker, flushMarkerQueue, keepPhoto, newClientId, pendingMarkerCount, pendingMarkers, pendingRemovals, removeMarker,
 } from '@/src/lib/markerQueue';
 import {
   buildSnapIndexAsync, createCoverStore, createMatcher, coverLines, coverTripIds, dropTrip,
@@ -52,6 +52,8 @@ import { capDay, loadTodayTrail, localDate, saveTodayTrail, type Line } from '@/
 import { getHistory, getRoads, refreshRoads, resolveTrace, type RoadsResult } from '@/src/lib/roadCache';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import { ManualTripPill, useManualTrip } from '@/src/components/ManualTripControl';
+import { MarkerDetailsSheet, type MarkerDetails } from '@/src/components/MarkerDetailsSheet';
+import { Image as ExpoImage } from 'expo-image';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 const C = {
@@ -221,6 +223,10 @@ export default function MapScreen() {
    * one tap, no questions — undoing what you did a moment ago needs no "are you sure".
    */
   const [lastDrop, setLastDrop] = useState<MapMarker | null>(null);
+  /** The pin is placed: the reason-and-photo sheet is open for this colour at this spot. */
+  const [detailsFor, setDetailsFor] = useState<{ cat: MarkerCategory; pos: [number, number] } | null>(null);
+  /** A marker photo opened full screen from the marker card. */
+  const [photoView, setPhotoView] = useState<string | null>(null);
   useEffect(() => {
     if (!lastDrop) return undefined;
     const t = setTimeout(() => setLastDrop(null), UNDO_MS);
@@ -337,9 +343,14 @@ export default function MapScreen() {
    *  always sits above it, and neither should have to be hunted for). */
   const sheetRef = useRef<BottomSheetHandle>(null);
   const insets = useSafeAreaInsets();
-  // Start trip / Stop trip for manual-recording projects — here as well as on Home, because a
-  // project may hide the Home tab and send drivers straight to the map.
-  const manualTrip = useManualTrip();
+  // Start trip / Stop trip for manual-recording projects lives on the Dashboard. The map shows it
+  // only when the project hides the Dashboard tab (same rule as TabBar / app/index.tsx), because
+  // then this screen is the one place left to start a trip from.
+  const dashboardHidden =
+    Array.isArray(user?.enabledModules) &&
+    user.enabledModules.length > 0 &&
+    !user.enabledModules.includes('dashboard');
+  const manualTrip = useManualTrip(dashboardHidden);
   const { height: winH } = useWindowDimensions();
   /**
    * How tall the sheet opens to. Well short of the screen so the map stays visible behind it, and
@@ -1169,6 +1180,8 @@ export default function MapScreen() {
           id: p.clientId, lat: p.lat, lon: p.lon,
           category: cats.categories.find((c) => c.id === p.categoryId) ?? null,
           driverName: user?.name ?? null, vehiclePlate: null, recordedAt: p.recordedAt,
+          reason: p.reason ?? null, note: p.note ?? null,
+          photos: (p.photos || []).map((ph) => ({ url: ph.file, width: ph.width, height: ph.height })),
         }));
       setMarkers([...live, ...queued]);
     } catch { /* auxiliary layer — the map must not degrade over it */ }
@@ -1206,19 +1219,30 @@ export default function MapScreen() {
   useEffect(() => () => { if (flushTimerRef.current) clearTimeout(flushTimerRef.current); }, []);
 
   /** The actual drop, at an explicit position — placement decides WHERE, this only delivers. */
-  const dropAt = useCallback(async (cat: MarkerCategory, pos: [number, number]) => {
+  const dropAt = useCallback(async (cat: MarkerCategory, pos: [number, number], details?: MarkerDetails) => {
+    const clientId = newClientId();
+    // The photos move out of the picker's cache into the app's own storage, named after the drop,
+    // and wait there until the outbox has put them in the bucket.
+    const photos = (details?.photos || []).map((ph, i) => ({
+      file: keepPhoto(ph.uri, clientId, i), width: ph.width, height: ph.height, bytes: ph.bytes,
+    }));
     const pending = {
-      clientId: newClientId(),
+      clientId,
       lat: pos[1],
       lon: pos[0],
       categoryId: cat.id,
       recordedAt: new Date().toISOString(),
+      ...(details?.reason ? { reason: details.reason } : {}),
+      ...(details?.note ? { note: details.note } : {}),
+      ...(photos.length ? { photos } : {}),
     };
     // On the map immediately — the driver must SEE the drop landed; delivery is separate.
     const dropped: MapMarker = {
       id: pending.clientId, lat: pending.lat, lon: pending.lon, category: cat,
       driverName: user?.name ?? null, vehiclePlate: null, recordedAt: pending.recordedAt,
       clientId: pending.clientId,
+      reason: details?.reason ?? null, note: details?.note || null,
+      photos: photos.map((ph) => ({ url: ph.file, width: ph.width, height: ph.height })),
     };
     setMarkers((cur) => [...cur, dropped]);
     setLastDrop(dropped);
@@ -1292,8 +1316,9 @@ export default function MapScreen() {
     startFollowing(followRef.current, followRef.current.lastPan);
     syncFollowUi();
     if (!pos) { setMarkerNote('No GPS position yet — cannot drop a marker.'); return; }
-    await dropAt(cat, pos);
-  }, [placing, dropAt, syncFollowUi]);
+    // The spot is chosen; now the reason and a photo (MarkerDetailsSheet), then the drop.
+    setDetailsFor({ cat, pos });
+  }, [placing, syncFollowUi]);
 
   /** Markers in the map's layer shape; the id doubles as the tap key back into `markers`. */
   const markersLayer = useMemo<MapGLMarkers>(() => ({
@@ -1858,7 +1883,7 @@ export default function MapScreen() {
           onUnsupported={setMapError}
         />
         {controls}
-        <ManualTripPill trip={manualTrip} style={{ top: insets.top + 10 }} />
+        {dashboardHidden && <ManualTripPill trip={manualTrip} style={{ top: insets.top + 10 }} />}
         {/* 📍 Follow Me: the driver moved the map away (or it is showing their area) — one tap brings
             the camera back to the vehicle and following resumes. While driving it also comes back on
             its own 10 s after the last touch; this is the immediate, visible way. */}
@@ -1909,6 +1934,17 @@ export default function MapScreen() {
                 elapsed(tappedMarker.recordedAt),
               ].filter(Boolean).join(' · ')}
             </Text>
+            {!!tappedMarker.reason && <Text style={s.markerReason}>{tappedMarker.reason}</Text>}
+            {!!tappedMarker.note && <Text style={s.markerNoteTxt}>{tappedMarker.note}</Text>}
+            {!!tappedMarker.photos?.length && (
+              <View style={s.markerPhotos}>
+                {tappedMarker.photos.filter((ph) => ph.url).map((ph) => (
+                  <TouchableOpacity key={ph.url} onPress={() => setPhotoView(ph.url!)} accessibilityLabel="Open the photo">
+                    <ExpoImage source={{ uri: ph.url }} style={s.markerPhoto} contentFit="cover" />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
             {confirmRemove ? (
               <View style={s.markerConfirm}>
                 <Text style={s.markerConfirmTxt}>Remove this marker from the map?</Text>
@@ -1980,6 +2016,23 @@ export default function MapScreen() {
             </View>
           </View>
         )}
+
+        {/* After the pin is placed: why, and a photo — then the drop. */}
+        <MarkerDetailsSheet
+          category={detailsFor?.cat ?? null}
+          onCancel={() => { setDetailsFor(null); setMarkerNote('Marker not saved'); }}
+          onSave={(d) => {
+            const f = detailsFor;
+            setDetailsFor(null);
+            if (f) void dropAt(f.cat, f.pos, d);
+          }}
+        />
+        <Modal visible={Boolean(photoView)} transparent animationType="fade" onRequestClose={() => setPhotoView(null)}>
+          <TouchableOpacity style={s.photoViewer} activeOpacity={1} onPress={() => setPhotoView(null)} accessibilityLabel="Close the photo">
+            {photoView && <ExpoImage source={{ uri: photoView }} style={{ width: '100%', height: '80%' }} contentFit="contain" />}
+            <Text style={s.photoViewerHint}>Tap to close</Text>
+          </TouchableOpacity>
+        </Modal>
 
         {/* Category picker — which flag is this? Defined by admins, coloured like the dots. */}
         <Modal visible={pickerOpen} transparent animationType="slide" onRequestClose={() => setPickerOpen(false)}>
@@ -2072,6 +2125,12 @@ const s = StyleSheet.create({
   },
   markerHead:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   markerTitle: { fontSize: 14.5, fontWeight: '800', color: '#0f172a' },
+  markerReason: { fontSize: 13.5, fontWeight: '700', color: '#0f172a', marginTop: 6 },
+  markerNoteTxt: { fontSize: 13, color: '#475569', marginTop: 2, lineHeight: 18 },
+  markerPhotos: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  markerPhoto: { width: 72, height: 72, borderRadius: 10, backgroundColor: '#e2e8f0' },
+  photoViewer: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' },
+  photoViewerHint: { color: '#cbd5e1', fontSize: 13, marginTop: 12 },
   markerClose: { fontSize: 14, color: '#64748b', paddingHorizontal: 4 },
   markerMeta:  { fontSize: 12.5, color: '#64748b', marginTop: 3 },
   markerLink:  { fontSize: 13.5, color: '#2563eb', fontWeight: '700', marginTop: 8 },

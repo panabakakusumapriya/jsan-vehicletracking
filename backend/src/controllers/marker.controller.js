@@ -6,6 +6,52 @@ const Vehicle = require('../models/Vehicle');
 const asyncHandler = require('../utils/asyncHandler');
 const { accessibleDriverFilter } = require('../utils/scope');
 const { dayRange, isValidTimeZone } = require('../utils/timezone');
+const s3 = require('../config/s3');
+
+/**
+ * Marker photos. At most MAX_PHOTOS per drop, JPEG only (the phone re-encodes every picture to a
+ * ~1600 px JPEG before it queues it, so a photo is a few hundred KB, not a 6 MB camera original).
+ * Each lives at markers/<driverId>/<clientId>/<n>.jpg: the same drop asks for the same keys every
+ * time, so a retried upload overwrites itself instead of leaving orphans, and the driver and drop in
+ * the key are what lets the server accept a key from the phone without trusting it.
+ */
+const MAX_PHOTOS = 3;
+const PHOTO_TYPE = 'image/jpeg';
+const PHOTO_LINK_SECONDS = 6 * 60 * 60;
+const CLIENT_ID_RE = /^[A-Za-z0-9_-]{4,80}$/;
+const photoPrefix = (driverId, clientId) => `markers/${driverId}/${clientId}/`;
+const photoKey = (driverId, clientId, n) => `${photoPrefix(driverId, clientId)}${n}.jpg`;
+
+/** The photos a drop may carry: only keys this driver was handed for this very drop. */
+function cleanPhotos(user, clientId, photos) {
+  if (!Array.isArray(photos) || !photos.length || !clientId) return [];
+  const prefix = photoPrefix(user._id, clientId);
+  const seen = new Set();
+  const out = [];
+  for (const ph of photos.slice(0, MAX_PHOTOS)) {
+    const key = ph && typeof ph.key === 'string' ? ph.key : '';
+    if (!key.startsWith(prefix) || !/^\d\.jpg$/.test(key.slice(prefix.length)) || seen.has(key)) continue;
+    seen.add(key);
+    const num = (v) => (Number.isFinite(v) && v > 0 ? Math.round(v) : null);
+    out.push({ key, width: num(ph.width), height: num(ph.height), bytes: num(ph.bytes) });
+  }
+  return out;
+}
+
+/**
+ * Signed links to view the photos, added to markers already shaped by toJSON. The bucket is
+ * private and an <img> cannot send our token, so every read hands out links that work for six hours
+ * (PHOTO_LINK_SECONDS) — a panel left open all morning keeps showing them.
+ * Signing is local arithmetic (no request to the bucket), so a page of markers costs nothing extra.
+ */
+async function withPhotoUrls(list) {
+  if (!s3.isS3Configured()) return list;
+  await Promise.all(list.map(async (m) => {
+    if (!m.photos || !m.photos.length) return;
+    m.photos = await Promise.all(m.photos.map(async (ph) => ({ ...ph, url: await s3.presignGet(ph.key, PHOTO_LINK_SECONDS) })));
+  }));
+  return list;
+}
 
 /**
  * How far either side of a trip a marker still belongs to it. A driver stops to flag a spot, and
@@ -26,7 +72,10 @@ function toJSON(m) {
     category: cat,
     driverName: m.driverName,
     vehiclePlate: m.vehiclePlate,
+    reason: m.reason || null,
     note: m.note,
+    // Keys and sizes; the links to view them are added by withPhotoUrls on the way out.
+    photos: (m.photos || []).map((ph) => ({ key: ph.key, width: ph.width ?? null, height: ph.height ?? null })),
     recordedAt: m.recordedAt,
     createdAt: m.createdAt,
     tripId: m.tripId ? String(m.tripId) : null,
@@ -189,7 +238,8 @@ exports.deleteCategory = asyncHandler(async (req, res) => {
  * in a batch is stamped exactly as one sent alone.
  */
 async function createOne(user, body, ctx = null) {
-  const { lat, lon, categoryId, clientId, recordedAt, note } = body || {};
+  const { lat, lon, categoryId, clientId, recordedAt, note, reason } = body || {};
+  const photos = cleanPhotos(user, clientId, body && body.photos);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return { status: 400, error: 'lat and lon are required numbers' };
   if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return { status: 400, error: 'lat/lon out of range' };
 
@@ -200,7 +250,16 @@ async function createOne(user, body, ctx = null) {
     const dup = ctx
       ? ctx.dups.get(String(clientId))
       : await Marker.findOne({ clientId }).populate('categoryId', 'name color');
-    if (dup) return { status: 200, marker: toJSON(dup), duplicate: true };
+    if (dup) {
+      // The same drop again. If an earlier copy arrived without its photos or reason (an upload cut
+      // short), this one completes it; otherwise it is answered as it stands.
+      if ((photos.length && !(dup.photos && dup.photos.length)) || (reason && !dup.reason)) {
+        if (photos.length && !(dup.photos && dup.photos.length)) dup.photos = photos;
+        if (reason && !dup.reason) dup.reason = String(reason).trim().slice(0, 200);
+        await dup.save();
+      }
+      return { status: 200, marker: toJSON(dup), duplicate: true };
+    }
   }
 
   const catKey = String(categoryId);
@@ -250,7 +309,9 @@ async function createOne(user, body, ctx = null) {
     categoryId: cat._id,
     lat,
     lon,
-    note: note ? String(note).slice(0, 500) : null,
+    reason: reason && String(reason).trim() ? String(reason).trim().slice(0, 200) : null,
+    note: note && String(note).trim() ? String(note).trim().slice(0, 500) : null,
+    photos: photos.length ? photos : undefined,
     driverName: user.name || null,
     vehiclePlate,
     clientId: clientId || undefined,
@@ -265,7 +326,33 @@ async function createOne(user, body, ctx = null) {
 exports.create = asyncHandler(async (req, res) => {
   const r = await createOne(req.user, req.body);
   if (r.error) return res.status(r.status).json({ error: r.error });
+  await withPhotoUrls([r.marker]);
   return res.status(r.status).json(r.duplicate ? { marker: r.marker, duplicate: true } : { marker: r.marker });
+});
+
+/**
+ * POST /api/markers/photo-uploads  { clientId, count }   (driver)
+ *
+ * Signed links for the phone to put a drop's photos straight into the bucket, one per photo, valid
+ * 15 minutes. The phone asks just before it uploads (from its outbox, maybe hours after the drop),
+ * PUTs each JPEG with Content-Type image/jpeg, and then sends the marker with the keys. Asking again
+ * for the same drop returns the same keys, so a retry overwrites rather than duplicates.
+ * 503 while the server has no bucket configured: the phone keeps the drop queued until it has.
+ */
+exports.photoUploads = asyncHandler(async (req, res) => {
+  const { clientId, count } = req.body || {};
+  if (!CLIENT_ID_RE.test(String(clientId || ''))) return res.status(400).json({ error: 'clientId is required' });
+  const n = Math.round(Number(count));
+  if (!Number.isFinite(n) || n < 1 || n > MAX_PHOTOS) {
+    return res.status(400).json({ error: `count must be 1-${MAX_PHOTOS}` });
+  }
+  if (!s3.isS3Configured()) return res.status(503).json({ error: 'Photo storage is not configured on the server' });
+  const uploads = [];
+  for (let i = 0; i < n; i += 1) {
+    const key = photoKey(req.user._id, clientId, i);
+    uploads.push({ key, url: await s3.presignPut(key, PHOTO_TYPE), contentType: PHOTO_TYPE });
+  }
+  res.json({ uploads, maxPhotos: MAX_PHOTOS });
 });
 
 /**
@@ -298,6 +385,7 @@ exports.createBatch = asyncHandler(async (req, res) => {
       results.push({ clientId: m && m.clientId, error: e.message, permanent: false });
     }
   }
+  await withPhotoUrls(results.filter((r) => r.marker).map((r) => r.marker));
   res.json({ results });
 });
 
@@ -306,7 +394,7 @@ exports.mine = asyncHandler(async (req, res) => {
   const markers = await Marker.find({ driverId: req.user._id, ...LIVE })
     .sort({ createdAt: -1 })
     .populate('categoryId', 'name color');
-  res.json({ markers: markers.map(toJSON) });
+  res.json({ markers: await withPhotoUrls(markers.map(toJSON)) });
 });
 
 // GET /api/markers?days=90                          (admin / manager / team_lead — scoped)
@@ -334,7 +422,7 @@ exports.list = asyncHandler(async (req, res) => {
     })
       .sort({ recordedAt: 1 })
       .populate('categoryId', 'name color');
-    return res.json({ markers: markers.map(toJSON) });
+    return res.json({ markers: await withPhotoUrls(markers.map(toJSON)) });
   }
 
   // One driver's day, in the zone the Trips page grouped that day in.
@@ -358,7 +446,7 @@ exports.list = asyncHandler(async (req, res) => {
     })
       .sort({ recordedAt: 1 })
       .populate('categoryId', 'name color');
-    return res.json({ markers: markers.map(toJSON) });
+    return res.json({ markers: await withPhotoUrls(markers.map(toJSON)) });
   }
 
   const days = Math.min(Math.max(parseInt(req.query.days, 10) || 90, 1), 365);
@@ -373,7 +461,7 @@ exports.list = asyncHandler(async (req, res) => {
   const markers = await Marker.find(where)
     .sort({ createdAt: -1 })
     .populate('categoryId', 'name color');
-  res.json({ markers: markers.map(toJSON), days });
+  res.json({ markers: await withPhotoUrls(markers.map(toJSON)), days });
 });
 
 /**

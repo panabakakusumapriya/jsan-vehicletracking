@@ -1773,6 +1773,8 @@ select.input { cursor: pointer; }
 .cov-area-pop.side-right::before { left: -7px; border-top-color: transparent; border-right-color: transparent; }
 .cov-area-pop.side-left::before  { right: -7px; border-bottom-color: transparent; border-left-color: transparent; }
 .cov-area-pop.no-caret::before, .cov-area-pop.docked::before { display: none; }
+/* A field marker's card: the same callout, a little narrower — reason, photos, link. */
+.cov-marker-pop { width: 290px; }
 /* Narrow maps: a bottom sheet instead of a callout. */
 .cov-area-pop.docked {
   top: auto; left: 10px; right: 10px; bottom: 10px; width: auto; max-width: none;

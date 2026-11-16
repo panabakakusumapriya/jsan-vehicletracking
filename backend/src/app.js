@@ -147,6 +147,9 @@ function createApp() {
         // only after they end (services/liveMatcher.js).
         liveMatch: true,
         roadsVersionsBatch: true,
+        // Markers carry a reason and photos; photos go straight to the S3 bucket via
+        // POST /api/markers/photo-uploads. False here = the S3_* variables are not set on this host.
+        markerPhotos: require('./config/s3').isS3Configured(),
       },
     })
   );

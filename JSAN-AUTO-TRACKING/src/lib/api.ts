@@ -387,7 +387,42 @@ export type MapMarker = {
   recordedAt: string;
   /** The phone's id for the drop (servers from 2026-11-05 send it back). */
   clientId?: string | null;
+  /** Why it was flagged — one of the colour's reasons, or the driver's own words (1.0.28+). */
+  reason?: string | null;
+  /** Anything more the driver typed. */
+  note?: string | null;
+  /**
+   * Photos of the spot. `url` is a signed link from the server (valid six hours), or a local file
+   * for a drop still waiting to upload on this phone.
+   */
+  photos?: MarkerPhoto[];
 };
+
+export type MarkerPhoto = { key?: string; url?: string; width?: number | null; height?: number | null };
+
+/** What a drop sends: where, which colour, when, why, and the bucket keys of its photos. */
+export type MarkerUpload = {
+  lat: number;
+  lon: number;
+  categoryId: string;
+  clientId: string;
+  recordedAt: string;
+  reason?: string;
+  note?: string;
+  photos?: { key: string; width?: number; height?: number; bytes?: number }[];
+};
+
+/**
+ * Signed links to upload one drop's photos straight into the bucket (POST /api/markers/photo-uploads).
+ * The same drop always gets the same keys, so a retried upload overwrites itself.
+ */
+export function apiMarkerPhotoUploads(
+  token: string,
+  clientId: string,
+  count: number
+): Promise<{ uploads: { key: string; url: string; contentType: string }[]; maxPhotos: number }> {
+  return request('/api/markers/photo-uploads', { method: 'POST', body: JSON.stringify({ clientId, count }) }, token);
+}
 
 export function apiMarkerCategories(token: string): Promise<{ categories: MarkerCategory[] }> {
   return request('/api/markers/categories', {}, token);
@@ -399,7 +434,7 @@ export function apiMyMarkers(token: string): Promise<{ markers: MapMarker[] }> {
 
 export function apiDropMarker(
   token: string,
-  m: { lat: number; lon: number; categoryId: string; clientId: string; recordedAt: string }
+  m: MarkerUpload
 ): Promise<{ marker: MapMarker }> {
   return request('/api/markers', { method: 'POST', body: JSON.stringify(m) }, token);
 }
@@ -416,7 +451,7 @@ export function apiRemoveMarker(token: string, key: string): Promise<{ ok: boole
 /** Several queued drops in one request (POST /api/markers/batch); each entry answered on its own. */
 export function apiDropMarkers(
   token: string,
-  markers: { lat: number; lon: number; categoryId: string; clientId: string; recordedAt: string }[]
+  markers: MarkerUpload[]
 ): Promise<{ results: { clientId: string; marker?: MapMarker; error?: string; permanent?: boolean }[] }> {
   return request('/api/markers/batch', { method: 'POST', body: JSON.stringify({ markers }) }, token);
 }

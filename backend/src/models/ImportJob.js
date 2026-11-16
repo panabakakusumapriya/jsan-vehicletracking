@@ -81,6 +81,14 @@ const importJobSchema = new mongoose.Schema(
     includeOrphanLinks: { type: Boolean, default: false },
 
     /**
+     * This delivery ADDS to the project rather than replacing what is active now (more ground, or
+     * another priority on the same ground). On commit the delivery active until then is kept live
+     * (NetworkVersion.keepLive) instead of dropping off the map. Off: today's behaviour, a
+     * re-delivery that takes the active one's place.
+     */
+    keepCurrent: { type: Boolean, default: false },
+
+    /**
      * Rows sharing an area code but with DIFFERENT shapes are pieces of one area (HERE Admin4:
      * islands, slivers, harbour-split parts all carry the town's AREA_ID) — join them into one
      * MultiPolygon instead of keeping the first piece. Off by default: in a file merged from

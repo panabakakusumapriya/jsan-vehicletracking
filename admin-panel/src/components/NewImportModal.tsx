@@ -78,6 +78,12 @@ export function NewImportModal({
    * delivery for ground already loaded is the rarer case, and is one untick away.
    */
   const [draw, setDraw] = useState({ on: true, minKm: '250', maxKm: '300', absorbRemainder: true });
+  /**
+   * This delivery ADDS to the project (more ground, or another priority on the same ground) rather
+   * than replacing the one active now. Off by default: a re-delivery replacing the old copy is the
+   * usual case. On, the delivery active now stays on the map beside the new one (keepLive).
+   */
+  const [keepCurrent, setKeepCurrent] = useState(false);
   const [progress, setProgress] = useState<{ layer: Layer; percent: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -135,6 +141,8 @@ export function NewImportModal({
 
   const roadsOnly = !files.boundary && files.network.length > 0;
   const drawing = roadsOnly && draw.on;
+  /** Work areas, or zones drawn from the roads: a delivery of its own, which becomes the active one. */
+  const newDelivery = Boolean(files.boundary) || drawing;
 
   const start = async () => {
     if (!files.boundary && !files.network.length) return;
@@ -142,7 +150,12 @@ export function NewImportModal({
     setError(null);
     let jobId: string | null = null;
     try {
-      const created = await api.post<{ job: ImportJob }>('/api/network/imports', { projectId, label: label.trim() || undefined });
+      const created = await api.post<{ job: ImportJob }>('/api/network/imports', {
+        projectId,
+        label: label.trim() || undefined,
+        // Only a new delivery supersedes anything: roads added to the current areas do not.
+        keepCurrent: newDelivery && keepCurrent,
+      });
       jobId = created.job._id;
       if (drawing) {
         await api.patch(`/api/network/imports/${jobId}`, {
@@ -376,6 +389,16 @@ export function NewImportModal({
             </div>
           )}
         </div>
+      )}
+      {newDelivery && (
+        <label className="cov-toggle" style={{ marginTop: 12 }}>
+          <input type="checkbox" checked={keepCurrent} disabled={busy} onChange={(e) => setKeepCurrent(e.target.checked)} />
+          <span>
+            <b>Adds to the project — keep the current delivery on the map too.</b> Tick when this is
+            more ground or another priority (e.g. Vietnam P2 after P1), not a new copy of the same
+            roads. Unticked, it replaces the delivery that is active now.
+          </span>
+        </label>
       )}
       {!files.network.length && files.boundary && (
         <div className="cov-sub" style={{ marginTop: 10 }}>

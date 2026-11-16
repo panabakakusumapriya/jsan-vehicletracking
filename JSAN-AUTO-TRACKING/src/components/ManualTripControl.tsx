@@ -11,8 +11,8 @@ import { getPermissionHealth } from '@/src/lib/permissions';
  *
  * On those projects the engine never starts or ends a trip by itself; this button is the only way
  * in and out, and everything between the two presses is recorded, walking included. It lives on
- * Home (inside the status card) and on the map (a pill at the top left), because a project may hide
- * either tab.
+ * the Dashboard (inside the status card). The map shows it as a pill at the top centre only when
+ * the project hides the Dashboard tab, so a driver is never left without it.
  *
  * The engine owns the trip state; this only asks and then reads the answer back (events, plus a
  * light status poll — a trip can also end by sign-out or the 8 h roll-over, and a heartbeat can
@@ -29,7 +29,8 @@ export type ManualTrip = {
   stop: () => void;
 };
 
-export function useManualTrip(): ManualTrip {
+/** `active` false: nothing polled or listened to (a screen that is not showing the button). */
+export function useManualTrip(active = true): ManualTrip {
   const { user } = useAuth();
   const [status, setStatus] = useState<VehicleTracker.TrackerStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -48,6 +49,7 @@ export function useManualTrip(): ManualTrip {
 
   useEffect(() => {
     mounted.current = true;
+    if (!active) return () => { mounted.current = false; };
     void refresh();
     const id = setInterval(refresh, 5000);
     const subs = [
@@ -60,7 +62,7 @@ export function useManualTrip(): ManualTrip {
       clearInterval(id);
       subs.forEach((s) => s?.remove());
     };
-  }, [refresh]);
+  }, [refresh, active]);
 
   // The engine's own mode wins (the heartbeat can change it while the app is open); the account's
   // is the fallback for the first moments, before the first status read.
@@ -205,7 +207,11 @@ const s = StyleSheet.create({
   bigStart: {},
   bigStop: {},
   bigText: { fontSize: 16, fontWeight: '900', letterSpacing: 0.2 },
-  pillWrap: { position: 'absolute', left: 12 },
+  // Centred at the top: the map's compass is top-left (MapNative, shown once the map is turned off
+  // north) and the zoom / location / marker buttons run down the right — the pill used to sit at
+  // left: 12 and covered the compass. The wrapper spans the width but lets touches through
+  // (box-none), so only the pill itself takes taps.
+  pillWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
   pill: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingHorizontal: 16, paddingVertical: 10, borderRadius: 22, minWidth: 120, justifyContent: 'center',

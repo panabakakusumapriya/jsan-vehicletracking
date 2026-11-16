@@ -91,9 +91,11 @@ async function cutDrawnArea(job, version, report, onProgress) {
 async function finishCommit(job, layers, areas, mapping, report, onProgress) {
   const version = await networkImport.commit(job, layers, areas, mapping, onProgress);
 
+  // An import that ADDS to the project (job.keepCurrent) keeps the delivery it supersedes on the
+  // map — see NetworkVersion.keepLive.
   await NetworkVersion.updateMany(
     { projectId: version.projectId, status: 'active', _id: { $ne: version._id } },
-    { $set: { status: 'superseded' } }
+    { $set: { status: 'superseded', ...(job.keepCurrent ? { keepLive: true } : {}) } }
   );
   version.status = 'active';
   version.activatedAt = new Date();

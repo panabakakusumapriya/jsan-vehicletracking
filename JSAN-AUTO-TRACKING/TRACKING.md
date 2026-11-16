@@ -24,7 +24,7 @@ because when the app is killed the JS runtime dies, so buffering + upload must b
 
 A project set to **Manual** in the admin panel (Projects → Edit → Trip recording) turns the two
 automatic rules off for its drivers: no auto-start and no auto-stop. The app shows **Start trip** /
-**Stop trip** (Home status card, and a pill at the top left of the map). Everything between the two
+**Stop trip** (the Dashboard status card; on My Map only for a project that hides the Dashboard tab). Everything between the two
 presses is recorded by the ordinary recording rules, so a **walk is recorded like a drive**.
 
 - Mode reaches the phone on `/me` (`tripMode`) and on the heartbeat response; stored in

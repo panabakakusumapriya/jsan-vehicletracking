@@ -24,6 +24,7 @@ const driverPositions = require('../services/driverPositions');
 const roadBlobs = require('../services/roadBlobs');
 const { ensureRegions } = require('../services/deliveryRegions');
 const { liveNetworkVersions } = require('../services/liveNetworks');
+const { removeUnusedDelivery } = require('../services/deliveryRemoval');
 const { kickImportRunner } = require('../services/importRunner');
 const shapefile = require('../utils/shapefile');
 const { simplifyGeometry, bboxUnion } = require('../utils/geo');
@@ -148,7 +149,8 @@ async function resolveNetworkScope(req) {
   let inUse = scopeMemo.get(memoKey);
   if (!inUse || Date.now() - inUse.at > 20000) {
     const flags = await Promise.all(all.map(async (v) => {
-      if (v.status === 'active') return true;
+      // keepLive: imported alongside the others rather than replacing them (NetworkVersion.keepLive).
+      if (v.status === 'active' || v.keepLive) return true;
       const [cov, asg] = await Promise.all([
         LinkCoverage.exists({ networkVersionId: v._id }),
         AreaAssignment.exists({ networkVersionId: v._id, releasedAt: null }),
@@ -243,6 +245,7 @@ async function createJob(req, res) {
     requestedBy: req.user._id,
     label,
     includeOrphanLinks: Boolean(req.body.includeOrphanLinks),
+    keepCurrent: Boolean(req.body.keepCurrent),
   });
 
   return res.status(201).json({ job });
@@ -393,6 +396,8 @@ async function updateJob(req, res) {
   if (typeof req.body.includeOrphanLinks === 'boolean') {
     job.includeOrphanLinks = req.body.includeOrphanLinks;
   }
+  // Only what happens to the delivery active now, at commit — nothing in the report changes.
+  if (typeof req.body.keepCurrent === 'boolean') job.keepCurrent = req.body.keepCurrent;
   // Joining pieces changes how many areas the delivery HAS, so the standing report is wrong the
   // moment this flips — re-check rather than let someone approve a stale one.
   if (typeof req.body.joinAreaParts === 'boolean' && (req.body.joinAreaParts !== job.joinAreaParts || !job.joinAreaPartsChosenAt)) {
@@ -516,8 +521,14 @@ async function deleteJob(req, res) {
     await fileStore.remove(job.files?.[layer]?.fileId);
   }
   fs.rmSync(networkImport.jobDir(job._id), { recursive: true, force: true });
+
+  // What the import loaded goes with it — its work areas and roads — unless work already sits on
+  // them (services/deliveryRemoval.js). Before, only the record went and the map kept the areas.
+  const delivery = await removeUnusedDelivery(job);
+  if (delivery.removed) scopeMemo.delete(String(job.projectId));
+
   await job.deleteOne();
-  return res.json({ ok: true });
+  return res.json({ ok: true, delivery });
 }
 
 /* ------------------------------------------------------------------ versions */

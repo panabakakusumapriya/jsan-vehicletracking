@@ -13,6 +13,8 @@ router.delete('/categories/:id', requireRole('admin'), ctrl.deleteCategory);
 // Markers: drivers drop and see their own; staff review across the drivers they can see.
 router.post('/', requireRole('user'), ctrl.create);
 router.post('/batch', requireRole('user'), ctrl.createBatch);
+// Signed links for the phone to upload a drop's photos straight into the bucket.
+router.post('/photo-uploads', requireRole('user'), ctrl.photoUploads);
 router.get('/mine', requireRole('user'), ctrl.mine);
 // A driver takes their own marker off the map (by id, or the clientId of a drop still uploading).
 router.delete('/mine/:key', requireRole('user'), ctrl.removeMine);

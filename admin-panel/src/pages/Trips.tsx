@@ -953,7 +953,7 @@ export function Trips() {
                               {open && (
                                 <table className="tdm-table">
                                   <thead>
-                                    <tr><th>Time</th><th>Marker</th><th>Trip</th><th>Plate</th><th>Note</th><th></th></tr>
+                                    <tr><th>Time</th><th>Marker</th><th>Trip</th><th>Plate</th><th>Reason</th><th>Photos</th><th></th></tr>
                                   </thead>
                                   <tbody>
                                     {shown.map((m) => {
@@ -964,7 +964,21 @@ export function Trips() {
                                           <td><span className="tdm-cat"><img src={pinUrl(m.category?.color)} alt="" width={11} height={15} />{m.category?.name ?? 'Marker'}</span></td>
                                           <td>{trip ? `${hhmm(trip.startedAt)}–${trip.endedAt ? hhmm(trip.endedAt) : 'now'}` : <span className="muted">between trips</span>}</td>
                                           <td>{m.vehiclePlate ? <span className="tdm-plate">{m.vehiclePlate}</span> : <span className="muted">—</span>}</td>
-                                          <td className="tdm-note">{m.note || <span className="muted">—</span>}</td>
+                                          <td className="tdm-note">
+                                            {m.reason || m.note
+                                              ? <>{m.reason && <b>{m.reason}</b>}{m.reason && m.note ? ' — ' : ''}{m.note}</>
+                                              : <span className="muted">—</span>}
+                                          </td>
+                                          <td className="tdm-photos">
+                                            {(m.photos || []).filter((ph) => ph.url).length
+                                              ? (m.photos || []).filter((ph) => ph.url).map((ph, i) => (
+                                                <a key={ph.key} href={ph.url} target="_blank" rel="noreferrer" title={`Photo ${i + 1} — open full size`}>
+                                                  <img src={ph.url} alt={`Photo ${i + 1}`} loading="lazy" width={34} height={34}
+                                                    style={{ objectFit: 'cover', borderRadius: 6, border: '1px solid var(--line-2)', marginRight: 4, verticalAlign: 'middle' }} />
+                                                </a>
+                                              ))
+                                              : <span className="muted">—</span>}
+                                          </td>
                                           <td className="tdm-links">
                                             {trip && (
                                               <Link to={`/trips/${trip._id}/map`} state={{ tripsSearch: searchParams.toString() }} onClick={() => rememberTrip(trip._id)}>On map</Link>

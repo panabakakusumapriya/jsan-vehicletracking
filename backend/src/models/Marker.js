@@ -17,7 +17,34 @@ const markerSchema = new mongoose.Schema(
     categoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'MarkerCategory', required: true, index: true },
     lat: { type: Number, required: true },
     lon: { type: Number, required: true },
+    /**
+     * Why the spot was flagged, as the driver gave it: one of the reasons listed under the
+     * marker's colour (MarkerCategory.description — "Tunnel", "Private Road"…) or, for "Other",
+     * their own words. The app asks for it on every drop since 1.0.28; older drops have none.
+     */
+    reason: { type: String, trim: true, default: null },
+    /** Anything more the driver typed about the spot. */
     note: { type: String, trim: true, default: null },
+    /**
+     * Photos of the spot, in the S3 bucket (config/s3.js), never in Mongo. The phone uploads each
+     * straight to the bucket with a signed link (POST /api/markers/photo-uploads) and then sends
+     * the keys with the marker. Keys always live under markers/<driverId>/<clientId>/, which is
+     * how the server knows a key it is handed is this driver's own upload.
+     */
+    photos: {
+      type: [
+        new mongoose.Schema(
+          {
+            key: { type: String, required: true },
+            width: { type: Number, default: null },
+            height: { type: Number, default: null },
+            bytes: { type: Number, default: null },
+          },
+          { _id: false }
+        ),
+      ],
+      default: undefined,
+    },
     driverName: { type: String, default: null },
     vehiclePlate: { type: String, default: null },
     /**

@@ -159,7 +159,12 @@ class DbfReader {
     for (const f of this.fields) {
       const raw = this.window.buf.toString(this.encoding, rel + f.offset, rel + f.offset + f.length).trim();
       if (f.type === 'N' || f.type === 'F') {
-        row[f.name] = raw === '' ? null : Number(raw);
+        // A value too wide for its column is written as asterisks ("**********") — 31 of the
+        // Vietnam roads' LINK_IDs, 130 km. As NaN they all became the id "NaN", and 30 were thrown
+        // away as repeats of the first. Unreadable is no value at all: the link gets an id from its
+        // shape instead, like any road whose id is missing.
+        const n = raw === '' ? null : Number(raw);
+        row[f.name] = Number.isFinite(n) ? n : null;
       } else if (f.type === 'L') {
         row[f.name] = raw === '' ? null : /^[YyTt]$/.test(raw);
       } else if (f.type === 'D') {

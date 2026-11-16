@@ -690,6 +690,8 @@ export interface ImportJob {
   files: { boundary: ImportFileInfo; network: ImportFileInfo };
   mapping: ColumnMapping;
   includeOrphanLinks: boolean;
+  /** Adds to the project: the delivery active at commit stays on the map (backend ImportJob.keepCurrent). */
+  keepCurrent?: boolean;
   /** Join rows sharing an area code into one MultiPolygon area — see backend models/ImportJob.js. */
   joinAreaParts?: boolean;
   /** Set once the operator has ticked or unticked joinAreaParts; until then the preflight picks. */
@@ -731,6 +733,8 @@ export interface NetworkVersion {
   regionSource?: 'auto' | 'manual' | null;
   /** The project is working from this delivery (see backend services/liveNetworks.js). */
   live?: boolean;
+  /** Kept on the map after a newer import that ADDED to the project superseded it. */
+  keepLive?: boolean;
 }
 
 /** One delivery's figures, as the summary reports them for the By-region / By-delivery table. */

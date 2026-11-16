@@ -86,6 +86,20 @@ const networkVersionSchema = new mongoose.Schema(
     notes: { type: String, default: null },
 
     /**
+     * Stays one of the project's live deliveries after a newer import supersedes it, even before
+     * anyone is assigned to it or drives it (services/liveNetworks.js).
+     *
+     * Superseded normally means "re-delivered": the newer copy carries the same roads, so the old
+     * one drops off the map unless work already sits on it. That is wrong when the newer import is
+     * MORE ground rather than a new copy — Vietnam came as three deliveries by priority (FC3 in
+     * Hanoi and Ho Chi Minh, FC4-5 at 7 TPA sites, FC1-2 countrywide), on overlapping ground, and
+     * importing the second hid the first before a single driver could be given an area in it. Set
+     * when the import that superseded this one was marked "adds to the project"
+     * (ImportJob.keepCurrent).
+     */
+    keepLive: { type: Boolean, default: false },
+
+    /**
      * Where this delivery is — "Australia", "New Zealand" — which the coverage page filters and
      * totals by. Detected from the time zone under its work areas (services/deliveryRegions.js),
      * because the customer's import name cannot be relied on to say: every PRJ-025 delivery was

@@ -2536,9 +2536,25 @@ function ImportDetail({
   };
 
   const remove = async () => {
-    if (!confirm('Delete this import job and its uploaded archives?')) return;
+    if (
+      !confirm(
+        'Delete this import?\n\nIts uploaded files go, and so do the work areas and roads it loaded — ' +
+          'unless drivers have been assigned, driven or signed off there, in which case those stay.'
+      )
+    ) return;
     try {
-      await api.del(`/api/network/imports/${jobId}`);
+      const res = await api.del<{ ok: boolean; delivery?: { removed: boolean; reason?: string | null; areas?: number; reactivated?: string | null } }>(
+        `/api/network/imports/${jobId}`
+      );
+      const d = res?.delivery;
+      if (d?.removed) {
+        alert(
+          `Import deleted, and its ${d.areas?.toLocaleString() ?? ''} work area(s) and roads removed from the map.` +
+            (d.reactivated ? `\n“${d.reactivated}” is the active delivery again.` : '')
+        );
+      } else if (d?.reason) {
+        alert(`Import deleted. ${d.reason}`);
+      }
       onChanged();
       onClose();
     } catch (e) {
