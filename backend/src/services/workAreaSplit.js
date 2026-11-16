@@ -8,7 +8,7 @@ const NetworkVersion = require('../models/NetworkVersion');
 const Project = require('../models/Project');
 const areaSplit = require('./areaSplit');
 const osmPlaces = require('./osmPlaces');
-const { bboxOf, midpointOf, pointInPolygon, simplifyGeometry } = require('../utils/geo');
+const { bboxOf, bboxUnion, midpointOf, pointInPolygon, simplifyGeometry } = require('../utils/geo');
 
 /**
  * Putting areaSplit to work on areas that are in the database.
@@ -768,7 +768,11 @@ async function findExistingZones(projectId, parentCode) {
     priority: d.priority,
     areaSqm: d.areaSqm,
     geometry: d.geometry,
-    bbox: d.bbox && d.bbox.length === 4 ? d.bbox : bboxOf(polygonsOf(d.geometry)[0][0]),
+    // Every part, not just the first: a zone cut from a country outline can be several pieces, and
+    // a bbox that covers one of them is what made Vietnam's P3 import read 0 of 0 km.
+    bbox: d.bbox && d.bbox.length === 4
+      ? d.bbox
+      : polygonsOf(d.geometry).reduce((box, p) => (box ? bboxUnion(box, bboxOf(p[0])) : bboxOf(p[0])), null),
     props: d.props || {},
     targetMeters: 0,
     targetLinks: 0,

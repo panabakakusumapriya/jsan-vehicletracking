@@ -429,6 +429,27 @@ function polygonToGeoJson(parts) {
   return { type: 'MultiPolygon', coordinates: polygons };
 }
 
+/**
+ * Bbox of a Polygon or MultiPolygon, over every ring of every part.
+ *
+ * The bbox is what `locate()` rejects roads against before it casts a ray, so it has to cover the
+ * whole area. Reading `coordinates[0][0]` gave a MultiPolygon the bbox of its FIRST part only:
+ * Vietnam's country outline is one row of 1,411 province rings whose first ring is a small island,
+ * so all 158,624 links tested against a 200 m box and came out "outside every area" - the delivery
+ * imported with 0 of 0 km (2026-11-16). A single-part area is unaffected.
+ */
+function bboxOfGeometry(geometry) {
+  const polygons = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+  let box = null;
+  for (const polygon of polygons) {
+    for (const ring of polygon) {
+      if (!ring.length) continue;
+      box = box ? bboxUnion(box, bboxOf(ring)) : bboxOf(ring);
+    }
+  }
+  return box;
+}
+
 /* ------------------------------------------------------------------ extraction */
 
 /**
@@ -657,9 +678,7 @@ async function areasFromVersion(versionId) {
     priority: d.priority,
     areaSqm: d.areaSqm,
     geometry: d.geometry,
-    bbox: d.bbox && d.bbox.length === 4 ? d.bbox : bboxOf(
-      d.geometry.type === 'Polygon' ? d.geometry.coordinates[0] : d.geometry.coordinates[0][0]
-    ),
+    bbox: d.bbox && d.bbox.length === 4 ? d.bbox : bboxOfGeometry(d.geometry),
     props: d.props || {},
     targetMeters: 0,
     targetLinks: 0,
@@ -823,7 +842,7 @@ async function buildReport(job, layers, onProgress = () => {}, deps = {}) {
         priority,
         areaSqm,
         geometry,
-        bbox: bboxOf(outer),
+        bbox: bboxOfGeometry(geometry),
         props: attrs,
         targetMeters: 0,
         targetLinks: 0,
