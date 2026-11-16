@@ -1177,7 +1177,7 @@ async function versionAreasGeoJson(req, res) {
 
   const [areas, covered] = await Promise.all([
     WorkArea.find({ networkVersionId: { $in: scope.versionIds } }).select(
-      'areaCode name parentName priority areaSqm targetMeters targetLinks outline bbox'
+      'areaCode name parentName priority areaSqm targetMeters targetLinks outline bbox networkVersionId'
     ),
     LinkCoverage.aggregate([
       { $match: { networkVersionId: { $in: scope.versionIds } } },
@@ -1246,6 +1246,9 @@ async function versionAreasGeoJson(req, res) {
       geometry,
       properties: {
         areaId: String(a._id),
+        // Which delivery it belongs to: several on the same ground (Vietnam P1/P2/P3) are told
+        // apart on the map by colouring each delivery its own colour.
+        versionId: String(a.networkVersionId),
         areaCode: a.areaCode,
         name: a.name,
         parentName: a.parentName,

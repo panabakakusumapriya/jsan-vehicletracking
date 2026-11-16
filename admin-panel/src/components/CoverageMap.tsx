@@ -44,6 +44,8 @@ type Geometry = { type: string; coordinates: unknown };
 
 export interface AreaProps {
   areaId?: string;
+  /** The delivery (NetworkVersion) it belongs to — for colouring by delivery. Absent on an older API. */
+  versionId?: string;
   areaCode: string;
   name: string;
   parentName: string | null;
@@ -125,6 +127,26 @@ const PRIORITY_COLOR: Record<number, [number, number, number]> = {
 const priorityColor = (p: number): [number, number, number] => PRIORITY_COLOR[p] || [107, 114, 128];
 
 /**
+ * One colour per delivery, for "Colour areas by → Delivery". Several deliveries can lie on the
+ * same ground — Vietnam came as P1 (FC3), P2 (TPA sites) and P3 (FC1-2) over the same Hanoi
+ * streets — and with all of them in view, one delivery's zone looked as if it held the others'
+ * roads. Each delivery's zones AND its roads still to drive take its colour. Never red or blue:
+ * those mean "to drive" and "driven" everywhere else on this map, and driven roads stay blue.
+ */
+const DELIVERY_PALETTE: [number, number, number][] = [
+  [13, 148, 136], // teal
+  [192, 38, 211], // fuchsia
+  [202, 138, 4], // mustard
+  [101, 163, 13], // lime
+  [146, 64, 14], // brown
+  [8, 145, 178], // cyan
+  [234, 88, 12], // orange
+  [71, 85, 105], // slate
+];
+export const deliveryColor = (i: number): [number, number, number] => DELIVERY_PALETTE[i % DELIVERY_PALETTE.length];
+const NO_DELIVERY: [number, number, number] = [148, 163, 184];
+
+/**
  * What an area IS, in one colour: completed, held by a driver, or waiting for one. The same palette
  * paints the polygons, the map legend, the layer card and the summary bar above the map. Never
  * blue or red — on this map those belong to the roads (driven / to drive).
@@ -204,6 +226,8 @@ export function CoverageMap({
   holdersByCode,
   onAreasLoaded,
   showCompleted = true,
+  deliveryColors,
+  deliveryNames,
 }: {
   /** A committed version — shows coverage and lets road links load. */
   versionId?: string;
@@ -219,8 +243,11 @@ export function CoverageMap({
    *
    * `priority` stays its own view: the customer's band is a label, not a quantity, so it cannot
    * share an encoding with a percentage.
+   *
+   * `delivery` colours each delivery in view its own colour (`deliveryColors`) — its zones and its
+   * roads still to drive — so overlapping deliveries can be told apart.
    */
-  mode: 'assignment' | 'priority';
+  mode: 'assignment' | 'priority' | 'delivery';
   /** Pixels, or any CSS length — fullscreen passes '100vh'. */
   height?: number | string;
   onSelectArea?: (areaId: string) => void;
@@ -334,6 +361,10 @@ export function CoverageMap({
   onAreasLoaded?: (areas: AreaProps[]) => void;
   /** Draw the signed-off (completed) polygons. Off leaves only the ground still being worked. */
   showCompleted?: boolean;
+  /** versionId -> its colour, for the `delivery` mode; the page keeps it the same as the legend's. */
+  deliveryColors?: Record<string, [number, number, number]>;
+  /** versionId -> the delivery's name, for the map key and the hover. */
+  deliveryNames?: Record<string, string>;
 }) {
   const mapRef = useRef<Map3DHandle>(null);
   const [areas, setAreas] = useState<AreaCollection | null>(null);
@@ -670,6 +701,9 @@ export function CoverageMap({
   driverNamesRef.current = driverNamesByArea;
   const holdersByCodeRef = useRef(holdersByCode);
   holdersByCodeRef.current = holdersByCode;
+  /** versionId -> delivery name, for the hover — only when more than one delivery is in view. */
+  const deliveryNamesRef = useRef<Record<string, string> | null>(null);
+  deliveryNamesRef.current = deliveryNames && Object.keys(deliveryNames).length > 1 ? deliveryNames : null;
   netsRef.current = nets;
   const roadStateRef = useRef(roadState);
   roadStateRef.current = roadState;
@@ -687,8 +721,18 @@ export function CoverageMap({
   const selectionKey = (selectedIds || []).join(',');
   /** The polygons the area layer draws: all of them, or all but the completed ones. */
   const drawnAreas = useMemo(() => {
-    if (!areas || showCompleted) return areas;
-    return { ...areas, features: areas.features.filter((f) => !f.properties.completed) };
+    if (!areas) return areas;
+    const kept = showCompleted ? areas.features : areas.features.filter((f) => !f.properties.completed);
+    /**
+     * Biggest first, so a small area is drawn — and clicked — on top of a big one it lies in. Where
+     * deliveries overlap (a 7 km² TPA site inside a 3,000 km² countrywide zone) the site used to be
+     * buried under the zone's fill and a click on it opened the zone.
+     */
+    const size = (f: AreaFeature) => {
+      const b = f.properties.bbox;
+      return b ? (b[2] - b[0]) * (b[3] - b[1]) : 0;
+    };
+    return { ...areas, features: [...kept].sort((a, b) => size(b) - size(a)) };
   }, [areas, showCompleted]);
 
   /**
@@ -747,6 +791,8 @@ export function CoverageMap({
     const drivers = roadState?.drivers || [];
     return nets.map((net) => {
       const per = roadState?.coveredBy.get(net.versionId);
+      // Coloured by delivery: its roads still to drive take the delivery's colour; driven stays blue.
+      const todoColor = (mode === 'delivery' && deliveryColors?.[net.versionId]) || RED;
       // Per area: 1 held by a driver, 2 signed off.
       const flags = new Uint8Array(net.areas.length);
       net.areas.forEach((a, i) => {
@@ -769,7 +815,7 @@ export function CoverageMap({
         if (!visible) continue;
         shown += 1;
         if (covered) driven += 1;
-        let c: [number, number, number] = RED;
+        let c: [number, number, number] = todoColor;
         let a = 225;
         // 1 = still to drive, 2 = done: drawn as separate layers (below) so the driven roads can
         // be the thicker ones at every zoom.
@@ -785,7 +831,7 @@ export function CoverageMap({
       }
       return { net, bucketOf, colorOf, shown, driven };
     });
-  }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet, holdersByCode]);
+  }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet, holdersByCode, mode, deliveryColors]);
 
   /**
    * The roads, as map tiles (lib/roadTiles): deck.gl asks for the tiles in view at the level the
@@ -890,7 +936,8 @@ export function CoverageMap({
 
   const layers = useMemo<Layer[]>(() => {
     // The fill is always a quantity: how much of the area is driven, or which band it sits in.
-    const shadeOf = (p: AreaProps): [number, number, number] => priorityColor(p.priority);
+    const shadeOf = (p: AreaProps): [number, number, number] =>
+      mode === 'delivery' ? (p.versionId && deliveryColors?.[p.versionId]) || NO_DELIVERY : priorityColor(p.priority);
 
     /**
      * Held by somebody right now: the page's live list when it passes one, else the copy that came
@@ -952,7 +999,8 @@ export function CoverageMap({
               return [c[0], c[1], c[2], st === 'open' && highlightUnassigned ? 150 : st === 'held' ? 60 : 90];
             }
             const c = shadeOf(f.properties);
-            return [c[0], c[1], c[2], isFaded(f.properties) ? 25 : 110];
+            // By delivery, lighter: deliveries overlap, and the one underneath must show through.
+            return [c[0], c[1], c[2], isFaded(f.properties) ? 25 : mode === 'delivery' ? 60 : 110];
           },
           // The outline answers "whose is this", independently of the fill's percentage.
           getLineColor: (f: { properties: AreaProps }) => {
@@ -972,7 +1020,9 @@ export function CoverageMap({
           getLineWidth: (f: { properties: AreaProps }) =>
             f.properties.completed
               ? 3
-              : isAssigned(f.properties)
+              : mode === 'delivery'
+                ? 2.5
+                : isAssigned(f.properties)
                 ? 2
                 : highlightUnassigned
                   ? 2.5
@@ -1001,11 +1051,11 @@ export function CoverageMap({
             // deck.gl caches accessor results; without naming every input here a change would not
             // repaint. The selection is NOT one of them: it has its own small layer (below), so a
             // click no longer re-colours every polygon of the region.
-            getFillColor: [mode, driverColorByArea, holdersByCode, roadScope, highlightAreaIds, highlightUnassigned],
-            getLineColor: [mode, driverColorByArea, holdersByCode, highlightAreaIds, highlightUnassigned],
+            getFillColor: [mode, driverColorByArea, holdersByCode, roadScope, highlightAreaIds, highlightUnassigned, deliveryColors],
+            getLineColor: [mode, driverColorByArea, holdersByCode, highlightAreaIds, highlightUnassigned, deliveryColors],
             // Width depends on whether an area is assigned, so the holders belong here too --
             // without them, assigning an area would recolour its outline but not thicken it.
-            getLineWidth: [driverColorByArea, holdersByCode, highlightUnassigned],
+            getLineWidth: [mode, driverColorByArea, holdersByCode, highlightUnassigned],
             getDashArray: [mode, driverColorByArea, holdersByCode, highlightUnassigned],
           },
           onClick: (info: PickingInfo, event?: { srcEvent?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } }) => {
@@ -1202,6 +1252,7 @@ export function CoverageMap({
     areaLods,
     areaLod,
     nearAreas,
+    deliveryColors,
   ]);
 
   const getTooltip = useCallback((info: PickingInfo) => {
@@ -1232,12 +1283,15 @@ export function CoverageMap({
       const holders = (area && holdersRef.current.get(area.code)) || [];
       const byOther = who && holders.length > 0 && !holders.includes(who);
       const fc = net.fc[li];
+      const ofDelivery = deliveryNamesRef.current?.[net.versionId];
       return {
         html: `<div style="font:12px/1.5 system-ui;padding:2px"><b>${
           d >= 0 ? (byOther ? '✓ driven by another driver' : '✓ driven') : 'not driven yet'
         }</b>${who ? `<div>by ${escapeHtml(who)}</div>` : ''}${
           byOther ? `<div style="opacity:.7">area now with ${escapeHtml(holders.join(', '))}</div>` : ''
-        }${signed ? '<div style="opacity:.7">area signed off as completed</div>' : ''}<div style="opacity:.7">${fc ? `FC${fc}` : 'FC ?'}${area ? ` · ${escapeHtml(area.name)}` : ' · outside every area'}</div><div style="opacity:.55;font-family:monospace;font-size:11px">${escapeHtml(
+        }${signed ? '<div style="opacity:.7">area signed off as completed</div>' : ''}<div style="opacity:.7">${fc ? `FC${fc}` : 'FC ?'}${area ? ` · ${escapeHtml(area.name)}` : ' · outside every area'}</div>${
+          ofDelivery ? `<div style="opacity:.7">delivery: ${escapeHtml(ofDelivery)}</div>` : ''
+        }<div style="opacity:.55;font-family:monospace;font-size:11px">${escapeHtml(
           linkIdAt(net, li)
         )}</div></div>`,
       };
@@ -1267,6 +1321,8 @@ export function CoverageMap({
       const rows: string[] = [];
       if (p.parentName) rows.push(`<div style="opacity:.7">${p.parentName}</div>`);
       rows.push(`<div style="opacity:.7">P${p.priority} · ${p.areaCode}</div>`);
+      const ofDelivery = p.versionId ? deliveryNamesRef.current?.[p.versionId] : null;
+      if (ofDelivery) rows.push(`<div style="opacity:.7">delivery: ${escapeHtml(ofDelivery)}</div>`);
       // Same source the fill uses, so the hover can never contradict the panel.
       const live = holdersByCodeRef.current;
       const holders = live
@@ -1526,6 +1582,16 @@ export function CoverageMap({
               </div>
             )}
           </>
+        ) : mode === 'delivery' ? (
+          // Which colour is which delivery — its zones, and its roads still to drive.
+          <div className="cov-legend-drivers">
+            {Object.entries(deliveryColors || {}).map(([id, color]) => (
+              <span key={id} className="cov-legend-row" style={{ gap: 5 }}>
+                <span className="cov-swatch" style={{ background: `rgba(${color.join(',')},0.35)`, border: `2px solid rgb(${color.join(',')})` }} />
+                <span>{deliveryNames?.[id] || 'Delivery'}</span>
+              </span>
+            ))}
+          </div>
         ) : (
           <div className="cov-legend-row">
             {[0, 1, 2, 3].map((p) => (
@@ -1548,8 +1614,17 @@ export function CoverageMap({
               }}
             />
             <span>{colorRoadsByDriver ? 'driven (driver’s colour)' : 'driven'}</span>
-            <span className="cov-line" style={{ height: 2, background: `rgb(${RED.join(',')})` }} />
-            <span>to drive</span>
+            <span
+              className="cov-line"
+              style={{
+                height: 2,
+                background:
+                  mode === 'delivery' && deliveryColors && Object.keys(deliveryColors).length
+                    ? `linear-gradient(90deg, ${[...Object.values(deliveryColors), ...Object.values(deliveryColors)].slice(0, Math.max(2, Math.min(4, Object.keys(deliveryColors).length))).map((c) => `rgb(${c.join(',')})`).join(', ')})`
+                    : `rgb(${RED.join(',')})`,
+              }}
+            />
+            <span>{mode === 'delivery' ? 'to drive (delivery’s colour)' : 'to drive'}</span>
           </div>
         )}
         {linksHint && <div className="cov-legend-note">{linksHint}</div>}

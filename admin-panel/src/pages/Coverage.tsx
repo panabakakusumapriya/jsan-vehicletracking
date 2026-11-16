@@ -1,7 +1,7 @@
 import { PageIcon } from '../components/AppIcon';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { AREA_STATUS, CoverageMap, type AreaProps } from '../components/CoverageMap';
+import { AREA_STATUS, CoverageMap, deliveryColor, type AreaProps } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
@@ -531,7 +531,31 @@ function ProgressTab({
   // Two views, not three: who holds an area and how much of it is done are read together, so they
   // share one picture (outline / fill). The customer's priority band is a label rather than a
   // quantity and cannot share that encoding, so it keeps its own view.
-  const [mapMode, setMapMode] = useState<'assignment' | 'priority'>('assignment');
+  const [mapMode, setMapMode] = useState<'assignment' | 'priority' | 'delivery'>('assignment');
+  /**
+   * The deliveries on the map now: those named in the scope ("id~id"), or every live one for the
+   * whole project. Each gets its own colour for "Colour areas by → Delivery", in upload order, so
+   * the same set always comes out the same colours (Vietnam P1, P2, P3 → teal, fuchsia, mustard).
+   */
+  const inViewDeliveries = useMemo(() => {
+    const ids = new Set(scopeId.split('~'));
+    const named = deliveries.filter((v) => ids.has(v._id));
+    return (named.length ? named : deliveries)
+      .slice()
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }, [deliveries, scopeId]);
+  const deliveryColors = useMemo(
+    () => Object.fromEntries(inViewDeliveries.map((v, i) => [v._id, deliveryColor(i)])) as Record<string, [number, number, number]>,
+    [inViewDeliveries]
+  );
+  const deliveryNames = useMemo(
+    () => Object.fromEntries(inViewDeliveries.map((v) => [v._id, nameOf(v)])) as Record<string, string>,
+    [inViewDeliveries, nameOf]
+  );
+  // One delivery left in view: nothing to tell apart, back to the status view.
+  useEffect(() => {
+    if (mapMode === 'delivery' && inViewDeliveries.length < 2) setMapMode('assignment');
+  }, [mapMode, inViewDeliveries.length]);
   // Areas picked on the map, waiting to be handed to a driver. Territory is carved
   // geographically, so the selection lives on the map rather than in the table.
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -1892,7 +1916,12 @@ function ProgressTab({
                 <div className="cov-layer-row static">
                   <span className="cov-layer-label">
                     Colour areas by
-                    {layersExplain && <small>Status (above) or the customer's priority band.</small>}
+                    {layersExplain && (
+                      <small>
+                        Status (above), the customer's priority band, or — with several deliveries in view —
+                        which delivery each area and road belongs to.
+                      </small>
+                    )}
                   </span>
                   <div className="cov-seg">
                     <button className={mapMode === 'assignment' ? 'active' : ''} onClick={() => setMapMode('assignment')}>
@@ -1901,6 +1930,15 @@ function ProgressTab({
                     <button className={mapMode === 'priority' ? 'active' : ''} onClick={() => setMapMode('priority')}>
                       Priority
                     </button>
+                    {inViewDeliveries.length > 1 && (
+                      <button
+                        className={mapMode === 'delivery' ? 'active' : ''}
+                        onClick={() => setMapMode('delivery')}
+                        title="Each delivery in its own colour — its areas and its roads still to drive"
+                      >
+                        Delivery
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1981,6 +2019,8 @@ function ProgressTab({
         <CoverageMap
           versionId={scopeId}
           mode={mapMode}
+          deliveryColors={deliveryColors}
+          deliveryNames={deliveryNames}
           height={isFullscreen ? '100vh' : mapHeight}
           focusAreaId={focusAreaId}
           focusNonce={focusNonce}

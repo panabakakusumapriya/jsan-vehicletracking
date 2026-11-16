@@ -182,6 +182,10 @@ const grid = (lon, lat, n, props) => Array.from({ length: n }, (_, i) => ({
   const summary = (await as(request(app).get(`/api/network/versions/${project._id}`))).body;
   const bands = (summary.coverage?.byPriority || []).map((b) => b.priority).sort();
   assert(bands.join() === '1,2', 'the Coverage page totals the project by P1 and P2');
+  const outlines = (await as(request(app).get(`/api/network/versions/${project._id}/areas.geojson`))).body.features;
+  const byDelivery = new Set(outlines.map((f) => f.properties.versionId));
+  assert(byDelivery.has(String(p1.version._id)) && byDelivery.has(String(p2.version._id)) && byDelivery.size === 2,
+    'each area on the map says which delivery it belongs to (the map colours by it)');
 
   console.log('\n-- mixed bands in one roads file --');
   const mixed = await importRoads('Mixed', 'mixed', grid(108.20, 16.05, 6, (i) => ({ fc: '2', priority: i % 2 ? 3 : 1 })));
