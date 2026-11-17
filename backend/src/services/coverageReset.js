@@ -27,7 +27,7 @@ const INLINE_TRIPS = 40;
 
 const refuse = (message, status = 409) => Object.assign(new Error(message), { status });
 
-async function clearAreaCoverage({ versionId, areaId, userId = null, userName = null, note = null }) {
+async function clearAreaCoverage({ versionId, areaId, userId = null, userName = null, note = null, driverId = null }) {
   const area = await WorkArea.findOne({ _id: areaId, networkVersionId: versionId })
     .select('projectId networkVersionId areaCode name')
     .lean();
@@ -49,13 +49,24 @@ async function clearAreaCoverage({ versionId, areaId, userId = null, userName = 
     .select('_id networkVersionId')
     .lean();
   const everywhere = { $or: copies.map((c) => ({ networkVersionId: c.networkVersionId, areaId: c._id })) };
+  if (driverId) everywhere.firstDriverId = driverId;
 
   const [links, rows] = await Promise.all([
     RoadLink.find({ networkVersionId: versionId, areaId }).select('linkId -_id').lean(),
-    LinkCoverage.find(everywhere).select('networkVersionId lengthMeters firstTripId').lean(),
+    LinkCoverage.find(everywhere).select('networkVersionId lengthMeters firstTripId linkId').lean(),
   ]);
   const here = rows.filter((r) => String(r.networkVersionId) === String(versionId));
   const tripIds = [...new Set(rows.map((r) => String(r.firstTripId)).filter(Boolean))];
+
+  // Per-driver clear only blocks the links that driver actually claimed.
+  const resetLinkIds = driverId ? [...new Set(rows.map((r) => r.linkId))] : links.map((l) => l.linkId);
+
+  let driverName = null;
+  if (driverId) {
+    const User = require('../models/User');
+    const drv = await User.findById(driverId).select('name').lean();
+    driverName = drv ? drv.name : null;
+  }
 
   // 1. The marker first: an attribution running right now must find it before it can re-insert.
   const resetAt = new Date();
@@ -66,7 +77,9 @@ async function clearAreaCoverage({ versionId, areaId, userId = null, userName = 
     areaCode: area.areaCode,
     areaName: area.name,
     resetAt,
-    linkIds: links.map((l) => l.linkId),
+    linkIds: resetLinkIds,
+    clearedDriverId: driverId || null,
+    clearedDriverName: driverName,
     clearedLinks: here.length,
     clearedMeters: here.reduce((sum, r) => sum + (r.lengthMeters || 0), 0),
     tripsAffected: tripIds.length,

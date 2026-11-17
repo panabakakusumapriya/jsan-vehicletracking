@@ -148,14 +148,19 @@ const NO_DELIVERY: [number, number, number] = [148, 163, 184];
 
 /**
  * What an area IS, in one colour: completed, held by a driver, or waiting for one. The same palette
- * paints the polygons, the map legend, the layer card and the summary bar above the map. Never
- * blue or red — on this map those belong to the roads (driven / to drive).
+ * paints the polygons, the map legend, the layer card and the summary bar above the map.
+ *
+ * Never blue or red — on this map those belong to the roads (driven / to drive). Assigned used to
+ * be violet (#7C3AED), which at a 2 px outline over a pale basemap reads as navy blue: dispatchers
+ * could not tell the polygon's boundary from the driven road inside it, so they could not tell
+ * whether the area had been collected. Magenta was next but sat too close to the red to-drive roads.
+ * It is black now (#111111) — no road colour comes near it, and it reads as a hard boundary.
  */
 export type AreaStatus = 'done' | 'held' | 'open';
 export const AREA_STATUS: Record<AreaStatus, { label: string; fill: [number, number, number]; line: [number, number, number]; css: string }> = {
   done: { label: 'Completed', fill: [21, 128, 61], line: [20, 83, 45], css: '#15803D' },
-  held: { label: 'Assigned', fill: [124, 58, 237], line: [109, 40, 217], css: '#7C3AED' },
-  open: { label: 'Unassigned', fill: [249, 115, 22], line: [194, 65, 12], css: '#F97316' },
+  held: { label: 'Assigned', fill: [240, 17, 173], line: [17, 17, 17], css: '#111111' },
+  open: { label: 'Unassigned', fill: [240, 236, 17], line: [168, 165, 12], css: '#F0EC11' },
 };
 
 /** The pinned area card's width — also the room the camera leaves for it when framing an area. */
@@ -1016,14 +1021,15 @@ export function CoverageMap({
           // Selected polygons get a heavy border so a chosen cluster is legible even where the
           // areas are tiny and packed, which is most of inner Melbourne.
           // An assigned outline has to carry on its own what a fill used to say, so it is drawn
-          // heavier than an unassigned one.
+          // heavier than an unassigned one — and heavier again since the client asked for a weight
+          // that reads as a boundary at a glance rather than as one of the roads inside it.
           getLineWidth: (f: { properties: AreaProps }) =>
             f.properties.completed
               ? 3
               : mode === 'delivery'
                 ? 2.5
                 : isAssigned(f.properties)
-                ? 2
+                ? 3.5
                 : highlightUnassigned
                   ? 2.5
                   : 1.5,
@@ -1074,12 +1080,16 @@ export function CoverageMap({
         })
       ));
       /**
-       * The picked areas, drawn again on top: a light, see-through blue wash and a heavy border, so
-       * a chosen cluster is legible even where the areas are tiny and packed. The wash is kept
-       * pale on purpose: a solid dark blue hid the blue driven roads and muddied the red ones to
-       * drive, which are exactly what a manager picks an area to look at. On its own layer so
-       * picking a polygon redraws a handful of shapes, not every polygon of the region. Not
-       * pickable: clicks go through to the area layer underneath, which owns them.
+       * The picked areas, drawn again on top: a pale white wash and a heavy white border,
+       * so a chosen cluster is legible even where the areas are tiny and packed.
+       *
+       * The border used to be navy (#0369A1), then charcoal, then orange. Assigned boundaries are
+       * black now, so the selection is white — maximum contrast against the black boundary and
+       * every road colour. A picked edge can only be a picked edge. The wash is kept pale on
+       * purpose: a solid wash hid the blue driven roads and muddied the red ones to drive, which
+       * are exactly what a manager picks an area to look at. On its own layer so picking a polygon
+       * redraws a handful of shapes, not every polygon of the region. Not pickable: clicks go
+       * through to the area layer underneath, which owns them.
        */
       if (selectedFeatures.length) {
         out.push(
@@ -1089,9 +1099,9 @@ export function CoverageMap({
             pickable: false,
             stroked: true,
             filled: true,
-            getFillColor: [125, 211, 252, 70],
-            getLineColor: [3, 105, 161, 255],
-            getLineWidth: 3,
+            getFillColor: [17, 17, 17, 130],
+            getLineColor: [255, 255, 255, 255],
+            getLineWidth: 4,
             lineWidthUnits: 'pixels',
             lineWidthMinPixels: 1.2,
           })

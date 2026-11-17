@@ -32,6 +32,10 @@ const coverageResetSchema = new mongoose.Schema(
     resetAt: { type: Date, required: true },
     linkIds: { type: [String], default: [] },
 
+    /** Null = all drivers (whole-area clear). Set = only this driver's claims are blocked. */
+    clearedDriverId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    clearedDriverName: { type: String, default: null },
+
     // What was wiped, for the record.
     clearedLinks: { type: Number, default: 0 },
     clearedMeters: { type: Number, default: 0 },

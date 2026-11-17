@@ -410,15 +410,16 @@ async function ledgerFor(networkVersionId, linkIds) {
  * re-match, the catch-up sweep, a full rebuild — would otherwise hand it back the very roads that
  * were wiped, and the area would turn blue again on its own. Driving after the clear is untouched.
  */
-async function withoutCleared(projectId, covered) {
+async function withoutCleared(projectId, covered, driverId = null) {
   if (!covered.size) return covered;
   const ids = [...covered.keys()];
   const clearedAt = new Map();
   for (let i = 0; i < ids.length; i += BULK_CHUNK) {
     const rows = await CoverageReset.find({ projectId, linkIds: { $in: ids.slice(i, i + BULK_CHUNK) } })
-      .select('resetAt linkIds')
+      .select('resetAt linkIds clearedDriverId')
       .lean();
     for (const row of rows) {
+      if (row.clearedDriverId && driverId && String(row.clearedDriverId) !== String(driverId)) continue;
       const at = new Date(row.resetAt).getTime();
       for (const linkId of row.linkIds) {
         if (covered.has(linkId) && at > (clearedAt.get(linkId) || 0)) clearedAt.set(linkId, at);
@@ -451,7 +452,7 @@ function earlierThan(aAt, aTrip, bAt, bTrip) {
 async function claimLinks(trip, ctx, matched) {
   // Roads cleared after this trip drove them are not this trip's to claim — and since they are
   // then absent from `covered`, the release at the end drops any row it still held for them.
-  const covered = await withoutCleared(ctx.projectId, matched);
+  const covered = await withoutCleared(ctx.projectId, matched, trip.driverId);
   const displaced = new Set();
   const base = (linkId) => ({ networkVersionId: ctx.networkVersionId, linkId });
 

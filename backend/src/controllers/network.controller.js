@@ -2595,6 +2595,7 @@ async function clearAreaCoverage(req, res) {
       userId: req.user._id,
       userName: req.user.name,
       note: req.body?.note,
+      driverId: req.body?.driverId || null,
     });
     return res.json(result);
   } catch (err) {
