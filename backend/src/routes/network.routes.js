@@ -98,6 +98,12 @@ router.get(
   '/versions/:id/areas/:areaId/overlaps',
   ctrl.areaOverlaps
 );
+// Take other deliveries' ground out of one area without splitting it.
+router.post(
+  '/versions/:id/areas/:areaId/cut-around',
+  requireRole('admin', 'manager'),
+  ctrl.cutAreaAround
+);
 router.post(
   '/versions/:id/areas/:areaId/split',
   requireRole('admin', 'manager'),

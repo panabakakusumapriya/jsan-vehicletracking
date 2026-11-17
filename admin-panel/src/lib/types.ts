@@ -814,21 +814,50 @@ export interface AreaSplitResult {
    * covers all seven FC4-5 TPA sites and both FC3 city polygons. `links`/`km` are this area's own
    * road inside them.
    */
-  overlaps?: {
-    versionId: string;
-    label: string;
-    areas: number;
-    names: string[];
-    links?: number;
-    km?: number;
-    cutAround?: boolean;
-  }[];
+  overlaps?: (DeliveryOverlap & { links?: number; km?: number; cutAround?: boolean })[];
   /** How many zones were cut with holes where another delivery's areas are. */
   zonesCutAround?: number;
   /** Road kept in the zone surrounding a hole, per delivery it was cut around. */
   excluded?: { versionId: string; label: string; links: number; km: number }[];
+  /** Zones that would STILL sit on a delivery they were cut around — should be none. */
+  remaining?: RemainingOverlap[];
   applied: boolean;
   alreadySplit?: boolean;
+}
+
+/**
+ * Another delivery whose areas share ground with an area — MEASURED shared ground, so outlines
+ * that only touch (the edge of a hole already cut around them) are not in it.
+ */
+export interface DeliveryOverlap {
+  versionId: string;
+  label: string;
+  areas: number;
+  /** Shared ground with all of that delivery's areas together, km². */
+  sqKm?: number;
+  names: string[];
+  /** Per area: shared km², and what share of that area it is (0–1). */
+  list?: { code: string; name: string; sqKm: number; share: number | null }[];
+}
+
+/** Ground that still overlaps after a cut: which piece, how much, and on which deliveries. */
+export interface RemainingOverlap {
+  code: string;
+  name: string;
+  sqKm: number;
+  with: string[];
+}
+
+/** POST …/areas/:id/cut-around — one area cut around other deliveries, not split. */
+export interface AreaCutResult {
+  area: { _id: string; code: string; name: string; km: number; links: number };
+  beforeSqKm: number;
+  afterSqKm: number;
+  cutSqKm: number;
+  overlaps: (DeliveryOverlap & { cutAround?: boolean })[];
+  excluded: { versionId: string; label: string; links: number; km: number }[];
+  remaining: RemainingOverlap[];
+  applied: boolean;
 }
 
 export interface CoverageArea {

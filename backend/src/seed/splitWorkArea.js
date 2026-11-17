@@ -8,6 +8,8 @@
  *   npm run split:area -- --version <id> --area <code> --min 300 --max 300
  *   npm run split:area -- --version <id> --area <code> --keep-leftover   leftover as its own zone
  *   npm run split:area -- --version <id> --area <code> --cut <versionId>  cut around another delivery
+ *   npm run split:area -- --version <id> --area <code> --cut <versionId> --cut-only [--apply]
+ *                                                   cut around it WITHOUT splitting (the area stays one)
  *   npm run split:area -- --version <id> --area <code> --join            put it back together
  *
  * --min / --max   how much road a zone should hold, km (default 250 / 300)
@@ -47,7 +49,21 @@ const log = (...a) => console.log(...a);
   await connectDB();
 
   try {
-    if (has('--join')) {
+    const cutIds = argv.filter((a, i) => argv[i - 1] === '--cut');
+    if (has('--cut-only')) {
+      const area = await require('../models/WorkArea').findOne({ networkVersionId: versionId, areaCode }).select('_id').lean();
+      if (!area) throw new Error(`No area ${areaCode} in version ${versionId}`);
+      const r = await workAreaSplit.cutAreaAround({ versionId, areaId: area._id, cutAround: cutIds, apply: has('--apply') });
+      log(`${r.area.name} [${r.area.code}] — ${r.area.km.toFixed(1)} km, ${r.area.links} links`);
+      for (const o of r.overlaps) {
+        log(`  overlaps ${o.label}: ${o.sqKm.toFixed(3)} km² over ${o.areas} area(s)${o.cutAround ? ' — CUT AROUND' : ''}`);
+        for (const a of o.list) log(`     ${a.name}: ${a.sqKm.toFixed(3)} km²`);
+      }
+      log(`  outline ${r.beforeSqKm.toFixed(2)} km² -> ${r.afterSqKm.toFixed(2)} km² (${r.cutSqKm.toFixed(3)} km² cut out)`);
+      for (const e of r.excluded) if (e.links) log(`  ${e.km.toFixed(1)} km of its road inside ${e.label} stays with it.`);
+      log(r.remaining.length ? `  STILL OVERLAPPING: ${JSON.stringify(r.remaining)}` : '  Checked: nothing left overlapping the deliveries cut around.');
+      log(r.applied ? 'CUT — written.' : 'PLAN — nothing written; add --apply.');
+    } else if (has('--join')) {
       const result = await workAreaSplit.joinSplitArea({ versionId, areaCode });
       if (result.alreadyJoined) log(`${result.area.name} is already back in one piece.`);
       else log(`Joined: ${result.removedZones} zones removed, ${result.area.name} restored — ${result.area.km.toFixed(1)} km, ${result.area.links} links.`);
@@ -59,7 +75,7 @@ const log = (...a) => console.log(...a);
       });
       const result = await workAreaSplit.splitCommittedArea({
         versionId, areaCode, options, apply: has('--apply'),
-        cutAround: argv.filter((a, i) => argv[i - 1] === '--cut'),
+        cutAround: cutIds,
       });
       if (result.alreadySplit) {
         log(`Already split into ${result.zones.length} zones:`);
@@ -67,7 +83,7 @@ const log = (...a) => console.log(...a);
         log(`${result.parent.name} [${result.parent.code}] — ${result.parent.km.toFixed(1)} km, ${result.parent.links} links`);
         log(`Zones of ${options.minKm}-${options.maxKm} km, leftover ${options.absorbRemainder ? 'shared out' : 'kept apart'}; place names: ${result.namesFrom}`);
         for (const o of result.overlaps || []) {
-          log(`  overlaps ${o.label}: ${o.areas} area(s)${o.links ? `, ${o.links} links / ${o.km.toFixed(1)} km of this road inside` : ''}${o.cutAround ? ' — CUT AROUND' : ''}`);
+          log(`  overlaps ${o.label}: ${(o.sqKm || 0).toFixed(3)} km² over ${o.areas} area(s)${o.links ? `, ${o.links} links / ${o.km.toFixed(1)} km of this road inside` : ''}${o.cutAround ? ' — CUT AROUND' : ''}`);
         }
         log(result.applied ? `SPLIT into ${result.zones.length} zones:` : `PLAN — ${result.zones.length} zones (nothing written; add --apply):`);
       }
@@ -79,6 +95,11 @@ const log = (...a) => console.log(...a);
         for (const e of result.excluded || []) {
           if (e.links) log(`  ${e.km.toFixed(1)} km inside ${e.label} stays with the zone around it.`);
         }
+      }
+      if ((result.remaining || []).length) {
+        log(`  STILL OVERLAPPING after the cut: ${result.remaining.map((r) => `${r.name} (${r.sqKm.toFixed(3)} km² on ${r.with.join(', ')})`).join('; ')}`);
+      } else if ((result.overlaps || []).some((o) => o.cutAround)) {
+        log('  Checked: no zone overlaps the deliveries cut around.');
       }
       if (result.unplacedLinks) {
         log(`  ${result.unplacedLinks} link(s), ${(result.unplacedKm || 0).toFixed(1)} km, are on detached scraps too small for a zone and ${result.applied ? 'are now' : 'would be'} outside every area.`);

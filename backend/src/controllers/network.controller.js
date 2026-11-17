@@ -940,18 +940,55 @@ async function areaOverlaps(req, res) {
     if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
 
     const rows = await workAreaSplit.overlappingDeliveries({ versionId: area.networkVersionId, parent: area });
+    // Measured shared ground, km², per delivery and per area — outlines that only touch (the edge of
+    // a hole already cut around them) are not in it.
     return res.json({
       deliveries: rows.map((row) => ({
         versionId: String(row.versionId),
         label: row.label,
         areas: row.areas.length,
+        sqKm: row.sqm / 1e6,
         names: row.areas.slice(0, 6).map((a) => a.name || a.areaCode),
+        list: row.areas.slice(0, 12).map((a) => ({ code: a.areaCode, name: a.name || a.areaCode, sqKm: a.sqm / 1e6, share: a.share })),
       })),
     });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error('[area overlaps]', err);
     return res.status(500).json({ error: 'Could not work out which deliveries overlap this area' });
+  }
+}
+
+/**
+ * POST /versions/:id/areas/:areaId/cut-around — { cutAround: [versionId], apply }
+ *
+ * Take the picked deliveries' ground out of this one area, without splitting it
+ * (workAreaSplit.cutAreaAround). Preview first (apply false), then apply.
+ */
+async function cutAreaAround(req, res) {
+  try {
+    const scope = await resolveNetworkScope(req);
+    if (!scope) return res.status(404).json({ error: 'Network version not found' });
+    assertProjectAccess(req.user, scope.projectId);
+    const area = await WorkArea.findOne({
+      _id: asObjectId(req.params.areaId) || null,
+      networkVersionId: { $in: scope.versionIds },
+    }).select('networkVersionId');
+    if (!area) return res.status(404).json({ error: 'Work area not found in this version' });
+
+    const result = await workAreaSplit.cutAreaAround({
+      versionId: area.networkVersionId,
+      areaId: area._id,
+      cutAround: Array.isArray(req.body?.cutAround) ? req.body.cutAround : [],
+      apply: req.body?.apply === true,
+      userId: req.user._id,
+    });
+    return res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    // eslint-disable-next-line no-console
+    console.error('[cut around]', err);
+    return res.status(500).json({ error: 'The area could not be cut around — nothing was changed' });
   }
 }
 
@@ -2688,6 +2725,7 @@ module.exports = {
   reopenArea,
   splitArea,
   areaOverlaps,
+  cutAreaAround,
   joinArea,
   clearAreaCoverage,
   versionTracks,

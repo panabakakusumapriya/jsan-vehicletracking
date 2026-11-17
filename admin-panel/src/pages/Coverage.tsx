@@ -757,6 +757,8 @@ function ProgressTab({
 
   /** The area being split into zones, while its dialog is open. */
   const [splitting, setSplitting] = useState<AreaCoverageDetail['area'] | null>(null);
+  /** A zone (or any area) to cut around other deliveries without splitting it. */
+  const [cuttingAround, setCuttingAround] = useState<AreaCoverageDetail['area'] | null>(null);
   /** The area whose driven data is about to be cleared, while its "are you sure?" is open. */
   const [clearing, setClearing] = useState<AreaCoverageDetail | null>(null);
 
@@ -1506,6 +1508,19 @@ function ProgressTab({
                 Join zones back…
               </button>
             )}
+            {/* A zone cannot be split again, but it can still be drawn over another delivery's
+                ground: take that ground out of it, keeping it whole. (An unsplit area has the same
+                choice inside "Split into zones…".) */}
+            {canEdit && !shownDone && shownDetail.area.splitFrom && (
+              <button
+                className="btn-ghost"
+                disabled={detailBusy}
+                title="Check whether this zone overlaps another delivery's areas, and cut them out of it"
+                onClick={() => setCuttingAround(shownDetail.area)}
+              >
+                Cut around…
+              </button>
+            )}
             {/* Hand the area over afresh: the ledger is fleet-wide, so a second driver would open
                 it already blue. Asks first — this wipes recorded progress. */}
             {canEdit && !shownDone && shownDetail.coveredLinks > 0 && (
@@ -2092,7 +2107,16 @@ function ProgressTab({
           </div>
         )}
         {assignNote && (
-          <div className="cov-issue warn" style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          <div
+            className="cov-issue warn"
+            style={{
+              marginTop: 8, display: 'flex', gap: 10, alignItems: 'flex-start',
+              // Under the map is off-screen in fullscreen (the map is 100vh), so float it on the map.
+              ...(isFullscreen
+                ? { position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 20, maxWidth: 'min(640px, calc(100% - 24px))', marginTop: 0 }
+                : {}),
+            }}
+          >
             <span style={{ flex: 1 }}>{assignNote}</span>
             <button type="button" className="cov-pop-x" aria-label="Dismiss" onClick={() => setAssignNote(null)}>✕</button>
           </div>
@@ -2287,6 +2311,29 @@ function ProgressTab({
             // The area is gone; land on its first zone so the map does not show an empty card.
             setSelectedIds(result.zones[0]?._id ? [result.zones[0]._id] : []);
             loadAssignments();
+            setReloadKey((n) => n + 1);
+            onChanged();
+          }}
+          onCut={(result) => {
+            // Kept whole, only its outline changed: same area, redrawn.
+            setSplitting(null);
+            loadDetail(result.area._id);
+            setReloadKey((n) => n + 1);
+            onChanged();
+          }}
+        />
+      )}
+
+      {cuttingAround && (
+        <SplitZonesModal
+          mode="cut"
+          scopeId={scopeId}
+          area={cuttingAround}
+          onClose={() => setCuttingAround(null)}
+          onDone={() => setCuttingAround(null)}
+          onCut={(result) => {
+            setCuttingAround(null);
+            loadDetail(result.area._id);
             setReloadKey((n) => n + 1);
             onChanged();
           }}

@@ -44,34 +44,76 @@ const piecesBbox = (pieces) => pieces.reduce((box, poly) => (box ? bboxUnion(box
 const boxesOverlap = (a, b) => Boolean(a && b) && a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
 
 /**
- * Do two sets of polygons share ground? Answered from sampled vertices, both ways round.
+ * How much ground two sets of polygons really share, in m² — measured, not guessed.
  *
- * An exact boolean between a zone (thousands of vertices — a Voronoi cut against a country outline)
- * and a city polygon (7,000) took 20 seconds per pair with polygon-clipping; on a five-second budget
- * for a dialog that is a no. A sampled vertex of either outline that lands inside the other answers
- * the same question in milliseconds, and the only case it can miss — two shapes that overlap without
- * a single vertex of either falling in the other — cannot happen for outlines this size.
+ * Two earlier answers were wrong in ways that mattered:
+ *  - an exact boolean (polygon-clipping) took ~20 s per pair between a Voronoi zone cut from a
+ *    country outline and a 7,000-vertex city polygon: far too slow for a dialog;
+ *  - "does a sampled corner of one fall inside the other" was fast, but once a zone had been cut
+ *    around another delivery the hole's edge IS that delivery's outline, vertex for vertex, so its
+ *    corners lie exactly on the other's border and the ray test called about half of them inside.
+ *    Every cut zone in Vietnam was listed as still overlapping, with 0 m² actually shared. It could
+ *    also miss a real overlap where two outlines cross without a corner of either inside the other.
+ *
+ * A grid of points over the box the two have in common answers both: a point counts when it is
+ * inside both. Points sit at cell centres, not on vertices, so outlines that only touch share
+ * nothing; and any overlap bigger than a cell is found however the outlines cross. At most
+ * GRID_CELLS² points (never more than GRID_MAX_SIDE along one side), cells never finer than 10 m.
+ *
+ * @returns { sqm, cellSqm }  shared ground, and the size of one grid cell (the measuring step)
  */
-function piecesOverlap(aPieces, bPieces) {
+const GRID_CELLS = 60;
+const GRID_MAX_SIDE = 240;
+/** Less shared ground than this is two outlines drawn a hair apart, not an overlap: 1,000 m². */
+const MIN_SHARED_SQM = 1000;
+
+function insideAny(pt, pieces, boxes) {
+  for (let i = 0; i < pieces.length; i++) {
+    const b = boxes[i];
+    if (pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
+    if (pointInPolygon(pt, pieces[i])) return true;
+  }
+  return false;
+}
+
+function sharedGround(aPieces, bPieces) {
   const aBoxes = aPieces.map((p) => bboxOf(p[0]));
   const bBoxes = bPieces.map((p) => bboxOf(p[0]));
-  const scan = (from, fromBoxes, into, intoBoxes) => {
-    for (let i = 0; i < from.length; i++) {
-      if (!intoBoxes.some((b) => boxesOverlap(fromBoxes[i], b))) continue;
-      const ring = from[i][0];
-      const step = Math.max(1, Math.floor(ring.length / 40));
-      for (let k = 0; k < ring.length; k += step) {
-        const pt = ring[k];
-        for (let j = 0; j < into.length; j++) {
-          const b = intoBoxes[j];
-          if (pt[0] < b[0] || pt[0] > b[2] || pt[1] < b[1] || pt[1] > b[3]) continue;
-          if (pointInPolygon(pt, into[j])) return true;
-        }
-      }
-    }
-    return false;
+  const aBox = aBoxes.reduce((b, x) => bboxUnion(b, x), null);
+  const bBox = bBoxes.reduce((b, x) => bboxUnion(b, x), null);
+  if (!aBox || !bBox || !boxesOverlap(aBox, bBox)) return { sqm: 0, cellSqm: 0 };
+  const box = [Math.max(aBox[0], bBox[0]), Math.max(aBox[1], bBox[1]), Math.min(aBox[2], bBox[2]), Math.min(aBox[3], bBox[3])];
+  if (box[0] >= box[2] || box[1] >= box[3]) return { sqm: 0, cellSqm: 0 };
+
+  const kx = 111320 * Math.cos((((box[1] + box[3]) / 2) * Math.PI) / 180);
+  const ky = 110540;
+  const wM = (box[2] - box[0]) * kx;
+  const hM = (box[3] - box[1]) * ky;
+  const cellM = Math.max(10, Math.sqrt((wM * hM) / (GRID_CELLS * GRID_CELLS)), wM / GRID_MAX_SIDE, hM / GRID_MAX_SIDE);
+  const nx = Math.max(1, Math.ceil(wM / cellM));
+  const ny = Math.max(1, Math.ceil(hM / cellM));
+  const dx = (box[2] - box[0]) / nx;
+  const dy = (box[3] - box[1]) / ny;
+  const cellSqm = (wM / nx) * (hM / ny);
+
+  // Only the pieces that reach into the shared box take part.
+  const near = (pieces, boxes) => {
+    const keep = pieces.map((_, i) => i).filter((i) => boxesOverlap(boxes[i], box));
+    return [keep.map((i) => pieces[i]), keep.map((i) => boxes[i])];
   };
-  return scan(aPieces, aBoxes, bPieces, bBoxes) || scan(bPieces, bBoxes, aPieces, aBoxes);
+  const [aNear, aNearBoxes] = near(aPieces, aBoxes);
+  const [bNear, bNearBoxes] = near(bPieces, bBoxes);
+  if (!aNear.length || !bNear.length) return { sqm: 0, cellSqm };
+
+  let hits = 0;
+  for (let i = 0; i < nx; i++) {
+    const x = box[0] + (i + 0.5) * dx;
+    for (let j = 0; j < ny; j++) {
+      const pt = [x, box[1] + (j + 0.5) * dy];
+      if (insideAny(pt, bNear, bNearBoxes) && insideAny(pt, aNear, aNearBoxes)) hits++;
+    }
+  }
+  return { sqm: hits * cellSqm, cellSqm };
 }
 
 /**
@@ -110,7 +152,7 @@ async function overlappingDeliveries({ versionId, parent }) {
     'bbox.1': { $lte: parentBox[3] },
     'bbox.3': { $gte: parentBox[1] },
   })
-    .select('areaCode name geometry networkVersionId')
+    .select('areaCode name geometry areaSqm networkVersionId')
     .lean();
 
   const parentBoxes = parentPieces.map((p) => bboxOf(p[0]));
@@ -123,18 +165,65 @@ async function overlappingDeliveries({ versionId, parent }) {
     // site sits inside one or two of them.
     const near = parentPieces.filter((p, i) => boxesOverlap(parentBoxes[i], box));
     if (!near.length) continue;
-    if (!piecesOverlap(near, pieces)) continue;
+    // Measured, so an outline that only touches this one — the edge of a hole cut around it — is
+    // not reported as sitting on it (see sharedGround).
+    const shared = sharedGround(near, pieces);
+    if (shared.sqm < MIN_SHARED_SQM) continue;
 
     const key = String(area.networkVersionId);
     if (!found.has(key)) {
-      found.set(key, { versionId: area.networkVersionId, label: labels.get(key) || 'Untitled delivery', areas: [], pieces: [] });
+      found.set(key, { versionId: area.networkVersionId, label: labels.get(key) || 'Untitled delivery', areas: [], pieces: [], sqm: 0 });
     }
     const row = found.get(key);
-    row.areas.push({ areaCode: area.areaCode, name: area.name });
+    const ownSqm = area.areaSqm || areaSplit.geometryAreaSqm(area.geometry);
+    row.areas.push({ areaCode: area.areaCode, name: area.name, sqm: shared.sqm, share: ownSqm ? Math.min(1, shared.sqm / ownSqm) : null });
     row.pieces.push(...pieces);
+    row.sqm += shared.sqm;
   }
-  // Biggest first: the delivery with the most areas on this ground is the one to talk about.
-  return [...found.values()].sort((a, b) => b.areas.length - a.areas.length);
+  // Most shared ground first, and within a delivery the areas it overlaps most.
+  for (const row of found.values()) row.areas.sort((a, b) => b.sqm - a.sqm);
+  return [...found.values()].sort((a, b) => b.sqm - a.sqm);
+}
+
+/** One overlapping delivery as the API reports it: what is shared, area by area, in km². */
+function overlapRow(row) {
+  return {
+    versionId: String(row.versionId),
+    label: row.label,
+    areas: row.areas.length,
+    sqKm: row.sqm / 1e6,
+    names: row.areas.slice(0, 6).map((a) => a.name || a.areaCode),
+    list: row.areas.slice(0, 12).map((a) => ({ code: a.areaCode, name: a.name || a.areaCode, sqKm: a.sqm / 1e6, share: a.share })),
+  };
+}
+
+/**
+ * After a cut: which pieces of ground still sit on the deliveries they were cut around. Should be
+ * none. A zone that lay wholly inside another delivery could not be cut (nothing would have been
+ * left of it) and is drawn whole — that is exactly the overlap a manager must be told about rather
+ * than discover on the map, so it is measured and listed instead of passing in silence.
+ *
+ * @param shapes  [{ code, name, geometry }]
+ * @param cut     overlappingDeliveries rows that were cut around
+ */
+function remainingOverlaps(shapes, cut) {
+  const out = [];
+  const others = cut.map((row) => ({ label: row.label, pieces: row.pieces, box: piecesBbox(row.pieces) }));
+  for (const shape of shapes) {
+    const pieces = polygonsOf(shape.geometry);
+    const box = piecesBbox(pieces);
+    let sqm = 0;
+    const withLabels = [];
+    for (const other of others) {
+      if (!boxesOverlap(box, other.box)) continue;
+      const shared = sharedGround(pieces, other.pieces);
+      if (shared.sqm < MIN_SHARED_SQM) continue;
+      sqm += shared.sqm;
+      withLabels.push(other.label);
+    }
+    if (withLabels.length) out.push({ code: shape.code, name: shape.name, sqKm: sqm / 1e6, with: withLabels });
+  }
+  return out;
 }
 
 /** How much of `links` runs inside `pieces` — the road a cut around it would move. */
@@ -439,6 +528,8 @@ async function splitCommittedArea({
       zonesCutAround++;
     }
   }
+  // Check the result instead of trusting it: whatever still sits on a delivery that was cut around.
+  const remaining = cut.length && planZones ? remainingOverlaps(planZones, cut) : [];
 
   const zoneList = planZones || zoneDocs.map((d) => ({ code: d.areaCode, name: d.name }));
   const perZone = zoneList.map(() => ({ meters: 0, links: 0 }));
@@ -472,15 +563,15 @@ async function splitCommittedArea({
     // stays with the zone surrounding the hole — this delivery's own road, whose class the delivery
     // it is cut around does not hold.
     overlaps: overlaps.map((row) => ({
-      versionId: String(row.versionId),
-      label: row.label,
-      areas: row.areas.length,
-      names: row.areas.slice(0, 4).map((a) => a.name || a.areaCode),
+      ...overlapRow(row),
       links: row.links,
       km: row.km,
       cutAround: cut.some((c) => String(c.versionId) === String(row.versionId)),
     })),
     zonesCutAround,
+    // Zones that would still sit on a delivery they were cut around — should be none (see
+    // remainingOverlaps). The panel shows them in red before anything is written.
+    remaining,
     excluded: [...cutRoad.entries()].map(([versionId, road]) => {
       const row = cut.find((c) => String(c.versionId) === versionId);
       return { versionId, label: row.label, links: road.links, km: road.km };
@@ -1043,11 +1134,107 @@ async function carrySplitsForward({ areas, linksOf, projectId = null, deps = {} 
   return { areas: next, splits, unplacedLinks, unplacedMeters };
 }
 
+/**
+ * Take other deliveries' ground out of ONE area, without splitting it.
+ *
+ * For an area that has to stay whole but was drawn over another delivery's areas: a small strip
+ * (Vietnam's "P1 exception – Hanoi fringe" lay across two TPA sites, 2.1 km²), a zone that missed a
+ * cut, a client's site. Same cut as "Cut around" in a split: the other delivery's polygons become
+ * holes. Nothing else moves — the area keeps its code, its assignment and every one of its roads,
+ * the ones that run inside a hole included (they are this delivery's road class, not the other's).
+ * What was cut is recorded on the area (`props.cutAround`).
+ *
+ * Refused when nothing would be left: an area wholly inside the other delivery's ground cannot be
+ * cut around it — that is a decision about the data, not something to do quietly.
+ *
+ * `apply: false` works it out and writes nothing.
+ */
+async function cutAreaAround({ versionId, areaId, cutAround = [], apply = false, userId = null }) {
+  const area = await WorkArea.findOne({ _id: areaId, networkVersionId: versionId }).lean();
+  if (!area) throw Object.assign(new Error('Work area not found in this network version'), { status: 404 });
+  const cutIds = (Array.isArray(cutAround) ? cutAround : []).map(String).filter(Boolean);
+  if (!cutIds.length) throw Object.assign(new Error('Tick at least one delivery to cut around'), { status: 400 });
+
+  const overlaps = await overlappingDeliveries({ versionId, parent: area });
+  const cut = overlaps.filter((row) => cutIds.includes(String(row.versionId)));
+  if (!cut.length) {
+    throw refuse(`${area.name} does not overlap the deliveries picked — there is nothing to cut around`);
+  }
+
+  const linkDocs = await RoadLink.find({ networkVersionId: versionId, areaId: area._id })
+    .select('geometry lengthMeters')
+    .lean();
+  const links = linkDocs.map((l) => ({ coords: l.geometry.coordinates, meters: l.lengthMeters }));
+
+  const pieces = polygonsOf(area.geometry);
+  const hole = polygonClipping.union(...cut.flatMap((row) => row.pieces));
+  const kept = polygonClipping.difference(pieces, hole);
+  if (!kept.length) {
+    throw refuse(
+      `${area.name} lies entirely inside ${cut.map((row) => row.label).join(' and ')} — cutting around it would leave nothing. ` +
+      'Decide which delivery that ground belongs to instead.'
+    );
+  }
+  const geometry = kept.length === 1 ? { type: 'Polygon', coordinates: kept[0] } : { type: 'MultiPolygon', coordinates: kept };
+  const beforeSqm = areaSplit.geometryAreaSqm(area.geometry);
+  const afterSqm = areaSplit.geometryAreaSqm(geometry);
+  const remaining = remainingOverlaps([{ code: area.areaCode, name: area.name, geometry }], cut);
+
+  const summary = {
+    area: { _id: area._id, code: area.areaCode, name: area.name, km: (area.targetMeters || 0) / 1000, links: area.targetLinks || 0 },
+    beforeSqKm: beforeSqm / 1e6,
+    afterSqKm: afterSqm / 1e6,
+    cutSqKm: Math.max(0, beforeSqm - afterSqm) / 1e6,
+    overlaps: overlaps.map((row) => ({ ...overlapRow(row), cutAround: cutIds.includes(String(row.versionId)) })),
+    // This area's own road inside the holes: it stays with the area.
+    excluded: cut.map((row) => {
+      const road = roadInside(links, row.pieces);
+      return { versionId: String(row.versionId), label: row.label, links: road.links, km: road.meters / 1000 };
+    }),
+    remaining,
+    applied: false,
+  };
+  if (!apply) return summary;
+  if (remaining.length) {
+    throw refuse(`${area.name} would still overlap ${remaining[0].with.join(', ')} after the cut — nothing was changed`);
+  }
+
+  const props = {
+    ...(area.props || {}),
+    cutAround: [
+      ...((area.props && area.props.cutAround) || []),
+      ...cut.map((row) => ({ versionId: row.versionId, label: row.label, sqKm: row.sqm / 1e6, at: new Date(), by: userId })),
+    ],
+  };
+  try {
+    await WorkArea.updateOne(
+      { _id: area._id },
+      {
+        $set: {
+          geometry,
+          outline: simplifyGeometry(geometry, OUTLINE_TOLERANCE_M),
+          bbox: piecesBbox(kept),
+          areaSqm: afterSqm,
+          props,
+        },
+      }
+    );
+  } catch (err) {
+    // The 2dsphere index refuses an outline it cannot read: say so, and nothing has changed.
+    throw refuse(`The cut outline of ${area.name} could not be stored (${err.message}) — nothing was changed`);
+  }
+  summary.applied = true;
+  return summary;
+}
+
 module.exports = {
   optionsFrom,
   zoneLocator,
   findExistingZones,
   overlappingDeliveries,
+  sharedGround,
+  remainingOverlaps,
+  cutAreaAround,
   splitCommittedArea,
   cutCommittedArea,
   joinSplitArea,
