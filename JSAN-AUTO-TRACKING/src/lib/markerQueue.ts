@@ -24,6 +24,8 @@ export type PendingMarker = {
   note?: string;
   /** Photos waiting on this phone; each gets its bucket `key` once uploaded. */
   photos?: PendingPhoto[];
+  /** How many flushes have tried and failed to upload photos. After 3, the marker goes without. */
+  photoAttempts?: number;
 };
 
 /** A photo of a drop, saved on the phone until it is in the bucket. */
@@ -303,14 +305,30 @@ function toUpload(p: PendingMarker, withPhotos: boolean): MarkerUpload {
 /**
  * The drops that can go up now, photos first. A drop whose photos cannot go yet stays queued
  * (it is still drawn on the driver's map from the outbox) and is tried again on the next flush.
+ * After 3 failed attempts the marker is sent without photos — the drop must never be held hostage
+ * by a storage upload that cannot succeed (weak signal, signature mismatch, bucket issue).
  */
+const MAX_PHOTO_ATTEMPTS = 3;
+
 async function readyToSend(token: string, list: PendingMarker[]): Promise<MarkerUpload[]> {
   const out: MarkerUpload[] = [];
   for (const p of list) {
     const state = await uploadPhotos(token, p);
-    if (state === 'later') continue;
-    const fresh = readOutbox().find((x) => x.clientId === p.clientId) || p;
-    out.push(toUpload(fresh, state === 'ready'));
+    if (state === 'later') {
+      const attempts = (p.photoAttempts || 0) + 1;
+      if (attempts >= MAX_PHOTO_ATTEMPTS) {
+        // Give up on photos: send the marker now, strip the photos from the outbox entry.
+        const fresh = readOutbox().find((x) => x.clientId === p.clientId) || p;
+        out.push(toUpload({ ...fresh, photos: undefined }, false));
+        writeOutbox(readOutbox().map((x) => x.clientId === p.clientId ? { ...x, photos: undefined, photoAttempts: attempts } : x));
+      } else {
+        writeOutbox(readOutbox().map((x) => x.clientId === p.clientId ? { ...x, photoAttempts: attempts } : x));
+        continue;
+      }
+    } else {
+      const fresh = readOutbox().find((x) => x.clientId === p.clientId) || p;
+      out.push(toUpload(fresh, state === 'ready'));
+    }
   }
   return out;
 }
