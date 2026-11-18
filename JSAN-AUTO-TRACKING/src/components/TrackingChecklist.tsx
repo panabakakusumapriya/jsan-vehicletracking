@@ -136,7 +136,7 @@ export function TrackingChecklist({ compact = false }: { compact?: boolean }) {
     return (
       <View style={[c.card, allOk ? c.cardOk : c.cardBad]}>
         <View style={c.head}>
-          <Text style={c.title}>Tracking checklist</Text>
+          <Text style={c.title}>Tracking check</Text>
           {badge}
         </View>
         {list}
@@ -152,10 +152,10 @@ export function TrackingChecklist({ compact = false }: { compact?: boolean }) {
         onPress={() => setOpen(true)}
         activeOpacity={0.8}
         accessibilityRole="button"
-        accessibilityLabel="Open tracking checklist"
+        accessibilityLabel="Open tracking check"
       >
         <View style={c.head}>
-          <Text style={c.title}>Tracking checklist</Text>
+          <Text style={c.title}>Tracking check</Text>
           {badge}
         </View>
         <View style={c.summaryRow}>
@@ -172,7 +172,7 @@ export function TrackingChecklist({ compact = false }: { compact?: boolean }) {
       <ModalSheet visible={open} onClose={() => setOpen(false)} heightRatio={0.62}>
         <ScrollView contentContainerStyle={c.sheetBody}>
           <View style={c.head}>
-            <Text style={c.sheetTitle}>Tracking checklist</Text>
+            <Text style={c.sheetTitle}>Tracking check</Text>
             {badge}
           </View>
           <Text style={c.sheetSub}>
