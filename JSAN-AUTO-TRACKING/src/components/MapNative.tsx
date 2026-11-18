@@ -38,7 +38,13 @@ const MAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const COLOR_UNCOVERED = '#dc2626';
 const COLOR_COVERED = '#2563eb';
 const COLOR_TRACE = '#059669';
-const COLOR_AREA = '#7c3aed';
+/**
+ * The work-area boundary. Was violet (#7c3aed): at 2 px on a pale basemap it reads as navy blue,
+ * right next to the blue driven roads and the cyan history band, so drivers and managers could not
+ * tell the boundary from collected road. Black, as on the admin panel's map (AREA_STATUS.held):
+ * no road colour comes near it.
+ */
+const COLOR_AREA = '#111111';
 const COLOR_VEHICLE = '#7c3aed';
 /**
  * Earlier trips. Was a thin grey line at 55% drawn OVER the roads — drivers could hardly make it
@@ -370,12 +376,12 @@ export const MapNative = forwardRef<MapGLHandle, MapGLProps>(function MapNative(
         <GeoJSONSource id="areas" data={areasData}>
           <Layer
             type="fill" id="area-fill"
-            paint={{ 'fill-color': COLOR_AREA, 'fill-opacity': 0.07 }}
+            paint={{ 'fill-color': COLOR_AREA, 'fill-opacity': 0.04 }}
             layout={{ visibility: showAreas ? 'visible' : 'none' }}
           />
           <Layer
             type="line" id="area-outline"
-            paint={{ 'line-color': COLOR_AREA, 'line-width': 2, 'line-opacity': 0.85, 'line-dasharray': [3, 2] }}
+            paint={{ 'line-color': COLOR_AREA, 'line-width': 2.5, 'line-opacity': 0.9, 'line-dasharray': [3, 2] }}
             layout={{ visibility: showAreas ? 'visible' : 'none' }}
           />
         </GeoJSONSource>
