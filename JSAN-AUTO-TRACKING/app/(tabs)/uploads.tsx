@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as VehicleTracker from '@/modules/vehicle-tracker';
 import type { SyncStatus } from '@/modules/vehicle-tracker';
 import { useAuth } from '@/src/lib/auth';
-import { flushMarkerQueue, pendingMarkerCount } from '@/src/lib/markerQueue';
+import { flushMarkerQueue, markerSyncProblem, pendingMarkerCount } from '@/src/lib/markerQueue';
 import { timeLeftText } from '@/src/lib/tripSync';
 
 /**
@@ -53,6 +53,8 @@ export default function SyncTab() {
   const { token } = useAuth();
   const [st, setSt] = useState<SyncStatus | null>(null);
   const [markers, setMarkers] = useState(0);
+  /** Why markers are still waiting, when the queue knows (a refused photo upload, no answer…). */
+  const [markerProblem, setMarkerProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const startCount = useRef<number | null>(null);
   const samples = useRef<{ t: number; q: number }[]>([]);
@@ -66,6 +68,7 @@ export default function SyncTab() {
       setSt(next);
     } catch { /* next poll */ }
     setMarkers(pendingMarkerCount());
+    setMarkerProblem(markerSyncProblem());
   }, []);
 
   // Only while the tab is on screen.
@@ -168,6 +171,7 @@ export default function SyncTab() {
       <View style={s.list}>
         <Row icon="road" label="Trip points" value={queued ? `${queued.toLocaleString()} waiting` : 'All synced'} ok={!queued} />
         <Row icon="map-marker" label="Markers" value={markers ? `${markers} waiting` : 'All synced'} ok={!markers} />
+        {!!markers && !!markerProblem && <Text style={s.problem}>{markerProblem}</Text>}
         <Row icon="signal" label="Connection" value={st ? (st.online ? 'Online' : 'Offline') : '—'} ok={!!st?.online} />
         <Row icon="clock-o" label="Last upload" value={st?.lastSuccessAt ? ago(st.lastSuccessAt) : 'Not since the app opened'} ok last />
       </View>
@@ -215,6 +219,7 @@ const s = StyleSheet.create({
   fill: { height: 8, borderRadius: 99 },
   etaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
   eta: { fontSize: 14, fontWeight: '700', color: C.text2 },
+  problem: { fontSize: 12.5, color: C.amber, paddingHorizontal: 16, paddingBottom: 10, marginTop: -4, lineHeight: 17 },
   list: { ...shadow, backgroundColor: C.surface, borderRadius: 18, borderWidth: 1, borderColor: C.border, paddingHorizontal: 14 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: C.border },
   rowLabel: { flex: 1, fontSize: 14, color: C.text2 },

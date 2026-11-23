@@ -24,8 +24,14 @@ export type PendingMarker = {
   note?: string;
   /** Photos waiting on this phone; each gets its bucket `key` once uploaded. */
   photos?: PendingPhoto[];
-  /** How many flushes have tried and failed to upload photos. After 3, the marker goes without. */
+  /** How many flushes have tried and failed to upload this drop's photos. */
   photoAttempts?: number;
+  /**
+   * The marker itself is on the server; the entry stays only for its photos, which are attached to
+   * it once they are in the bucket (the server completes a drop it already has when the same
+   * clientId comes again with photo keys).
+   */
+  sent?: boolean;
 };
 
 /** A photo of a drop, saved on the phone until it is in the bucket. */
@@ -224,7 +230,7 @@ async function flushRemovals(token: string): Promise<number> {
   const done = new Set<string>();
   for (const key of list) {
     try {
-      await apiRemoveMarker(token, key);
+      await withTimeout(apiRemoveMarker(token, key), REQUEST_TIMEOUT_MS);
       done.add(key);
     } catch (e) {
       const status = (e as { status?: number }).status;
@@ -240,15 +246,49 @@ async function flushRemovals(token: string): Promise<number> {
 
 /** How long one photo may take to upload before it is left for the next flush. */
 const PHOTO_UPLOAD_TIMEOUT_MS = 90_000;
+/**
+ * How long one request to our own server may take. Without a limit, one request that never got an
+ * answer (a dead mobile connection that never errors) held the flush open for good — and every
+ * later flush waits on the one running, so no marker went up again until the app was restarted.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * Flushes that may fail to put a drop's photos in the bucket before the photos are given up. The
+ * marker itself went up long before; only its pictures are lost, never the drop.
+ */
+const MAX_PHOTO_ATTEMPTS = 10;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error('The server did not answer in time'), { status: 0 })), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * The last thing that stopped a marker or a photo going up, in words — shown on the Sync tab so a
+ * stuck queue explains itself instead of just counting. Cleared when a flush delivers everything.
+ */
+let lastProblem: string | null = null;
+export function markerSyncProblem(): string | null {
+  return readOutbox().length + readRemovals().length > 0 ? lastProblem : null;
+}
 
 /**
  * Put a drop's photos into the bucket: signed links from the server, then one PUT per photo straight
- * to storage, streamed from the file (never read into JS memory). Each photo's key is written back to
- * the outbox as soon as it is up, so an interrupted flush resumes where it stopped.
+ * to storage. Each photo's key is written back to the outbox as soon as it is up, so an interrupted
+ * flush resumes where it stopped.
  *
- *   'ready'       — every photo is up (or the drop has none): send the marker.
- *   'later'       — offline, storage not set up on the server yet (503), or an upload failed: keep it.
- *   'unsupported' — a server from before photos (404): send the marker without them.
+ * The body is the JPEG's bytes with our own Content-Type. Handed the File object itself, expo/fetch
+ * REPLACES the request's Content-Type with the type it guesses for the file — and the type is part
+ * of the link's signature, so the bucket refuses any other value.
+ *
+ *   'ready'       — every photo is up (or the drop has none).
+ *   'later'       — offline, storage not set up on the server yet (503), or an upload failed.
+ *   'unsupported' — a server from before photos (404): the drop goes without them.
  */
 async function uploadPhotos(token: string, p: PendingMarker): Promise<'ready' | 'later' | 'unsupported'> {
   const photos = (p.photos || []).filter((ph) => {
@@ -258,23 +298,35 @@ async function uploadPhotos(token: string, p: PendingMarker): Promise<'ready' | 
   if (!photos.length || photos.every((ph) => ph.key)) return 'ready';
   let links: { key: string; url: string; contentType: string }[];
   try {
-    links = (await apiMarkerPhotoUploads(token, p.clientId, photos.length)).uploads;
+    links = (await withTimeout(apiMarkerPhotoUploads(token, p.clientId, photos.length), REQUEST_TIMEOUT_MS)).uploads;
   } catch (e) {
-    return (e as { status?: number }).status === 404 ? 'unsupported' : 'later';
+    const status = (e as { status?: number }).status;
+    if (status === 404) return 'unsupported';
+    lastProblem = status === 503
+      ? 'Photo storage is not set up on the server yet'
+      : `Could not get a photo upload link: ${e instanceof Error ? e.message : 'unknown error'}`;
+    return 'later';
   }
   for (let i = 0; i < photos.length; i += 1) {
     if (photos[i].key || !links[i]) continue;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), PHOTO_UPLOAD_TIMEOUT_MS);
     try {
+      const bytes = await new File(photos[i].file).bytes();
       const res = await expoFetch(links[i].url, {
         method: 'PUT',
         headers: { 'Content-Type': links[i].contentType },
-        body: new File(photos[i].file),
+        body: bytes,
         signal: ctrl.signal,
       });
-      if (!res.ok) return 'later';
-    } catch {
+      if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.text()).match(/<Code>([^<]+)<\/Code>/)?.[1] ?? ''; } catch { /* no body */ }
+        lastProblem = `Photo upload refused by storage (${res.status}${detail ? ` ${detail}` : ''})`;
+        return 'later';
+      }
+    } catch (e) {
+      lastProblem = `Photo upload failed: ${e instanceof Error ? e.message : 'unknown error'}`;
       return 'later';
     } finally {
       clearTimeout(timer);
@@ -290,101 +342,133 @@ function savePhotos(clientId: string, photos: PendingPhoto[]) {
   writeOutbox(readOutbox().map((x) => (x.clientId === clientId ? { ...x, photos } : x)));
 }
 
-/** A queued drop as the server takes it: local file paths stay on the phone. */
-function toUpload(p: PendingMarker, withPhotos: boolean): MarkerUpload {
+const hasPhotos = (p: PendingMarker) => (p.photos || []).length > 0;
+const allPhotosUp = (p: PendingMarker) => (p.photos || []).every((ph) => ph.key);
+
+/**
+ * A queued drop as the server takes it: local file paths stay on the phone. Photo keys go only when
+ * EVERY photo is up — the server attaches photos to a marker that has none, once, so sending some
+ * now would lose the rest.
+ */
+function toUpload(p: PendingMarker): MarkerUpload {
   const up: MarkerUpload = { lat: p.lat, lon: p.lon, categoryId: p.categoryId, clientId: p.clientId, recordedAt: p.recordedAt };
   if (p.reason) up.reason = p.reason;
   if (p.note) up.note = p.note;
-  if (withPhotos) {
-    const keyed = (p.photos || []).filter((ph) => ph.key);
-    if (keyed.length) up.photos = keyed.map((ph) => ({ key: ph.key!, width: ph.width, height: ph.height, bytes: ph.bytes }));
+  if (hasPhotos(p) && allPhotosUp(p)) {
+    up.photos = p.photos!.map((ph) => ({ key: ph.key!, width: ph.width, height: ph.height, bytes: ph.bytes }));
   }
   return up;
 }
 
+type Delivery = { sent: MapMarker[]; delivered: Set<string>; dropped: Set<string> };
+
 /**
- * The drops that can go up now, photos first. A drop whose photos cannot go yet stays queued
- * (it is still drawn on the driver's map from the outbox) and is tried again on the next flush.
- * After 3 failed attempts the marker is sent without photos — the drop must never be held hostage
- * by a storage upload that cannot succeed (weak signal, signature mismatch, bucket issue).
+ * Send drops to the server: batches of up to 50 (POST /api/markers/batch), or one at a time on a
+ * server without the batch route. `delivered` is on the server; `dropped` never can be (a retired
+ * category). Null when nothing reached the server (offline, 5xx, no answer) — all of it stays queued.
  */
-const MAX_PHOTO_ATTEMPTS = 3;
-
-async function readyToSend(token: string, list: PendingMarker[]): Promise<MarkerUpload[]> {
-  const out: MarkerUpload[] = [];
-  for (const p of list) {
-    const state = await uploadPhotos(token, p);
-    if (state === 'later') {
-      const attempts = (p.photoAttempts || 0) + 1;
-      if (attempts >= MAX_PHOTO_ATTEMPTS) {
-        // Give up on photos: send the marker now, strip the photos from the outbox entry.
-        const fresh = readOutbox().find((x) => x.clientId === p.clientId) || p;
-        out.push(toUpload({ ...fresh, photos: undefined }, false));
-        writeOutbox(readOutbox().map((x) => x.clientId === p.clientId ? { ...x, photos: undefined, photoAttempts: attempts } : x));
-      } else {
-        writeOutbox(readOutbox().map((x) => x.clientId === p.clientId ? { ...x, photoAttempts: attempts } : x));
-        continue;
-      }
-    } else {
-      const fresh = readOutbox().find((x) => x.clientId === p.clientId) || p;
-      out.push(toUpload(fresh, state === 'ready'));
-    }
-  }
-  return out;
-}
-
-async function flushOnce(token: string): Promise<{ sent: MapMarker[]; pending: number }> {
-  const queued = readOutbox();
-  if (queued.length === 0) return { sent: [], pending: 0 };
-  const list = await readyToSend(token, queued);
-  if (list.length === 0) return { sent: [], pending: readOutbox().length };
-  const sent: MapMarker[] = [];
-  const done = new Set<string>();
-  let batchWorks = true;
-  for (let i = 0; i < list.length && batchWorks; i += 50) {
+async function sendMarkers(token: string, list: MarkerUpload[]): Promise<Delivery | null> {
+  const out: Delivery = { sent: [], delivered: new Set(), dropped: new Set() };
+  let reached = false;
+  for (let i = 0; i < list.length; i += 50) {
     const chunk = list.slice(i, i + 50);
     try {
-      const r = await apiDropMarkers(token, chunk);
+      const r = await withTimeout(apiDropMarkers(token, chunk), REQUEST_TIMEOUT_MS);
+      reached = true;
       for (const x of r.results || []) {
-        if (x.marker) { sent.push(x.marker); done.add(x.clientId); } else if (x.permanent) done.add(x.clientId);
+        if (x.marker) { out.sent.push(x.marker); out.delivered.add(x.clientId); }
+        else if (x.permanent) out.dropped.add(x.clientId);
+        else if (x.error) lastProblem = `Marker refused by the server: ${x.error}`;
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : '';
-      if (/404|not found/i.test(msg)) batchWorks = false; // older server: one at a time below
-      else break; // offline or 5xx: everything left stays queued for the next flush
+      const status = (e as { status?: number }).status;
+      if (status === 404 || /404|not found/i.test(msg)) return sendOneByOne(token, list.slice(i), out, reached);
+      lastProblem = `Markers could not be sent: ${msg || 'no connection'}`;
+      break;
     }
   }
-  if (batchWorks) {
-    // Re-read: drops made during the upload were appended meanwhile and must stay queued.
-    const now = readOutbox();
-    now.filter((p) => done.has(p.clientId)).forEach(forgetPhotos);
-    writeOutbox(now.filter((p) => !done.has(p.clientId)));
-    return { sent, pending: readOutbox().length };
-  }
-  return flushOneByOne(token, list);
+  return reached ? out : null;
 }
 
-async function flushOneByOne(token: string, list: MarkerUpload[]): Promise<{ sent: MapMarker[]; pending: number }> {
-  const sent: MapMarker[] = [];
-  const keep: MarkerUpload[] = [];
+async function sendOneByOne(token: string, list: MarkerUpload[], out: Delivery, reachedBefore: boolean): Promise<Delivery | null> {
+  let reached = reachedBefore;
   for (const p of list) {
     try {
-      const r = await apiDropMarker(token, p);
-      sent.push(r.marker);
+      const r = await withTimeout(apiDropMarker(token, p), REQUEST_TIMEOUT_MS);
+      reached = true;
+      out.sent.push(r.marker);
+      out.delivered.add(p.clientId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : '';
       // request() surfaces the server's error text; the only permanent one names the category.
-      if (/category/i.test(msg)) continue;
-      keep.push(p);
+      if (/category/i.test(msg)) { out.dropped.add(p.clientId); reached = true; continue; }
+      lastProblem = `Markers could not be sent: ${msg || 'no connection'}`;
+      break;
     }
   }
-  // What went up leaves the outbox (photos and all); what failed, and everything not tried this
-  // time (photos still waiting, drops made meanwhile), stays exactly as it was.
-  const kept = new Set(keep.map((p) => p.clientId));
-  const handled = new Set(list.map((p) => p.clientId).filter((id) => !kept.has(id)));
+  return reached ? out : null;
+}
+
+/** Take finished drops out of the outbox, photos and all (re-read: drops made meanwhile stay). */
+function finish(clientIds: Set<string>) {
+  if (!clientIds.size) return;
   const now = readOutbox();
-  now.filter((p) => handled.has(p.clientId)).forEach(forgetPhotos);
-  const left = now.filter((p) => !handled.has(p.clientId));
-  writeOutbox(left);
-  return { sent, pending: left.length };
+  now.filter((p) => clientIds.has(p.clientId)).forEach(forgetPhotos);
+  writeOutbox(now.filter((p) => !clientIds.has(p.clientId)));
+}
+
+/**
+ * One pass over the outbox, in two steps.
+ *
+ *  1. Every drop not yet on the server goes up NOW, photos or not. In the first 1.0.28 build a drop
+ *     waited for its photos to reach the bucket before the marker was sent at all — so when the
+ *     photo upload failed, the marker never arrived, however good the signal was for trip points.
+ *  2. Then the photos of drops already on the server: into the bucket, then attached to the marker
+ *     (the same clientId again, now with the photo keys). Given up after MAX_PHOTO_ATTEMPTS failed
+ *     flushes — the marker is safe either way.
+ */
+async function flushOnce(token: string): Promise<{ sent: MapMarker[]; pending: number }> {
+  const sent: MapMarker[] = [];
+  let problem = false;
+
+  const unsent = readOutbox().filter((p) => !p.sent);
+  if (unsent.length) {
+    const r = await sendMarkers(token, unsent.map(toUpload));
+    if (!r) return { sent, pending: readOutbox().length };
+    sent.push(...r.sent);
+    const done = new Set(r.dropped);
+    const forPhotos = new Set<string>();
+    for (const p of unsent) {
+      if (!r.delivered.has(p.clientId)) { if (!r.dropped.has(p.clientId)) problem = true; continue; }
+      // Up with all its photos (or it has none): finished. Otherwise it stays, for the photos.
+      if (!hasPhotos(p) || allPhotosUp(p)) done.add(p.clientId);
+      else forPhotos.add(p.clientId);
+    }
+    finish(done);
+    if (forPhotos.size) writeOutbox(readOutbox().map((x) => (forPhotos.has(x.clientId) ? { ...x, sent: true } : x)));
+  }
+
+  for (const p of readOutbox().filter((x) => x.sent)) {
+    const state = hasPhotos(p) ? await uploadPhotos(token, p) : 'unsupported';
+    const fresh = readOutbox().find((x) => x.clientId === p.clientId);
+    if (!fresh) continue; // taken off the map meanwhile
+    if (state === 'unsupported' || !hasPhotos(fresh)) { finish(new Set([p.clientId])); continue; }
+    if (state === 'ready') {
+      const r = await sendMarkers(token, [toUpload(fresh)]);
+      if (r && r.delivered.has(p.clientId)) {
+        if (r.sent[0]) sent.push(r.sent[0]);
+        finish(new Set([p.clientId]));
+        continue;
+      }
+    }
+    problem = true;
+    const attempts = (fresh.photoAttempts || 0) + 1;
+    if (attempts >= MAX_PHOTO_ATTEMPTS) finish(new Set([p.clientId]));
+    else writeOutbox(readOutbox().map((x) => (x.clientId === p.clientId ? { ...x, photoAttempts: attempts } : x)));
+  }
+
+  const pending = readOutbox().length;
+  if (!problem && pending === 0) lastProblem = null;
+  return { sent, pending };
 }
