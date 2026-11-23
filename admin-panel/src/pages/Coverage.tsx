@@ -1,7 +1,7 @@
 import { PageIcon } from '../components/AppIcon';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { AREA_STATUS, CoverageMap, deliveryColor, fcColor, type AreaProps } from '../components/CoverageMap';
+import { AREA_STATUS, CoverageMap, FC_KEY_PX, deliveryColor, fcColor, type AreaProps } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
@@ -1954,7 +1954,7 @@ function ProgressTab({
                   <div className="cov-status-key roads">
                     {FC_KEY.map(([fc, what]) => (
                       <span key={fc}>
-                        <i style={{ background: `rgb(${fcColor(fc).join(',')})` }} />
+                        <i style={{ background: `rgb(${fcColor(fc).join(',')})`, height: FC_KEY_PX[fc] }} />
                         <b>FC{fc}</b>
                         {layersExplain && <small>{what}</small>}
                       </span>

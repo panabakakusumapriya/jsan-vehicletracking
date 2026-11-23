@@ -31,9 +31,16 @@ const CELLS = 512;
 /** How long one slice of tile-building may hold the main thread. */
 const SLICE_MS = 4;
 
+/**
+ * Layers a tile is cut into, each drawn at its own width: 1 still to drive, 2 driven, and — with
+ * "Colour roads by FC" on — 3 to 7 still to drive by functional class, FC1 to FC5. Width has to be
+ * per layer (deck.gl's min/max pixel widths are layer props), so each class is its own bucket.
+ */
+export const ROAD_BUCKETS = 7;
+
 export interface RoadPaint {
   net: RoadNet;
-  /** Per link: 0 hidden, 1 still to drive, 2 driven. */
+  /** Per link: 0 hidden, else its bucket (see ROAD_BUCKETS). */
   bucketOf: Uint8Array;
   /** Per link: RGBA packed little-endian. */
   colorOf: Uint32Array;
@@ -52,8 +59,8 @@ export interface RoadTilePart {
 export interface RoadTileData {
   /** [lon, lat] the positions are offsets from (LNGLAT_OFFSETS, latitude bent as roadNetwork does). */
   origin: [number, number];
-  todo: RoadTilePart;
-  done: RoadTilePart;
+  /** One per bucket, bucket b at index b - 1. */
+  parts: RoadTilePart[];
   paints: RoadPaint[];
   pickable: boolean;
 }
@@ -228,13 +235,8 @@ async function build(
   // About how many metres a cell is, to skip walking the vertices of a road too short to leave one.
   const cellMetres = (40075016 * Math.cos(origin[1] * RAD)) / 2 ** z / CELLS;
 
-  const parts = [new Part(), new Part()];
-  if (!whole) {
-    for (const p of parts) {
-      p.dot = new Uint8Array(CELLS * CELLS);
-      p.step = new Uint8Array(CELLS * CELLS);
-    }
-  }
+  // The per-cell bookkeeping (2 × 256 KB) only for the buckets this tile actually uses.
+  const parts = Array.from({ length: ROAD_BUCKETS }, () => new Part());
 
   let sliceStart = performance.now();
   for (let pi = 0; pi < paints.length; pi++) {
@@ -265,6 +267,10 @@ async function build(
       const b = bucketOf[li];
       if (!b) continue;
       const part = parts[b - 1];
+      if (!whole && !part.dot) {
+        part.dot = new Uint8Array(CELLS * CELLS);
+        part.step = new Uint8Array(CELLS * CELLS);
+      }
       const v0 = starts[li];
       const v1 = starts[li + 1];
       const n = v1 - v0;
@@ -349,6 +355,6 @@ async function build(
       part.paths += 1;
     }
   }
-  if (!parts[0].paths && !parts[1].paths) return null;
-  return { origin, todo: parts[0].finish(), done: parts[1].finish(), paints, pickable: z >= PICK_TILE_Z };
+  if (!parts.some((p) => p.paths)) return null;
+  return { origin, parts: parts.map((p) => p.finish()), paints, pickable: z >= PICK_TILE_Z };
 }

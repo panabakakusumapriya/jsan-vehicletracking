@@ -16,7 +16,7 @@ import {
   type RoadState,
 } from '../lib/roadNetwork';
 import { Map3D, type Map3DHandle } from '../lib/map3d/Map3D';
-import { MAX_TILE_Z, buildRoadTile, type RoadTileData, type RoadTilePart } from '../lib/roadTiles';
+import { MAX_TILE_Z, buildRoadTile, type RoadTileData } from '../lib/roadTiles';
 import { AREA_LOD_TOLERANCES, areaLodOf, simplifyAreas } from '../lib/simplifyAreas';
 import { stateCoverage, type StateCoverage } from '../lib/stateCoverage';
 import { MarkerCardBody, pinUrl, type TripMarker } from './TripMarkers';
@@ -49,12 +49,32 @@ const BLUE: [number, number, number] = [37, 99, 235];
  */
 export const FC_COLORS: Record<number, [number, number, number]> = {
   1: [249, 115, 22], // orange — motorways
-  2: [234, 179, 8], // yellow
+  2: [202, 138, 4], // dark yellow — the bright one sank into the yellow of an unassigned area
   3: [22, 163, 74], // green
   4: [192, 38, 211], // fuchsia
   5: [100, 116, 139], // slate — local streets
 };
 const FC_UNKNOWN: [number, number, number] = [148, 163, 184];
+
+/**
+ * How each road layer is drawn: metres (so a road grows as you zoom in), never thinner than `min`
+ * pixels nor wider than `max`. The FC classes are thick on purpose — the client could not tell
+ * FC1 from FC5 at city zoom when they were the 1.3 px hairline every road to drive used to be —
+ * and FC1 heaviest, so the network's skeleton reads before its colour does. Index = bucket - 1.
+ */
+const ROAD_STYLE: { width: number; min: number; max: number }[] = [
+  { width: 3, min: 1.3, max: 6 }, // to drive
+  { width: 5, min: 2.4, max: 10 }, // driven
+  { width: 16, min: 6, max: 16 }, // FC1
+  { width: 14, min: 5, max: 14 }, // FC2
+  { width: 12, min: 4.2, max: 12 }, // FC3
+  { width: 10, min: 3.4, max: 10 }, // FC4
+  { width: 7, min: 2.4, max: 8 }, // FC5
+];
+/** Bottom to top: plain roads to drive, then FC5 up to FC1, driven roads over everything. */
+const ROAD_DRAW_ORDER = [1, 7, 6, 5, 4, 3, 2];
+/** Pixel widths of the line in the FC key, FC1..FC5 — the same order of weight as on the map. */
+export const FC_KEY_PX = [0, 6, 5, 4, 3.5, 2.5];
 export const fcColor = (fc: number): [number, number, number] => FC_COLORS[fc] || FC_UNKNOWN;
 
 type Geometry = { type: string; coordinates: unknown };
@@ -827,7 +847,7 @@ export function CoverageMap({
       });
       // Each link's bucket and colour, and nothing more: the geometry is cut into tiles as the map
       // asks for them (lib/roadTiles), so a change of colour no longer copies the whole network.
-      const bucketOf = new Uint8Array(net.linkCount); // 0 hidden, 1 to drive, 2 done
+      const bucketOf = new Uint8Array(net.linkCount); // 0 hidden, 1 to drive, 2 done, 3-7 FC1-5 to drive
       const colorOf = new Uint32Array(net.linkCount); // RGBA packed
       let shown = 0;
       let driven = 0;
@@ -840,11 +860,12 @@ export function CoverageMap({
         if (!visible) continue;
         shown += 1;
         if (covered) driven += 1;
-        let c: [number, number, number] = colorRoadsByFc ? fcColor(net.fc[i]) : todoColor;
+        const fc = net.fc[i];
+        let c: [number, number, number] = colorRoadsByFc ? fcColor(fc) : todoColor;
         let a = 225;
-        // 1 = still to drive, 2 = done: drawn as separate layers (below) so the driven roads can
-        // be the thicker ones at every zoom.
-        let bucket = 1;
+        // 1 = still to drive, 2 = done, 3-7 = still to drive by class: drawn as separate layers
+        // (below) so each can have its own width at every zoom.
+        let bucket = colorRoadsByFc && fc >= 1 && fc <= 5 ? 2 + fc : 1;
         if (covered) {
           bucket = 2;
           const who = d < drivers.length ? drivers[d].driverId : null;
@@ -867,10 +888,6 @@ export function CoverageMap({
    */
   const roadLayers = useMemo<Layer[]>(() => {
     if (!roadPaint.length) return [];
-    const widths = [
-      { suffix: 'todo', width: 3, min: 1.3, max: 6 },
-      { suffix: 'done', width: 5, min: 2.4, max: 10 },
-    ] as const;
     return [
       new TileLayer<RoadTileData | null>({
         id: 'roads',
@@ -884,16 +901,26 @@ export function CoverageMap({
         pickable: true,
         getTileData: (tile: { index: { x: number; y: number; z: number }; bbox: unknown; signal?: AbortSignal }) => buildRoadTile(roadPaint, tile.index, tile.bbox as never, tile.signal),
         updateTriggers: { getTileData: [roadPaint] },
-        renderSubLayers: (props: { id: string; data: unknown }) => {
+        renderSubLayers: (props: { id: string; data: unknown; tile?: { index?: { z: number } } }) => {
           const tile = props.data as RoadTileData | null;
           if (!tile) return null;
-          return widths
-            .map((b) => ({ b, part: (b.suffix === 'todo' ? tile.todo : tile.done) as RoadTilePart }))
-            .filter(({ part }) => part.length > 0)
-            .map(
-              ({ b, part }) =>
+          // Zoomed out, the FC classes come down in weight: a whole country of 6 px lines is a
+          // smear. Tiles are 1024 px, so tile level z is about map zoom z + 2 (city ≈ 11-13).
+          const z = props.tile?.index?.z ?? MAX_TILE_Z;
+          const fcScale = z >= 11 ? 1 : z >= 9 ? 0.7 : 0.45;
+          return ROAD_DRAW_ORDER
+            .map((bucket) => ({ bucket, part: tile.parts[bucket - 1] }))
+            .filter(({ part }) => part && part.length > 0)
+            .map(({ bucket, part }) => {
+              const style = ROAD_STYLE[bucket - 1];
+              const b = {
+                width: style.width,
+                min: bucket >= 3 ? style.min * fcScale : bucket === 2 && colorRoadsByFc ? 3.4 : style.min,
+                max: style.max,
+              };
+              return (
                 new PathLayer({
-                  id: `${props.id}-${b.suffix}`,
+                  id: `${props.id}-b${bucket}`,
                   data: {
                     length: part.length,
                     startIndices: part.startIndices,
@@ -915,7 +942,8 @@ export function CoverageMap({
                   jointRounded: true,
                   pickable: tile.pickable,
                 } as never)
-            );
+              );
+            });
         },
       } as never) as unknown as Layer,
       /**
@@ -942,7 +970,7 @@ export function CoverageMap({
         pickable: true,
       } as never),
     ];
-  }, [roadPaint]);
+  }, [roadPaint, colorRoadsByFc]);
 
   const areaBbox = areas?.bbox ? areas.bbox.join(',') : '';
   useEffect(() => {
@@ -990,6 +1018,9 @@ export function CoverageMap({
       Boolean(highlightAreaIds) && !highlightAreaIds!.has(p.areaId || '');
 
     const out: Layer[] = [];
+    // With roads coloured by FC, the areas' fill fades: the classes are what is being read, and a
+    // strong yellow wash under them (unassigned) swallowed the yellow FC2 and muddied the rest.
+    const fcWash = colorRoadsByFc && roadScope !== 'off' ? 0.35 : 1;
 
     if (showAreas && drawnAreas?.features.length) {
       (areaLods || [drawnAreas]).forEach((fc, lod, all) => out.push(
@@ -1021,11 +1052,11 @@ export function CoverageMap({
             if (mode === 'assignment' || st === 'done') {
               const c = AREA_STATUS[st].fill;
               if (dimmed(f.properties)) return [c[0], c[1], c[2], 18];
-              return [c[0], c[1], c[2], st === 'open' && highlightUnassigned ? 150 : st === 'held' ? 60 : 90];
+              return [c[0], c[1], c[2], Math.round((st === 'open' && highlightUnassigned ? 150 : st === 'held' ? 60 : 90) * fcWash)];
             }
             const c = shadeOf(f.properties);
             // By delivery, lighter: deliveries overlap, and the one underneath must show through.
-            return [c[0], c[1], c[2], isFaded(f.properties) ? 25 : mode === 'delivery' ? 60 : 110];
+            return [c[0], c[1], c[2], Math.round((isFaded(f.properties) ? 25 : mode === 'delivery' ? 60 : 110) * fcWash)];
           },
           // The outline answers "whose is this", independently of the fill's percentage.
           getLineColor: (f: { properties: AreaProps }) => {
@@ -1077,7 +1108,7 @@ export function CoverageMap({
             // deck.gl caches accessor results; without naming every input here a change would not
             // repaint. The selection is NOT one of them: it has its own small layer (below), so a
             // click no longer re-colours every polygon of the region.
-            getFillColor: [mode, driverColorByArea, holdersByCode, roadScope, highlightAreaIds, highlightUnassigned, deliveryColors],
+            getFillColor: [mode, driverColorByArea, holdersByCode, roadScope, highlightAreaIds, highlightUnassigned, deliveryColors, colorRoadsByFc],
             getLineColor: [mode, driverColorByArea, holdersByCode, highlightAreaIds, highlightUnassigned, deliveryColors],
             // Width depends on whether an area is assigned, so the holders belong here too --
             // without them, assigning an area would recolour its outline but not thicken it.
@@ -1266,6 +1297,7 @@ export function CoverageMap({
     visibleTracks,
     driverColorById,
     colorRoadsByDriver,
+    colorRoadsByFc,
     driverSet,
     filterKey,
     highlightAreaIds,
@@ -1299,7 +1331,9 @@ export function CoverageMap({
       const picked = info as PickingInfo & { tile?: { content?: RoadTileData | null }; sourceLayer?: { id?: string } };
       const tile = picked.tile?.content;
       if (!tile) return null;
-      const part = (picked.sourceLayer?.id || '').endsWith('-done') ? tile.done : tile.todo;
+      const bucket = Number(/-b(\d)$/.exec(picked.sourceLayer?.id || '')?.[1] || 1);
+      const part = tile.parts[bucket - 1];
+      if (!part) return null;
       const li = part.link[info.index];
       const net = tile.paints[part.paint[info.index]]?.net;
       if (li === undefined || !net) return null;
