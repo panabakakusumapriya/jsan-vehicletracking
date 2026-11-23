@@ -591,6 +591,10 @@ function ProgressTab({
   const [colorRoadsByDriver, setColorRoadsByDriver] = useState(false);
   /** Roads still to drive in their functional-class colour, FC1 to FC5. */
   const [colorRoadsByFc, setColorRoadsByFc] = useState(false);
+  /** The FC key appears under its switch, low in the layers list: bring it into view when it does. */
+  const revealFcKey = useCallback((el: HTMLDivElement | null) => {
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, []);
   /** Everyone with driven road on this network — NOT the same set as "everyone holding a polygon". */
   const [coverageDrivers, setCoverageDrivers] = useState<
     { driverId: string | null; name: string; links: number; meters: number }[]
@@ -1951,7 +1955,7 @@ function ProgressTab({
                 {roadScope !== 'off' && colorRoadsByFc && (
                   // The key right under the switch, as the area colours sit under "Areas" — no
                   // hunting for the legend at the foot of the map.
-                  <div className="cov-status-key roads">
+                  <div className="cov-status-key roads" ref={revealFcKey}>
                     {FC_KEY.map(([fc, what]) => (
                       <span key={fc}>
                         <i style={{ background: `rgb(${fcColor(fc).join(',')})`, height: FC_KEY_PX[fc] }} />
