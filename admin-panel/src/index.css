@@ -1561,6 +1561,8 @@ select.input { cursor: pointer; }
 .cov-status-key { display: flex; flex-direction: column; gap: 4px; padding: 2px 8px 6px 48px; }
 .cov-status-key span { display: grid; grid-template-columns: 12px auto; column-gap: 7px; align-items: center; font-size: 12px; }
 .cov-status-key i { width: 12px; height: 12px; border-radius: 3px; }
+/* Roads, not areas: the swatch is a stroke. */
+.cov-status-key.roads i { height: 4px; border-radius: 2px; }
 .cov-status-key b { font-weight: 600; color: var(--text); }
 .cov-status-key small { grid-column: 2; font-size: 11px; color: var(--muted); }
 .cov-layer-note {

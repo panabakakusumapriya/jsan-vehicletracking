@@ -1,7 +1,7 @@
 import { PageIcon } from '../components/AppIcon';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { AREA_STATUS, CoverageMap, deliveryColor, type AreaProps } from '../components/CoverageMap';
+import { AREA_STATUS, CoverageMap, deliveryColor, fcColor, type AreaProps } from '../components/CoverageMap';
 import { Modal } from '../components/Modal';
 import { SplitZonesModal } from '../components/SplitZonesModal';
 import { ClearCoverageModal } from '../components/ClearCoverageModal';
@@ -246,6 +246,15 @@ function Bar({ value, total, tone = 'brand' }: { value: number; total: number; t
  * One row of the map's layer card: switch, label, optional count, and — while "explain" is on —
  * what the layer means in a line under the label. The row is tinted while on.
  */
+/** HERE functional classes, for the key under "Colour roads by FC". */
+const FC_KEY: [number, string][] = [
+  [1, 'motorways and main highways'],
+  [2, 'major roads between and through cities'],
+  [3, 'secondary roads'],
+  [4, 'connecting roads within neighbourhoods'],
+  [5, 'local streets'],
+];
+
 function LayerRow({
   on,
   onChange,
@@ -1936,8 +1945,26 @@ function ProgressTab({
                     onChange={setColorRoadsByFc}
                     label="Colour roads by FC"
                     explain={layersExplain}
-                    hint="Roads still to drive in the colour of their road class, FC1 to FC5 (legend on the map). Driven roads stay blue."
+                    hint="Roads still to drive in the colour of their road class:"
                   />
+                )}
+                {roadScope !== 'off' && colorRoadsByFc && (
+                  // The key right under the switch, as the area colours sit under "Areas" — no
+                  // hunting for the legend at the foot of the map.
+                  <div className="cov-status-key roads">
+                    {FC_KEY.map(([fc, what]) => (
+                      <span key={fc}>
+                        <i style={{ background: `rgb(${fcColor(fc).join(',')})` }} />
+                        <b>FC{fc}</b>
+                        {layersExplain && <small>{what}</small>}
+                      </span>
+                    ))}
+                    <span>
+                      <i style={{ background: '#2563EB' }} />
+                      <b>Driven</b>
+                      {layersExplain && <small>any class, once a trip has covered it</small>}
+                    </span>
+                  </div>
                 )}
                 <div className="cov-layer-row static">
                   <span className="cov-layer-label">
