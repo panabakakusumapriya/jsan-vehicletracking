@@ -40,6 +40,23 @@ import { MarkerCardBody, pinUrl, type TripMarker } from './TripMarkers';
 const RED: [number, number, number] = [220, 38, 38];
 const BLUE: [number, number, number] = [37, 99, 235];
 
+/**
+ * Roads still to drive by HERE functional class, when "Colour roads by FC" is on (asked for by the
+ * client for the Asia deliveries — HK, Macao, Vietnam — where FC1 to FC5 are driven as separate
+ * priorities). Never red or blue: blue stays "driven", so progress still reads at a glance, and red
+ * is what an unclassified road keeps meaning. FC1 the loudest, FC5 — by far the most road — the
+ * quietest, so the network's skeleton stands out of the local streets.
+ */
+export const FC_COLORS: Record<number, [number, number, number]> = {
+  1: [249, 115, 22], // orange — motorways
+  2: [234, 179, 8], // yellow
+  3: [22, 163, 74], // green
+  4: [192, 38, 211], // fuchsia
+  5: [100, 116, 139], // slate — local streets
+};
+const FC_UNKNOWN: [number, number, number] = [148, 163, 184];
+export const fcColor = (fc: number): [number, number, number] => FC_COLORS[fc] || FC_UNKNOWN;
+
 type Geometry = { type: string; coordinates: unknown };
 
 export interface AreaProps {
@@ -204,6 +221,7 @@ export function CoverageMap({
   showAreas = true,
   roadScope = 'assigned',
   colorRoadsByDriver = false,
+  colorRoadsByFc = false,
   assignedKey,
   showTracks = false,
   tracksFrom,
@@ -303,6 +321,8 @@ export function CoverageMap({
    */
   /** Draw driven roads in the colour of whoever drove them, instead of the standard blue. */
   colorRoadsByDriver?: boolean;
+  /** Draw roads still to drive in the colour of their functional class (FC1 to FC5). */
+  colorRoadsByFc?: boolean;
   /** Changes when assignments or coverage move, so the layer refetches rather than going stale. */
   assignedKey?: string;
   /** Draw the fleet's snapped routes for the project over the network. */
@@ -820,7 +840,7 @@ export function CoverageMap({
         if (!visible) continue;
         shown += 1;
         if (covered) driven += 1;
-        let c: [number, number, number] = todoColor;
+        let c: [number, number, number] = colorRoadsByFc ? fcColor(net.fc[i]) : todoColor;
         let a = 225;
         // 1 = still to drive, 2 = done: drawn as separate layers (below) so the driven roads can
         // be the thicker ones at every zoom.
@@ -836,7 +856,7 @@ export function CoverageMap({
       }
       return { net, bucketOf, colorOf, shown, driven };
     });
-  }, [nets, roadState, roadScope, colorRoadsByDriver, driverColorById, driverSet, holdersByCode, mode, deliveryColors]);
+  }, [nets, roadState, roadScope, colorRoadsByDriver, colorRoadsByFc, driverColorById, driverSet, holdersByCode, mode, deliveryColors]);
 
   /**
    * The roads, as map tiles (lib/roadTiles): deck.gl asks for the tiles in view at the level the
@@ -1628,13 +1648,25 @@ export function CoverageMap({
               className="cov-line"
               style={{
                 height: 2,
-                background:
-                  mode === 'delivery' && deliveryColors && Object.keys(deliveryColors).length
+                background: colorRoadsByFc
+                  ? `linear-gradient(90deg, ${[1, 2, 3, 4, 5].map((f) => `rgb(${fcColor(f).join(',')})`).join(', ')})`
+                  : mode === 'delivery' && deliveryColors && Object.keys(deliveryColors).length
                     ? `linear-gradient(90deg, ${[...Object.values(deliveryColors), ...Object.values(deliveryColors)].slice(0, Math.max(2, Math.min(4, Object.keys(deliveryColors).length))).map((c) => `rgb(${c.join(',')})`).join(', ')})`
                     : `rgb(${RED.join(',')})`,
               }}
             />
-            <span>{mode === 'delivery' ? 'to drive (delivery’s colour)' : 'to drive'}</span>
+            <span>{colorRoadsByFc ? 'to drive (road class)' : mode === 'delivery' ? 'to drive (delivery’s colour)' : 'to drive'}</span>
+          </div>
+        )}
+        {roadsShown > 0 && !netLoading && !netError && colorRoadsByFc && (
+          // Which colour is which class. Only roads still to drive take it — driven roads stay blue.
+          <div className="cov-legend-row" style={{ flexWrap: 'wrap', gap: '4px 10px' }}>
+            {[1, 2, 3, 4, 5].map((f) => (
+              <span key={f} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <span className="cov-line" style={{ height: 3, width: 16, background: `rgb(${fcColor(f).join(',')})` }} />
+                FC{f}
+              </span>
+            ))}
           </div>
         )}
         {linksHint && <div className="cov-legend-note">{linksHint}</div>}

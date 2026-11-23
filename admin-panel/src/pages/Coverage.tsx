@@ -580,6 +580,8 @@ function ProgressTab({
   const [roadScope, setRoadScope] = useState<'off' | 'assigned' | 'covered' | 'all'>('all');
   // Off by default: red/blue is the contract the phone uses, and per-driver hues override it.
   const [colorRoadsByDriver, setColorRoadsByDriver] = useState(false);
+  /** Roads still to drive in their functional-class colour, FC1 to FC5. */
+  const [colorRoadsByFc, setColorRoadsByFc] = useState(false);
   /** Everyone with driven road on this network — NOT the same set as "everyone holding a polygon". */
   const [coverageDrivers, setCoverageDrivers] = useState<
     { driverId: string | null; name: string; links: number; meters: number }[]
@@ -1928,6 +1930,15 @@ function ProgressTab({
                     hint="Driven roads take the colour of the driver who drove them first."
                   />
                 )}
+                {roadScope !== 'off' && (
+                  <LayerRow
+                    on={colorRoadsByFc}
+                    onChange={setColorRoadsByFc}
+                    label="Colour roads by FC"
+                    explain={layersExplain}
+                    hint="Roads still to drive in the colour of their road class, FC1 to FC5 (legend on the map). Driven roads stay blue."
+                  />
+                )}
                 <div className="cov-layer-row static">
                   <span className="cov-layer-label">
                     Colour areas by
@@ -2061,6 +2072,7 @@ function ProgressTab({
           // the question stops being "where did the fleet go" and becomes "who drove THIS area".
           tracksAreaId={singleAreaId}
           colorRoadsByDriver={colorRoadsByDriver}
+          colorRoadsByFc={colorRoadsByFc}
           driverColorById={driverViz.byDriver}
           driverFilter={driverFilter}
           highlightAreaIds={highlightAreaIds}
