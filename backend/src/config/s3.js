@@ -70,18 +70,21 @@ async function getFromS3(key) {
 
 /**
  * A short-lived link the PHONE uploads one file to, straight into the bucket (marker photos): the
- * bytes never pass through the API. The Content-Type is part of the signature, so the phone must
- * send exactly this one.
+ * bytes never pass through the API.
+ *
+ * Content-Type is deliberately NOT part of the signature. Signing it looked tighter — only the
+ * exact type the link was issued for would be accepted — but the phone's fetch layer rewrites the
+ * header (a charset suffix, or its own guess for a binary body), and the bucket then refuses the
+ * PUT with 403 SignatureDoesNotMatch whenever the value differs by even a character. So every photo
+ * failed. The link is already short-lived and only handed to an authenticated driver, so accepting
+ * whatever Content-Type the phone sends is the safe trade.
  */
 async function presignPut(key, contentType, expiresIn = 15 * 60) {
   const client = getS3Client();
-  // signableHeaders: by default the presigner leaves Content-Type out of the signature, and the
-  // bucket then took any type at all (checked against the real bucket). Signed, a PUT with another
-  // Content-Type is refused, so what lands under markers/ is the JPEG the link was issued for.
   return getSignedUrl(
     client,
     new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, ContentType: contentType }),
-    { expiresIn, signableHeaders: new Set(['content-type']) }
+    { expiresIn }
   );
 }
 
