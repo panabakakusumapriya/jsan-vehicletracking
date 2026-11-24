@@ -9,9 +9,9 @@ router.get('/current', ctrl.getCurrent);
 router.post('/report-version', ctrl.reportVersion);
 
 // Admin-only management
-router.get('/versions', authenticate, requireRole('admin'), ctrl.list);
-router.post('/versions', authenticate, requireRole('admin'), ctrl.create);
-router.patch('/versions/:id', authenticate, requireRole('admin'), ctrl.update);
-router.delete('/versions/:id', authenticate, requireRole('admin'), ctrl.remove);
+router.get('/versions', authenticate, requireRole('admin', 'manager'), ctrl.list);
+router.post('/versions', authenticate, requireRole('admin', 'manager'), ctrl.create);
+router.patch('/versions/:id', authenticate, requireRole('admin', 'manager'), ctrl.update);
+router.delete('/versions/:id', authenticate, requireRole('admin', 'manager'), ctrl.remove);
 
 module.exports = router;

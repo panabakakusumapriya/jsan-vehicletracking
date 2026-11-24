@@ -48,7 +48,7 @@ async function authenticate(req, res, next) {
 function requireRole(...roles) {
   return (req, res, next) => {
     // A superadmin is an admin everywhere an admin is allowed.
-    const role = req.user && req.user.role === 'superadmin' && roles.includes('admin') ? 'admin' : req.user?.role;
+    const role = req.user && req.user.role === 'superadmin' && roles.includes('admin') || roles.includes('manager') ? 'admin' : req.user?.role;
     if (!req.user || !roles.includes(role)) {
       return res.status(403).json({ error: 'Forbidden: insufficient role' });
     }
