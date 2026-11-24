@@ -81,9 +81,11 @@ async function getFromS3(key) {
  */
 async function presignPut(key, contentType, expiresIn = 15 * 60) {
   const client = getS3Client();
+  // ContentType intentionally NOT included in PutObjectCommand - see comment above
+  // Including it causes SignatureDoesNotMatch when the phone's fetch layer modifies the header
   return getSignedUrl(
     client,
-    new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key, ContentType: contentType }),
+    new PutObjectCommand({ Bucket: process.env.S3_BUCKET, Key: key }),
     { expiresIn }
   );
 }
