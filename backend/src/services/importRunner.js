@@ -199,8 +199,18 @@ async function tick({ jobId = null, heldBy = null } = {}) {
     jobId
       ? { _id: jobId, status: { $in: ['queued', 'committing'] }, claimToken: heldBy }
       : {
-        status: { $in: ['queued', 'committing'] },
-        $or: [{ claimToken: null }, { claimedAt: { $lt: new Date(now.getTime() - RUNNER_STALE_MS) } }],
+        $or: [
+          {
+            status: { $in: ['queued', 'committing'] },
+            $or: [{ claimToken: null }, { claimedAt: { $lt: new Date(now.getTime() - RUNNER_STALE_MS) } }],
+          },
+          // A runner that died while PARSING (a deploy restarting the server mid-read: the Vietnam
+          // FC1-5 delivery, 23 Nov 2026) left its job in 'parsing' for good — only queued and
+          // committing jobs were ever taken over, so it showed "parsing" until someone looked.
+          // Parsing writes nothing but the job itself, so the job is simply read again from its
+          // stored files.
+          { status: 'parsing', claimedAt: { $lt: new Date(now.getTime() - RUNNER_STALE_MS) } },
+        ],
       },
     { $set: { startedAt: now, claimToken: token, claimedAt: now } },
     { sort: { createdAt: 1 }, new: true }
