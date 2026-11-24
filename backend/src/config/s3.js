@@ -41,12 +41,17 @@ function getS3Client() {
 
 /**
  * Upload a buffer to S3. Returns the S3 key (not a full URL).
+ * 
+ * @param {Buffer} buffer - The file buffer to upload
+ * @param {string} originalName - Original filename with extension
+ * @param {string} userId - User ID for file organization
+ * @param {string} folder - Folder prefix: 'ssd' (default) or 'markers'
  */
-async function uploadToS3(buffer, originalName, userId) {
+async function uploadToS3(buffer, originalName, userId, folder = 'ssd') {
   const client = getS3Client();
   const bucket = process.env.S3_BUCKET;
   const ext = path.extname(originalName) || '.jpg';
-  const key = `ssd/${userId}_${Date.now()}${ext}`;
+  const key = `${folder}/${userId}_${Date.now()}${ext}`;
 
   await client.send(new PutObjectCommand({
     Bucket: bucket,
