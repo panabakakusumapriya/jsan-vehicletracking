@@ -19,6 +19,7 @@ import { AcademyCard } from '@/src/components/AcademyCard';
 import { DayWork } from '@/src/components/DayWork';
 import { ManualTripButton, useManualTrip } from '@/src/components/ManualTripControl';
 import { TrackingChecklist } from '@/src/components/TrackingChecklist';
+import { OTAUpdateChecker } from '@/src/components/OTAUpdateChecker';
 import { loadProgress } from '@/src/lib/academy';
 import { API_BASE_URL } from '@/src/lib/config';
 import { useAuth } from '@/src/lib/auth';
@@ -76,6 +77,7 @@ export default function Home() {
   const [lastFix, setLastFix] = useState<VehicleTracker.LocationEvent | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadError, setUploadError] = useState<UploadError>(null);
+  const [updateCheckerOpen, setUpdateCheckerOpen] = useState(false);
   /** Bumped when a trip starts or ends, or on pull-to-refresh: the working-hours card reloads. */
   const [workKey, setWorkKey] = useState(0);
   const started = useRef(false);
@@ -397,6 +399,18 @@ export default function Home() {
         </>
       )}
 
+      {/* App: updates and diagnostics */}
+      <Text style={s.section}>App</Text>
+      <TouchableOpacity
+        style={s.updateCard}
+        onPress={() => setUpdateCheckerOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel="Check for app updates"
+      >
+        <FontAwesome name="refresh" size={16} color={C.brand} />
+        <Text style={s.updateCardText}>Check for updates</Text>
+      </TouchableOpacity>
+
       {/* For support on the phone: who is signed in, and where the GPS last put the phone. */}
       <Text style={s.footer}>
         {user?.email}
@@ -404,6 +418,12 @@ export default function Home() {
         {`  ·  ${queued} point${queued === 1 ? '' : 's'} waiting`}
       </Text>
     </ScrollView>
+
+    {/* OTA Update Checker Modal */}
+    <OTAUpdateChecker
+      visible={updateCheckerOpen}
+      onClose={() => setUpdateCheckerOpen(false)}
+    />
     </View>
   );
 }
@@ -482,4 +502,10 @@ const s = StyleSheet.create({
   },
   uploadErrText: { flex: 1, fontSize: 13, color: '#92400e', fontWeight: '600', lineHeight: 18 },
   uploadErrDismiss: { fontSize: 14, color: C.muted, fontWeight: '700', paddingHorizontal: 4 },
+
+  updateCard: {
+    ...card, flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingHorizontal: 14, paddingVertical: 12,
+  },
+  updateCardText: { color: C.text, fontSize: 14, fontWeight: '600' },
 });

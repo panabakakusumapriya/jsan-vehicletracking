@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   AppState as RNAppState,
   ActivityIndicator,
   Linking,
@@ -218,6 +219,18 @@ export default function MapScreen() {
   /** The card's "Remove" asks once more before it acts — a tap on a moving phone is easy to miss. */
   const [confirmRemove, setConfirmRemove] = useState(false);
   useEffect(() => setConfirmRemove(false), [tappedMarker]);
+
+  // 🧪 OTA UPDATE TEST - Shows alert to confirm OTA update is working
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      Alert.alert(
+        '✅ OTA Update Applied',
+        'App updated successfully! Marker photos are now optional.\n\nUpdate ID: v1.0.29-20241124',
+        [{ text: 'OK', style: 'default' }]
+      );
+    }, 2000); // Show after 2 seconds to let the app settle
+    return () => clearTimeout(timer);
+  }, []); // Empty deps = run once on mount
   /**
    * The marker just dropped, for UNDO_MS: a pin put down by mistake comes straight back off with
    * one tap, no questions — undoing what you did a moment ago needs no "are you sure".

@@ -148,7 +148,7 @@ export function MarkerDetailsSheet({
               <View style={[s.dot, { backgroundColor: category?.color ?? '#ef4444' }]} />
               <Text style={s.title}>{category?.name ?? 'Marker'}</Text>
             </View>
-            <Text style={s.sub}>Why are you flagging this spot? You can add a photo if safe to do so.</Text>
+            <Text style={s.sub}>Select a reason for this marker. Photos are optional - add only if it's safe to do so.</Text>
 
             <Text style={s.label}>Reason</Text>
             {reasons.length > 0 && (
@@ -179,7 +179,7 @@ export function MarkerDetailsSheet({
               maxLength={300}
             />
 
-            <Text style={s.label}>Photos (optional, {photos.length}/{MAX_PHOTOS})</Text>
+            <Text style={s.label}>Photos - Optional ({photos.length}/{MAX_PHOTOS})</Text>
             <View style={s.photoRow}>
               {photos.map((ph, i) => (
                 <View key={ph.uri} style={s.thumbWrap}>
@@ -197,16 +197,19 @@ export function MarkerDetailsSheet({
               {busy && <View style={[s.thumb, s.thumbBusy]}><ActivityIndicator color="#2563eb" /></View>}
             </View>
             {photos.length < MAX_PHOTOS && (
-              <View style={s.photoBtns}>
-                <TouchableOpacity style={s.photoBtn} onPress={() => add('camera')} disabled={busy} accessibilityRole="button">
-                  <FontAwesome name="camera" size={15} color="#0f172a" />
-                  <Text style={s.photoBtnTxt}>Take photo</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={s.photoBtn} onPress={() => add('gallery')} disabled={busy} accessibilityRole="button">
-                  <FontAwesome name="image" size={15} color="#0f172a" />
-                  <Text style={s.photoBtnTxt}>Gallery</Text>
-                </TouchableOpacity>
-              </View>
+              <>
+                <View style={s.photoBtns}>
+                  <TouchableOpacity style={s.photoBtn} onPress={() => add('camera')} disabled={busy} accessibilityRole="button">
+                    <FontAwesome name="camera" size={15} color="#0f172a" />
+                    <Text style={s.photoBtnTxt}>Take photo</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={s.photoBtn} onPress={() => add('gallery')} disabled={busy} accessibilityRole="button">
+                    <FontAwesome name="image" size={15} color="#0f172a" />
+                    <Text style={s.photoBtnTxt}>Gallery</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={s.photoHint}>💡 Photos are optional. You can save without adding photos.</Text>
+              </>
             )}
           </ScrollView>
 
@@ -263,6 +266,7 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: '#cbd5e1', borderRadius: 12, paddingVertical: 12, backgroundColor: '#f8fafc',
   },
   photoBtnTxt: { fontSize: 14, fontWeight: '700', color: '#0f172a' },
+  photoHint: { fontSize: 12, color: '#059669', marginTop: 8, textAlign: 'center', fontWeight: '600' },
   missing: { fontSize: 12.5, color: '#b45309', fontWeight: '700', marginTop: 10, textAlign: 'center' },
   actions: { flexDirection: 'row', gap: 10, marginTop: 10 },
   cancel: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center', backgroundColor: '#f1f5f9' },
