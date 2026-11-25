@@ -2,7 +2,7 @@
   "expo": {
     "name": "JSAN-AUTO-TRACKING",
     "slug": "jsanvtsauto",
-    "version": "1.0.30",
+    "version": "1.0.29",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "jsanautotracking",
@@ -31,7 +31,8 @@
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.INTERNET"
-      ]
+      ],
+      "versionCode": 2
     },
     "web": {
       "output": "static",
