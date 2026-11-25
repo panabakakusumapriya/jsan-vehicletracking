@@ -21,17 +21,17 @@ import {
 import type { MarkerCategory } from '@/src/lib/api';
 
 /**
- * What a marker needs before it is dropped: WHY the spot was flagged and a PHOTO of it.
+ * What a marker needs before it is dropped: WHY the spot was flagged, and optionally a PHOTO of it.
  *
  * Opens after the driver has placed the pin. The reason is one of the reasons the admins listed
  * under that colour (MarkerCategory.description, edited on the portal's Markers page), or "Other"
- * with the driver's own words; a few extra words are always welcome. At least one photo is needed,
- * up to three — taken with the camera, or picked from the gallery when the moment has passed.
+ * with the driver's own words; a few extra words are always welcome. Photos are optional — the
+ * driver can add up to three if safe to do so, taken with the camera or picked from the gallery.
  *
  * Every picture is shrunk to a ~1600 px JPEG here, on the phone: a camera original is 4-8 MB and
  * would take minutes to upload on the weak signal markers are dropped in; this is a few hundred KB.
  */
-export const MIN_PHOTOS = 1;
+export const MIN_PHOTOS = 0;
 export const MAX_PHOTOS = 3;
 const MAX_EDGE_PX = 1600;
 const JPEG_QUALITY = 0.7;
@@ -93,7 +93,7 @@ export function MarkerDetailsSheet({
   const photosOk = photos.length >= MIN_PHOTOS;
   const missing = !reasonOk
     ? (other ? 'Write the reason (a few words)' : 'Pick the reason')
-    : !photosOk ? 'Add a photo of the spot' : null;
+    : null;
 
   const add = async (from: 'camera' | 'gallery') => {
     if (busy || photos.length >= MAX_PHOTOS) return;
@@ -148,7 +148,7 @@ export function MarkerDetailsSheet({
               <View style={[s.dot, { backgroundColor: category?.color ?? '#ef4444' }]} />
               <Text style={s.title}>{category?.name ?? 'Marker'}</Text>
             </View>
-            <Text style={s.sub}>Why are you flagging this spot? Add a photo so the office can see it.</Text>
+            <Text style={s.sub}>Why are you flagging this spot? You can add a photo if safe to do so.</Text>
 
             <Text style={s.label}>Reason</Text>
             {reasons.length > 0 && (
@@ -179,7 +179,7 @@ export function MarkerDetailsSheet({
               maxLength={300}
             />
 
-            <Text style={s.label}>Photo{MAX_PHOTOS > 1 ? `s (${photos.length}/${MAX_PHOTOS})` : ''}</Text>
+            <Text style={s.label}>Photos (optional, {photos.length}/{MAX_PHOTOS})</Text>
             <View style={s.photoRow}>
               {photos.map((ph, i) => (
                 <View key={ph.uri} style={s.thumbWrap}>
