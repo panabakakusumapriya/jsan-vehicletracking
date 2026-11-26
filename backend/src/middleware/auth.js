@@ -48,7 +48,10 @@ async function authenticate(req, res, next) {
 function requireRole(...roles) {
   return (req, res, next) => {
     // A superadmin is an admin everywhere an admin is allowed.
-    const role = req.user && req.user.role === 'superadmin' && roles.includes('admin') || roles.includes('manager') ? 'admin' : req.user?.role;
+    // Only the superadmin is promoted. Which other roles a route lets in is the route's own list
+    // (e.g. requireRole('admin', 'manager')) — never widen it here: an `|| roles.includes(...)`
+    // in this line once let every signed-in driver through every manager route as an admin.
+    const role = req.user && req.user.role === 'superadmin' && roles.includes('admin') ? 'admin' : req.user?.role;
     if (!req.user || !roles.includes(role)) {
       return res.status(403).json({ error: 'Forbidden: insufficient role' });
     }

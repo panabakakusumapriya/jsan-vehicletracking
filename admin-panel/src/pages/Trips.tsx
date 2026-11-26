@@ -375,6 +375,14 @@ export function Trips() {
     await downloadFile(`/api/trips/export-table?${params}`, `trips.${format}`);
   };
 
+  /** The markers the same project / country / driver / dates cover. Status is a trip filter, so it's dropped. */
+  const handleMarkers = async (format: 'xlsx' | 'csv' | 'kml') => {
+    const params = buildParams(1);
+    for (const k of ['page', 'limit', 'status']) params.delete(k);
+    params.set('format', format);
+    await downloadFile(`/api/markers/export?${params}`, `markers.${format}`);
+  };
+
   const handleExport = async (format: 'kml' | 'json', layer: 'raw' | 'snapped') => {
     const params: Record<string, string> = { format, layer };
     if (status) params.status = status;
@@ -576,7 +584,7 @@ export function Trips() {
           </button>
         )}
         <div className="tr-export">
-          <ExportButtons onExport={handleExport} onSpreadsheet={handleSheet} disabled={total === 0} snappedAvailable status={exportStatus} />
+          <ExportButtons onExport={handleExport} onSpreadsheet={handleSheet} onMarkers={handleMarkers} disabled={total === 0} snappedAvailable status={exportStatus} />
         </div>
       </div>
 

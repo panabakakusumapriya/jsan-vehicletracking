@@ -26,7 +26,16 @@ interface ExportButtonsProps {
    * route files when given — most people exporting from a table want the table.
    */
   onSpreadsheet?: (format: SheetFormat, level: SheetLevel) => Promise<void>;
+  /** The driver-dropped markers the same filters cover, as a file. Shown last when given. */
+  onMarkers?: (format: MarkerFormat) => Promise<void>;
 }
+
+export type MarkerFormat = 'xlsx' | 'csv' | 'kml';
+const MARKER_CHOICES: { format: MarkerFormat; label: string; hint: string }[] = [
+  { format: 'xlsx', label: 'Markers · Excel', hint: 'Every flag: driver, time, reason, Google Maps link' },
+  { format: 'csv', label: 'Markers · CSV', hint: 'The same rows as plain CSV' },
+  { format: 'kml', label: 'Markers · KML', hint: 'Pins in category colours, for Google Earth' },
+];
 
 type SheetChoice = { format: SheetFormat; level: SheetLevel; label: string; hint: string };
 const SHEET_CHOICES: SheetChoice[] = [
@@ -61,7 +70,7 @@ const ChevronIcon = ({ open }: { open: boolean }) => (
   </svg>
 );
 
-export function ExportButtons({ onExport, disabled, snappedAvailable = false, status, onSpreadsheet }: ExportButtonsProps) {
+export function ExportButtons({ onExport, disabled, snappedAvailable = false, status, onSpreadsheet, onMarkers }: ExportButtonsProps) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,8 +105,11 @@ export function ExportButtons({ onExport, disabled, snappedAvailable = false, st
     }
   };
   const handlePick = (choice: Choice) => run(choice.label, () => onExport(choice.format, choice.layer));
+  // Section headings stand out from the choices under them: a brand-tinted bar, not grey text.
   const sectionTitle: React.CSSProperties = {
-    padding: '6px 10px 2px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--muted)',
+    margin: '4px 2px 2px', padding: '5px 10px', borderRadius: 6,
+    background: 'var(--brand-light)', borderLeft: '3px solid var(--brand)',
+    fontSize: 11, fontWeight: 800, letterSpacing: 0.6, textTransform: 'uppercase', color: 'var(--brand)',
   };
 
   return (
@@ -189,6 +201,27 @@ export function ExportButtons({ onExport, disabled, snappedAvailable = false, st
               </button>
             );
           })}
+          {onMarkers && (
+            <>
+              <div style={{ height: 1, background: 'var(--line)', margin: '4px 6px' }} />
+              <div style={sectionTitle}>Markers</div>
+              {MARKER_CHOICES.map((c) => (
+                <button
+                  key={c.label}
+                  type="button"
+                  role="menuitem"
+                  title={c.hint}
+                  onClick={() => run(c.label, () => onMarkers(c.format))}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderRadius: 8, padding: '8px 10px', fontSize: 13, fontWeight: 600, color: 'var(--text-2)', cursor: 'pointer' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
+                >
+                  {c.label}
+                  <span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: 'var(--muted)', marginTop: 1 }}>{c.hint}</span>
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
 

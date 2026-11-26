@@ -19,6 +19,8 @@ router.get('/mine', requireRole('user'), ctrl.mine);
 // A driver takes their own marker off the map (by id, or the clientId of a drop still uploading).
 router.delete('/mine/:key', requireRole('user'), ctrl.removeMine);
 router.get('/', requireRole('admin', 'manager', 'team_lead'), ctrl.list);
+// The Trips page's filters as a file: Excel, CSV or KML.
+router.get('/export', requireRole('admin', 'manager', 'team_lead'), ctrl.exportMarkers);
 router.delete('/:id', requireRole('admin'), ctrl.remove);
 
 module.exports = router;

@@ -4,7 +4,8 @@ const MarkerCategory = require('../models/MarkerCategory');
 const Trip = require('../models/Trip');
 const Vehicle = require('../models/Vehicle');
 const asyncHandler = require('../utils/asyncHandler');
-const { accessibleDriverFilter } = require('../utils/scope');
+const { accessibleDriverFilter, narrowDrivers } = require('../utils/scope');
+const { timezoneForCountry } = require('../utils/countryTimezone');
 const { dayRange, isValidTimeZone } = require('../utils/timezone');
 const s3 = require('../config/s3');
 
@@ -494,6 +495,143 @@ exports.remove = asyncHandler(async (req, res) => {
   const m = await Marker.findByIdAndDelete(req.params.id);
   if (!m) return res.status(404).json({ error: 'Marker not found' });
   res.json({ ok: true });
+});
+
+/**
+ * GET /api/markers/export?format=xlsx|csv|kml   (admin / manager / team_lead — scoped)
+ *   &driverId=<id> | &driverIds=<id,id,…>   the Trips page's driver / project / country filter
+ *   &from=YYYY-MM-DD&to=YYYY-MM-DD&tz=<zone>  days on the viewer's clock, by when the driver pressed
+ *
+ * The markers the Trips page filters describe, as a file: Excel or CSV for the office, KML for
+ * Google Earth (one folder per category, pins in the category colour). Same driver rule as the
+ * trips export — a requested driver narrows the caller's scope, never widens it, and an empty
+ * driverIds (a project/country with nobody in it) exports nothing rather than the whole fleet.
+ * Times are each driver's local time; removed markers are left out, as everywhere else.
+ */
+const MARKER_EXPORT_MAX = 20000;
+exports.exportMarkers = asyncHandler(async (req, res) => {
+  const format = ['csv', 'kml'].includes(req.query.format) ? req.query.format : 'xlsx';
+  const scope = await accessibleDriverFilter(req.user);
+  const where = { ...scope, ...LIVE };
+  const ids = (list) => narrowDrivers(
+    scope,
+    list.filter((id) => mongoose.isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(id))
+  );
+  if (req.query.driverId) {
+    where.driverId = { $in: ids([String(req.query.driverId).trim()]) };
+  } else if (req.query.driverIds !== undefined) {
+    where.driverId = { $in: ids(String(req.query.driverIds).split(',').map((x) => x.trim()).filter(Boolean)) };
+  }
+  if (req.query.from || req.query.to) {
+    const zone = isValidTimeZone(req.query.tz) ? req.query.tz : 'UTC';
+    try {
+      where.recordedAt = {};
+      if (req.query.from) where.recordedAt.$gte = dayRange(String(req.query.from), zone).from;
+      if (req.query.to) where.recordedAt.$lt = dayRange(String(req.query.to), zone).to;
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+  }
+
+  const markers = await Marker.find(where)
+    .sort({ recordedAt: -1 })
+    .limit(MARKER_EXPORT_MAX + 1)
+    .populate('categoryId', 'name color')
+    .populate('driverId', 'name country')
+    .lean();
+  const truncated = markers.length > MARKER_EXPORT_MAX;
+  if (truncated) markers.length = MARKER_EXPORT_MAX;
+
+  const local = (d, tz) => {
+    const p = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    })
+      .formatToParts(new Date(d))
+      .reduce((o, x) => ({ ...o, [x.type]: x.value }), {});
+    return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
+  };
+  const rows = markers.map((m) => {
+    const tz = timezoneForCountry(m.driverId?.country) || 'UTC';
+    const at = local(m.recordedAt || m.createdAt, tz);
+    return {
+      Date: at.date,
+      Time: at.time,
+      'Time zone': tz,
+      Driver: m.driverName || m.driverId?.name || '',
+      Country: m.driverId?.country || '',
+      Vehicle: m.vehiclePlate || '',
+      Category: m.categoryId?.name || '',
+      Reason: m.reason || '',
+      Note: m.note || '',
+      Latitude: m.lat,
+      Longitude: m.lon,
+      'Google Maps': `https://www.google.com/maps/search/?api=1&query=${m.lat},${m.lon}`,
+      Photos: (m.photos || []).length,
+      'Marker ID': String(m._id),
+      'Trip ID': m.tripId ? String(m.tripId) : '',
+      _color: COLOR_RE.test(m.categoryId?.color || '') ? m.categoryId.color : '#999999',
+    };
+  });
+
+  const stamp = new Date().toISOString().slice(0, 10);
+
+  if (format === 'kml') {
+    const esc = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    // KML colours are aabbggrr.
+    const kmlColor = (hex) => `ff${hex.slice(5, 7)}${hex.slice(3, 5)}${hex.slice(1, 3)}`.toLowerCase();
+    const groups = new Map();
+    for (const r of rows) {
+      const key = r.Category || 'Uncategorised';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    }
+    // A filled dot in the category colour, in Google Earth AND in QGIS. QGIS (via GDAL's LIBKML
+    // driver) can't use a remote icon and fell back to a hollow square; the `#ogr-sym-3` fragment
+    // names OGR's filled-circle symbol, which QGIS draws instead. Google Earth drops the fragment
+    // when it fetches the image and tints the white circle. Checked in QGIS 3.44 (2026-11-26).
+    const DOT_ICON = 'http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png#ogr-sym-3';
+    const styles = [...new Set(rows.map((r) => r._color))]
+      .map((c) => `<Style id="c${c.slice(1)}"><IconStyle><color>${kmlColor(c)}</color><scale>1.1</scale>` +
+        `<Icon><href>${DOT_ICON}</href></Icon></IconStyle></Style>`)
+      .join('\n');
+    const folders = [...groups].map(([name, list]) => `<Folder><name>${esc(name)} (${list.length})</name>\n` +
+      list.map((r) => {
+        const desc = `${r.Driver} · ${r.Date} ${r.Time} (${r['Time zone']})` +
+          (r.Vehicle ? ` · ${r.Vehicle}` : '') + (r.Note ? `\n${r.Note}` : '') + (r.Photos ? `\n${r.Photos} photo(s)` : '');
+        return `<Placemark><name>${esc(r.Reason || r.Category || 'Marker')}</name>` +
+          `<description>${esc(desc)}</description><styleUrl>#c${r._color.slice(1)}</styleUrl>` +
+          `<Point><coordinates>${r.Longitude},${r.Latitude},0</coordinates></Point></Placemark>`;
+      }).join('\n') + '\n</Folder>').join('\n');
+    const kml = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document>' +
+      `<name>Markers ${stamp}</name>\n${styles}\n${folders}\n</Document></kml>\n`;
+    res.setHeader('Content-Type', 'application/vnd.google-earth.kml+xml; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="markers-${stamp}.kml"`);
+    return res.send(kml);
+  }
+
+  const XLSX = require('xlsx');
+  const HEADER = ['Date', 'Time', 'Time zone', 'Driver', 'Country', 'Vehicle', 'Category', 'Reason', 'Note',
+    'Latitude', 'Longitude', 'Google Maps', 'Photos', 'Marker ID', 'Trip ID'];
+  const sheet = XLSX.utils.json_to_sheet(rows.map(({ _color, ...r }) => r), { header: HEADER });
+  if (format === 'csv') {
+    // BOM so Excel opens it as UTF-8 (names and notes in other scripts).
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="markers-${stamp}.csv"`);
+    return res.send('﻿' + XLSX.utils.sheet_to_csv(sheet));
+  }
+  const book = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(book, sheet, 'Markers');
+  const about = [
+    { Item: 'Exported', Value: new Date().toISOString() },
+    { Item: 'Markers', Value: rows.length },
+    { Item: 'Dates', Value: req.query.from || req.query.to ? `${req.query.from || '…'} to ${req.query.to || '…'}` : 'All dates' },
+    { Item: 'Times', Value: 'Each driver’s local time, when they pressed the button' },
+  ];
+  if (truncated) about.push({ Item: 'Note', Value: `Only the newest ${MARKER_EXPORT_MAX} markers — narrow the filters for the rest` });
+  XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(about), 'About');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="markers-${stamp}.xlsx"`);
+  res.send(XLSX.write(book, { type: 'buffer', bookType: 'xlsx' }));
 });
 
 exports.seedDefaultCategories = seedDefaultCategories;
